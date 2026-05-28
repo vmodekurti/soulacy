@@ -1,0 +1,1232 @@
+<script>
+  import { onMount, tick } from 'svelte'
+  import { api } from '../lib/api.js'
+  import { apiKey } from '../lib/stores.js'
+  import ChipPicker from '../lib/ChipPicker.svelte'
+
+  let agents   = []
+  let selected = null   // the agent currently shown in the editor
+  let editing  = null   // deep-copy being modified
+  let error    = null
+  let saveMsg  = ''
+  let saving   = false
+  let deleting = false
+
+  // Tool catalog — fetched once, used by the python_file dropdown
+  let catalog = { python_tools: [], mcp_tools: [], builtins: [] }
+
+  // Providers + per-provider model lists (lazy-fetched on demand)
+  let providers       = []   // [{ id, registered }]
+  let modelsByProv    = {}   // provider id → [model names]
+  let modelsLoading   = {}   // provider id → bool
+  let modelsError     = {}   // provider id → string
+
+  // Lookup sources for the picker fields. Loaded once on mount so
+  // typing errors are impossible — every selection is from a real list.
+  let availableChannels  = []  // [{id, name, kind}]
+  let availableSkills    = []  // [{name, description}]
+  let availableKBs       = []  // [{id, name, description, document_count, chunk_count}]
+
+  async function loadLookups() {
+    const [chs, sks, kbs] = await Promise.allSettled([
+      api.channels.list(),
+      api.skills.list(),
+      api.knowledge.list(),
+    ])
+    if (chs.status === 'fulfilled') availableChannels = chs.value?.channels || []
+    if (sks.status === 'fulfilled') availableSkills   = sks.value?.skills   || []
+    if (kbs.status === 'fulfilled') availableKBs      = kbs.value?.knowledge_bases || []
+  }
+
+  // ---- Picker option transforms ---------------------------------------------
+  // Each lookup is mapped to ChipPicker's { value, label, description, group }
+  // shape so the picker can be generic. Recomputed reactively so freshly-added
+  // channels/skills/KBs show up without a reload.
+  $: channelOptions = availableChannels.map(c => ({
+    value: c.id, label: c.id, description: c.kind || c.name || '',
+  }))
+  $: skillOptions = availableSkills.map(s => ({
+    value: s.name, label: s.name, description: s.description || '',
+  }))
+  $: kbOptions = availableKBs.map(k => ({
+    value: k.name, label: k.name,
+    description: `${k.document_count || 0} docs · ${k.chunk_count || 0} chunks${k.description ? ' — ' + k.description : ''}`,
+  }))
+  $: peerAgentOptions = agents
+    .filter(a => !editing || a.id !== editing.id)
+    .map(a => ({
+      value: a.id, label: a.id,
+      description: a.name || a.description || '',
+    }))
+  $: builtinOptions = (catalog.builtins || []).map(b => ({
+    value: b.name, label: b.name, description: b.description || '',
+  }))
+  // The tool_choice dropdown is a UNION of meta-options + peers + builtins.
+  // Computed reactively from editing.agents and editing.builtins so the list
+  // updates as the user toggles those fields.
+  $: toolChoiceOptions = (() => {
+    const opts = [
+      { value: '',         label: '(default — auto)', description: 'Model decides freely', group: 'Mode' },
+      { value: 'auto',     label: 'auto',             description: 'Same as default',      group: 'Mode' },
+      { value: 'none',     label: 'none',             description: 'Disallow tool calls on turn 1', group: 'Mode' },
+      { value: 'required', label: 'required',         description: 'Must call some tool on turn 1', group: 'Mode' },
+    ]
+    if (editing) {
+      for (const peerId of (editing.agents || [])) {
+        const peer = agents.find(a => a.id === peerId)
+        opts.push({
+          value: `agent__${peerId}`, label: `agent__${peerId}`,
+          description: peer?.name || peer?.description || '(peer agent)',
+          group: 'Peer agents',
+        })
+      }
+      // Allow naming specific built-ins too (rare but supported)
+      for (const b of (catalog.builtins || [])) {
+        opts.push({ value: b.name, label: b.name, description: b.description || '', group: 'Built-ins' })
+      }
+    }
+    return opts
+  })()
+  // Memory scopes are a fixed enum.
+  const memoryScopeOptions = [
+    { value: 'session', label: 'session', description: 'Per-conversation history' },
+    { value: 'global',  label: 'global',  description: 'Persistent across conversations for this agent' },
+    { value: 'agent',   label: 'agent',   description: 'Shared across all sessions of this agent' },
+  ]
+
+  const BLANK = () => ({
+    id: '', name: '', description: '', version: '1.0',
+    trigger: 'channel', channels: ['http'], schedule: { cron: '' },
+    system_prompt: '',
+    llm: { provider: 'ollama', model: '', temperature: 0.7, max_tokens: 512 },
+    memory: { read_scopes: ['session'], write_scopes: ['session'], max_tokens: 20 },
+    tools: [], skills: [], knowledge: [], agents: [], max_turns: 5, stream_reply: false, enabled: true,
+  })
+
+  async function load() {
+    try {
+      const res = await api.agents.list()
+      agents = res.agents || []
+      error  = null
+    } catch (e) { error = e.message }
+  }
+
+  async function loadCatalog() {
+    try {
+      catalog = await api.tools.catalog()
+    } catch (e) {
+      catalog = { python_tools: [], mcp_tools: [], builtins: [] }
+    }
+  }
+
+  // Fetch the list of registered providers (drives the LLM Provider dropdown)
+  async function loadProviders() {
+    try {
+      const res  = await api.providers.list()
+      const regs = res.registered || []      // currently registered with the live router
+      const ids  = new Set([...regs, ...(res.known || []), ...Object.keys(res.providers || {})])
+      providers  = [...ids].map(id => ({
+        id,
+        registered: regs.includes(id),
+        configured: (res.providers || {})[id] != null,
+      }))
+    } catch (e) {
+      providers = []
+    }
+  }
+
+  // Lazy-fetch the model list for one provider (cached). Called whenever the
+  // user selects a provider in the LLM section.
+  async function loadModels(providerId) {
+    if (!providerId) return
+    if (modelsByProv[providerId] || modelsLoading[providerId]) return
+    modelsLoading = { ...modelsLoading, [providerId]: true }
+    try {
+      const res = await api.providers.models(providerId)
+      modelsByProv = { ...modelsByProv, [providerId]: res.models || [] }
+      modelsError  = { ...modelsError,  [providerId]: '' }
+    } catch (e) {
+      modelsByProv = { ...modelsByProv, [providerId]: [] }
+      modelsError  = { ...modelsError,  [providerId]: e.message }
+    } finally {
+      modelsLoading = { ...modelsLoading, [providerId]: false }
+    }
+  }
+
+  // Reactive: any time the editor's provider changes, pull its model list.
+  $: if (editing?.llm?.provider) loadModels(editing.llm.provider)
+
+  // Computed: options for the model dropdown.
+  // - If the agent's current model isn't in the fetched list, append it so the
+  //   form keeps showing the user's choice (it's almost always a real model
+  //   the provider just doesn't enumerate, like a fine-tune name).
+  $: modelOptions = (() => {
+    const provId = editing?.llm?.provider
+    const list   = (modelsByProv[provId] || [])
+    const cur    = editing?.llm?.model
+    if (cur && cur !== '' && !list.includes(cur)) {
+      return [cur, ...list]
+    }
+    return list
+  })()
+
+  // ── Tools editing ─────────────────────────────────────────────────────────
+  function addTool() {
+    if (!editing) return
+    editing.tools = [...(editing.tools || []), {
+      name: '', description: '', python_file: '',
+      timeout: '',
+      parameters: { type: 'object', properties: {} },
+    }]
+  }
+  function removeTool(i) {
+    editing.tools = editing.tools.filter((_, idx) => idx !== i)
+  }
+  function moveTool(i, dir) {
+    const arr = [...editing.tools]
+    const j = i + dir
+    if (j < 0 || j >= arr.length) return
+    ;[arr[i], arr[j]] = [arr[j], arr[i]]
+    editing.tools = arr
+  }
+  function onPythonFilePicked(i, path) {
+    const meta = catalog.python_tools.find(t => t.path === path)
+    editing.tools[i].python_file = path
+    if (meta) {
+      if (!editing.tools[i].name)        editing.tools[i].name = meta.name
+      if (!editing.tools[i].description) editing.tools[i].description = meta.description || ''
+    }
+    editing = editing
+  }
+  function paramsJson(t) {
+    try { return JSON.stringify(t.parameters || {}, null, 2) } catch { return '{}' }
+  }
+  function updateParams(i, json) {
+    try { editing.tools[i].parameters = JSON.parse(json) } catch { /* mid-edit */ }
+  }
+  // ── Channels & skills (CSV inputs) ────────────────────────────────────────
+  function csvToArr(s) { return (s || '').split(',').map(x => x.trim()).filter(Boolean) }
+  function syncChannels(v)  { if (editing) editing.channels  = csvToArr(v) }
+  function syncSkills(v)    { if (editing) editing.skills    = csvToArr(v) }
+  function syncKnowledge(v) { if (editing) editing.knowledge = csvToArr(v) }
+  function syncAgents(v)    { if (editing) editing.agents    = csvToArr(v) }
+  // Built-ins field is tri-state:
+  //   "default"  → undefined (no `builtins:` key in YAML, server applies default gating)
+  //   "none"     → []        (peer-only orchestrator: no built-ins at all)
+  //   "csv,…"    → [csv,…]   (allowlist)
+  function syncBuiltins(v) {
+    if (!editing) return
+    const t = String(v || '').trim().toLowerCase()
+    if (t === '' || t === 'default') { delete editing.builtins; return }
+    if (t === 'none' || t === '[]')  { editing.builtins = [];   return }
+    editing.builtins = csvToArr(v)
+  }
+  function builtinsDisplay() {
+    if (!editing) return 'default'
+    if (editing.builtins === undefined || editing.builtins === null) return 'default'
+    if (editing.builtins.length === 0) return 'none'
+    return editing.builtins.join(', ')
+  }
+  // Tri-state for the builtins radio: 'default' (field absent), 'none' (empty
+  // array), 'restricted' (non-empty array).
+  function builtinsMode() {
+    if (!editing) return 'default'
+    if (editing.builtins === undefined || editing.builtins === null) return 'default'
+    if (editing.builtins.length === 0) return 'none'
+    return 'restricted'
+  }
+
+  function select(agent) {
+    selected = agent
+    editing  = JSON.parse(JSON.stringify(agent))
+    // Ensure nested objects always exist in the editor copy
+    editing.llm      = editing.llm      || { provider: 'ollama', model: '', temperature: 0.7, max_tokens: 512 }
+    editing.memory   = editing.memory   || { read_scopes: ['session'], write_scopes: ['session'], max_tokens: 20 }
+    editing.schedule = editing.schedule || { cron: '' }
+    editing.tools    = editing.tools    || []
+    editing.skills    = editing.skills    || []
+    editing.knowledge = editing.knowledge || []
+    editing.agents    = editing.agents    || []
+    editing.channels  = editing.channels  || []
+    saveMsg = ''
+  }
+
+  function newAgent() {
+    selected = null
+    editing  = BLANK()
+    saveMsg  = ''
+  }
+
+  async function save() {
+    if (!editing) return
+    saving  = true
+    saveMsg = ''
+    try {
+      if (selected) {
+        await api.agents.update(selected.id, editing)
+      } else {
+        await api.agents.create(editing)
+      }
+      await load()
+      saveMsg  = '✓ Saved'
+      const found = agents.find(a => a.id === editing.id)
+      if (found) select(found)
+    } catch (e) {
+      saveMsg = '✗ ' + e.message
+    }
+    saving = false
+  }
+
+  async function toggleEnabled(agent, e) {
+    e.stopPropagation()
+    try {
+      agent.enabled ? await api.agents.disable(agent.id)
+                    : await api.agents.enable(agent.id)
+      await load()
+      if (selected?.id === agent.id) {
+        const found = agents.find(a => a.id === agent.id)
+        if (found) select(found)
+      }
+    } catch (e) { error = e.message }
+  }
+
+  async function deleteAgent() {
+    if (!selected) return
+    if (!confirm(`Delete agent "${selected.id}"? This cannot be undone.`)) return
+    deleting = true
+    try {
+      await api.agents.delete(selected.id)
+      editing = null; selected = null
+      await load()
+    } catch (e) { error = e.message }
+    deleting = false
+  }
+
+  // ── Inline playground ─────────────────────────────────────────────────────
+  // Right-side panel that chats with the currently-selected agent without
+  // forcing the user to navigate to the standalone Chat page. Mirrors
+  // Langflow's "Playground" sidebar that opens over the canvas — the win is
+  // edit-prompt → save → chat in one screen without losing scroll/context.
+  //
+  // Conversation state is keyed by agent.id so switching between agents
+  // preserves a separate transcript per agent (matches the standalone Chat
+  // page's mental model). State is intentionally local (not in a global
+  // store) so the inline playground and the full Chat page don't fight over
+  // the same buffer.
+  let showPlay        = false
+  let playByAgent     = {}     // agentId → [{role, text, ts}]
+  let playInput       = ''
+  let playSending     = false
+  let playError       = ''
+  let playMsgListEl
+
+  // Derived: the current agent's transcript. We assign through the map so
+  // Svelte sees the reactive change.
+  $: playMessages = (selected ? (playByAgent[selected.id] || []) : [])
+
+  function appendPlayMsg(agentId, msg) {
+    const prev = playByAgent[agentId] || []
+    playByAgent = { ...playByAgent, [agentId]: [...prev, msg] }
+  }
+
+  async function playSend() {
+    if (!selected) return
+    const text = playInput.trim()
+    if (!text || playSending) return
+    playInput   = ''
+    playError   = ''
+    const agentId = selected.id
+    appendPlayMsg(agentId, { role: 'user', text, ts: new Date() })
+    playSending = true
+    await scrollPlayBottom()
+    try {
+      const res = await api.chat(agentId, text, 'gui-playground')
+      appendPlayMsg(agentId, { role: 'assistant', text: res.reply, ts: new Date() })
+    } catch (e) {
+      playError = e.message
+      appendPlayMsg(agentId, { role: 'system', text: '⚠ ' + e.message, ts: new Date() })
+    }
+    playSending = false
+    await scrollPlayBottom()
+  }
+
+  async function scrollPlayBottom() {
+    // Tick is imported below
+    await tick()
+    if (playMsgListEl) playMsgListEl.scrollTop = playMsgListEl.scrollHeight
+  }
+
+  function playKeydown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); playSend() }
+  }
+
+  function clearPlayChat() {
+    if (!selected) return
+    playByAgent = { ...playByAgent, [selected.id]: [] }
+    playError   = ''
+  }
+
+  function fmtTime(d) {
+    try { return d.toLocaleTimeString() } catch { return '' }
+  }
+
+  // ── API export modal ─────────────────────────────────────────────────────
+  // Shows ready-to-paste curl / Python / JS snippets for the selected agent's
+  // /api/v1/chat endpoint with the active API key pre-filled. Inspired by
+  // Langflow's "API" button — the demo always ends with "here's how to call
+  // this from your code." Lowers the activation energy for users who came in
+  // through the GUI but want to script against the agent later.
+  let showExport   = false
+  let exportTab    = 'curl'      // 'curl' | 'python' | 'js'
+
+  $: gatewayOrigin = (typeof window !== 'undefined') ? window.location.origin : 'http://127.0.0.1:18789'
+  $: apiKeyValue   = $apiKey || '<your-api-key>'
+
+  $: curlSnippet = selected ? `curl -X POST ${gatewayOrigin}/api/v1/chat \\
+  -H 'Content-Type: application/json' \\
+  -H 'Authorization: Bearer ${apiKeyValue}' \\
+  -d '{
+    "agent_id": "${selected.id}",
+    "user_id":  "api-user",
+    "text":     "hello"
+  }'` : ''
+
+  $: pythonSnippet = selected ? `import requests
+
+resp = requests.post(
+    "${gatewayOrigin}/api/v1/chat",
+    headers={"Authorization": "Bearer ${apiKeyValue}"},
+    json={
+        "agent_id": "${selected.id}",
+        "user_id":  "api-user",
+        "text":     "hello",
+    },
+    timeout=120,
+)
+resp.raise_for_status()
+print(resp.json()["reply"])` : ''
+
+  $: jsSnippet = selected ? `const res = await fetch("${gatewayOrigin}/api/v1/chat", {
+  method: "POST",
+  headers: {
+    "Content-Type":  "application/json",
+    "Authorization": "Bearer ${apiKeyValue}",
+  },
+  body: JSON.stringify({
+    agent_id: "${selected.id}",
+    user_id:  "api-user",
+    text:     "hello",
+  }),
+});
+const { reply } = await res.json();
+console.log(reply);` : ''
+
+  $: activeSnippet = exportTab === 'python' ? pythonSnippet
+                   : exportTab === 'js'     ? jsSnippet
+                   : curlSnippet
+
+  function copySnippet() {
+    if (!activeSnippet) return
+    navigator.clipboard?.writeText(activeSnippet)
+  }
+
+  // ── Templates ("New from template" modal) ────────────────────────────────
+  // Loaded on demand when the user opens the picker. Each entry has the shape
+  // { name, display_name, description, tags, source, definition } from the
+  // /api/v1/templates endpoint. The `source` is "embedded" or "user" — we
+  // show a small badge so users can tell built-ins from their own.
+  let showTemplates    = false
+  let templates        = []
+  let templatesLoading = false
+  let templatesError   = ''
+  let instantiating    = ''   // name of the template currently being instantiated
+
+  async function openTemplates() {
+    showTemplates    = true
+    templatesError   = ''
+    if (templates.length === 0) {
+      templatesLoading = true
+      try {
+        const res = await api.templates.list()
+        templates = res.templates || []
+      } catch (e) {
+        templatesError = e.message
+      }
+      templatesLoading = false
+    }
+  }
+
+  async function useTemplate(t) {
+    instantiating = t.name
+    try {
+      const def = await api.templates.instantiate(t.name)
+      await load()                              // refresh agent list
+      const fresh = agents.find(a => a.id === def.id)
+      if (fresh) select(fresh)                  // open it in the editor
+      showTemplates = false
+    } catch (e) {
+      templatesError = e.message
+    }
+    instantiating = ''
+  }
+
+  onMount(() => { load(); loadCatalog(); loadProviders(); loadLookups() })
+</script>
+
+<div class="page">
+  <div class="page-header">
+    <h1>Agents</h1>
+    <div class="hdr-actions">
+      <button class="btn-secondary" on:click={openTemplates}>📋 From template…</button>
+      <button class="btn-primary"   on:click={newAgent}>+ New Agent</button>
+    </div>
+  </div>
+
+  {#if error}
+    <div class="banner err">⚠ {error}</div>
+  {/if}
+
+  <div class="split">
+    <!-- ── Agent list ── -->
+    <div class="list-col">
+      {#if agents.length === 0}
+        <div class="empty">No agents loaded.<br>Click "New Agent" to create one.</div>
+      {/if}
+      {#each agents as agent}
+        <div class="agent-card" class:active={selected?.id === agent.id}
+             on:click={() => select(agent)}>
+          <div>
+            <div class="agent-name">{agent.name || agent.id}</div>
+            <div class="agent-meta">
+              {agent.trigger} · {agent.llm?.provider || 'ollama'}/{agent.llm?.model || '?'}
+            </div>
+          </div>
+          <button class="toggle" class:on={agent.enabled}
+                  title={agent.enabled ? 'Disable' : 'Enable'}
+                  on:click={(e) => toggleEnabled(agent, e)}>
+            {agent.enabled ? '●' : '○'}
+          </button>
+        </div>
+      {/each}
+    </div>
+
+    <!-- ── Editor ── -->
+    <div class="editor-col">
+      {#if !editing}
+        <div class="empty-panel">Select an agent or create a new one.</div>
+      {:else}
+        <div class="editor">
+          <div class="editor-hdr">
+            <span>{selected ? 'Editing: ' + selected.id : 'New Agent'}</span>
+            <div class="hdr-actions">
+              {#if selected}
+                <button class="btn-secondary" on:click={() => showExport = true}
+                        title="Show API snippets for this agent">&lt;/&gt; API</button>
+                <button class="btn-secondary" on:click={() => showPlay = !showPlay}
+                        class:on={showPlay}
+                        title="Toggle inline chat panel">
+                  {showPlay ? '× Close' : '💬 Test'}
+                </button>
+                <button class="btn-danger" on:click={deleteAgent} disabled={deleting}>
+                  {deleting ? '…' : 'Delete'}
+                </button>
+              {/if}
+              <button class="btn-primary" on:click={save} disabled={saving}>
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+              {#if saveMsg}
+                <span class="save-msg" class:ok={saveMsg.startsWith('✓')}>{saveMsg}</span>
+              {/if}
+            </div>
+          </div>
+
+          <div class="fields">
+            <div class="row-2">
+              <div class="field">
+                <label>ID <span class="req">*</span></label>
+                <input bind:value={editing.id} placeholder="my-agent"
+                       disabled={!!selected} />
+              </div>
+              <div class="field">
+                <label>Name</label>
+                <input bind:value={editing.name} placeholder="My Agent" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Description</label>
+              <input bind:value={editing.description} placeholder="What this agent does" />
+            </div>
+
+            <div class="row-2">
+              <div class="field">
+                <label>Trigger</label>
+                <select bind:value={editing.trigger}>
+                  <option value="channel">channel (HTTP / Slack / Telegram…)</option>
+                  <option value="cron">cron (scheduled)</option>
+                  <option value="oneshot">oneshot (run once at startup)</option>
+                  <option value="webhook">webhook</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>Enabled</label>
+                <select bind:value={editing.enabled}>
+                  <option value={true}>Yes</option>
+                  <option value={false}>No</option>
+                </select>
+              </div>
+            </div>
+
+            {#if editing.trigger === 'cron'}
+              <div class="field">
+                <label>Cron expression</label>
+                <input bind:value={editing.schedule.cron}
+                       placeholder="0 9 * * *  (9 AM every day)" />
+              </div>
+            {/if}
+
+            <div class="field">
+              <label>System Prompt</label>
+              <textarea bind:value={editing.system_prompt} rows="7"
+                        placeholder="You are a helpful Soulacy agent…"></textarea>
+            </div>
+
+            <div class="sep">LLM</div>
+
+            <div class="row-3">
+              <div class="field">
+                <label>Provider</label>
+                <select bind:value={editing.llm.provider}>
+                  {#if providers.length === 0}
+                    <option value={editing.llm.provider}>{editing.llm.provider || 'ollama'}</option>
+                  {:else}
+                    {#each providers as p}
+                      <option value={p.id}>
+                        {p.id}{p.registered ? '' : ' (not registered)'}
+                      </option>
+                    {/each}
+                  {/if}
+                </select>
+              </div>
+              <div class="field">
+                <label>
+                  Model
+                  {#if modelsLoading[editing.llm.provider]}
+                    <span class="mloading">loading…</span>
+                  {:else if modelsError[editing.llm.provider]}
+                    <span class="merror" title={modelsError[editing.llm.provider]}>(can't reach provider)</span>
+                  {:else if modelOptions.length > 0}
+                    <span class="mhint">{modelOptions.length} options</span>
+                  {/if}
+                </label>
+                {#if modelOptions.length > 0}
+                  <select bind:value={editing.llm.model}>
+                    {#if !editing.llm.model}
+                      <option value="">— pick a model —</option>
+                    {/if}
+                    {#each modelOptions as m}
+                      <option value={m}>{m}</option>
+                    {/each}
+                    <option value="__custom__">Custom (type below)…</option>
+                  </select>
+                  {#if editing.llm.model === '__custom__'}
+                    <input bind:value={editing.llm.model}
+                           placeholder="Enter model name"
+                           on:focus={() => editing.llm.model = ''} />
+                  {/if}
+                {:else}
+                  <input bind:value={editing.llm.model}
+                         placeholder="e.g. llama3.3:70b" />
+                {/if}
+              </div>
+              <div class="field">
+                <label>Max tokens</label>
+                <input type="number" bind:value={editing.llm.max_tokens} min="64" max="8192" />
+              </div>
+            </div>
+
+            <div class="row-2">
+              <div class="field">
+                <label>Temperature</label>
+                <input type="number" bind:value={editing.llm.temperature}
+                       min="0" max="2" step="0.05" />
+              </div>
+              <div class="field">
+                <label>Max turns</label>
+                <input type="number" bind:value={editing.max_turns} min="1" max="50" />
+              </div>
+            </div>
+
+            <div class="field">
+              <label>Tool choice <span class="optional">(controls turn-1 tool selection — agent__&lt;peer&gt; triggers the engine's auto-delegate path)</span></label>
+              <ChipPicker
+                value={editing.llm.tool_choice ? [editing.llm.tool_choice] : []}
+                options={toolChoiceOptions}
+                placeholder="(default — auto)"
+                single={true}
+                allowFreeform={true}
+                on:change={(e) => editing.llm.tool_choice = e.detail[0] || ''}
+              />
+            </div>
+
+            <div class="sep">Memory</div>
+            <div class="row-2">
+              <div class="field">
+                <label>Read scopes <span class="optional">(which memory tiers the agent loads as context)</span></label>
+                <ChipPicker
+                  value={editing.memory?.read_scopes || []}
+                  options={memoryScopeOptions}
+                  placeholder="Pick scopes (typically: session)"
+                  on:change={(e) => { editing.memory = editing.memory || {}; editing.memory.read_scopes = e.detail }}
+                />
+              </div>
+              <div class="field">
+                <label>Write scopes <span class="optional">(which memory tiers the agent persists into)</span></label>
+                <ChipPicker
+                  value={editing.memory?.write_scopes || []}
+                  options={memoryScopeOptions}
+                  placeholder="Pick scopes (typically: session)"
+                  on:change={(e) => { editing.memory = editing.memory || {}; editing.memory.write_scopes = e.detail }}
+                />
+              </div>
+            </div>
+            <div class="field">
+              <label>Memory max tokens <span class="optional">(how many recent entries to inject into context)</span></label>
+              <input type="number" bind:value={editing.memory.max_tokens} min="0" max="200" />
+            </div>
+
+            {#if editing.trigger === 'channel'}
+              <div class="sep">Channels</div>
+              <div class="field">
+                <label>Bound channels — pick from registered channel adapters</label>
+                <ChipPicker
+                  value={editing.channels || []}
+                  options={channelOptions}
+                  placeholder="Type to search (http, telegram, slack…)"
+                  allowFreeform={true}
+                  on:change={(e) => editing.channels = e.detail}
+                />
+              </div>
+            {/if}
+
+            <div class="sep">
+              Tools
+              <button class="add-btn" type="button" on:click={addTool}>+ Add tool</button>
+            </div>
+
+            {#if (editing.tools || []).length === 0}
+              <div class="tools-empty">
+                No tools wired. Click <strong>+ Add tool</strong> to give this agent a Python script, MCP tool, or built-in.
+                {#if catalog.python_tools.length > 0}
+                  &nbsp;Available Python scripts: <em>{catalog.python_tools.map(t => t.name).join(', ')}</em>
+                {/if}
+              </div>
+            {:else}
+              {#each editing.tools as tool, i (i)}
+                <div class="tool-card">
+                  <div class="tool-hdr">
+                    <span class="tool-idx">#{i + 1}</span>
+                    <input class="tool-name-input"
+                           bind:value={tool.name}
+                           placeholder="tool_name (snake_case)" />
+                    <div class="tool-ops">
+                      <button title="Move up"   on:click={() => moveTool(i, -1)} disabled={i === 0}>↑</button>
+                      <button title="Move down" on:click={() => moveTool(i, +1)} disabled={i === editing.tools.length - 1}>↓</button>
+                      <button title="Remove" class="rm" on:click={() => removeTool(i)}>✕</button>
+                    </div>
+                  </div>
+
+                  <div class="field">
+                    <label>Python file</label>
+                    {#if catalog.python_tools.length > 0}
+                      <select value={tool.python_file || ''}
+                              on:change={(e) => onPythonFilePicked(i, e.target.value)}>
+                        <option value="">— pick a file or paste a path below —</option>
+                        {#each catalog.python_tools as pt}
+                          <option value={pt.path}>{pt.name} &nbsp;·&nbsp; {pt.path}</option>
+                        {/each}
+                      </select>
+                    {/if}
+                    <input bind:value={tool.python_file}
+                           placeholder="~/.soulacy/tools/your_tool.py" />
+                  </div>
+
+                  <div class="field">
+                    <label>Description (shown to the LLM)</label>
+                    <input bind:value={tool.description}
+                           placeholder="What this tool does. The LLM picks tools by description." />
+                  </div>
+
+                  <div class="field">
+                    <label>Timeout <span class="optional">(optional — overrides global; e.g. 30m, 1h)</span></label>
+                    <input bind:value={tool.timeout}
+                           placeholder="30s (defaults to runtime.tool_timeout)" />
+                  </div>
+
+                  <div class="field">
+                    <label>Parameters schema (JSON)</label>
+                    <textarea rows="5"
+                              value={paramsJson(tool)}
+                              on:input={(e) => updateParams(i, e.target.value)}
+                              spellcheck="false"></textarea>
+                  </div>
+                </div>
+              {/each}
+            {/if}
+
+            {#if catalog.mcp_tools.length > 0}
+              <div class="catalog-hint">
+                <strong>MCP tools auto-injected:</strong>
+                {#each catalog.mcp_tools.slice(0, 8) as t}
+                  <span class="chip">{t.full_name}</span>
+                {/each}
+                {#if catalog.mcp_tools.length > 8}<span class="more">+{catalog.mcp_tools.length - 8} more</span>{/if}
+              </div>
+            {/if}
+
+            <div class="sep">Skills</div>
+            <div class="field">
+              <label>Skills available to this agent — pick from installed skills</label>
+              <ChipPicker
+                value={editing.skills || []}
+                options={skillOptions}
+                placeholder={availableSkills.length === 0 ? 'No skills installed' : 'Type to search…'}
+                allowFreeform={true}
+                on:change={(e) => editing.skills = e.detail}
+              />
+            </div>
+
+            <div class="sep">Knowledge bases</div>
+            <div class="field">
+              <label>KBs the agent may search via <code>kb_search</code> — pick from created KBs</label>
+              <ChipPicker
+                value={editing.knowledge || []}
+                options={kbOptions}
+                placeholder={availableKBs.length === 0 ? 'No knowledge bases yet — create one on the Knowledge page' : 'Type to search…'}
+                allowFreeform={true}
+                on:change={(e) => editing.knowledge = e.detail}
+              />
+            </div>
+
+            <div class="sep">Peer agents</div>
+            <div class="field">
+              <label>Other agents this agent may invoke as <code>agent__&lt;id&gt;</code> tools — pick from loaded agents</label>
+              <ChipPicker
+                value={editing.agents || []}
+                options={peerAgentOptions}
+                placeholder={peerAgentOptions.length === 0 ? 'No other agents loaded' : 'Type to search…'}
+                allowFreeform={true}
+                on:change={(e) => editing.agents = e.detail}
+              />
+            </div>
+
+            <div class="sep">Built-in tools <span class="optional">(advanced)</span></div>
+            <div class="field">
+              <div class="radio-row">
+                <label class="radio-opt">
+                  <input type="radio" name="builtins-mode" value="default"
+                         checked={builtinsMode() === 'default'}
+                         on:change={() => { delete editing.builtins; editing = editing }} />
+                  Default <span class="optional">(all gated built-ins auto-injected)</span>
+                </label>
+                <label class="radio-opt">
+                  <input type="radio" name="builtins-mode" value="none"
+                         checked={builtinsMode() === 'none'}
+                         on:change={() => { editing.builtins = []; editing = editing }} />
+                  None <span class="optional">(peer-only orchestrator)</span>
+                </label>
+                <label class="radio-opt">
+                  <input type="radio" name="builtins-mode" value="restricted"
+                         checked={builtinsMode() === 'restricted'}
+                         on:change={() => { editing.builtins = editing.builtins?.length ? editing.builtins : []; editing = editing }} />
+                  Restricted to:
+                </label>
+              </div>
+              {#if builtinsMode() === 'restricted'}
+                <ChipPicker
+                  value={editing.builtins || []}
+                  options={builtinOptions}
+                  placeholder="Pick which built-ins this agent can use"
+                  on:change={(e) => editing.builtins = e.detail}
+                />
+              {/if}
+            </div>
+          </div>
+        </div>
+      {/if}
+    </div>
+
+    <!-- ── Inline playground (right column) ── -->
+    {#if showPlay && selected}
+      <div class="play-col">
+        <div class="play-hdr">
+          <span>Playground · <code>{selected.id}</code></span>
+          <button class="btn-secondary small" on:click={clearPlayChat}
+                  disabled={playSending || playMessages.length === 0}>Clear</button>
+        </div>
+
+        <div class="play-messages" bind:this={playMsgListEl}>
+          {#if playMessages.length === 0}
+            <div class="play-empty">
+              Saved changes? Send a message to test this agent.<br>
+              <span class="hint">Edits aren't picked up until you click Save above.</span>
+            </div>
+          {:else}
+            {#each playMessages as msg}
+              <div class="msg-row" class:user={msg.role==='user'} class:sys={msg.role==='system'}>
+                <div class="bubble">
+                  <div class="btext">{msg.text}</div>
+                  <div class="btime">{fmtTime(msg.ts)}</div>
+                </div>
+              </div>
+            {/each}
+            {#if playSending}
+              <div class="msg-row">
+                <div class="bubble">
+                  <div class="typing"><span/><span/><span/></div>
+                </div>
+              </div>
+            {/if}
+          {/if}
+        </div>
+
+        <div class="play-input">
+          <textarea
+            bind:value={playInput}
+            on:keydown={playKeydown}
+            placeholder="Message {selected.id}… (Enter to send)"
+            rows="2"
+            disabled={playSending}
+          ></textarea>
+          <button class="send-btn btn-primary"
+                  on:click={playSend}
+                  disabled={playSending || !playInput.trim()}>
+            {playSending ? '…' : '↑'}
+          </button>
+        </div>
+      </div>
+    {/if}
+  </div>
+</div>
+
+{#if showExport && selected}
+  <div class="modal-bg" on:click|self={() => showExport = false}>
+    <div class="modal wide">
+      <h2>API · {selected.id}</h2>
+      <div class="modal-sub">
+        Call this agent from your own code. The Authorization header uses the
+        API key you're logged in with — anyone holding it gets the same access.
+      </div>
+
+      <div class="tab-row">
+        <button class="tab" class:active={exportTab==='curl'}   on:click={() => exportTab = 'curl'}>cURL</button>
+        <button class="tab" class:active={exportTab==='python'} on:click={() => exportTab = 'python'}>Python</button>
+        <button class="tab" class:active={exportTab==='js'}     on:click={() => exportTab = 'js'}>JavaScript</button>
+        <div style="flex:1"></div>
+        <button class="btn-secondary small" on:click={copySnippet}>Copy</button>
+      </div>
+
+      <pre class="snippet">{activeSnippet}</pre>
+
+      <div class="modal-row" style="display:flex;justify-content:flex-end;">
+        <button class="btn-secondary" on:click={() => showExport = false}>Close</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showTemplates}
+  <div class="modal-bg" on:click|self={() => { if (!instantiating) showTemplates = false }}>
+    <div class="modal">
+      <h2>Start from a template</h2>
+      <div class="modal-sub">
+        Each template creates a working agent you can chat with immediately,
+        then tweak. Drop your own templates into <code>~/.soulacy/templates/</code>
+        to extend this list.
+      </div>
+
+      {#if templatesError}
+        <div class="banner err">⚠ {templatesError}</div>
+      {/if}
+
+      {#if templatesLoading}
+        <div class="tpl-empty">Loading templates…</div>
+      {:else if templates.length === 0}
+        <div class="tpl-empty">No templates available.</div>
+      {:else}
+        <div class="tpl-list">
+          {#each templates as t (t.name)}
+            <div class="tpl-card">
+              <div class="tpl-body">
+                <div class="tpl-title">
+                  {t.display_name || t.name}
+                  <span class="tpl-source-badge {t.source}">{t.source}</span>
+                </div>
+                {#if t.description}
+                  <div class="tpl-desc">{t.description}</div>
+                {/if}
+                {#if t.tags?.length}
+                  <div class="tpl-tags">
+                    {#each t.tags as tag}<span class="tpl-tag">{tag}</span>{/each}
+                  </div>
+                {/if}
+              </div>
+              <button class="tpl-use"
+                      disabled={!!instantiating}
+                      on:click={() => useTemplate(t)}>
+                {instantiating === t.name ? 'Creating…' : 'Use this'}
+              </button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+
+      <div class="modal-row" style="display:flex;justify-content:flex-end;gap:.5rem;">
+        <button class="btn-secondary" on:click={() => showTemplates = false}
+                disabled={!!instantiating}>Cancel</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<style>
+  .page        { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; height: 100%; }
+  .page-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+  .page-header h1 { font-size: 1.2rem; font-weight: 600; }
+
+  .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; flex-shrink: 0; }
+  .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
+
+  .split    { display: flex; gap: 1rem; flex: 1; min-height: 0; }
+
+  /* List */
+  .list-col { width: 250px; flex-shrink: 0; overflow-y: auto; display: flex; flex-direction: column; gap: .45rem; }
+  .agent-card {
+    background: #141626; border: 1px solid #1a1e36; border-radius: 8px;
+    padding: .7rem .85rem; cursor: pointer;
+    display: flex; align-items: center; justify-content: space-between;
+    transition: border-color .12s;
+  }
+  .agent-card:hover, .agent-card.active { border-color: #6c63ff; }
+  .agent-name  { font-weight: 500; font-size: .875rem; }
+  .agent-meta  { color: #6b7294; font-size: .72rem; margin-top: .15rem; }
+  .toggle      { background: none; font-size: 1rem; color: #6b7294; padding: .15rem; }
+  .toggle.on   { color: #4caf82; }
+  .empty       { color: #6b7294; text-align: center; padding: 2rem .5rem; font-size: .875rem; line-height: 1.6; }
+
+  /* Editor */
+  .editor-col  { flex: 1; overflow-y: auto; min-width: 0; }
+  .empty-panel { display: flex; align-items: center; justify-content: center; height: 200px; color: #6b7294; }
+
+  .editor      { background: #141626; border: 1px solid #1a1e36; border-radius: 10px; overflow: hidden; }
+  .editor-hdr  {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .8rem 1rem; border-bottom: 1px solid #1a1e36;
+    font-weight: 600; font-size: .875rem; flex-shrink: 0;
+  }
+  .hdr-actions { display: flex; align-items: center; gap: .65rem; }
+  .save-msg    { font-size: .8rem; color: #f06060; }
+  .save-msg.ok { color: #4caf82; }
+
+  .fields  { padding: 1rem; display: flex; flex-direction: column; gap: .8rem; }
+  .field   { display: flex; flex-direction: column; gap: .3rem; }
+  label    { font-size: .72rem; color: #6b7294; text-transform: uppercase; letter-spacing: .05em; }
+  .mloading { color: #8b85ff; text-transform: none; font-weight: 500; margin-left: .35rem; }
+  .merror   { color: #f0c060; text-transform: none; font-weight: 500; margin-left: .35rem; cursor: help; }
+  .mhint    { color: #4caf82; text-transform: none; font-weight: 500; margin-left: .35rem; }
+  .optional { color: #555a7a; text-transform: none; font-weight: 400; font-size: .68rem; letter-spacing: 0; margin-left: .25rem; }
+  .req     { color: #f06060; }
+  .row-2   { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+  .row-3   { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: .75rem; }
+  .sep {
+    font-size: .7rem; color: #6b7294; text-transform: uppercase; letter-spacing: .08em;
+    border-bottom: 1px solid #1a1e36; padding-bottom: .3rem; margin-top: .25rem;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .add-btn {
+    background: rgba(108,99,255,.12); color: #8b85ff; border: 1px solid rgba(108,99,255,.35);
+    padding: .25rem .6rem; border-radius: 6px; font-size: .72rem; font-weight: 600;
+    text-transform: none; letter-spacing: 0;
+  }
+  .add-btn:hover { background: rgba(108,99,255,.2); }
+
+  /* Radio rows for tri-state fields (e.g. builtins: default/none/restricted) */
+  .radio-row { display: flex; flex-wrap: wrap; gap: .9rem; padding: .15rem 0 .3rem; }
+  .radio-opt {
+    display: inline-flex; align-items: center; gap: .35rem;
+    font-size: .82rem; color: #c8cadf; cursor: pointer; user-select: none;
+  }
+  .radio-opt input[type="radio"] { width: auto; margin: 0; cursor: pointer; }
+  .tools-empty {
+    background: #0e1020; border: 1px dashed #2a2f4a; border-radius: 8px;
+    padding: .8rem 1rem; color: #6b7294; font-size: .8rem; line-height: 1.55;
+  }
+  .tools-empty em { color: #8b85ff; font-style: normal; }
+  .tool-card {
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px;
+    padding: .8rem; display: flex; flex-direction: column; gap: .55rem;
+  }
+  .tool-hdr { display: flex; align-items: center; gap: .5rem; }
+  .tool-idx { color: #555a7a; font-size: .72rem; font-weight: 600; }
+  .tool-name-input { flex: 1; font-family: monospace; font-size: .85rem; }
+  .tool-ops { display: flex; gap: .25rem; }
+  .tool-ops button {
+    background: #1c1f35; color: #c8cadf; border: 1px solid #2a2f4a;
+    width: 26px; height: 26px; border-radius: 5px; font-size: .8rem;
+  }
+  .tool-ops button:hover:not(:disabled) { background: #252840; }
+  .tool-ops .rm { color: #f06060; border-color: rgba(240,96,96,.3); }
+  .tool-ops .rm:hover { background: rgba(240,96,96,.12); }
+
+  .catalog-hint {
+    font-size: .72rem; color: #6b7294; padding: .5rem .6rem;
+    background: rgba(76,175,130,.06); border: 1px solid rgba(76,175,130,.18);
+    border-radius: 6px; display: flex; flex-wrap: wrap; align-items: center; gap: .4rem;
+  }
+  .catalog-hint strong { color: #4caf82; font-weight: 600; }
+  .chip {
+    font-family: monospace; font-size: .68rem; color: #b0b5d8;
+    background: #1a1e36; padding: .1rem .4rem; border-radius: 4px;
+  }
+  .more { color: #555a7a; font-size: .72rem; }
+
+  /* ── Inline playground ─────────────────────────────────────────────── */
+  .play-col {
+    width: 360px; flex-shrink: 0;
+    background: #141626; border: 1px solid #1a1e36; border-radius: 10px;
+    display: flex; flex-direction: column; min-height: 0; overflow: hidden;
+  }
+  .play-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: .6rem .85rem; border-bottom: 1px solid #1a1e36; flex-shrink: 0;
+    font-size: .82rem; color: #c8cadf;
+  }
+  .play-hdr code { font-family: monospace; color: #4caf82; }
+  .play-messages {
+    flex: 1; overflow-y: auto; padding: .85rem;
+    display: flex; flex-direction: column; gap: .65rem;
+  }
+  .play-empty {
+    flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    color: #6b7294; text-align: center; line-height: 1.6; font-size: .82rem;
+  }
+  .play-empty .hint { color: #555a7a; font-size: .72rem; margin-top: .35rem; }
+  .play-input {
+    display: flex; gap: .55rem; align-items: flex-end;
+    padding: .55rem; border-top: 1px solid #1a1e36; flex-shrink: 0;
+  }
+  .play-input textarea {
+    flex: 1; resize: none; font-size: .85rem;
+    background: #1c1f35; color: #e8eaf6; border: 1px solid #2a2f4a;
+    border-radius: 5px; padding: .45rem .55rem;
+  }
+  .send-btn {
+    height: 38px; min-width: 44px; padding: 0; font-size: 1rem;
+    align-self: flex-end; flex-shrink: 0; border-radius: 6px;
+  }
+
+  .msg-row       { display: flex; justify-content: flex-start; }
+  .msg-row.user  { justify-content: flex-end; }
+  .msg-row.sys   { justify-content: center; }
+  .bubble {
+    max-width: 80%; padding: .55rem .8rem; border-radius: 10px;
+    display: flex; flex-direction: column; gap: .25rem;
+    background: #1c1f35; border: 1px solid #2a2f4a;
+    border-bottom-left-radius: 3px;
+  }
+  .msg-row.user .bubble {
+    background: #5b52ef; border-color: transparent; color: #fff;
+    border-bottom-left-radius: 10px; border-bottom-right-radius: 3px;
+  }
+  .msg-row.sys .bubble {
+    background: rgba(240,96,96,.1); border-color: rgba(240,96,96,.3); color: #f06060;
+  }
+  .btext { font-size: .85rem; white-space: pre-wrap; word-break: break-word; line-height: 1.45; }
+  .btime { font-size: .65rem; opacity: .55; align-self: flex-end; }
+
+  .typing { display: flex; gap: 4px; align-items: center; height: 1.1rem; }
+  .typing span {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: #6b7294; animation: bounce 1.1s infinite;
+  }
+  .typing span:nth-child(2) { animation-delay: .18s; }
+  .typing span:nth-child(3) { animation-delay: .36s; }
+  @keyframes bounce {
+    0%, 80%, 100% { transform: scale(.65); opacity: .4; }
+    40%           { transform: scale(1);   opacity: 1;   }
+  }
+
+  /* Small variant for header buttons */
+  :global(.btn-secondary.small) { padding: .25rem .55rem; font-size: .72rem; }
+  /* "On" state for the toggle so users can tell at a glance that the
+     playground is open. Picks up the global btn-secondary style and tints it. */
+  :global(.btn-secondary.on) { background: #4caf82; color: #0a0d1a; border-color: transparent; }
+  :global(.btn-secondary.on:hover:not(:disabled)) { background: #5ec092; }
+
+  /* ── API export modal ──────────────────────────────────────────────── */
+  .modal.wide { width: 720px; }
+  .tab-row {
+    display: flex; gap: .35rem; align-items: center;
+    border-bottom: 1px solid #2a2f4a; padding-bottom: .4rem;
+  }
+  .tab {
+    background: transparent; color: #8a90b8; border: none;
+    padding: .35rem .7rem; font-size: .78rem; cursor: pointer;
+    border-radius: 5px 5px 0 0; border-bottom: 2px solid transparent;
+  }
+  .tab:hover  { color: #c8cadf; }
+  .tab.active { color: #4caf82; border-bottom-color: #4caf82; }
+  .snippet {
+    background: #0a0d1a; border: 1px solid #2a2f4a; border-radius: 6px;
+    padding: .85rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .76rem; color: #c8cadf; white-space: pre-wrap; word-break: break-all;
+    max-height: 360px; overflow-y: auto; line-height: 1.5;
+  }
+
+  /* ── Templates modal ───────────────────────────────────────────────── */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(5,7,18,.6);
+    display: flex; align-items: center; justify-content: center; z-index: 100;
+  }
+  .modal {
+    background: #141626; border: 1px solid #2a2f4a; border-radius: 12px;
+    padding: 1.5rem; width: 680px; max-width: 92vw; max-height: 86vh;
+    display: flex; flex-direction: column; gap: .9rem; overflow: hidden;
+  }
+  .modal h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: .15rem; }
+  .modal-sub { font-size: .78rem; color: #8a90b8; margin-top: -.2rem; }
+  .tpl-list { display: flex; flex-direction: column; gap: .55rem; overflow-y: auto; padding-right: .25rem; }
+  .tpl-card {
+    background: #181b30; border: 1px solid #2a2f4a; border-radius: 8px;
+    padding: .85rem .95rem; display: flex; gap: .9rem; align-items: flex-start;
+    transition: border-color .12s, background .12s;
+  }
+  .tpl-card:hover { border-color: #4caf82; background: #1c2138; }
+  .tpl-body { flex: 1; min-width: 0; }
+  .tpl-title {
+    font-weight: 600; color: #e8ebf8; font-size: .92rem;
+    display: flex; align-items: center; gap: .5rem;
+  }
+  .tpl-source-badge {
+    font-size: .62rem; padding: .08rem .35rem; border-radius: 3px;
+    text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+  }
+  .tpl-source-badge.embedded { background: rgba(76,175,130,.18); color: #4caf82; }
+  .tpl-source-badge.user     { background: rgba(110,150,255,.18); color: #8aa6ff; }
+  .tpl-desc {
+    font-size: .78rem; color: #a0a6cc; margin-top: .25rem;
+    line-height: 1.4; white-space: pre-wrap;
+  }
+  .tpl-tags { margin-top: .35rem; display: flex; gap: .3rem; flex-wrap: wrap; }
+  .tpl-tag {
+    font-family: monospace; font-size: .65rem; color: #b0b5d8;
+    background: #1a1e36; padding: .05rem .35rem; border-radius: 3px;
+  }
+  .tpl-use {
+    align-self: center; padding: .45rem .9rem; font-size: .8rem;
+    background: #4caf82; color: #0a0d1a; border: none; border-radius: 5px;
+    font-weight: 600; cursor: pointer; white-space: nowrap;
+  }
+  .tpl-use:disabled { opacity: .55; cursor: wait; }
+  .tpl-empty { color: #6b7294; font-size: .8rem; text-align: center; padding: 2rem 0; }
+</style>

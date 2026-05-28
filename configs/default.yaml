@@ -1,0 +1,70 @@
+# Soulacy default configuration
+# Copy to ~/.soulacy/config.yaml and edit as needed.
+# All values can also be set via environment variables: SOULACY_<SECTION>_<KEY>
+# e.g. SOULACY_SERVER_PORT=8080
+
+server:
+  host: "0.0.0.0"
+  port: 18789
+  gui_enabled: true
+  api_key: ""           # Set to a secret string to require bearer auth on all API calls
+
+runtime:
+  max_concurrent_sessions: 100
+  default_max_turns: 20
+  python_bin: "python3"
+  tool_timeout: "30s"
+
+memory:
+  max_history: 50       # Max messages kept in hot (file) memory per session
+  vector_db: ""         # "chroma" | "qdrant" | "" (disabled)
+  vector_url: ""
+
+llm:
+  default_provider: ollama
+  providers:
+    ollama:
+      base_url: "http://localhost:11434"
+      model: "llama3"
+    openai:
+      base_url: "https://api.openai.com/v1"
+      api_key: ""       # or set SOULACY_LLM_PROVIDERS_OPENAI_API_KEY
+      model: "gpt-4o"
+    anthropic:
+      base_url: "https://api.anthropic.com"
+      api_key: ""       # or set SOULACY_LLM_PROVIDERS_ANTHROPIC_API_KEY
+      model: "claude-sonnet-4-6"
+
+# Channel adapter configurations.
+# Each key is the channel adapter ID. The inner map is adapter-specific.
+channels:
+  http:
+    enabled: true       # Always-on HTTP webhook channel, no extra config needed
+  telegram:
+    enabled: false
+    token: ""           # SOULACY_CHANNELS_TELEGRAM_TOKEN
+  discord:
+    enabled: false
+    token: ""           # SOULACY_CHANNELS_DISCORD_TOKEN
+    app_id: ""
+  slack:
+    enabled: false
+    bot_token: ""
+    app_token: ""       # Socket mode app token (xapp-)
+  whatsapp:
+    enabled: false
+    phone_number_id: ""
+    token: ""
+  email:
+    enabled: false
+    imap_host: ""
+    imap_port: 993
+    smtp_host: ""
+    smtp_port: 587
+    username: ""
+    password: ""
+
+log:
+  level: info           # debug | info | warn | error
+  format: console       # console | json
+  file: ""              # optional path to log file
