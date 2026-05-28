@@ -1,0 +1,116 @@
+site_name: Soulacy
+site_description: Open-source multi-agent orchestration platform — deploy AI agents to Telegram, Slack, Discord, WhatsApp, and HTTP in minutes.
+site_url: https://vmodekurti.github.io/soulacy
+repo_url: https://github.com/vmodekurti/soulacy
+repo_name: vmodekurti/soulacy
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  logo: assets/logo.svg
+  favicon: assets/logo.svg
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.expand
+    - navigation.path
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - attr_list
+  - md_in_html
+  - tables
+  - footnotes
+  - toc:
+      permalink: true
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/vmodekurti/soulacy
+  version:
+    provider: mike
+
+nav:
+  - Home: index.md
+  - Getting Started:
+    - Installation: getting-started/installation.md
+    - Quick Start: getting-started/quickstart.md
+    - Your First Agent: getting-started/first-agent.md
+  - Configuration:
+    - Overview: configuration/index.md
+    - Server: configuration/server.md
+    - LLM Providers: configuration/llm.md
+    - Storage: configuration/storage.md
+    - Auth: configuration/auth.md
+    - Rate Limiting: configuration/rate-limiting.md
+    - Telemetry: configuration/telemetry.md
+  - Agents:
+    - SOUL.yaml Reference: agents/soul-yaml.md
+    - Workflow DAGs: agents/workflow.md
+    - Built-in Tools: agents/tools.md
+    - Skills: agents/skills.md
+  - Channels:
+    - Overview: channels/index.md
+    - Telegram: channels/telegram.md
+    - Slack: channels/slack.md
+    - Discord: channels/discord.md
+    - WhatsApp: channels/whatsapp.md
+    - HTTP: channels/http.md
+  - API Reference:
+    - Overview: api/index.md
+    - Auth: api/auth.md
+    - Agents: api/agents.md
+    - Credentials: api/credentials.md
+    - Costs: api/costs.md
+    - Admin: api/admin.md
+  - CLI:
+    - Reference: cli/reference.md
+  - Deployment:
+    - Docker: deployment/docker.md
+    - macOS: deployment/macos.md
+    - Linux / VPS: deployment/linux.md
+  - Architecture:
+    - Overview: architecture/overview.md
