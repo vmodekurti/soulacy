@@ -1,0 +1,37 @@
+id: scheduled-briefing-template
+name: Scheduled briefing
+description: |
+  Runs on a cron schedule and produces a briefing — perfect for a 7am morning
+  digest, a Friday wrap-up, or an end-of-day status note. Edit the cron
+  expression and the system prompt to control when it runs and what it
+  reports on. By default it greets you and gives the current date/time.
+version: "1.0"
+tags:
+    - template
+    - cron
+trigger: cron
+channels:
+    - http
+schedule:
+    cron: "0 7 * * *"
+system_prompt: |
+    You are a concise daily-briefing agent. When invoked, produce a short,
+    well-structured summary suitable for a morning read:
+
+    - Open with the current date and one-line greeting.
+    - List 3-5 bullets covering whatever the user has asked you to track.
+    - Keep it under 200 words.
+llm:
+    provider: ollama
+    model: llama3.3:70b
+    temperature: 0.5
+    max_tokens: 1024
+memory:
+    read_scopes:
+        - session
+    write_scopes:
+        - session
+    max_tokens: 20
+max_turns: 3
+stream_reply: false
+enabled: false

@@ -1,0 +1,55 @@
+# ── Local config (may contain real secrets) ───────────────────────────────────
+config.yaml
+.env
+
+# ── Build outputs ─────────────────────────────────────────────────────────────
+bin/
+dist/
+*.exe
+
+# ── Web GUI build artifacts (rebuilt by `make gui`) ──────────────────────────
+# Keep the directory (needed for //go:embed all:dist), exclude built assets.
+internal/webui/dist/*
+!internal/webui/dist/.gitkeep
+
+# ── SQLite databases (runtime data, never source) ────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+*.db-shm
+*.db-wal
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+/logs/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# ── Go workspace / coverage ───────────────────────────────────────────────────
+go.work
+go.work.sum
+coverage.out
+coverage.html
+
+# ── Internal dev & session artifacts (not useful for contributors) ────────────
+docs/SESSION_HANDOFF.md
+docs/PRODUCTION_AUDIT.md
+docs/REGRESSION_TESTING.md
+docs/*.html
+
+# ── Personal convenience scripts ─────────────────────────────────────────────
+build-and-restart.command
+
+# ── Legacy dir ────────────────────────────────────────────────────────────────
+.clawstack/

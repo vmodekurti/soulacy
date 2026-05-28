@@ -1,0 +1,469 @@
+// Package config manages all Soulacy configuration.
+// Config is loaded from ~/.soulacy/config.yaml (or SOULACY_CONFIG_PATH),
+// then overridden by environment variables prefixed with SOULACY_.
+// All subsystems receive a *Config at startup; no globals are used.
+package config
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/spf13/viper"
+)
+
+// Version is injected at build time via ldflags.
+var Version = "dev"
+
+// Config is the top-level configuration object.
+type Config struct {
+	// Server settings
+	Server ServerConfig `mapstructure:"server"`
+
+	// Agent runtime settings
+	Runtime RuntimeConfig `mapstructure:"runtime"`
+
+	// Memory layer settings
+	Memory MemoryConfig `mapstructure:"memory"`
+
+	// LLM provider settings
+	LLM LLMConfig `mapstructure:"llm"`
+
+	// Channel configurations — keyed by channel adapter ID
+	Channels map[string]map[string]any `mapstructure:"channels"`
+
+	// MCP (Model Context Protocol) servers — keyed by server ID.
+	// Tools from connected MCP servers are auto-injected into every agent's
+	// tool list with namespaced names: mcp__<server>__<tool>.
+	MCP MCPConfig `mapstructure:"mcp"`
+
+	// Plugin directories to scan
+	PluginDirs []string `mapstructure:"plugin_dirs"`
+
+	// Agent definition directories to scan
+	AgentDirs []string `mapstructure:"agent_dirs"`
+
+	// Skill directories to scan (in addition to the default ~/.soulacy/skills/ and ~/.agents/skills/)
+	SkillDirs []string `mapstructure:"skill_dirs"`
+
+	// Knowledge (RAG) settings — see KnowledgeConfig for details.
+	Knowledge KnowledgeConfig `mapstructure:"knowledge"`
+
+	// Storage backend — see StorageConfig for details.
+	Storage StorageConfig `mapstructure:"storage"`
+
+	// Vector backend — see VectorConfig for details.
+	// (Overrides Memory.VectorDB when set.)
+	Vector VectorConfig `mapstructure:"vector"`
+
+	// Executor backend — see ExecutorConfig for details.
+	Executor ExecutorConfig `mapstructure:"executor"`
+
+	// Queue backend — see QueueConfig for details.
+	Queue QueueConfig `mapstructure:"queue"`
+
+	// Auth controls request authentication. See AuthConfig for details.
+	Auth AuthConfig `mapstructure:"auth"`
+
+	// Credentials configures the encrypted credential vault.
+	Credentials CredentialsConfig `mapstructure:"credentials"`
+
+	// Telemetry configures OpenTelemetry tracing.
+	Telemetry TelemetryConfig `mapstructure:"telemetry"`
+
+	// RateLimit configures per-user and per-agent rate limiting (Task #33).
+	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
+
+	// Logging
+	Log LogConfig `mapstructure:"log"`
+}
+
+// RateLimitConfig controls per-user and per-agent request/token quotas.
+//
+//	enabled:               true
+//	per_user_rpm:          60     — max API requests/min per JWT subject (0 = off)
+//	per_agent_rpm:         0      — max requests/min to one agent across all users (0 = off)
+//	per_user_tokens_day:   0      — max LLM tokens/day per user (0 = off)
+//	per_agent_tokens_day:  0      — max LLM tokens/day per agent across all users (0 = off)
+//	backend:               memory — or "redis" (multi-instance; requires redis_url)
+//	redis_url:             redis://localhost:6379
+type RateLimitConfig struct {
+	Enabled             bool   `mapstructure:"enabled"`
+	PerUserRPM          int    `mapstructure:"per_user_rpm"`
+	PerAgentRPM         int    `mapstructure:"per_agent_rpm"`
+	PerUserTokensDay    int    `mapstructure:"per_user_tokens_day"`
+	PerAgentTokensDay   int    `mapstructure:"per_agent_tokens_day"`
+	Backend             string `mapstructure:"backend"`
+	RedisURL            string `mapstructure:"redis_url"`
+}
+
+// TelemetryConfig holds OpenTelemetry tracing configuration.
+type TelemetryConfig struct {
+	Enabled      bool   `mapstructure:"enabled"`
+	Exporter     string `mapstructure:"exporter"`      // "otlp_grpc" | "otlp_http" | "stdout"
+	OTLPEndpoint string `mapstructure:"otlp_endpoint"` // e.g. "localhost:4317"
+	ServiceName  string `mapstructure:"service_name"`  // default "soulacy"
+}
+
+// CredentialsConfig holds credential vault settings.
+type CredentialsConfig struct {
+	KMSProvider    string `mapstructure:"kms_provider"`    // "local" (default), "hashicorp", "awskms"
+	HashiCorpAddr  string `mapstructure:"hashicorp_addr"`
+	HashiCorpToken string `mapstructure:"hashicorp_token"`
+	AWSKMSKeyID    string `mapstructure:"aws_kms_key_id"`
+}
+
+type ServerConfig struct {
+	Host         string `mapstructure:"host"`
+	Port         int    `mapstructure:"port"`
+	GUIEnabled   bool   `mapstructure:"gui_enabled"`
+	GUIStaticDir string `mapstructure:"gui_static_dir"`
+	APIKey       string `mapstructure:"api_key"` // gateway auth key; empty = no auth
+	TLSCert      string `mapstructure:"tls_cert"`
+	TLSKey       string `mapstructure:"tls_key"`
+
+	// AllowedOrigins is an explicit allow-list of CORS origins. When empty,
+	// only the gateway's own UI origin (`http://<host>:<port>`) is allowed —
+	// no localhost:3000 / 5173 dev-server escape hatch. (PRODUCTION_AUDIT
+	// → LOW/Config) Set explicitly in production.
+	AllowedOrigins []string `mapstructure:"allowed_origins"`
+}
+
+type RuntimeConfig struct {
+	MaxConcurrentSessions int    `mapstructure:"max_concurrent_sessions"`
+	DefaultMaxTurns       int    `mapstructure:"default_max_turns"`
+	PythonBin             string `mapstructure:"python_bin"` // path to python3 interpreter
+	ToolTimeout           string `mapstructure:"tool_timeout"` // e.g. "30s"
+
+	// Sandbox controls the per-Python-tool resource caps applied via the
+	// soulacy __exec-sandbox wrapper. Zero values mean "no limit for
+	// that knob"; enabling the sandbox without configuring any limits is
+	// equivalent to disabled.
+	// (PRODUCTION_AUDIT → F1, 2026-05-27)
+	Sandbox SandboxConfig `mapstructure:"sandbox"`
+
+	// AllowSystemTools enables OS-level built-in tools (shell_exec, run_script,
+	// install_library, read_file, write_file, list_dir). Enabled by default so
+	// the built-in system agent works out of the box. Set to false in
+	// config.yaml to disable across all agents (e.g. in multi-tenant deployments).
+	AllowSystemTools bool `mapstructure:"allow_system_tools"`
+
+	// SSRFProtection, when true, blocks HTTP tools (fetch_url, http_request,
+	// download_file) from reaching private RFC-1918 address ranges and the
+	// link-local metadata endpoint (169.254.0.0/16). Loopback (127.x / ::1)
+	// is always allowed so local MCP servers still work.
+	// Default false for single-user; enable for multi-tenant deployments.
+	SSRFProtection bool `mapstructure:"ssrf_protection"`
+
+	// AllowPrivateHosts lists hostnames/IPs reachable even when SSRFProtection
+	// is true (e.g. an internal API server the agent legitimately needs).
+	AllowPrivateHosts []string `mapstructure:"allow_private_hosts"`
+
+	// AuditDir is where tool-call audit logs are written as JSONL.
+	// Each session gets <AuditDir>/<date>/<sessionID>.jsonl.
+	// Defaults to ~/.soulacy/audit. Set to "" to disable.
+	AuditDir string `mapstructure:"audit_dir"`
+}
+
+// SandboxConfig is the YAML face of internal/sandbox.Limits.
+type SandboxConfig struct {
+	Enabled    bool `mapstructure:"enabled"`
+	CPUSeconds int  `mapstructure:"cpu_seconds"`
+	MemoryMB   int  `mapstructure:"memory_mb"`
+	OpenFiles  int  `mapstructure:"open_files"`
+	FileSizeMB int  `mapstructure:"file_size_mb"`
+}
+
+type MemoryConfig struct {
+	Dir        string `mapstructure:"dir"`        // base directory for file memory
+	SQLitePath string `mapstructure:"sqlite_path"` // path to SQLite archive
+	VectorDB   string `mapstructure:"vector_db"`  // "sqlite-vec" (built-in) or "" (disabled)
+	VectorURL  string `mapstructure:"vector_url"`
+	VectorDims int    `mapstructure:"vector_dims"` // embedding dimensions (default 768 for nomic-embed-text)
+	MaxHistory int    `mapstructure:"max_history"` // max messages to keep in hot memory
+}
+
+// StorageConfig selects the durable event-log and memory-archive backend.
+//
+//	backend:     "sqlite"    — embedded SQLite (default, zero-dependency)
+//	             "postgres"  — PostgreSQL via pgx/v5
+//	postgres_dsn: "postgres://user:pass@host:5432/soulacy?sslmode=disable"
+//	postgres_log_dir: path where per-agent .log mirror files are written
+//	             (defaults to the same directory as Memory.Dir)
+type StorageConfig struct {
+	Backend        string `mapstructure:"backend"`         // "sqlite" (default) or "postgres"
+	PostgresDSN    string `mapstructure:"postgres_dsn"`    // libpq connection string
+	PostgresLogDir string `mapstructure:"postgres_log_dir"` // per-agent .log mirror directory
+}
+
+// VectorConfig selects the semantic vector-search backend.
+// When empty, falls back to Memory.VectorDB for backwards compatibility.
+//
+//	backend:     "sqlite-vec"  — built-in sqlite-vec (default)
+//	             "qdrant"      — Qdrant REST API
+//	url:         "http://localhost:6333"   (Qdrant only)
+//	collection:  "soulacy_memory"        (Qdrant only)
+//	api_key:     ""                        (Qdrant optional auth)
+//	dims:        768                       (must match your embedder)
+type VectorConfig struct {
+	Backend    string `mapstructure:"backend"`    // "sqlite-vec" or "qdrant"
+	URL        string `mapstructure:"url"`        // Qdrant base URL
+	Collection string `mapstructure:"collection"` // Qdrant collection name
+	APIKey     string `mapstructure:"api_key"`    // Qdrant API key (optional)
+	Dims       int    `mapstructure:"dims"`       // embedding dimensionality
+}
+
+// ExecutorConfig selects the Python tool executor backend.
+//
+//	backend:  "process"  — one python3 subprocess per call (default, simple)
+//	          "pool"     — N pre-forked persistent workers (low-latency)
+//	workers:  4          — pool only: number of pre-forked Python processes
+type ExecutorConfig struct {
+	Backend string `mapstructure:"backend"` // "process" (default) or "pool"
+	Workers int    `mapstructure:"workers"` // pool only: worker count
+}
+
+// AuthConfig controls API request authentication.
+//
+//	mode:            "apikey"  — static bearer token (default, backwards-compatible)
+//	                 "jwt"     — locally-issued short-lived JWTs; static key still accepted
+//	jwt_secret:      HMAC-SHA256 signing key (required when mode=jwt; if empty an ephemeral
+//	                 key is generated — tokens are invalidated on restart).
+//	                 Set to a stable 32-byte hex string in production.
+//	jwt_access_ttl:  "15m"    — access token lifetime
+//	jwt_refresh_ttl: "168h"   — refresh token lifetime (7 days)
+//	oidc_issuer:     ""       — OIDC provider base URL (e.g. https://accounts.google.com)
+//	                 When set, JWTs from this issuer are also accepted.
+//	oidc_audience:   ""       — expected `aud` claim; defaults to oidc_client_id
+//	oidc_client_id:  ""       — used as audience fallback when oidc_audience is empty
+type AuthConfig struct {
+	Mode          string `mapstructure:"mode"`            // "apikey" or "jwt"
+	JWTSecret     string `mapstructure:"jwt_secret"`      // HMAC signing key
+	JWTAccessTTL  string `mapstructure:"jwt_access_ttl"`  // e.g. "15m"
+	JWTRefreshTTL string `mapstructure:"jwt_refresh_ttl"` // e.g. "168h"
+	OIDCIssuer    string `mapstructure:"oidc_issuer"`     // provider discovery URL
+	OIDCAudience  string `mapstructure:"oidc_audience"`   // aud claim value
+	OIDCClientID  string `mapstructure:"oidc_client_id"`  // audience fallback
+}
+
+// QueueConfig selects the durable message queue backend.
+//
+//	backend:             "memory"  — in-process channel-based (default, zero-dependency)
+//	                     "nats"    — NATS JetStream (durable, multi-instance)
+//	nats_url:            "nats://localhost:4222"
+//	                     Comma-separated list accepted for cluster deployments.
+//	nats_stream:         "soulacy"
+//	                     Name of the JetStream stream that owns Soulacy subjects.
+//	nats_subject_prefix: ""
+//	                     Subject filter applied to the stream. Defaults to "<stream>.>".
+//	nats_ack_wait:       "30s"
+//	                     How long JetStream waits for an Ack before redelivering.
+//	nats_max_deliver:    0
+//	                     Max delivery attempts per message; 0 = unlimited.
+type QueueConfig struct {
+	Backend           string `mapstructure:"backend"`             // "memory" (default) or "nats"
+	NATSUrl           string `mapstructure:"nats_url"`            // NATS server URL
+	NATSStream        string `mapstructure:"nats_stream"`         // JetStream stream name
+	NATSSubjectPrefix string `mapstructure:"nats_subject_prefix"` // subjects filter
+	NATSAckWait       string `mapstructure:"nats_ack_wait"`       // e.g. "30s"
+	NATSMaxDeliver    int    `mapstructure:"nats_max_deliver"`    // 0 = unlimited
+}
+
+type LLMConfig struct {
+	DefaultProvider string                    `mapstructure:"default_provider"`
+	Providers       map[string]ProviderConfig `mapstructure:"providers"`
+}
+
+type ProviderConfig struct {
+	BaseURL string `mapstructure:"base_url"`
+	APIKey  string `mapstructure:"api_key"`
+	Model   string `mapstructure:"model"`
+}
+
+// KnowledgeConfig holds RAG defaults.
+//
+//	db_path                ~/.soulacy/knowledge.db
+//	embedding_provider     "ollama" (default) — see internal/llm/embed.go
+//	embedding_model        "nomic-embed-text"
+//	chunk_size             1000 characters
+//	chunk_overlap          200 characters
+type KnowledgeConfig struct {
+	DBPath            string `mapstructure:"db_path"`
+	EmbeddingProvider string `mapstructure:"embedding_provider"`
+	EmbeddingModel    string `mapstructure:"embedding_model"`
+	ChunkSize         int    `mapstructure:"chunk_size"`
+	ChunkOverlap      int    `mapstructure:"chunk_overlap"`
+}
+
+type LogConfig struct {
+	Level  string `mapstructure:"level"`  // debug, info, warn, error
+	Format string `mapstructure:"format"` // json, console
+	File   string `mapstructure:"file"`   // path; empty = stdout only
+}
+
+// MCPConfig groups configured MCP servers.
+type MCPConfig struct {
+	Servers map[string]MCPServerConfig `mapstructure:"servers"`
+}
+
+// MCPServerConfig describes one MCP server connection.
+type MCPServerConfig struct {
+	Transport string            `mapstructure:"transport"` // "stdio" (default) or "http"
+	Command   string            `mapstructure:"command"`   // stdio: executable
+	Args      []string          `mapstructure:"args"`      // stdio: arguments
+	Env       map[string]string `mapstructure:"env"`       // stdio: extra env
+	URL       string            `mapstructure:"url"`       // http: server URL
+	Headers   map[string]string `mapstructure:"headers"`   // http: extra headers
+}
+
+// Load reads configuration from disk and environment, returning a validated Config
+// and the resolved configuration file path.
+func Load(cfgPath string) (*Config, string, error) {
+	v := viper.New()
+
+	// Defaults — default to loopback to keep first-run gateways off the LAN.
+	// (PRODUCTION_AUDIT → CRITICAL/Security: default-open posture). Users
+	// explicitly opt into 0.0.0.0 via config or the SOULACY_SERVER_HOST env
+	// var; main.go additionally refuses to start when bound to a non-loopback
+	// address with no API key set.
+	v.SetDefault("server.host", "127.0.0.1")
+	v.SetDefault("server.port", 18789)
+	v.SetDefault("server.gui_enabled", true)
+	v.SetDefault("runtime.max_concurrent_sessions", 100)
+	v.SetDefault("runtime.default_max_turns", 20)
+	v.SetDefault("runtime.python_bin", "python3")
+	// PRODUCTION_AUDIT → LOW/Config: NotebookLM-style tools regularly take
+	// minutes; the old 30s default silently SIGKILLed them unless every
+	// agent declared a per-tool override. 120s is the new sane floor;
+	// per-tool override at `tools[i].timeout` still applies.
+	v.SetDefault("runtime.tool_timeout", "120s")
+	v.SetDefault("runtime.allow_system_tools", true)
+	v.SetDefault("runtime.ssrf_protection", false)
+	// PRODUCTION_AUDIT → F1: sandbox defaults ON with conservative caps
+	// suitable for typical agent tools. Disable per-deployment by setting
+	// runtime.sandbox.enabled=false. Limits = 0 means "no cap for that knob"
+	// so an operator can relax only the constraints they need.
+	v.SetDefault("runtime.sandbox.enabled", true)
+	v.SetDefault("runtime.sandbox.cpu_seconds", 30)
+	v.SetDefault("runtime.sandbox.memory_mb", 512)
+	v.SetDefault("runtime.sandbox.open_files", 256)
+	v.SetDefault("runtime.sandbox.file_size_mb", 64)
+	v.SetDefault("memory.max_history", 50)
+	v.SetDefault("memory.vector_db", "")
+	v.SetDefault("memory.vector_dims", 768)
+	v.SetDefault("storage.backend", "sqlite")
+	v.SetDefault("vector.backend", "")    // empty → inherit from memory.vector_db
+	v.SetDefault("vector.dims", 768)
+	v.SetDefault("executor.backend", "process")
+	v.SetDefault("executor.workers", 4)
+	v.SetDefault("queue.backend", "memory")
+	v.SetDefault("queue.nats_url", "nats://localhost:4222")
+	v.SetDefault("queue.nats_stream", "soulacy")
+	v.SetDefault("queue.nats_ack_wait", "30s")
+	v.SetDefault("queue.nats_max_deliver", 0)
+	v.SetDefault("auth.mode", "apikey")
+	v.SetDefault("auth.jwt_access_ttl", "15m")
+	v.SetDefault("auth.jwt_refresh_ttl", "168h")
+	v.SetDefault("llm.default_provider", "ollama")
+	v.SetDefault("llm.providers.ollama.base_url", "http://localhost:11434")
+	v.SetDefault("llm.providers.ollama.model", "llama3")
+	v.SetDefault("knowledge.embedding_provider", "ollama")
+	v.SetDefault("knowledge.embedding_model", "nomic-embed-text")
+	v.SetDefault("knowledge.chunk_size", 1000)
+	v.SetDefault("knowledge.chunk_overlap", 200)
+	v.SetDefault("log.level", "info")
+	v.SetDefault("log.format", "console")
+
+	// Config file
+	if cfgPath != "" {
+		v.SetConfigFile(cfgPath)
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, "", fmt.Errorf("cannot determine home directory: %w", err)
+		}
+		// Search CWD first (project-level config wins for dev), then fall back to home dir.
+		v.AddConfigPath(".")
+		v.AddConfigPath(filepath.Join(home, ".soulacy"))
+		v.SetConfigName("config")
+		v.SetConfigType("yaml")
+
+		// Default agent and plugin dirs
+		v.SetDefault("agent_dirs", []string{filepath.Join(home, ".soulacy", "agents")})
+		v.SetDefault("plugin_dirs", []string{filepath.Join(home, ".soulacy", "plugins")})
+		v.SetDefault("memory.dir", filepath.Join(home, ".soulacy", "memory"))
+		v.SetDefault("memory.sqlite_path", filepath.Join(home, ".soulacy", "archive.db"))
+		v.SetDefault("knowledge.db_path", filepath.Join(home, ".soulacy", "knowledge.db"))
+		v.SetDefault("runtime.audit_dir", filepath.Join(home, ".soulacy", "audit"))
+		v.SetDefault("server.gui_static_dir", filepath.Join(home, ".soulacy", "gui"))
+	}
+
+	// Environment overrides: SOULACY_SERVER_PORT=8080, SOULACY_SERVER_API_KEY=…, etc.
+	// SetEnvKeyReplacer converts dot-separated viper keys to underscored env var names:
+	//   server.api_key  →  SOULACY_SERVER_API_KEY
+	v.SetEnvPrefix("SOULACY")
+	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
+	v.AutomaticEnv()
+
+	if err := v.ReadInConfig(); err != nil {
+		// Config file is optional on first run
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			return nil, "", fmt.Errorf("reading config: %w", err)
+		}
+	}
+
+	resolvedPath := v.ConfigFileUsed()
+	if resolvedPath == "" {
+		if home, _ := os.UserHomeDir(); home != "" {
+			resolvedPath = filepath.Join(home, ".soulacy", "config.yaml")
+		}
+	}
+
+	cfg := &Config{}
+	if err := v.Unmarshal(cfg); err != nil {
+		return nil, "", fmt.Errorf("unmarshalling config: %w", err)
+	}
+
+	return cfg, resolvedPath, nil
+}
+
+// DataDir returns the Soulacy home directory (~/.soulacy).
+func DataDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".soulacy"), nil
+}
+
+// EnsureDirs creates all directories Soulacy needs to run.
+func EnsureDirs(cfg *Config) error {
+	home, _ := os.UserHomeDir()
+	dirs := []string{
+		cfg.Memory.Dir,
+		filepath.Dir(cfg.Memory.SQLitePath),
+	}
+	if cfg.Knowledge.DBPath != "" {
+		dirs = append(dirs, filepath.Dir(cfg.Knowledge.DBPath))
+	}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".soulacy", "skills"))
+	}
+	dirs = append(dirs, cfg.AgentDirs...)
+	dirs = append(dirs, cfg.PluginDirs...)
+	dirs = append(dirs, cfg.SkillDirs...)
+	if cfg.Runtime.AuditDir != "" {
+		dirs = append(dirs, cfg.Runtime.AuditDir)
+	}
+
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		if err := os.MkdirAll(d, 0755); err != nil {
+			return fmt.Errorf("creating dir %s: %w", d, err)
+		}
+	}
+	return nil
+}

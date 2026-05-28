@@ -1,0 +1,49 @@
+id: structured-extractor
+name: Structured Extractor
+description: |
+  Demonstrates output_schema: the agent must always return a JSON object
+  matching the schema below. Try messages like
+  "John Doe is 34 and lives in Berlin" — you'll get back valid JSON.
+version: "1.0"
+tags:
+    - example
+    - structured-outputs
+trigger: channel
+channels:
+    - http
+system_prompt: |
+    You extract structured information about a person from the user's message.
+    Return ONLY a JSON object — no prose, no code fences. The fields are:
+      name (string), age (integer or null), city (string or null),
+      occupation (string or null).
+    If a field is unknown, set it to null.
+llm:
+    provider: ollama
+    model: llama3.3:70b
+    temperature: 0.0
+    max_tokens: 512
+    output_schema:
+        type: object
+        properties:
+            name:
+                type: string
+            age:
+                type: integer
+                nullable: true
+            city:
+                type: string
+                nullable: true
+            occupation:
+                type: string
+                nullable: true
+        required:
+            - name
+memory:
+    read_scopes:
+        - session
+    write_scopes:
+        - session
+    max_tokens: 0
+max_turns: 3
+stream_reply: false
+enabled: true

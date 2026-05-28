@@ -1,0 +1,23 @@
+id: Test Agent
+name: Test-Agent
+description: ""
+version: "1.0"
+trigger: channel
+channels:
+    - http
+schedule: {}
+system_prompt: ""
+llm:
+    provider: ollama
+    model: ""
+    temperature: 0.7
+    max_tokens: 512
+memory:
+    read_scopes:
+        - session
+    write_scopes:
+        - session
+    max_tokens: 20
+max_turns: 5
+stream_reply: false
+enabled: true
