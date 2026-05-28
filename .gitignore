@@ -7,6 +7,9 @@ bin/
 dist/
 *.exe
 
+# ── MkDocs generated site ─────────────────────────────────────────────────────
+site/
+
 # ── Web GUI build artifacts (rebuilt by `make gui`) ──────────────────────────
 # Keep the directory (needed for //go:embed all:dist), exclude built assets.
 internal/webui/dist/*
