@@ -113,7 +113,12 @@
 
   async function loadCatalog() {
     try {
-      catalog = await api.tools.catalog()
+      const res = await api.tools.catalog()
+      catalog = {
+        python_tools: res?.python_tools || [],
+        mcp_tools:    res?.mcp_tools    || [],
+        builtins:     res?.builtins     || [],
+      }
     } catch (e) {
       catalog = { python_tools: [], mcp_tools: [], builtins: [] }
     }
@@ -738,7 +743,7 @@ console.log(reply);` : ''
 
                   <div class="field">
                     <label>Python file</label>
-                    {#if catalog.python_tools.length > 0}
+                    {#if (catalog.python_tools || []).length > 0}
                       <select value={tool.python_file || ''}
                               on:change={(e) => onPythonFilePicked(i, e.target.value)}>
                         <option value="">— pick a file or paste a path below —</option>
@@ -774,7 +779,7 @@ console.log(reply);` : ''
               {/each}
             {/if}
 
-            {#if catalog.mcp_tools.length > 0}
+            {#if (catalog.mcp_tools || []).length > 0}
               <div class="catalog-hint">
                 <strong>MCP tools auto-injected:</strong>
                 {#each catalog.mcp_tools.slice(0, 8) as t}
