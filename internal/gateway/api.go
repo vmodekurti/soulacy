@@ -21,6 +21,7 @@ import (
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/builder"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/templates"
@@ -1222,6 +1223,107 @@ func mapToAny(m map[string]string) map[string]any {
 		out[k] = v
 	}
 	return out
+}
+
+// handleProvisionGlama fetches an MCP server spec from the Glama registry and
+// writes it to config.yaml in one shot — no manual copy-pasting required.
+//
+// POST /api/v1/mcp/provision-glama
+//
+// Request:
+//
+//	{
+//	  "glama_url": "https://glama.ai/mcp/servers/adamzaidi/icloud-mcp",
+//	  "env": { "IMAP_USER": "you@icloud.com", "IMAP_PASSWORD": "xxxx-xxxx-xxxx-xxxx" }
+//	}
+//
+// Response (env fields missing — returns what's required):
+//
+//	{ "ok": false, "spec": {...}, "env_required": ["IMAP_USER","IMAP_PASSWORD"] }
+//
+// Response (saved successfully):
+//
+//	{ "ok": true, "id": "icloud-mcp", "restart_needed": true, "message": "..." }
+func (s *Server) handleProvisionGlama(c *fiber.Ctx) error {
+	if s.cfgPath == "" {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "config file path unknown — cannot persist",
+		})
+	}
+
+	var body struct {
+		GlamaURL string            `json:"glama_url"`
+		Env      map[string]string `json:"env"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if strings.TrimSpace(body.GlamaURL) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "glama_url is required"})
+	}
+
+	// Fetch the spec from Glama (4s timeout inside FetchGlamaServer).
+	spec, err := builder.FetchGlamaServer(body.GlamaURL)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"error": "could not fetch Glama server spec: " + err.Error(),
+		})
+	}
+
+	// Collect required env vars that are missing from the request.
+	var missing []string
+	for _, ev := range spec.EnvSchema {
+		if ev.Required {
+			if v := strings.TrimSpace(body.Env[ev.Name]); v == "" {
+				missing = append(missing, ev.Name)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		return c.JSON(fiber.Map{
+			"ok":           false,
+			"spec":         spec,
+			"env_required": missing,
+		})
+	}
+
+	// All required env vars present — write to config.yaml.
+	raw, err := readRawConfig(s.cfgPath)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	mcpMap := getOrCreateMap(raw, "mcp")
+	serversMap := getOrCreateMap(mcpMap, "servers")
+
+	id := spec.ID
+	if _, exists := serversMap[id]; exists {
+		// Server already exists — update it in place.
+		s.log.Info("glama provision: updating existing server", zap.String("server", id))
+	}
+
+	serverCfg := mcpServerBody{
+		ID:        id,
+		Transport: "stdio",
+		Command:   spec.Command,
+		Args:      spec.Args,
+		Env:       body.Env,
+	}
+	serversMap[id] = mcpServerToYAML(serverCfg)
+
+	if err := writeRawConfig(s.cfgPath, raw); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	s.log.Info("glama provision: server saved",
+		zap.String("server", id),
+		zap.String("glama_url", body.GlamaURL),
+	)
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"ok":             true,
+		"id":             id,
+		"spec":           spec,
+		"restart_needed": true,
+		"message":        fmt.Sprintf("Saved. Restart the gateway to connect %q.", id),
+	})
 }
 
 // validMCPID accepts the same characters the rest of the codebase uses for
