@@ -23,6 +23,7 @@ import (
 
 	"github.com/soulacy/soulacy/internal/builder"
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/templates"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -1015,10 +1016,21 @@ func validateMCPServer(body mcpServerBody) string {
 	return ""
 }
 
-// handleCreateMCPServer adds a new MCP server to config.yaml. The new server
-// becomes active after the gateway restarts (mcp.Client doesn't currently
-// support hot-reconfigure). The response sets restart_needed so the GUI can
-// surface a banner.
+// mcpBodyToServerConfig converts an mcpServerBody to an mcp.ServerConfig for
+// hot-adding to the live client.
+func mcpBodyToServerConfig(body mcpServerBody) mcp.ServerConfig {
+	return mcp.ServerConfig{
+		Transport: body.Transport,
+		Command:   body.Command,
+		Args:      body.Args,
+		Env:       body.Env,
+		URL:       body.URL,
+		Headers:   body.Headers,
+	}
+}
+
+// handleCreateMCPServer adds a new MCP server to config.yaml and hot-connects
+// it immediately — no gateway restart required.
 func (s *Server) handleCreateMCPServer(c *fiber.Ctx) error {
 	if s.cfgPath == "" {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
@@ -1053,12 +1065,21 @@ func (s *Server) handleCreateMCPServer(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	s.log.Info("mcp server created", zap.String("server", id))
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
-		"ok":             true,
-		"id":             id,
-		"restart_needed": true,
-		"message":        "Saved. Restart the gateway to connect the new MCP server.",
-	})
+
+	// Hot-connect: start the server live without a restart.
+	connectErr := ""
+	if s.mcp != nil {
+		if err := s.mcp.AddServer(id, mcpBodyToServerConfig(body)); err != nil {
+			connectErr = err.Error()
+		}
+	}
+
+	resp := fiber.Map{"ok": true, "id": id, "restart_needed": false, "message": "Connected."}
+	if connectErr != "" {
+		resp["message"] = "Saved, but could not connect: " + connectErr
+		resp["connect_error"] = connectErr
+	}
+	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
 // handleUpdateMCPServer overwrites an existing MCP server config in
@@ -1095,12 +1116,21 @@ func (s *Server) handleUpdateMCPServer(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	s.log.Info("mcp server updated", zap.String("server", id))
-	return c.JSON(fiber.Map{
-		"ok":             true,
-		"id":             id,
-		"restart_needed": true,
-		"message":        "Saved. Restart the gateway to apply the change.",
-	})
+
+	// Hot-reconnect: remove old process, start updated one.
+	connectErr := ""
+	if s.mcp != nil {
+		if err := s.mcp.AddServer(id, mcpBodyToServerConfig(body)); err != nil {
+			connectErr = err.Error()
+		}
+	}
+
+	resp := fiber.Map{"ok": true, "id": id, "restart_needed": false, "message": "Updated and reconnected."}
+	if connectErr != "" {
+		resp["message"] = "Saved, but could not reconnect: " + connectErr
+		resp["connect_error"] = connectErr
+	}
+	return c.JSON(resp)
 }
 
 // handleDeleteMCPServer removes an MCP server from config.yaml.
@@ -1126,11 +1156,17 @@ func (s *Server) handleDeleteMCPServer(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	s.log.Info("mcp server deleted", zap.String("server", id))
+
+	// Hot-disconnect: stop the process immediately.
+	if s.mcp != nil {
+		_ = s.mcp.RemoveServer(id)
+	}
+
 	return c.JSON(fiber.Map{
 		"ok":             true,
 		"id":             id,
-		"restart_needed": true,
-		"message":        "Removed. Restart the gateway to disconnect the server cleanly.",
+		"restart_needed": false,
+		"message":        "Removed and disconnected.",
 	})
 }
 
@@ -1317,13 +1353,33 @@ func (s *Server) handleProvisionGlama(c *fiber.Ctx) error {
 		zap.String("server", id),
 		zap.String("glama_url", body.GlamaURL),
 	)
-	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+
+	// Hot-connect immediately.
+	connectErr := ""
+	if s.mcp != nil {
+		hotCfg := mcp.ServerConfig{
+			Transport: "stdio",
+			Command:   spec.Command,
+			Args:      spec.Args,
+			Env:       body.Env,
+		}
+		if err := s.mcp.AddServer(id, hotCfg); err != nil {
+			connectErr = err.Error()
+		}
+	}
+
+	resp := fiber.Map{
 		"ok":             true,
 		"id":             id,
 		"spec":           spec,
-		"restart_needed": true,
-		"message":        fmt.Sprintf("Saved. Restart the gateway to connect %q.", id),
-	})
+		"restart_needed": false,
+		"message":        fmt.Sprintf("%q connected with %d tools.", id, 0),
+	}
+	if connectErr != "" {
+		resp["message"] = fmt.Sprintf("Saved, but connection failed: %s", connectErr)
+		resp["connect_error"] = connectErr
+	}
+	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
 // validMCPID accepts the same characters the rest of the codebase uses for

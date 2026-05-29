@@ -110,6 +110,8 @@
       info = res.message || 'Saved.'
       if (res.restart_needed) restartNeeded = true
       closeModal()
+      // Brief pause so the server process has time to start before we poll.
+      await new Promise(r => setTimeout(r, 1500))
       await load()
     } catch (e) {
       error = e.message
@@ -125,6 +127,7 @@
       const res = await api.mcp.delete(s.id)
       info = res.message || 'Removed.'
       if (res.restart_needed) restartNeeded = true
+      await new Promise(r => setTimeout(r, 500))
       await load()
     } catch (e) {
       error = e.message
@@ -159,6 +162,7 @@
         info = res.message || 'Installed from Glama.'
         if (res.restart_needed) restartNeeded = true
         closeGlamaModal()
+        await new Promise(r => setTimeout(r, 1500))
         await load()
       } else {
         // env_required: show credential fields
@@ -183,6 +187,7 @@
         info = res.message || 'Installed from Glama.'
         if (res.restart_needed) restartNeeded = true
         closeGlamaModal()
+        await new Promise(r => setTimeout(r, 1500))
         await load()
       } else {
         glamaError = 'Some required credentials are still missing.'
@@ -437,11 +442,13 @@
           {#each glamaEnvRequired as envKey}
             <div class="field">
               <label>{envKey} <span class="req">*</span></label>
-              <input
-                type={envKey.toLowerCase().includes('password') || envKey.toLowerCase().includes('token') || envKey.toLowerCase().includes('secret') ? 'password' : 'text'}
-                bind:value={glamaEnv[envKey]}
-                placeholder={glamaSpec.env_schema?.find(e => e.name === envKey)?.description || envKey}
-              />
+              {#if envKey.toLowerCase().includes('password') || envKey.toLowerCase().includes('token') || envKey.toLowerCase().includes('secret')}
+                <input type="password" bind:value={glamaEnv[envKey]}
+                  placeholder={glamaSpec.env_schema?.find(e => e.name === envKey)?.description || envKey} />
+              {:else}
+                <input type="text" bind:value={glamaEnv[envKey]}
+                  placeholder={glamaSpec.env_schema?.find(e => e.name === envKey)?.description || envKey} />
+              {/if}
             </div>
           {/each}
         {/if}

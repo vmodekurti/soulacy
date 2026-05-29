@@ -293,6 +293,49 @@ func (c *Client) ServersSnapshot() []ServerStatus {
 	return out
 }
 
+// AddServer starts a new MCP server at runtime and adds it to the client.
+// If a server with the same id already exists it is stopped first (update semantics).
+// This allows hot-adding servers after config.yaml is written without a gateway restart.
+func (c *Client) AddServer(id string, cfg ServerConfig) error {
+	// Stop any existing server with this id.
+	_ = c.RemoveServer(id)
+
+	s := &server{id: id, cfg: cfg}
+	if err := c.start(s); err != nil {
+		s.detail = err.Error()
+		c.log.Warn("mcp: hot-add failed", zap.String("server", id), zap.Error(err))
+		c.mu.Lock()
+		c.servers = append(c.servers, s)
+		c.mu.Unlock()
+		return err
+	}
+	s.connected = true
+	s.detail = fmt.Sprintf("%d tool(s)", len(s.tools))
+	c.log.Info("mcp: server hot-added", zap.String("server", id), zap.Int("tools", len(s.tools)))
+
+	c.mu.Lock()
+	c.servers = append(c.servers, s)
+	c.mu.Unlock()
+	return nil
+}
+
+// RemoveServer stops and removes a server by id. Returns nil if not found.
+func (c *Client) RemoveServer(id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i, s := range c.servers {
+		if s.id == id {
+			if s.tx != nil {
+				_ = s.tx.close()
+			}
+			c.servers = append(c.servers[:i], c.servers[i+1:]...)
+			c.log.Info("mcp: server removed", zap.String("server", id))
+			return nil
+		}
+	}
+	return nil
+}
+
 // Close shuts down all transports.
 func (c *Client) Close() error {
 	c.mu.Lock()
