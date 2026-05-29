@@ -536,6 +536,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Patch("/mcp/:id", s.rbacMW(rbac.ResourceMCP, rbac.ActionWrite), s.handleUpdateMCPServer)
 	api.Delete("/mcp/:id", s.rbacMW(rbac.ResourceMCP, rbac.ActionDelete), s.handleDeleteMCPServer)
 	api.Post("/mcp/test", s.rbacMW(rbac.ResourceMCP, rbac.ActionRead), s.handleTestMCPServer)
+	api.Post("/mcp/provision-glama", s.rbacMW(rbac.ResourceMCP, rbac.ActionWrite), s.handleProvisionGlama)
 
 	// Knowledge (RAG) — KBs, documents, search
 	api.Get("/knowledge", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionRead), s.handleListKnowledge)

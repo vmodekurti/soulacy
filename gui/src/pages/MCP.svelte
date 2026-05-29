@@ -18,6 +18,16 @@
   let testing = false
   let testResult = null  // { ok, message }
 
+  // Glama provisioner state
+  let glamaModal = false
+  let glamaURL = ''
+  let glamaFetching = false
+  let glamaSpec = null      // GlamaProvisionSpec from server
+  let glamaEnvRequired = [] // env var names still needed
+  let glamaEnv = {}         // user-filled env values
+  let glamaError = ''
+  let glamaSaving = false
+
   const BLANK_STDIO = () => ({ id: '', transport: 'stdio', command: '', args: [], env: {}, url: '', headers: {} })
 
   async function load() {
@@ -121,6 +131,71 @@
     }
   }
 
+  // ── Glama provisioner ─────────────────────────────────────────────────────
+  function openGlamaModal() {
+    glamaModal = true
+    glamaURL = ''
+    glamaSpec = null
+    glamaEnvRequired = []
+    glamaEnv = {}
+    glamaError = ''
+    glamaFetching = false
+    glamaSaving = false
+  }
+  function closeGlamaModal() {
+    glamaModal = false
+  }
+
+  async function fetchFromGlama() {
+    if (!glamaURL.trim()) return
+    glamaFetching = true
+    glamaError = ''
+    glamaSpec = null
+    glamaEnvRequired = []
+    try {
+      const res = await api.mcp.provisionGlama({ glama_url: glamaURL.trim(), env: {} })
+      if (res.ok) {
+        // No env required — already saved!
+        info = res.message || 'Installed from Glama.'
+        if (res.restart_needed) restartNeeded = true
+        closeGlamaModal()
+        await load()
+      } else {
+        // env_required: show credential fields
+        glamaSpec = res.spec
+        glamaEnvRequired = res.env_required || []
+        glamaEnv = {}
+        for (const k of glamaEnvRequired) glamaEnv[k] = ''
+      }
+    } catch (e) {
+      glamaError = e.message
+    } finally {
+      glamaFetching = false
+    }
+  }
+
+  async function saveGlama() {
+    glamaSaving = true
+    glamaError = ''
+    try {
+      const res = await api.mcp.provisionGlama({ glama_url: glamaURL.trim(), env: glamaEnv })
+      if (res.ok) {
+        info = res.message || 'Installed from Glama.'
+        if (res.restart_needed) restartNeeded = true
+        closeGlamaModal()
+        await load()
+      } else {
+        glamaError = 'Some required credentials are still missing.'
+        glamaEnvRequired = res.env_required || glamaEnvRequired
+      }
+    } catch (e) {
+      glamaError = e.message
+    } finally {
+      glamaSaving = false
+    }
+  }
+  // ──────────────────────────────────────────────────────────────────────────
+
   const TRANSPORT_ICON = { stdio: '⎙', http: '🌐', https: '🌐' }
 
   // Quick-add templates for common stdio MCP servers. Clicking one prefills
@@ -151,6 +226,7 @@
     <h1>MCP Servers</h1>
     <div class="header-actions">
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
+      <button class="btn-glama"     on:click={openGlamaModal}>⚡ From Glama</button>
       <button class="btn-primary"   on:click={openNew}>+ New Server</button>
     </div>
   </div>
@@ -326,6 +402,68 @@
   </div>
 {/if}
 
+{#if glamaModal}
+  <div class="modal-bg" on:click|self={closeGlamaModal}>
+    <div class="modal wide">
+      <h2>⚡ Install from Glama</h2>
+      <p class="glama-hint">
+        Paste any <a href="https://glama.ai/mcp/servers" target="_blank" rel="noopener">Glama MCP server</a> URL.
+        Soulacy will fetch the config and fill in everything automatically.
+      </p>
+
+      <div class="field">
+        <label>Glama URL <span class="req">*</span></label>
+        <input
+          type="text"
+          bind:value={glamaURL}
+          placeholder="https://glama.ai/mcp/servers/adamzaidi/icloud-mcp"
+          on:keydown={(e) => e.key === 'Enter' && !glamaSpec && fetchFromGlama()}
+        />
+      </div>
+
+      {#if glamaError}
+        <div class="banner err">{glamaError}</div>
+      {/if}
+
+      {#if glamaSpec}
+        <div class="glama-spec-card">
+          <div class="glama-spec-name">{glamaSpec.name}</div>
+          <div class="glama-spec-desc">{glamaSpec.description}</div>
+          <div class="glama-spec-cmd"><code>npx {glamaSpec.args?.join(' ')}</code></div>
+        </div>
+
+        {#if glamaEnvRequired.length > 0}
+          <div class="glama-creds-label">Required credentials</div>
+          {#each glamaEnvRequired as envKey}
+            <div class="field">
+              <label>{envKey} <span class="req">*</span></label>
+              <input
+                type={envKey.toLowerCase().includes('password') || envKey.toLowerCase().includes('token') || envKey.toLowerCase().includes('secret') ? 'password' : 'text'}
+                bind:value={glamaEnv[envKey]}
+                placeholder={glamaSpec.env_schema?.find(e => e.name === envKey)?.description || envKey}
+              />
+            </div>
+          {/each}
+        {/if}
+      {/if}
+
+      <div class="modal-row">
+        <button class="btn-secondary" on:click={closeGlamaModal} disabled={glamaFetching || glamaSaving}>Cancel</button>
+        {#if !glamaSpec}
+          <button class="btn-glama" on:click={fetchFromGlama} disabled={glamaFetching || !glamaURL.trim()}>
+            {glamaFetching ? 'Fetching…' : 'Fetch config'}
+          </button>
+        {:else}
+          <button class="btn-glama" on:click={saveGlama}
+            disabled={glamaSaving || glamaEnvRequired.some(k => !glamaEnv[k]?.trim())}>
+            {glamaSaving ? 'Installing…' : '⚡ Install'}
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .page        { padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
   .page-header { display: flex; align-items: center; justify-content: space-between; }
@@ -430,11 +568,31 @@
   .test-result.ok { background: rgba(96,240,160,.08); border-color: rgba(96,240,160,.3); color: #60f0a0; }
   .test-result code { background: rgba(0,0,0,.25); padding: .05rem .3rem; border-radius: 4px; }
 
-  .btn-primary, .btn-secondary, .btn-danger {
+  .btn-primary, .btn-secondary, .btn-danger, .btn-glama {
     padding: .5rem .85rem; border-radius: 6px; font-size: .82rem; cursor: pointer; border: 1px solid transparent;
   }
   .btn-primary   { background: #6c63ff; color: white; border-color: #6c63ff; }
   .btn-primary:disabled { opacity: .5; cursor: not-allowed; }
   .btn-secondary { background: #1a1e36; color: #c8cadf; border-color: #2a2f4a; }
   .btn-danger    { background: transparent; color: #f06060; border-color: rgba(240,96,96,.4); }
+  .btn-glama     { background: rgba(255,180,0,.12); color: #ffc533; border-color: rgba(255,180,0,.35); font-weight: 600; }
+  .btn-glama:hover { background: rgba(255,180,0,.2); }
+  .btn-glama:disabled { opacity: .5; cursor: not-allowed; }
+
+  .glama-hint { font-size: .82rem; color: #7b82a8; line-height: 1.6; margin: -.25rem 0 .25rem; }
+  .glama-hint a { color: #ffc533; }
+
+  .glama-spec-card {
+    background: #0e1020; border: 1px solid #2a2f4a; border-radius: 8px;
+    padding: .85rem 1rem; display: flex; flex-direction: column; gap: .35rem;
+  }
+  .glama-spec-name { font-weight: 600; color: #e8eaf6; font-size: .9rem; }
+  .glama-spec-desc { font-size: .8rem; color: #7b82a8; line-height: 1.5; }
+  .glama-spec-cmd  { font-size: .78rem; }
+  .glama-spec-cmd code { background: #1c1f35; padding: .15rem .4rem; border-radius: 4px; color: #ffc533; font-family: monospace; }
+
+  .glama-creds-label {
+    font-size: .72rem; color: #6b7294; text-transform: uppercase; letter-spacing: .06em;
+    font-weight: 600; border-top: 1px solid #1a1e36; padding-top: .75rem;
+  }
 </style>

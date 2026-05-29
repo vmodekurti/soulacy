@@ -106,7 +106,8 @@ export const api = {
     create: (body)    => apiFetch('/mcp',                                       { method: 'POST',   body: JSON.stringify(body) }),
     update: (id, body)=> apiFetch(`/mcp/${encodeURIComponent(id)}`,            { method: 'PATCH',  body: JSON.stringify(body) }),
     delete: (id)      => apiFetch(`/mcp/${encodeURIComponent(id)}`,            { method: 'DELETE' }),
-    test:   (body)    => apiFetch('/mcp/test',                                  { method: 'POST',   body: JSON.stringify(body) }),
+    test:           (body)    => apiFetch('/mcp/test',             { method: 'POST', body: JSON.stringify(body) }),
+    provisionGlama: (body)    => apiFetch('/mcp/provision-glama',  { method: 'POST', body: JSON.stringify(body) }),
   },
 
   knowledge: {
