@@ -51,8 +51,14 @@ docs/PRODUCTION_AUDIT.md
 docs/REGRESSION_TESTING.md
 docs/*.html
 
+# ── Node / frontend tooling ───────────────────────────────────────────────────
+node_modules/
+gui/node_modules/
+gui/vite.config.js.timestamp-*
+
 # ── Personal convenience scripts ─────────────────────────────────────────────
 build-and-restart.command
+reinstall.sh
 
 # ── Legacy dir ────────────────────────────────────────────────────────────────
 .clawstack/
