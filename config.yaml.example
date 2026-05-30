@@ -1,5 +1,14 @@
+# Soulacy configuration example
+# Copy to ~/.soulacy/config.yaml and fill in your values.
+# NEVER commit config.yaml — it may contain secrets.
+
+# ── Agent directories ─────────────────────────────────────────────────────────
+# Use ABSOLUTE paths. Relative paths resolve from the working directory at
+# startup — unpredictable when launched via LaunchAgent or systemd.
 agent_dirs:
-    - examples/agents
+    - /Users/yourname/.soulacy/agents
+
+# ── Channels ─────────────────────────────────────────────────────────────────
 channels:
     discord:
         enabled: false
@@ -8,9 +17,23 @@ channels:
     slack:
         enabled: false
     telegram:
-        agent_id: hello-world
         enabled: false
+        # Single-bot (simple):
+        agent_id: hello-world
         token: ""                          # Your Telegram bot token
+        allowed_user_ids: []              # Allowlist of Telegram user IDs (int64)
+
+        # Multi-bot — one bot per agent. Comment out the three lines above and
+        # use this instead:
+        # bots:
+        #   - token: "BOT_TOKEN_1"
+        #     agent_id: system
+        #     allowed_user_ids: [123456789]
+        #   - token: "BOT_TOKEN_2"
+        #     agent_id: financial-agent
+        #     allowed_user_ids: [123456789]
+
+# ── LLM providers ─────────────────────────────────────────────────────────────
 llm:
     default_provider: ollama
     providers:
@@ -25,10 +48,14 @@ llm:
         ollama:
             base_url: http://localhost:11434
             model: llama3.3:70b
+
+# ── Logging ───────────────────────────────────────────────────────────────────
 log:
-    file: /tmp/soulacy.log
+    file: /Users/yourname/.soulacy/logs/soulacy.log
     format: console
     level: info
+
+# ── MCP servers ───────────────────────────────────────────────────────────────
 mcp:
     servers:
         filesystem:
@@ -40,20 +67,47 @@ mcp:
             transport: stdio
         rocketmoney:
             args:
-                - /path/to/soulacy/mcp-servers/rocketmoney/start.sh
+                - /Users/yourname/.soulacy/mcp-servers/rocketmoney/start.sh
             command: bash
-            env:
-                ROCKET_MONEY_COOKIE: ""    # Run: python3.11 mcp-servers/rocketmoney/extract_cookie.py
             transport: stdio
+            # DO NOT put the cookie in env here — the PATCH /api/v1/mcp/* endpoint
+            # rewrites config.yaml and silently strips env vars. Store the cookie
+            # in ~/.soulacy/secrets/rocket_money_cookie instead; start.sh reads it
+            # from there automatically.
+
+# ── Memory ────────────────────────────────────────────────────────────────────
 memory:
     max_history: 50
+
+# ── Runtime ───────────────────────────────────────────────────────────────────
 runtime:
     default_max_turns: 30
     max_concurrent_sessions: 100
-    python_bin: python3
+
+    # Python interpreter used for all python_file tools.
+    # Must match the interpreter you install packages with:
+    #   python3.11 -m pip install --break-system-packages feedparser httpx pyyaml
+    # Avoid plain "python3" — on macOS it maps to the system 3.9 which has no packages.
+    python_bin: python3.11
+
     tool_timeout: 30s
+
+    # Python sandbox resource caps (Linux rlimits — ignored on macOS).
+    # For long-running tools (e.g. the AI podcast pipeline takes ~15 min),
+    # set cpu_seconds: 0 to remove the cap.
+    # sandbox:
+    #   enabled: true
+    #   cpu_seconds: 0      # 0 = no cap (default 30)
+    #   memory_mb: 0        # 0 = no cap (default 512)
+    #   open_files: 256
+    #   file_size_mb: 64
+
+    # Optional: write per-session tool-call audit logs as JSONL.
+    # audit_dir: /Users/yourname/.soulacy/audit
+
+# ── Server ────────────────────────────────────────────────────────────────────
 server:
-    api_key: "sy_..."                      # Generate with: openssl rand -hex 32 | sed 's/^/sy_/'
+    api_key: "sy_..."                      # Generate: openssl rand -hex 32 | sed 's/^/sy_/'
     gui_enabled: true
     host: 127.0.0.1
     port: 18789
