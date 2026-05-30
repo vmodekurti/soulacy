@@ -59,6 +59,12 @@ type ToolCall struct {
 	ID        string         `json:"id"`
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
+
+	// ThoughtSignature is an opaque base64 blob returned by Gemini 2.5 thinking
+	// models alongside each functionCall. It must be echoed back verbatim in
+	// subsequent turns or Gemini returns a 400 INVALID_ARGUMENT.
+	// Other providers leave this field empty and it is not transmitted.
+	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
 // ToolResult carries the result back from a tool execution.

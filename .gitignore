@@ -59,6 +59,7 @@ gui/vite.config.js.timestamp-*
 # ── Personal convenience scripts ─────────────────────────────────────────────
 build-and-restart.command
 reinstall.sh
+session*.command
 
 # ── Legacy dir ────────────────────────────────────────────────────────────────
 .clawstack/

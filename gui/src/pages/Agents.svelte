@@ -162,17 +162,19 @@
   $: if (editing?.llm?.provider) loadModels(editing.llm.provider)
 
   // Computed: options for the model dropdown.
-  // - If the agent's current model isn't in the fetched list, append it so the
-  //   form keeps showing the user's choice (it's almost always a real model
-  //   the provider just doesn't enumerate, like a fine-tune name).
+  // Rules:
+  //   1. The current model is ALWAYS at position 0 — it never moves or disappears
+  //      while the provider model list is loading, so bind:value never loses its
+  //      match and the browser never snaps to option[0].
+  //   2. Remaining known models follow, deduplicated.
+  // The {#each} below uses a keyed loop (m) so Svelte moves <option> DOM nodes
+  // instead of mutating them in-place — avoids the browser reset-to-first bug.
   $: modelOptions = (() => {
     const provId = editing?.llm?.provider
     const list   = (modelsByProv[provId] || [])
     const cur    = editing?.llm?.model
-    if (cur && cur !== '' && !list.includes(cur)) {
-      return [cur, ...list]
-    }
-    return list
+    const others = list.filter(m => m !== cur && m !== '__custom__')
+    return cur ? [cur, ...others] : others
   })()
 
   // ── Tools editing ─────────────────────────────────────────────────────────
@@ -624,24 +626,23 @@ console.log(reply);` : ''
                     <span class="mhint">{modelOptions.length} options</span>
                   {/if}
                 </label>
-                {#if modelOptions.length > 0}
-                  <select bind:value={editing.llm.model}>
-                    {#if !editing.llm.model}
-                      <option value="">— pick a model —</option>
-                    {/if}
-                    {#each modelOptions as m}
-                      <option value={m}>{m}</option>
-                    {/each}
-                    <option value="__custom__">Custom (type below)…</option>
-                  </select>
-                  {#if editing.llm.model === '__custom__'}
-                    <input bind:value={editing.llm.model}
-                           placeholder="Enter model name"
-                           on:focus={() => editing.llm.model = ''} />
+                <!-- Keyed {#each (m)} prevents Svelte from mutating <option> values
+                     in-place during list updates. Current model is always at [0]
+                     (from modelOptions), so bind:value always has a match and the
+                     browser never resets to the first option. -->
+                <select bind:value={editing.llm.model}>
+                  {#if !editing.llm.model}
+                    <option value="">— pick a model —</option>
                   {/if}
-                {:else}
+                  {#each modelOptions as m (m)}
+                    <option value={m}>{m}</option>
+                  {/each}
+                  <option value="__custom__">Custom (type below)…</option>
+                </select>
+                {#if editing.llm.model === '__custom__'}
                   <input bind:value={editing.llm.model}
-                         placeholder="e.g. llama3.3:70b" />
+                         placeholder="Enter model name"
+                         on:focus={() => editing.llm.model = ''} />
                 {/if}
               </div>
               <div class="field">
@@ -697,7 +698,7 @@ console.log(reply);` : ''
             </div>
             <div class="field">
               <label>Memory max tokens <span class="optional">(how many recent entries to inject into context)</span></label>
-              <input type="number" bind:value={editing.memory.max_tokens} min="0" max="200" />
+              <input type="number" bind:value={editing.memory.max_tokens} min="0" max="100000" />
             </div>
 
             {#if editing.trigger === 'channel'}

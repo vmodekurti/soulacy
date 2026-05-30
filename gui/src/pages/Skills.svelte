@@ -2,11 +2,18 @@
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
 
-  let skills   = []
-  let selected = null
-  let loading  = true
+  let skills        = []
+  let selected      = null
+  let loading       = true
   let detailLoading = false
-  let error    = ''
+  let error         = ''
+
+  // AgenticSkills provisioner modal
+  let asModal    = false
+  let asURL      = ''
+  let asFetching = false
+  let asError    = ''
+  let asSuccess  = ''
 
   async function load() {
     loading = true
@@ -38,14 +45,85 @@
     }
   }
 
+  function openASModal() {
+    asURL     = ''
+    asError   = ''
+    asSuccess = ''
+    asModal   = true
+  }
+  function closeASModal() { asModal = false }
+
+  async function installFromAS() {
+    if (!asURL.trim()) return
+    asFetching = true
+    asError    = ''
+    asSuccess  = ''
+    try {
+      const res = await api.skills.provisionAgenticSkills({ url: asURL.trim() })
+      if (res.ok) {
+        asSuccess = res.message || `Skill installed.`
+        setTimeout(() => { closeASModal(); load() }, 1800)
+      } else {
+        asError = res.error || 'Install failed.'
+      }
+    } catch (e) {
+      asError = e.message
+    } finally {
+      asFetching = false
+    }
+  }
+
   onMount(load)
 </script>
 
 <div class="page">
   <div class="page-header">
     <h1>Agent Skills</h1>
-    <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
+    <div class="header-actions">
+      <button class="btn-as" on:click={openASModal}>⚡ From AgenticSkills</button>
+      <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
+    </div>
   </div>
+
+  <!-- AgenticSkills provisioner modal -->
+  {#if asModal}
+    <div class="modal-backdrop" on:click|self={closeASModal}>
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Install from AgenticSkills</h2>
+          <button class="modal-close" on:click={closeASModal}>✕</button>
+        </div>
+
+        <p class="as-hint">
+          Paste an <strong>agenticskills.io</strong> skill URL and click Install.
+          The SKILL.md will be downloaded and hot-loaded — no restart needed.
+        </p>
+
+        <input
+          class="as-input"
+          type="url"
+          placeholder="https://agenticskills.io/skills/frontend-design"
+          bind:value={asURL}
+          disabled={asFetching}
+          on:keydown={(e) => e.key === 'Enter' && installFromAS()}
+        />
+
+        {#if asError}
+          <div class="as-err">{asError}</div>
+        {/if}
+        {#if asSuccess}
+          <div class="as-ok">✓ {asSuccess}</div>
+        {/if}
+
+        <div class="modal-footer">
+          <button class="btn-secondary" on:click={closeASModal} disabled={asFetching}>Cancel</button>
+          <button class="btn-as" on:click={installFromAS} disabled={asFetching || !asURL.trim()}>
+            {asFetching ? 'Installing…' : '⚡ Install'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   {#if error}
     <div class="banner err">{error}</div>
@@ -152,6 +230,41 @@
   .page        { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.5rem; height: 100%; min-height: 0; }
   .page-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
   .page-header h1 { font-size: 1.2rem; font-weight: 600; }
+  .header-actions { display: flex; gap: .5rem; align-items: center; }
+
+  /* AgenticSkills button */
+  .btn-as {
+    padding: .45rem .85rem; border-radius: 7px; font-size: .8rem; font-weight: 600; cursor: pointer;
+    background: linear-gradient(135deg, #f59e0b, #d97706); color: #fff; border: none;
+    transition: opacity .15s;
+  }
+  .btn-as:hover    { opacity: .85; }
+  .btn-as:disabled { opacity: .5; cursor: not-allowed; }
+
+  /* Modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,.65); z-index: 200;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .modal {
+    background: #141626; border: 1px solid #2a2f4a; border-radius: 12px;
+    padding: 1.5rem; width: 520px; max-width: 95vw;
+    display: flex; flex-direction: column; gap: 1rem;
+  }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; }
+  .modal-header h2 { font-size: 1rem; font-weight: 700; }
+  .modal-close { background: none; border: none; color: #6b7294; font-size: 1rem; cursor: pointer; padding: .2rem; }
+  .modal-footer { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .25rem; }
+  .as-hint { font-size: .82rem; color: #7b82a8; line-height: 1.5; }
+  .as-hint strong { color: #f59e0b; }
+  .as-input {
+    width: 100%; padding: .6rem .8rem; border-radius: 7px; font-size: .85rem;
+    background: #0e1020; border: 1px solid #2a2f4a; color: #c8cadf;
+    outline: none; box-sizing: border-box;
+  }
+  .as-input:focus { border-color: #f59e0b; }
+  .as-err { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; padding: .6rem .8rem; border-radius: 7px; font-size: .82rem; }
+  .as-ok  { background: rgba(80,200,120,.1); border: 1px solid rgba(80,200,120,.3); color: #50c878; padding: .6rem .8rem; border-radius: 7px; font-size: .82rem; }
   .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; flex-shrink: 0; }
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
 

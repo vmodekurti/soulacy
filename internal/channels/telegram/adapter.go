@@ -3,11 +3,13 @@
 // API to reply. No third-party library required — plain HTTP calls.
 //
 // Configuration in config.yaml:
-//   channels:
-//     telegram:
-//       enabled: true
-//       token: "YOUR_BOT_TOKEN"
-//       agent_id: "my-agent"   # which agent handles all Telegram messages
+//
+//	channels:
+//	  telegram:
+//	    enabled: true
+//	    token: "YOUR_BOT_TOKEN"
+//	    agent_id: "my-agent"
+//	    allowed_user_ids: [123456789, 987654321]  # whitelist; empty = allow all
 package telegram
 
 import (
@@ -31,27 +33,46 @@ const apiBase = "https://api.telegram.org/bot"
 
 // Adapter polls the Telegram Bot API.
 type Adapter struct {
-	token     string
-	agentID   string
-	client    *http.Client
-	inbox     chan<- message.Message
-	offset    int64
-	connected bool
-	stopCh    chan struct{}
-	stopOnce  sync.Once // guards close(stopCh) so Stop() is idempotent
+	id             string // adapter ID — "telegram" for the primary bot, "telegram-<agentID>" for extras
+	token          string
+	agentID        string
+	allowedUserIDs map[int64]bool // nil/empty = allow everyone
+	client         *http.Client
+	inbox          chan<- message.Message
+	offset         int64
+	connected      bool
+	stopCh         chan struct{}
+	stopOnce       sync.Once
 }
 
-// New creates a Telegram adapter with the given bot token.
-func New(token, agentID string) *Adapter {
+// New creates a Telegram adapter for the primary (single-bot) configuration.
+// The adapter's channel ID is "telegram". allowedUserIDs restricts which
+// Telegram user IDs may interact with the bot — pass nil or empty to allow all.
+func New(token, agentID string, allowedUserIDs []int64) *Adapter {
+	return NewWithID("telegram", token, agentID, allowedUserIDs)
+}
+
+// NewWithID creates a Telegram adapter with a custom channel ID. Use this when
+// running multiple bots — each bot should have a unique ID such as
+// "telegram-system" or "telegram-financial-agent". The ID is embedded in every
+// message's Channel field, which is how the registry routes outbound replies
+// back to the correct bot.
+func NewWithID(id, token, agentID string, allowedUserIDs []int64) *Adapter {
+	allowed := make(map[int64]bool, len(allowedUserIDs))
+	for _, uid := range allowedUserIDs {
+		allowed[uid] = true
+	}
 	return &Adapter{
-		token:   token,
-		agentID: agentID,
-		client:  &http.Client{Timeout: 35 * time.Second},
-		stopCh:  make(chan struct{}),
+		id:             id,
+		token:          token,
+		agentID:        agentID,
+		allowedUserIDs: allowed,
+		client:         &http.Client{Timeout: 35 * time.Second},
+		stopCh:         make(chan struct{}),
 	}
 }
 
-func (a *Adapter) ID() string   { return "telegram" }
+func (a *Adapter) ID() string   { return a.id }
 func (a *Adapter) Name() string { return "Telegram" }
 
 func (a *Adapter) Start(ctx context.Context, inbox chan<- message.Message) error {
@@ -80,13 +101,24 @@ func (a *Adapter) poll(ctx context.Context) {
 
 		for _, u := range updates {
 			if u.Message == nil {
+				a.offset = u.UpdateID + 1
 				continue
 			}
+
+			// ── Allowlist check ───────────────────────────────────────────────
+			if len(a.allowedUserIDs) > 0 && !a.allowedUserIDs[u.Message.From.ID] {
+				log.Printf("telegram: blocked user %d (@%s) — not in allowed_user_ids",
+					u.Message.From.ID, u.Message.From.Username)
+				a.sendText(ctx, u.Message.Chat.ID, "⛔ Unauthorized.")
+				a.offset = u.UpdateID + 1
+				continue
+			}
+
 			msg := message.Message{
 				ID:        uuid.New().String(),
-				SessionID: fmt.Sprintf("telegram-%d", u.Message.Chat.ID),
+				SessionID: fmt.Sprintf("%s-%d", a.id, u.Message.Chat.ID),
 				AgentID:   a.agentID,
-				Channel:   "telegram",
+				Channel:   a.id, // uses adapter's own ID so multi-bot replies route correctly
 				ThreadID:  strconv.FormatInt(u.Message.Chat.ID, 10),
 				UserID:    strconv.FormatInt(u.Message.From.ID, 10),
 				Username:  u.Message.From.Username,
@@ -94,11 +126,7 @@ func (a *Adapter) poll(ctx context.Context) {
 				Parts:     message.Text(u.Message.Text),
 				CreatedAt: time.Now().UTC(),
 			}
-			// Non-blocking send with cancellation. If the shared inbox is
-			// saturated (downstream wedged on a slow LLM call), drop the
-			// message and log rather than wedging the poll loop too —
-			// otherwise Telegram updates pile up server-side and the
-			// adapter stops receiving entirely. (PRODUCTION_AUDIT → HIGH)
+
 			select {
 			case a.inbox <- msg:
 				a.offset = u.UpdateID + 1
@@ -118,16 +146,19 @@ func (a *Adapter) Send(_ context.Context, msg message.Message) error {
 	if len(msg.Parts) == 0 {
 		return nil
 	}
-	body := map[string]any{
-		"chat_id": msg.ThreadID,
-		"text":    msg.Parts[0].Text,
-	}
+	return a.sendText(context.Background(), mustParseInt64(msg.ThreadID), msg.Parts[0].Text)
+}
+
+func (a *Adapter) sendText(ctx context.Context, chatID int64, text string) error {
+	body := map[string]any{"chat_id": chatID, "text": text}
 	payload, _ := json.Marshal(body)
-	resp, err := a.client.Post(
-		apiBase+a.token+"/sendMessage",
-		"application/json",
-		bytes.NewReader(payload),
-	)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		apiBase+a.token+"/sendMessage", bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := a.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("telegram: send: %w", err)
 	}
@@ -145,17 +176,22 @@ func (a *Adapter) Status() channels.AdapterStatus {
 	return channels.AdapterStatus{Connected: a.connected, Detail: "long-polling"}
 }
 
+func mustParseInt64(s string) int64 {
+	n, _ := strconv.ParseInt(s, 10, 64)
+	return n
+}
+
 // --- Telegram API types ---
 
 type update struct {
-	UpdateID int64    `json:"update_id"`
-	Message  *tgMsg   `json:"message"`
+	UpdateID int64  `json:"update_id"`
+	Message  *tgMsg `json:"message"`
 }
 
 type tgMsg struct {
-	Text string  `json:"text"`
-	From tgUser  `json:"from"`
-	Chat tgChat  `json:"chat"`
+	Text string `json:"text"`
+	From tgUser `json:"from"`
+	Chat tgChat `json:"chat"`
 }
 
 type tgUser struct {

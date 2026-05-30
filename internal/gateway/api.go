@@ -8,10 +8,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -141,8 +144,46 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	if err := c.BodyParser(&updates); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	updates.ID = id // ID cannot be changed via update
+	updates.ID         = id               // ID cannot be changed via update
 	updates.SourcePath = existing.SourcePath
+	updates.LoadedAt   = existing.LoadedAt
+
+	// Preserve fields the GUI doesn't render — prevents a Save from wiping them.
+	// Any field not exposed in the agent editor form must be copied here so that
+	// round-tripping through the GUI is safe and non-destructive.
+	if updates.Security == nil {
+		updates.Security = existing.Security
+	}
+	if updates.Builtins == nil {
+		updates.Builtins = existing.Builtins
+	}
+	if updates.Workflow == nil {
+		updates.Workflow = existing.Workflow
+	}
+	if updates.NotifyOnFailure == nil {
+		updates.NotifyOnFailure = existing.NotifyOnFailure
+	}
+	if updates.RunTimeout == "" {
+		updates.RunTimeout = existing.RunTimeout
+	}
+	if !updates.SystemTools {
+		updates.SystemTools = existing.SystemTools
+	}
+	if len(updates.ConfirmTools) == 0 {
+		updates.ConfirmTools = existing.ConfirmTools
+	}
+	if len(updates.Labels) == 0 {
+		updates.Labels = existing.Labels
+	}
+	if len(updates.Agents) == 0 {
+		updates.Agents = existing.Agents
+	}
+	if len(updates.Knowledge) == 0 {
+		updates.Knowledge = existing.Knowledge
+	}
+	if len(updates.Tags) == 0 {
+		updates.Tags = existing.Tags
+	}
 
 	dir := ""
 	if len(s.cfg.AgentDirs) > 0 {
@@ -686,9 +727,10 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	}
 	defer s.scheduler.FinishRun(id)
 
+	sessionID := fmt.Sprintf("manual-%s", id)
 	msg := message.Message{
 		ID:        uuid.New().String(),
-		SessionID: fmt.Sprintf("manual-%s", id),
+		SessionID: sessionID,
 		AgentID:   id,
 		Channel:   "http",
 		ThreadID:  "manual-trigger",
@@ -699,6 +741,14 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 		CreatedAt: time.Now().UTC(),
 	}
 
+	runStart := time.Now()
+	s.log.Info("manual trigger started",
+		zap.String("agent", id),
+		zap.String("session", sessionID),
+		zap.String("llm_provider", def.LLM.Provider),
+		zap.String("llm_model", def.LLM.Model),
+	)
+
 	// Decouple client connection drop from background execution. Use the
 	// agent's run_timeout — long-running tools (e.g. NotebookLM audio gen)
 	// would blow the old 120s ceiling.
@@ -706,7 +756,14 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	defer cancel()
 
 	reply, err := s.engine.Handle(ctx, msg)
+	elapsed := time.Since(runStart).Round(time.Millisecond)
 	if err != nil {
+		s.log.Error("manual trigger failed",
+			zap.String("agent", id),
+			zap.String("session", sessionID),
+			zap.Duration("elapsed", elapsed),
+			zap.Error(err),
+		)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
@@ -717,6 +774,18 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 			break
 		}
 	}
+	s.log.Info("manual trigger completed",
+		zap.String("agent", id),
+		zap.String("session", sessionID),
+		zap.Duration("elapsed", elapsed),
+		zap.Int("reply_len", len(replyText)),
+		zap.String("reply_preview", func() string {
+			if len(replyText) > 120 {
+				return replyText[:120] + "…"
+			}
+			return replyText
+		}()),
+	)
 	return c.JSON(fiber.Map{"result": replyText})
 }
 
@@ -1475,7 +1544,7 @@ func (s *Server) handleListProviders(c *fiber.Ctx) error {
 	}
 	// Known provider IDs the GUI should always offer (even when not yet
 	// configured), so users can pick them from a dropdown to add credentials.
-	known := []string{"ollama", "openai", "anthropic", "google"}
+	known := []string{"ollama", "openai", "anthropic", "google", "groq", "mistral", "openrouter"}
 	return c.JSON(fiber.Map{
 		"providers":        providers,
 		"default_provider": s.cfg.LLM.DefaultProvider,
@@ -1678,6 +1747,184 @@ func (s *Server) handleGetSkill(c *fiber.Ctx) error {
 		"body":          sk.Body,
 		"dir":           sk.Dir,
 		"resources":     sk.ResourceFiles(),
+	})
+}
+
+// handleProvisionAgenticSkill fetches a skill from agenticskills.io and
+// installs it into ~/.soulacy/skills/ — no restart required.
+//
+// Request:  POST /api/skills/provision-agenticskills
+//   Body:   { "url": "https://agenticskills.io/skills/frontend-design" }
+//           or { "slug": "frontend-design" }
+//
+// Response (success): { "ok": true, "slug": "...", "source": "org/repo@sha", "message": "..." }
+// Response (error):   { "ok": false, "error": "..." }
+//
+// Flow:
+//  1. Derive slug from the URL or the slug field.
+//  2. Fetch the agenticskills.io skill page HTML.
+//  3. Extract the "View on GitHub" blob URL via regex.
+//  4. Download the raw SKILL.md from raw.githubusercontent.com.
+//  5. Write to ~/.soulacy/skills/<slug>/SKILL.md.
+//  6. Hot-rescan via the Scan() method on the loader (if available).
+var githubBlobRe = regexp.MustCompile(`href="(https://github\.com/[^/]+/[^/]+/blob/[^/"]+/[^"]+/SKILL\.md)"`)
+
+func (s *Server) handleProvisionAgenticSkill(c *fiber.Ctx) error {
+	if s.skillLoader == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"ok": false, "error": "skill loader not initialised",
+		})
+	}
+
+	var body struct {
+		URL  string `json:"url"`
+		Slug string `json:"slug"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "error": "invalid JSON body"})
+	}
+
+	// Derive slug.
+	slug := strings.TrimSpace(body.Slug)
+	if slug == "" && body.URL != "" {
+		u, err := url.Parse(strings.TrimSpace(body.URL))
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "error": "invalid URL"})
+		}
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) < 2 || parts[0] != "skills" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+				"ok": false, "error": "URL must be https://agenticskills.io/skills/<slug>",
+			})
+		}
+		slug = parts[1]
+	}
+	if slug == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "error": "url or slug required"})
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	client := &http.Client{Timeout: 30 * time.Second}
+
+	// 1. Fetch agenticskills.io page.
+	pageURL := fmt.Sprintf("https://agenticskills.io/skills/%s", url.PathEscape(slug))
+	pageReq, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"ok": false, "error": err.Error()})
+	}
+	pageReq.Header.Set("User-Agent", "Soulacy/1.0 (+https://github.com/soulacy/soulacy)")
+
+	pageResp, err := client.Do(pageReq)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("agenticskills.io unreachable: %v", err),
+		})
+	}
+	defer pageResp.Body.Close()
+
+	if pageResp.StatusCode == http.StatusNotFound {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("skill %q not found on agenticskills.io", slug),
+		})
+	}
+	if pageResp.StatusCode >= 300 {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("agenticskills.io: HTTP %d", pageResp.StatusCode),
+		})
+	}
+
+	pageHTML, err := io.ReadAll(io.LimitReader(pageResp.Body, 2<<20)) // 2 MB cap
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"ok": false, "error": "failed to read page"})
+	}
+
+	// 2. Extract GitHub blob URL from page.
+	match := githubBlobRe.FindSubmatch(pageHTML)
+	if match == nil {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"ok":    false,
+			"error": "could not find SKILL.md GitHub source on agenticskills.io — the skill may not have a public GitHub source",
+		})
+	}
+	blobURL := string(match[1])
+
+	// 3. Convert blob URL → raw URL.
+	// https://github.com/{org}/{repo}/blob/{ref}/{path}
+	// → https://raw.githubusercontent.com/{org}/{repo}/{ref}/{path}
+	rawURL := strings.Replace(blobURL, "https://github.com/", "https://raw.githubusercontent.com/", 1)
+	rawURL = strings.Replace(rawURL, "/blob/", "/", 1)
+
+	rawReq, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"ok": false, "error": err.Error()})
+	}
+	rawResp, err := client.Do(rawReq)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("download SKILL.md: %v", err),
+		})
+	}
+	defer rawResp.Body.Close()
+
+	if rawResp.StatusCode >= 300 {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("GitHub: HTTP %d for SKILL.md", rawResp.StatusCode),
+		})
+	}
+
+	skillMD, err := io.ReadAll(io.LimitReader(rawResp.Body, 1<<20)) // 1 MB cap
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"ok": false, "error": "failed to read SKILL.md"})
+	}
+
+	// 4. Write to ~/.soulacy/skills/<slug>/SKILL.md.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"ok": false, "error": "cannot determine home directory",
+		})
+	}
+	skillDir := filepath.Join(home, ".soulacy", "skills", slug)
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("create skill dir: %v", err),
+		})
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), skillMD, 0o644); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("write SKILL.md: %v", err),
+		})
+	}
+
+	// 5. Hot-rescan (skills.Loader implements Scan(); use type assertion to
+	//    avoid adding the method to the runtime.SkillLoader interface).
+	if scanner, ok := s.skillLoader.(interface{ Scan() []error }); ok {
+		_ = scanner.Scan()
+	}
+
+	// Derive a friendly source label from the blob URL.
+	// e.g. "anthropics/skills@5be498e"
+	source := strings.TrimPrefix(blobURL, "https://github.com/")
+	if i := strings.Index(source, "/blob/"); i >= 0 {
+		repo := source[:i]
+		rest := source[i+len("/blob/"):]
+		sha := rest
+		if j := strings.Index(rest, "/"); j >= 0 {
+			sha = rest[:j]
+		}
+		if len(sha) > 8 {
+			sha = sha[:8]
+		}
+		source = repo + "@" + sha
+	}
+
+	return c.JSON(fiber.Map{
+		"ok":      true,
+		"slug":    slug,
+		"source":  source,
+		"message": fmt.Sprintf("Skill %q installed from %s.", slug, source),
 	})
 }
 

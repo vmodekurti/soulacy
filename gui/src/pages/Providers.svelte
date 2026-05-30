@@ -4,7 +4,7 @@
 
   let providers       = {}
   let defaultProvider = ''
-  let known           = []   // known provider ids the GUI offers (ollama/openai/anthropic/google)
+  let known           = []   // known provider ids the GUI offers
   let registered      = []   // currently-registered provider ids in the live router
   let models          = {}   // provider → model list
   let chosen          = {}   // provider → selected model (for Save)
@@ -24,16 +24,22 @@
   let saving   = false
 
   const KNOWN_BASES = {
-    openai:    'https://api.openai.com/v1',
-    anthropic: 'https://api.anthropic.com',
-    google:    'https://generativelanguage.googleapis.com',
-    ollama:    'http://localhost:11434',
+    openai:      'https://api.openai.com/v1',
+    anthropic:   'https://api.anthropic.com',
+    google:      'https://generativelanguage.googleapis.com',
+    ollama:      'http://localhost:11434',
+    groq:        'https://api.groq.com/openai/v1',
+    mistral:     'https://api.mistral.ai/v1',
+    openrouter:  'https://openrouter.ai/api/v1',
   }
   const KNOWN_MODELS = {
-    openai:    'gpt-4o-mini',
-    anthropic: 'claude-3-5-sonnet-latest',
-    google:    'gemini-2.5-flash',
-    ollama:    'llama3',
+    openai:      'gpt-4o-mini',
+    anthropic:   'claude-3-5-sonnet-latest',
+    google:      'gemini-2.5-flash',
+    ollama:      'llama3',
+    groq:        'llama-3.3-70b-versatile',
+    mistral:     'mistral-small-latest',
+    openrouter:  'meta-llama/llama-3.3-70b-instruct:free',
   }
 
   async function load() {

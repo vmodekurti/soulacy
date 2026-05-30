@@ -97,8 +97,11 @@ export const api = {
   },
 
   skills: {
-    list: ()     => apiFetch('/skills'),
-    get:  (name) => apiFetch(`/skills/${name}`),
+    list:             ()     => apiFetch('/skills'),
+    get:              (name) => apiFetch(`/skills/${name}`),
+    provisionAgenticSkills: (body) => apiFetch('/skills/provision-agenticskills', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
   },
 
   mcp: {

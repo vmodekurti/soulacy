@@ -34,7 +34,13 @@ memory:
     write_scopes:
         - session
     max_tokens: 40
-max_turns: 20
+max_turns: 30
 stream_reply: true
 enabled: true
 run_timeout: 15m
+# Opt into OS-level built-in tools (shell_exec, run_script, read_file,
+# write_file, list_dir, install_library). Requires runtime.allow_system_tools:
+# true in config.yaml (the default). System tools are ONLY offered on the HTTP
+# (web GUI) channel — bot channels (telegram, discord, slack, whatsapp) always
+# suppress them regardless of this flag.
+system_tools: true

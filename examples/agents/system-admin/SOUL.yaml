@@ -44,8 +44,8 @@ system_prompt: |
     4. When running long scripts, stream output if the tool supports it.
     5. Do not expose secrets or credentials in your replies.
 llm:
-    provider: ollama
-    model: llama3.3:70b
+    provider: google
+    model: gemini-flash-lite-latest
     temperature: 0.2
     max_tokens: 4096
 system_tools: true
@@ -56,7 +56,7 @@ memory:
     write_scopes:
         - session
     max_tokens: 40
-max_turns: 15
+max_turns: 30
 stream_reply: true
 enabled: true
 run_timeout: 10m
