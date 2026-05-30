@@ -13,9 +13,11 @@
     try {
       const res = await api.agents.list()
       agents = (res.agents || []).filter(a => a.enabled)
-      // Pre-select first agent only if nothing is selected yet
+      // Pre-select only if nothing is selected yet.
+      // Prefer the "system" agent; fall back to the first enabled agent.
       if (agents.length && !$chatAgentId) {
-        chatAgentId.set(agents[0].id)
+        const sys = agents.find(a => a.id === 'system')
+        chatAgentId.set(sys ? sys.id : agents[0].id)
       }
     } catch (e) { error = e.message }
   }

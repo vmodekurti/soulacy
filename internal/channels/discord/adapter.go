@@ -38,6 +38,7 @@ const (
 
 // Adapter connects to the Discord Gateway WebSocket.
 type Adapter struct {
+	id        string // "discord" for the primary bot; "discord-<agentID>" for extras
 	token     string
 	agentID   string
 	guildID   string
@@ -48,9 +49,17 @@ type Adapter struct {
 	stopOnce  sync.Once // guards close(stopCh) so Stop() is idempotent
 }
 
-// New creates a Discord adapter.
+// New creates a Discord adapter with the default channel ID "discord".
 func New(token, agentID, guildID string) *Adapter {
+	return NewWithID("discord", token, agentID, guildID)
+}
+
+// NewWithID creates a Discord adapter with a custom channel ID. Use when
+// running multiple bots — each bot needs a unique ID (e.g. "discord-system")
+// so the registry can route replies back to the correct bot.
+func NewWithID(id, token, agentID, guildID string) *Adapter {
 	return &Adapter{
+		id:      id,
 		token:   token,
 		agentID: agentID,
 		guildID: guildID,
@@ -59,7 +68,7 @@ func New(token, agentID, guildID string) *Adapter {
 	}
 }
 
-func (a *Adapter) ID() string   { return "discord" }
+func (a *Adapter) ID() string   { return a.id }
 func (a *Adapter) Name() string { return "Discord" }
 
 func (a *Adapter) Start(ctx context.Context, inbox chan<- message.Message) error {
@@ -172,9 +181,9 @@ func (a *Adapter) run(ctx context.Context) error {
 				}
 				msg := message.Message{
 					ID:        uuid.New().String(),
-					SessionID: fmt.Sprintf("discord-%s", dm.ChannelID),
+					SessionID: fmt.Sprintf("%s-%s", a.id, dm.ChannelID),
 					AgentID:   a.agentID,
-					Channel:   "discord",
+					Channel:   a.id, // adapter's own ID for correct multi-bot reply routing
 					ThreadID:  dm.ChannelID,
 					UserID:    dm.Author.ID,
 					Username:  dm.Author.Username,

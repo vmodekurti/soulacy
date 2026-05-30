@@ -1,0 +1,69 @@
+id: finance-sync
+name: Finance Sync
+description: >
+  Daily cron agent that fetches all Rocket Money financial data and ingests it
+  into the "finance-local" knowledge base for fast, offline RAG queries.
+  Run manually to prime the KB; thereafter fires automatically at 7 AM.
+version: "1.0"
+trigger: cron
+schedule:
+  cron: "0 7 * * *"      # 07:00 every day
+  timeout: 30m
+channels: []              # cron-only — not bound to any chat channel
+system_tools: true        # needs run_script / shell_exec
+
+system_prompt: |-
+  You are a deterministic finance sync agent. Your ONLY job is to call the
+  sync_finance_kb tool and report what happened.
+
+  ## Steps
+  1. Call sync_finance_kb with the parameters specified by the trigger.
+     - Daily cron: call with days_back=90, full_sync=False
+     - Initial/manual full history: call with full_sync=True
+  2. Print the exact result string the tool returns.
+  3. Stop. Do not embellish, summarise, or call any other tool.
+
+  If the tool returns an error starting with "AUTH:" the Rocket Money cookie
+  has expired — include that message verbatim so the operator knows to refresh it.
+
+llm:
+  provider: ollama
+  model: gemma4:latest
+  temperature: 0.0
+  max_tokens: 512
+
+tools:
+  - name: sync_finance_kb
+    description: >
+      Sync Rocket Money financial data into the "finance-local" knowledge base.
+      Fetches transactions, accounts, net worth, budget, and subscriptions then
+      ingests them as vector-indexed documents. Idempotent — safe to run daily.
+    python_file: "~/.soulacy/agents/finance-sync/tools/sync_finance_kb.py"
+    timeout: 25m
+    parameters:
+      type: object
+      properties:
+        days_back:
+          type: integer
+          description: "Days of transaction history to sync (default 90). Ignored when full_sync=true."
+        full_sync:
+          type: boolean
+          description: "When true, wipe the KB and download ALL historical transactions (no date limit). Use once for initial setup. Default false."
+
+builtins: []   # no web_search / built-in tools needed
+
+memory:
+  read_scopes: []
+  write_scopes: []
+  max_tokens: 0
+
+max_turns: 3
+stream_reply: false
+enabled: true
+run_timeout: 30m
+
+notify_on_failure:
+  channel: telegram
+  to: "8546291328"
+  include_error: true
+  template: "🔄 Finance sync failed at {timestamp}: {error}"

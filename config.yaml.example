@@ -1,0 +1,59 @@
+agent_dirs:
+    - examples/agents
+channels:
+    discord:
+        enabled: false
+    http:
+        enabled: true
+    slack:
+        enabled: false
+    telegram:
+        agent_id: hello-world
+        enabled: false
+        token: ""                          # Your Telegram bot token
+llm:
+    default_provider: ollama
+    providers:
+        anthropic:
+            api_key: "sk-ant-..."          # Your Anthropic API key
+            base_url: https://api.anthropic.com
+            model: claude-sonnet-4-6
+        groq:
+            api_key: "gsk_..."             # Your Groq API key
+            base_url: https://api.groq.com/openai/v1
+            model: qwen/qwen3-32b
+        ollama:
+            base_url: http://localhost:11434
+            model: llama3.3:70b
+log:
+    file: /tmp/soulacy.log
+    format: console
+    level: info
+mcp:
+    servers:
+        filesystem:
+            args:
+                - -y
+                - '@modelcontextprotocol/server-filesystem'
+                - /Users/yourname/Documents
+            command: npx
+            transport: stdio
+        rocketmoney:
+            args:
+                - /path/to/soulacy/mcp-servers/rocketmoney/start.sh
+            command: bash
+            env:
+                ROCKET_MONEY_COOKIE: ""    # Run: python3.11 mcp-servers/rocketmoney/extract_cookie.py
+            transport: stdio
+memory:
+    max_history: 50
+runtime:
+    default_max_turns: 30
+    max_concurrent_sessions: 100
+    python_bin: python3
+    tool_timeout: 30s
+server:
+    api_key: "sy_..."                      # Generate with: openssl rand -hex 32 | sed 's/^/sy_/'
+    gui_enabled: true
+    host: 127.0.0.1
+    port: 18789

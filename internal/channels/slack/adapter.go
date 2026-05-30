@@ -31,6 +31,7 @@ const slackAPI = "https://slack.com/api"
 
 // Adapter implements the Slack Socket Mode protocol.
 type Adapter struct {
+	id        string // "slack" for the primary bot; "slack-<agentID>" for extras
 	botToken  string
 	appToken  string
 	agentID   string
@@ -41,9 +42,17 @@ type Adapter struct {
 	stopOnce  sync.Once // guards close(stopCh) so Stop() is idempotent
 }
 
-// New creates a Slack adapter.
+// New creates a Slack adapter with the default channel ID "slack".
 func New(botToken, appToken, agentID string) *Adapter {
+	return NewWithID("slack", botToken, appToken, agentID)
+}
+
+// NewWithID creates a Slack adapter with a custom channel ID. Use when
+// running multiple bots — each bot needs a unique ID (e.g. "slack-system")
+// so the registry can route replies back to the correct bot.
+func NewWithID(id, botToken, appToken, agentID string) *Adapter {
 	return &Adapter{
+		id:       id,
 		botToken: botToken,
 		appToken: appToken,
 		agentID:  agentID,
@@ -52,7 +61,7 @@ func New(botToken, appToken, agentID string) *Adapter {
 	}
 }
 
-func (a *Adapter) ID() string   { return "slack" }
+func (a *Adapter) ID() string   { return a.id }
 func (a *Adapter) Name() string { return "Slack" }
 
 func (a *Adapter) Start(ctx context.Context, inbox chan<- message.Message) error {
@@ -149,9 +158,9 @@ func (a *Adapter) run(ctx context.Context, wsURL string) error {
 			if ep.Event.Type == "message" && ep.Event.BotID == "" {
 				msg := message.Message{
 					ID:        uuid.New().String(),
-					SessionID: fmt.Sprintf("slack-%s", ep.Event.Channel),
+					SessionID: fmt.Sprintf("%s-%s", a.id, ep.Event.Channel),
 					AgentID:   a.agentID,
-					Channel:   "slack",
+					Channel:   a.id, // adapter's own ID for correct multi-bot reply routing
 					ThreadID:  ep.Event.Channel,
 					UserID:    ep.Event.User,
 					Username:  ep.Event.User,

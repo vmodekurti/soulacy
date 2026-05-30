@@ -162,14 +162,11 @@ func (l *Logger) run() {
 	defer timer.Stop()
 
 	flush := func() {
-		if len(batch) == 0 {
-			return
-		}
-		metrics.ActionlogBatchSize.Observe(float64(len(batch)))
-		l.flush(batch)
-		batch = batch[:0]
-		metrics.ActionlogQueueDepth.Set(float64(len(l.queue)))
-		// reset timer for next flush window
+		// Always re-arm the timer first, regardless of whether the batch is
+		// empty. Previously the timer was only reset after a non-empty flush,
+		// so a timer-fire at startup (before any events arrived) would leave
+		// the timer permanently dead — all subsequent events would accumulate
+		// in the batch but never be written until the process exited.
 		if !timer.Stop() {
 			select {
 			case <-timer.C:
@@ -177,6 +174,14 @@ func (l *Logger) run() {
 			}
 		}
 		timer.Reset(batchFlushInterval)
+
+		if len(batch) == 0 {
+			return
+		}
+		metrics.ActionlogBatchSize.Observe(float64(len(batch)))
+		l.flush(batch)
+		batch = batch[:0]
+		metrics.ActionlogQueueDepth.Set(float64(len(l.queue)))
 	}
 
 	for {

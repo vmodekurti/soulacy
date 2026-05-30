@@ -9,7 +9,7 @@
 
 ---
 
-## Install
+### Install
 
 ### macOS — one line
 

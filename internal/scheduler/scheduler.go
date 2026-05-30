@@ -277,12 +277,37 @@ func (s *Scheduler) fire(agentID, triggerType string) {
 	ctx, cancel := context.WithTimeout(s.appCtx, timeout)
 	defer cancel()
 
-	if _, err := s.engine.Handle(ctx, msg); err != nil {
+	runStart := time.Now()
+	reply, err := s.engine.Handle(ctx, msg)
+	elapsed := time.Since(runStart).Round(time.Millisecond)
+	if err != nil {
 		s.log.Error("scheduled agent execution failed",
 			zap.String("agent", agentID),
+			zap.String("trigger", triggerType),
+			zap.Duration("elapsed", elapsed),
 			zap.Error(err),
 		)
+		return
 	}
+	replyText := ""
+	for _, p := range reply.Parts {
+		if p.Type == message.ContentText && p.Text != "" {
+			replyText = p.Text
+			break
+		}
+	}
+	s.log.Info("scheduled agent completed",
+		zap.String("agent", agentID),
+		zap.String("trigger", triggerType),
+		zap.Duration("elapsed", elapsed),
+		zap.Int("reply_len", len(replyText)),
+		zap.String("reply_preview", func() string {
+			if len(replyText) > 200 {
+				return replyText[:200] + "…"
+			}
+			return replyText
+		}()),
+	)
 }
 
 // Entries returns a snapshot of all active cron schedules.

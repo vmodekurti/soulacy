@@ -653,37 +653,151 @@ func run() error {
 	// Start optional channel adapters based on config
 	chanCfg := cfg.Channels
 
+	// ── Telegram ─────────────────────────────────────────────────────────────
+	// Supports two config shapes:
+	//
+	// Single-bot (legacy, backwards-compatible):
+	//   channels.telegram.token:   "..."
+	//   channels.telegram.agent_id: "system"
+	//
+	// Multi-bot (one adapter per agent, separate bot tokens):
+	//   channels.telegram.bots:
+	//     - token: "..."
+	//       agent_id: "system"
+	//       allowed_user_ids: [123]
+	//     - token: "..."
+	//       agent_id: "financial-agent"
+	//       allowed_user_ids: [123]
+	//
+	// Each bot gets a unique adapter ID: "telegram" for the primary (or first
+	// when multi-bot), "telegram-<agentID>" for subsequent bots. This lets the
+	// channel registry route outbound replies to the right bot.
 	if tgCfg, ok := chanCfg["telegram"]; ok {
 		if enabled, _ := tgCfg["enabled"].(bool); enabled {
-			token, _ := tgCfg["token"].(string)
-			agentID, _ := tgCfg["agent_id"].(string)
-			if token != "" {
-				tg := telegramchan.New(token, agentID)
-				chanReg.Register(tg)
+			// Multi-bot path: channels.telegram.bots is a list
+			if rawBots, hasBots := tgCfg["bots"]; hasBots {
+				if botList, ok := rawBots.([]any); ok {
+					for i, rawBot := range botList {
+						botMap, ok := rawBot.(map[string]any)
+						if !ok {
+							continue
+						}
+						token, _ := botMap["token"].(string)
+						agentID, _ := botMap["agent_id"].(string)
+						if token == "" {
+							continue
+						}
+						allowedIDs := parseTelegramAllowedIDs(botMap)
+						// Primary bot keeps the canonical "telegram" ID for backwards
+						// compatibility; additional bots get "telegram-<agentID>".
+						adapterID := "telegram"
+						if i > 0 {
+							adapterID = "telegram-" + sanitizeID(agentID)
+						}
+						tg := telegramchan.NewWithID(adapterID, token, agentID, allowedIDs)
+						chanReg.Register(tg)
+						log.Info("telegram bot registered",
+							zap.String("adapter_id", adapterID),
+							zap.String("agent_id", agentID))
+					}
+				}
+			} else {
+				// Single-bot (legacy) path
+				token, _ := tgCfg["token"].(string)
+				agentID, _ := tgCfg["agent_id"].(string)
+				if token != "" {
+					allowedIDs := parseTelegramAllowedIDs(tgCfg)
+					tg := telegramchan.New(token, agentID, allowedIDs)
+					chanReg.Register(tg)
+				}
 			}
 		}
 	}
 
+	// ── Discord ───────────────────────────────────────────────────────────────
+	// Same dual-mode as Telegram: single-bot (legacy) or multi-bot via `bots:`.
+	//   channels.discord.bots:
+	//     - token: "Bot ..."
+	//       agent_id: "system"
+	//       guild_id: ""
 	if dsCfg, ok := chanCfg["discord"]; ok {
 		if enabled, _ := dsCfg["enabled"].(bool); enabled {
-			token, _ := dsCfg["token"].(string)
-			agentID, _ := dsCfg["agent_id"].(string)
-			guildID, _ := dsCfg["guild_id"].(string)
-			if token != "" {
-				ds := discordchan.New(token, agentID, guildID)
-				chanReg.Register(ds)
+			if rawBots, hasBots := dsCfg["bots"]; hasBots {
+				if botList, ok := rawBots.([]any); ok {
+					for i, rawBot := range botList {
+						botMap, ok := rawBot.(map[string]any)
+						if !ok {
+							continue
+						}
+						token, _ := botMap["token"].(string)
+						agentID, _ := botMap["agent_id"].(string)
+						guildID, _ := botMap["guild_id"].(string)
+						if token == "" {
+							continue
+						}
+						adapterID := "discord"
+						if i > 0 {
+							adapterID = "discord-" + sanitizeID(agentID)
+						}
+						ds := discordchan.NewWithID(adapterID, token, agentID, guildID)
+						chanReg.Register(ds)
+						log.Info("discord bot registered",
+							zap.String("adapter_id", adapterID),
+							zap.String("agent_id", agentID))
+					}
+				}
+			} else {
+				token, _ := dsCfg["token"].(string)
+				agentID, _ := dsCfg["agent_id"].(string)
+				guildID, _ := dsCfg["guild_id"].(string)
+				if token != "" {
+					ds := discordchan.New(token, agentID, guildID)
+					chanReg.Register(ds)
+				}
 			}
 		}
 	}
 
+	// ── Slack ─────────────────────────────────────────────────────────────────
+	// Same dual-mode as Telegram: single-bot (legacy) or multi-bot via `bots:`.
+	//   channels.slack.bots:
+	//     - bot_token: "xoxb-..."
+	//       app_token: "xapp-..."
+	//       agent_id: "system"
 	if slCfg, ok := chanCfg["slack"]; ok {
 		if enabled, _ := slCfg["enabled"].(bool); enabled {
-			botToken, _ := slCfg["bot_token"].(string)
-			appToken, _ := slCfg["app_token"].(string)
-			agentID, _ := slCfg["agent_id"].(string)
-			if botToken != "" && appToken != "" {
-				sl := slackchan.New(botToken, appToken, agentID)
-				chanReg.Register(sl)
+			if rawBots, hasBots := slCfg["bots"]; hasBots {
+				if botList, ok := rawBots.([]any); ok {
+					for i, rawBot := range botList {
+						botMap, ok := rawBot.(map[string]any)
+						if !ok {
+							continue
+						}
+						botToken, _ := botMap["bot_token"].(string)
+						appToken, _ := botMap["app_token"].(string)
+						agentID, _ := botMap["agent_id"].(string)
+						if botToken == "" || appToken == "" {
+							continue
+						}
+						adapterID := "slack"
+						if i > 0 {
+							adapterID = "slack-" + sanitizeID(agentID)
+						}
+						sl := slackchan.NewWithID(adapterID, botToken, appToken, agentID)
+						chanReg.Register(sl)
+						log.Info("slack bot registered",
+							zap.String("adapter_id", adapterID),
+							zap.String("agent_id", agentID))
+					}
+				}
+			} else {
+				botToken, _ := slCfg["bot_token"].(string)
+				appToken, _ := slCfg["app_token"].(string)
+				agentID, _ := slCfg["agent_id"].(string)
+				if botToken != "" && appToken != "" {
+					sl := slackchan.New(botToken, appToken, agentID)
+					chanReg.Register(sl)
+				}
 			}
 		}
 	}
@@ -984,6 +1098,45 @@ func run() error {
 	)
 
 	return srv.Listen(ctx)
+}
+
+// parseTelegramAllowedIDs extracts the allowed_user_ids list from a channel
+// config block (works for both single-bot and multi-bot map shapes).
+func parseTelegramAllowedIDs(m map[string]any) []int64 {
+	raw, ok := m["allowed_user_ids"]
+	if !ok {
+		return nil
+	}
+	var out []int64
+	if list, ok := raw.([]any); ok {
+		for _, item := range list {
+			switch v := item.(type) {
+			case int64:
+				out = append(out, v)
+			case float64:
+				out = append(out, int64(v))
+			case int:
+				out = append(out, int64(v))
+			}
+		}
+	}
+	return out
+}
+
+// sanitizeID replaces characters that are not safe for adapter IDs or log
+// fields with hyphens. Keeps letters, digits, hyphens, and underscores.
+func sanitizeID(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
 }
 
 // isLoopbackHost returns true if `host` is one of the well-known loopback

@@ -58,56 +58,133 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 
 	// Translate ChatMessage list → Gemini contents + system_instruction.
+	//
+	// Gemini enforces strict turn alternation:
+	//   user → model → user → model → …
+	// When the model emits function calls, ALL tool results must arrive in a
+	// SINGLE user turn immediately after (one functionResponse part per call).
+	// Emitting each tool result as its own separate user turn violates this and
+	// produces a 400 "function call turn comes immediately after a user turn".
 	var systemPrompt string
 	contents := make([]map[string]any, 0, len(req.Messages))
 
-	for _, m := range req.Messages {
+	for i := 0; i < len(req.Messages); {
+		m := req.Messages[i]
 		switch m.Role {
 		case "system":
 			if systemPrompt != "" {
 				systemPrompt += "\n\n"
 			}
 			systemPrompt += m.Content
+			i++
 		case "user":
+			text := m.Content
+			if text == "" {
+				text = "." // Gemini rejects empty text parts
+			}
 			contents = append(contents, map[string]any{
 				"role":  "user",
-				"parts": []map[string]any{{"text": m.Content}},
+				"parts": []map[string]any{{"text": text}},
 			})
+			i++
 		case "assistant":
 			parts := []map[string]any{}
 			if m.Content != "" {
 				parts = append(parts, map[string]any{"text": m.Content})
 			}
 			for _, tc := range m.ToolCalls {
-				parts = append(parts, map[string]any{
+				part := map[string]any{
 					"functionCall": map[string]any{
 						"name": tc.Name,
 						"args": tc.Arguments,
 					},
+				}
+				// Gemini 2.5 thinking models: thoughtSignature is a Part-level
+				// field (not nested inside functionCall). Must be echoed back
+				// verbatim or Gemini returns 400 INVALID_ARGUMENT.
+				if tc.ThoughtSignature != "" {
+					part["thoughtSignature"] = tc.ThoughtSignature
+				}
+				parts = append(parts, part)
+			}
+			// Skip turns with no parts — Gemini rejects "parts": [].
+			if len(parts) > 0 {
+				contents = append(contents, map[string]any{
+					"role":  "model",
+					"parts": parts,
 				})
 			}
-			contents = append(contents, map[string]any{
-				"role":  "model",
-				"parts": parts,
-			})
+			i++
 		case "tool":
-			contents = append(contents, map[string]any{
-				"role": "user",
-				"parts": []map[string]any{{
+			// Collect ALL consecutive tool messages into one user turn so
+			// Gemini sees a single functionResponse batch, not N separate turns.
+			parts := []map[string]any{}
+			for i < len(req.Messages) && req.Messages[i].Role == "tool" {
+				tm := req.Messages[i]
+				parts = append(parts, map[string]any{
 					"functionResponse": map[string]any{
-						"name": m.Name,
+						"name": tm.Name,
 						"response": map[string]any{
-							"name":    m.Name,
-							"content": m.Content,
+							"name":    tm.Name,
+							"content": tm.Content,
 						},
 					},
-				}},
+				})
+				i++
+			}
+			contents = append(contents, map[string]any{
+				"role":  "user",
+				"parts": parts,
 			})
+		default:
+			i++
 		}
+	}
+
+	// Post-process contents to satisfy Gemini's strict alternation rules:
+	//   1. Merge consecutive same-role turns into one (two model turns in a row
+	//      from e.g. a thinking text turn + tool-call turn cause a 400).
+	//   2. Ensure the sequence starts with a user turn (Gemini rejects sequences
+	//      that open with a model turn).
+	if len(contents) > 0 {
+		merged := make([]map[string]any, 0, len(contents))
+		for _, turn := range contents {
+			if len(merged) == 0 {
+				merged = append(merged, turn)
+				continue
+			}
+			last := merged[len(merged)-1]
+			if last["role"] == turn["role"] {
+				// Append parts from this turn into the previous same-role turn.
+				if ep, ok := last["parts"].([]map[string]any); ok {
+					if np, ok2 := turn["parts"].([]map[string]any); ok2 {
+						last["parts"] = append(ep, np...)
+					}
+				}
+			} else {
+				merged = append(merged, turn)
+			}
+		}
+		// Gemini requires the first turn to be from the user.
+		if merged[0]["role"] != "user" {
+			merged = append([]map[string]any{
+				{"role": "user", "parts": []map[string]any{{"text": "."}}},
+			}, merged...)
+		}
+		contents = merged
 	}
 
 	genCfg := map[string]any{
 		"temperature": req.Temperature,
+		// Disable thinking for Gemini 2.5 models. When thinking is enabled the
+		// model attaches a thoughtSignature to each functionCall part; that
+		// signature must be echoed back verbatim in subsequent turns or the API
+		// returns 400. Disabling thinking sidesteps this entirely for tool-use
+		// agents. Re-enable (remove this block) once round-trip signature
+		// handling is production-hardened.
+		"thinkingConfig": map[string]any{
+			"thinkingBudget": 0,
+		},
 	}
 	if req.MaxTokens > 0 {
 		genCfg["maxOutputTokens"] = req.MaxTokens
@@ -145,7 +222,10 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		body["tools"] = []map[string]any{{"functionDeclarations": funcs}}
 	}
 
-	payload, _ := json.Marshal(body)
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("google: marshal request: %w", err)
+	}
 
 	// Use the x-goog-api-key header rather than a ?key=... URL param so the
 	// key can't end up in any access log along the outbound chain.
@@ -167,6 +247,9 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 
 	if resp.StatusCode >= 300 {
 		bodyBytes, _ := io.ReadAll(resp.Body)
+		if len(bodyBytes) == 0 {
+			return nil, fmt.Errorf("google: http %d (empty response body — request may be malformed or too large)", resp.StatusCode)
+		}
 		return nil, fmt.Errorf("google: http %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 
@@ -174,8 +257,13 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		Candidates []struct {
 			Content struct {
 				Parts []struct {
-					Text         string `json:"text"`
-					FunctionCall *struct {
+					Text    string `json:"text"`
+					Thought bool   `json:"thought"` // internal reasoning — skip in visible content
+					// thoughtSignature lives on the Part, not inside functionCall.
+					// Gemini 2.5 thinking models attach it here and require it
+					// to be echoed back at the same level in conversation history.
+					ThoughtSignature string `json:"thoughtSignature"`
+					FunctionCall     *struct {
 						Name string         `json:"name"`
 						Args map[string]any `json:"args"`
 					} `json:"functionCall,omitempty"`
@@ -200,6 +288,10 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 
 	for i, part := range result.Candidates[0].Content.Parts {
+		// Skip internal thought parts — they are not user-visible text.
+		if part.Thought {
+			continue
+		}
 		if part.Text != "" {
 			if r.Content != "" {
 				r.Content += "\n"
@@ -208,9 +300,10 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		}
 		if part.FunctionCall != nil {
 			r.ToolCalls = append(r.ToolCalls, message.ToolCall{
-				ID:        fmt.Sprintf("call_%d_%s", i, part.FunctionCall.Name),
-				Name:      part.FunctionCall.Name,
-				Arguments: part.FunctionCall.Args,
+				ID:               fmt.Sprintf("call_%d_%s", i, part.FunctionCall.Name),
+				Name:             part.FunctionCall.Name,
+				Arguments:        part.FunctionCall.Args,
+				ThoughtSignature: part.ThoughtSignature, // on the Part, not inside FunctionCall
 			})
 		}
 	}
@@ -269,23 +362,44 @@ func (p *GeminiProvider) Models(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// sanitizeSchemaForGemini strips JSON Schema constructs Gemini doesn't accept:
-// $schema, additionalProperties (in some cases), and any non-allowlisted keys.
-// This is permissive — we just drop the obvious offenders. Most user-authored
-// schemas pass through unchanged.
+// sanitizeSchemaForGemini strips JSON Schema constructs Gemini doesn't accept
+// and repairs the required/properties contract that Gemini enforces strictly:
+// every name in `required` must exist as a key in `properties`.
+//
+// Key subtlety: `properties` is NOT a schema itself — it maps property NAMES
+// to sub-schemas. We must NOT recursively call sanitizeSchemaForGemini on the
+// properties map as a whole (that would treat property names as schema keywords
+// and strip them). Instead we iterate property names, sanitize each sub-schema,
+// and re-assemble.
 func sanitizeSchemaForGemini(s map[string]any) map[string]any {
 	if s == nil {
 		return nil
 	}
-	out := make(map[string]any, len(s))
 	allowed := map[string]bool{
 		"type": true, "format": true, "description": true, "nullable": true,
 		"enum": true, "items": true, "properties": true, "required": true,
 		"minimum": true, "maximum": true, "minItems": true, "maxItems": true,
 		"minLength": true, "maxLength": true, "pattern": true,
 	}
+
+	out := make(map[string]any, len(s))
 	for k, v := range s {
 		if !allowed[k] {
+			continue
+		}
+		if k == "properties" {
+			// Preserve property names; only sanitize their sub-schemas.
+			if propsMap, ok := v.(map[string]any); ok {
+				sanitized := make(map[string]any, len(propsMap))
+				for propName, propSchema := range propsMap {
+					if sm, ok := propSchema.(map[string]any); ok {
+						sanitized[propName] = sanitizeSchemaForGemini(sm)
+					} else {
+						sanitized[propName] = propSchema
+					}
+				}
+				out["properties"] = sanitized
+			}
 			continue
 		}
 		switch vv := v.(type) {
@@ -305,5 +419,26 @@ func sanitizeSchemaForGemini(s map[string]any) map[string]any {
 			out[k] = v
 		}
 	}
+
+	// Gemini rejects `required` entries whose names are absent from `properties`.
+	// Filter to only the intersection.
+	if props, hasProps := out["properties"].(map[string]any); hasProps {
+		if req, hasReq := out["required"].([]any); hasReq {
+			filtered := make([]any, 0, len(req))
+			for _, r := range req {
+				if name, ok := r.(string); ok {
+					if _, defined := props[name]; defined {
+						filtered = append(filtered, name)
+					}
+				}
+			}
+			if len(filtered) > 0 {
+				out["required"] = filtered
+			} else {
+				delete(out, "required")
+			}
+		}
+	}
+
 	return out
 }

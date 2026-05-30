@@ -28,8 +28,9 @@ var (
 //   - MaxIdleConnsPerHost: 64  (vs default 2)
 //   - MaxConnsPerHost:     0   (unlimited; flow control is upstream)
 //   - IdleConnTimeout:    90s  (Go default)
-//   - ResponseHeaderTimeout: 60s — protects against a stuck provider that
-//     accepts the connection but never returns headers.
+//   - ResponseHeaderTimeout: 120s — protects against a stuck provider that
+//     accepts the connection but never returns headers. 120s gives Ollama
+//     enough runway to load a model cold before the first token streams.
 func SharedTransport() *http.Transport {
 	sharedTransportOnce.Do(func() {
 		// Start from a clone of DefaultTransport so we inherit sane defaults
@@ -44,7 +45,7 @@ func SharedTransport() *http.Transport {
 		t.MaxIdleConnsPerHost = 64
 		t.MaxConnsPerHost = 0
 		t.IdleConnTimeout = 90 * time.Second
-		t.ResponseHeaderTimeout = 60 * time.Second
+		t.ResponseHeaderTimeout = 120 * time.Second
 		sharedTransport = t
 	})
 	return sharedTransport

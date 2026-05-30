@@ -262,6 +262,11 @@ type Session struct {
 	// hot-reloaded def picks up its new catalogs on the next inbound
 	// message (vs. the next process restart).
 	cachedPrefix string
+
+	// PassphraseVerified tracks whether the user has provided the correct
+	// passphrase for agents that have security.passphrase set. Enforced in
+	// Go before the LLM is invoked — cannot be bypassed by prompt injection.
+	PassphraseVerified bool
 }
 
 // NewEngine creates a new agent execution engine.
@@ -527,11 +532,18 @@ func (e *Engine) logAudit(ctx context.Context, def *agent.Definition, call messa
 func (e *Engine) Knowledge() *knowledge.Service { return e.knowledge }
 
 // Builtins returns a copy of the Go-native built-in tools (web_search,
-// read_skill, …). Used by the gateway's /tool-catalog endpoint to advertise
-// what's available to the Builder and the Agents Edit UI.
+// read_skill, …) plus the system tools (shell_exec, run_script, …).
+// Used by the gateway's /tool-catalog endpoint to advertise what's available
+// to the Builder and the Agents Edit UI.
+// System tools are listed in the catalog regardless of channel; they are only
+// actually offered at runtime when the three-way guard in allToolSchemas passes.
 func (e *Engine) Builtins() []BuiltinTool {
 	out := make([]BuiltinTool, len(e.builtins))
 	copy(out, e.builtins)
+	// Include system tools in the catalog so the GUI can display them.
+	if e.allowSystemTools {
+		out = append(out, e.buildSystemTools()...)
+	}
 	return out
 }
 
@@ -587,12 +599,9 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 		tools = append(tools, e.buildSemanticMemoryBuiltin())
 	}
 
-	// System tools — shell_exec, run_script, install_library, read_file,
-	// write_file, list_dir. Available to every agent when the server has
-	// runtime.allow_system_tools: true (the default). No per-agent opt-in needed.
-	if e.allowSystemTools {
-		tools = append(tools, e.buildSystemTools()...)
-	}
+	// System tools are NOT pre-built into e.builtins — they are injected
+	// per-request in allToolSchemas, gated by both def.SystemTools and the
+	// inbound channel. See allToolSchemas for the enforcement logic.
 
 	return tools
 }
@@ -1746,6 +1755,52 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// Retrieve or create session
 	sess := e.getOrCreateSession(msg.SessionID, msg.AgentID)
 
+	// ── Passphrase gate ───────────────────────────────────────────────────────
+	// Enforced in Go before the LLM is ever invoked. The model cannot bypass
+	// this check regardless of prompt injection or instruction following.
+	if sec := def.Security; sec != nil && sec.Passphrase != "" {
+		sess.mu.Lock()
+		verified := sess.PassphraseVerified
+		sess.mu.Unlock()
+
+		userText := flattenParts(msg.Parts)
+		if !verified {
+			if userText == sec.Passphrase {
+				// Correct passphrase — mark session as verified and acknowledge.
+				sess.mu.Lock()
+				sess.PassphraseVerified = true
+				sess.mu.Unlock()
+				reply = message.Message{
+					ID:        msg.ID + "-auth",
+					SessionID: msg.SessionID,
+					AgentID:   msg.AgentID,
+					Channel:   msg.Channel,
+					ThreadID:  msg.ThreadID,
+					Role:      message.RoleAssistant,
+					Parts:     message.Text("✅ Access granted. How can I help you?"),
+					CreatedAt: time.Now().UTC(),
+				}
+				return reply, nil
+			}
+			// Wrong or missing passphrase — challenge without invoking the LLM.
+			prompt := sec.PassphrasePrompt
+			if prompt == "" {
+				prompt = "🔒 Please provide your access passphrase to continue."
+			}
+			reply = message.Message{
+				ID:        msg.ID + "-auth",
+				SessionID: msg.SessionID,
+				AgentID:   msg.AgentID,
+				Channel:   msg.Channel,
+				ThreadID:  msg.ThreadID,
+				Role:      message.RoleAssistant,
+				Parts:     message.Text(prompt),
+				CreatedAt: time.Now().UTC(),
+			}
+			return reply, nil
+		}
+	}
+
 	// Persist inbound message to memory
 	_ = e.memory.Write(memory.Entry{
 		AgentID: msg.AgentID, SessionID: msg.SessionID,
@@ -1768,8 +1823,9 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// Build context messages
 	chatMsgs := e.buildContext(def, sess, msg)
 
-	// Build tool schemas for this agent (Python tools + opt-in Go built-ins)
-	tools := e.allToolSchemas(def)
+	// Build tool schemas for this agent (Python tools + opt-in Go built-ins).
+	// Pass the inbound channel so system tools are gated to HTTP-only.
+	tools := e.allToolSchemas(def, msg.Channel)
 
 	// Auto-delegate: when SOUL.yaml sets `llm.tool_choice: agent__<id>` and
 	// `<id>` is one of the declared peers, do the peer call HERE before the
@@ -2612,7 +2668,14 @@ print(result if isinstance(result, str) else json.dumps(result))
 // Go tools. The skill built-ins (read_skill, read_skill_file) are only offered
 // when the agent has opted into skills (def.Skills non-empty), so agents that
 // don't use skills aren't tempted to call them.
-func (e *Engine) allToolSchemas(def *agent.Definition) []llm.ToolSchema {
+//
+// channel is the inbound message's Channel field ("http", "telegram", etc.).
+// System tools (shell_exec, run_script, …) are only offered when ALL three
+// conditions hold:
+//   1. runtime.allow_system_tools = true  (server-level permit)
+//   2. def.SystemTools = true             (per-agent opt-in)
+//   3. channel == "http"                  (local web GUI only — never on bot channels)
+func (e *Engine) allToolSchemas(def *agent.Definition, channel string) []llm.ToolSchema {
 	schemas := make([]llm.ToolSchema, 0, len(def.Tools)+len(e.builtins))
 
 	// Python tools defined in the agent's SOUL.yaml
@@ -2683,6 +2746,23 @@ func (e *Engine) allToolSchemas(def *agent.Definition) []llm.ToolSchema {
 				Name:        pt.Name,
 				Description: pt.Description,
 				Parameters:  pt.Parameters,
+			})
+		}
+	}
+
+	// System tools — shell_exec, run_script, install_library, read_file,
+	// write_file, list_dir. Three-way guard:
+	//   (1) server must allow system tools (runtime.allow_system_tools)
+	//   (2) agent must opt in (def.SystemTools: true in SOUL.yaml)
+	//   (3) request must come via the local HTTP/web channel
+	// Bot channels (telegram, discord, slack, whatsapp) are ALWAYS excluded —
+	// this cannot be overridden by agent config alone.
+	if e.allowSystemTools && def.SystemTools && channel == "http" {
+		for _, st := range e.buildSystemTools() {
+			schemas = append(schemas, llm.ToolSchema{
+				Name:        st.Name,
+				Description: st.Description,
+				Parameters:  st.Parameters,
 			})
 		}
 	}

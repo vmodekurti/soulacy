@@ -79,6 +79,21 @@ type LLMConfig struct {
 	AllowedProviders []string `yaml:"allowed_providers,omitempty" json:"allowed_providers,omitempty"`
 }
 
+// SecurityConfig holds access-control settings for an agent.
+// All checks are enforced in Go before the LLM is invoked — they cannot be
+// overridden by prompt injection or model behavior.
+type SecurityConfig struct {
+	// Passphrase, when non-empty, requires every new session to present this
+	// exact string before the agent will answer any message. The engine tracks
+	// verified sessions in memory; once verified the check is not repeated for
+	// the remainder of that session. Comparison is case-sensitive.
+	Passphrase string `yaml:"passphrase,omitempty" json:"passphrase,omitempty"`
+
+	// PassphrasePrompt is the message shown to unverified users.
+	// Defaults to "🔒 Please provide your access passphrase to continue."
+	PassphrasePrompt string `yaml:"passphrase_prompt,omitempty" json:"passphrase_prompt,omitempty"`
+}
+
 // ToolDef describes a tool the agent can invoke.
 type ToolDef struct {
 	Name        string         `yaml:"name"                   json:"name"`
@@ -218,6 +233,11 @@ type Definition struct {
 	// reply target — for those you must set NotifyOnFailure explicitly or
 	// the failure is logged silently.
 	NotifyOnFailure *NotifyOnFailure `yaml:"notify_on_failure,omitempty" json:"notify_on_failure,omitempty"`
+
+	// Security configures access control for this agent independent of the LLM.
+	// When Passphrase is non-empty the engine enforces it in Go before the LLM
+	// ever sees the message — no model instruction can bypass this gate.
+	Security *SecurityConfig `yaml:"security,omitempty" json:"security,omitempty"`
 
 	// Workflow, when set, declares a multi-step DAG for this agent. The runtime
 	// executes steps sequentially, checkpointing state after each step, and can

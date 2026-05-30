@@ -74,7 +74,7 @@ tools:
         Audio Overview, then send the notebook URL to the given Telegram chat.
         Blocks for 5–10 minutes while NotebookLM renders the podcast. Returns
         a short status string.
-      python_file: ~/.soulacy/tools/ai_daily_pipeline.py
+      python_file: ~/.soulacy/agents/ai-article-podcast-agent/tools/ai_daily_pipeline.py
       parameters:
         properties:
             chat_id:

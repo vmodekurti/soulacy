@@ -529,6 +529,7 @@ func (s *Server) buildApp() *fiber.App {
 	// Skills (Agent Skills format — agentskills.io)
 	api.Get("/skills", s.rbacMW(rbac.ResourceSkills, rbac.ActionRead), s.handleListSkills)
 	api.Get("/skills/:name", s.rbacMW(rbac.ResourceSkills, rbac.ActionRead), s.handleGetSkill)
+	api.Post("/skills/provision-agenticskills", s.rbacMW(rbac.ResourceSkills, rbac.ActionWrite), s.handleProvisionAgenticSkill)
 
 	// MCP (Model Context Protocol) — configured external servers + their tools
 	api.Get("/mcp", s.rbacMW(rbac.ResourceMCP, rbac.ActionRead), s.handleListMCP)
