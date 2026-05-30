@@ -61,5 +61,8 @@ build-and-restart.command
 reinstall.sh
 session*.command
 
+# ── Agent configs (installation-specific, never commit) ──────────────────────
+examples/agents/
+
 # ── Legacy dir ────────────────────────────────────────────────────────────────
 .clawstack/
