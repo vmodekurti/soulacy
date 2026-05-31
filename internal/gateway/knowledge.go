@@ -20,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/soulacy/soulacy/internal/knowledge"
@@ -148,6 +149,33 @@ func (s *Server) handleListKnowledgeDocuments(c *fiber.Ctx) error {
 // handleIngestDocument adds a document to a KB. Accepts either:
 //   - JSON  { "title": "...", "source": "...", "content": "..." }
 //   - multipart form: file field "file" (filename used as title/source).
+//
+// Parent-child chunking:
+//
+// To maximise retrieval recall without inflating context windows, documents are
+// chunked at two granularities:
+//
+//   - Parent chunks (context windows): ~4× chunk_size characters each. These
+//     are stored in the chunks table but carry NO embedding and are never
+//     inserted into the vec0 or FTS5 tables. They exist purely to provide a
+//     wider excerpt to the LLM after a child retrieval hit. Parents have no
+//     parent_chunk_id (NULL).
+//
+//   - Child chunks (retrieval windows): chunk_size characters each, with
+//     chunk_overlap overlap. These are embedded and inserted into both vec0
+//     (for KNN) and chunks_fts (for BM25). Each child references the parent
+//     that covers it via parent_chunk_id.
+//
+// Parent assignment uses character midpoint: for each child chunk the handler
+// computes the rune offset of its midpoint within the full document text and
+// advances a cursor through the cumulative rune lengths of the parent chunks
+// until it finds the one whose range covers that midpoint. This is O(n) in the
+// number of chunks and requires only the pre-computed parent end-rune positions.
+//
+// At query time, Store.Search resolves the parent via a LEFT JOIN and returns
+// parent.content (the wide window) rather than child.content (the narrow one),
+// giving the LLM sufficient surrounding context without embedding the full
+// parent text.
 func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 	svc := s.engine.Knowledge()
 	if svc == nil {
@@ -226,11 +254,6 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "document produced no extractable text"})
 	}
 
-	pieces := knowledge.ChunkText(text, kb.ChunkSize, kb.ChunkOverlap)
-	if len(pieces) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "no chunks produced (empty document?)"})
-	}
-
 	embedder := svc.Embedders.Get(kb.EmbeddingProvider)
 	if embedder == nil {
 		return c.Status(fiber.StatusFailedDependency).JSON(fiber.Map{
@@ -238,16 +261,30 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		})
 	}
 
-	// Embed in batches to avoid huge payloads on big files.
+	// Parent chunks: large windows for LLM context (returned to agent after retrieval).
+	parentSize := kb.ChunkSize * 4
+	if parentSize < 1 {
+		parentSize = 4000
+	}
+	parentTexts := knowledge.ChunkText(text, parentSize, kb.ChunkOverlap*2)
+
+	// Child chunks: smaller windows for embedding/retrieval.
+	childTexts := knowledge.ChunkText(text, kb.ChunkSize, kb.ChunkOverlap)
+
+	if len(childTexts) == 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "no chunks produced (empty document?)"})
+	}
+
+	// Embed only child chunks in batches to avoid huge payloads on big files.
 	const batchSize = 64
-	vecs := make([][]float32, 0, len(pieces))
-	for i := 0; i < len(pieces); i += batchSize {
+	vecs := make([][]float32, 0, len(childTexts))
+	for i := 0; i < len(childTexts); i += batchSize {
 		end := i + batchSize
-		if end > len(pieces) {
-			end = len(pieces)
+		if end > len(childTexts) {
+			end = len(childTexts)
 		}
-		ctx, cancel := context.WithCancel(c.Context())
-		batch, eerr := embedder.Embed(ctx, kb.EmbeddingModel, pieces[i:end])
+		ctx2, cancel := context.WithCancel(c.Context())
+		batch, eerr := embedder.Embed(ctx2, kb.EmbeddingModel, childTexts[i:end])
 		cancel()
 		if eerr != nil {
 			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
@@ -256,15 +293,44 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		}
 		vecs = append(vecs, batch...)
 	}
-	if len(vecs) != len(pieces) {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"error": fmt.Sprintf("embedder returned %d vectors for %d chunks", len(vecs), len(pieces)),
-		})
+
+	// Pre-assign UUIDs for parent chunks so children can reference them.
+	parentIDs := make([]string, len(parentTexts))
+	for i := range parentTexts {
+		parentIDs[i] = uuid.New().String()
 	}
 
-	chunks := make([]knowledge.Chunk, len(pieces))
-	for i, p := range pieces {
-		chunks[i] = knowledge.Chunk{Content: p, Vector: vecs[i]}
+	// Assign each child to the parent whose character range covers the child's midpoint.
+	// Track cumulative rune positions for parent boundaries.
+	parentEndRunes := make([]int, len(parentTexts))
+	{
+		pos := 0
+		for i, p := range parentTexts {
+			pos += len([]rune(p))
+			parentEndRunes[i] = pos
+		}
+	}
+
+	allChunks := make([]knowledge.Chunk, 0, len(parentTexts)+len(childTexts))
+	// Add parent chunks first (no vector — zero-length Vector means no vec insert).
+	for i, pt := range parentTexts {
+		allChunks = append(allChunks, knowledge.Chunk{ID: parentIDs[i], Content: pt})
+	}
+	// Add child chunks, each linked to its parent.
+	childRunePos := 0
+	parentIdx := 0
+	for i, ct := range childTexts {
+		cr := len([]rune(ct))
+		mid := childRunePos + cr/2
+		for parentIdx < len(parentEndRunes)-1 && mid > parentEndRunes[parentIdx] {
+			parentIdx++
+		}
+		allChunks = append(allChunks, knowledge.Chunk{
+			Content:       ct,
+			ParentChunkID: parentIDs[parentIdx],
+			Vector:        vecs[i],
+		})
+		childRunePos += cr
 	}
 
 	doc, err := svc.Store.AddDocument(kb, knowledge.Document{
@@ -272,14 +338,14 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		Source:   source,
 		MIMEType: mimeType,
 		ByteSize: int64(len(data)),
-	}, chunks)
+	}, allChunks)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	s.log.Info("knowledge: doc ingested",
 		zap.String("kb", kb.Name),
 		zap.String("title", title),
-		zap.Int("chunks", len(chunks)),
+		zap.Int("chunks", len(allChunks)),
 	)
 	return c.Status(fiber.StatusCreated).JSON(doc)
 }

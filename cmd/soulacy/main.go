@@ -180,16 +180,25 @@ func run() error {
 	}
 
 	// ── Security guardrail ──────────────────────────────────────────────────
-	// PRODUCTION_AUDIT → CRITICAL/Security: a default-open gateway bound to
-	// a non-loopback address with no API key exposes agent/memory/config CRUD
-	// to anything on the LAN. Refuse to start in that combination — operators
-	// must EITHER set an API key OR explicitly bind to 127.0.0.1/::1.
+	// Behaviour change: was hard-block, now warn-only.
+	//
+	// Previously, starting with a non-loopback host and no API key caused the
+	// process to exit immediately with a fatal error. This turned out to be too
+	// aggressive for a common and legitimate deployment pattern: a VPS that
+	// binds on 0.0.0.0 with nginx/Caddy/Traefik sitting in front, enforcing
+	// TLS and authentication at the proxy layer. Those operators were forced to
+	// set a meaningless api_key (e.g. "disabled") just to get past the check,
+	// which is arguably worse than the warning.
+	//
+	// The current behaviour prints a prominent stderr warning but allows startup
+	// to continue. The warning is intentionally noisy (emoji, multi-line) so it
+	// is visible in service manager logs and cannot be easily missed.
 	if cfg.Server.APIKey == "" && !isLoopbackHost(cfg.Server.Host) {
-		return fmt.Errorf(
-			"refusing to start: server.host=%q binds to a non-loopback address "+
-				"with no server.api_key. Either set an API key in config.yaml "+
-				"or bind to 127.0.0.1. See docs/PRODUCTION_AUDIT.md for the "+
-				"rationale", cfg.Server.Host,
+		fmt.Fprintf(os.Stderr,
+			"\n⚠  SECURITY WARNING: server.host=%q is a non-loopback address with no server.api_key.\n"+
+				"   All API endpoints are UNAUTHENTICATED. Set server.api_key in config.yaml\n"+
+				"   unless a reverse proxy is enforcing authentication upstream.\n\n",
+			cfg.Server.Host,
 		)
 	}
 

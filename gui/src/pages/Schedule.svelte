@@ -30,6 +30,80 @@
   let saving   = false
   let runPrompt = null      // { agent, next, auto }
 
+  // History panel
+  let historyAgent   = null   // agent whose history is open
+  let historyRuns    = []     // [{sessionId, startTime, status, output}]
+  let historyLoading = false
+  let historyError   = ''
+  let expandedRuns   = {}     // sessionId → true (output expanded)
+
+  function partsText(payload) {
+    return (payload?.parts || []).filter(x => x.type === 'text').map(x => x.text).join('\n')
+  }
+
+  function groupRuns(events) {
+    const sessions = {}
+    for (const ev of events) {
+      const sid = ev.session_id || 'unknown'
+      if (!sessions[sid]) sessions[sid] = []
+      sessions[sid].push(ev)
+    }
+    return Object.entries(sessions).map(([sid, evs]) => {
+      // Event timestamp field is "timestamp" (not "created_at") per message.Event struct
+      const sorted = evs.slice().sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+      const outEv    = evs.find(e => e.type === 'message.out')
+      const errEv    = evs.find(e => e.type === 'error')
+      const inEv     = evs.find(e => e.type === 'message.in')
+      // A run is failed if any tool returned is_error:true, even when the LLM
+      // still produced a message.out summarising the failure.
+      const toolFailed = evs.some(e => e.type === 'tool.result' && e.payload?.is_error === true)
+
+      let status = 'unknown'
+      if (outEv && !toolFailed && !errEv) status = 'success'
+      else if (toolFailed || errEv)        status = 'failed'
+      else if (outEv)                      status = 'success'
+
+      let output = ''
+      if (outEv) {
+        output = partsText(outEv.payload) || JSON.stringify(outEv.payload)
+      }
+      if (errEv) {
+        const ep = errEv.payload
+        const errText = typeof ep === 'string' ? ep : (ep?.message || ep?.error || JSON.stringify(ep))
+        output = output ? output + '\n\n⚠ Error: ' + errText : '⚠ Error: ' + errText
+        status = 'failed'
+      }
+
+      // channel from message.in payload
+      const channel = inEv?.payload?.channel || ''
+      const startTime = (inEv || sorted[0])?.timestamp
+
+      return { sessionId: sid, startTime, status, output, channel }
+    }).sort((a, b) => new Date(b.startTime) - new Date(a.startTime))
+  }
+
+  async function openHistory(a) {
+    historyAgent   = a
+    historyRuns    = []
+    historyError   = ''
+    expandedRuns   = {}
+    historyLoading = true
+    try {
+      // Request a large tail but filter to only the event types needed for
+      // run summaries — this excludes tool.log (every stdout line) which
+      // would otherwise eat the limit and hide older completed runs.
+      const res = await api.agents.actions(a.id, 2000, 'message.in,message.out,error,tool.result')
+      historyRuns = groupRuns(res.events || [])
+    } catch (e) {
+      historyError = e.message
+    } finally {
+      historyLoading = false
+    }
+  }
+
+  function closeHistory() { historyAgent = null }
+  function toggleRun(sid) { expandedRuns = { ...expandedRuns, [sid]: !expandedRuns[sid] } }
+
   let statusTimer, tick
 
   async function load() {
@@ -296,6 +370,7 @@
                       {busy[a.id] ? '…' : '▶ Run'}
                     </button>
                   {/if}
+                  <button class="btn-secondary xs" on:click={() => openHistory(a)} title="Run history">📋 History</button>
                   <button class="btn-secondary xs" on:click={() => watchAgent(a.id)} title="Watch action log">👁 Watch</button>
                   <button class="btn-secondary xs" on:click={() => openEdit(a)} disabled={busy[a.id]}>Edit</button>
                   <button class="btn-secondary xs" on:click={() => clone(a.id)} disabled={busy[a.id]}>Clone</button>
@@ -336,6 +411,53 @@ schedule:
       <div class="modal-row">
         <button class="btn-secondary" on:click={closeEdit} disabled={saving}>Cancel</button>
         <button class="btn-primary" on:click={saveEdit} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+<!-- History slide-out panel -->
+{#if historyAgent}
+  <div class="panel-bg" on:click|self={closeHistory}>
+    <div class="history-panel">
+      <div class="panel-hdr">
+        <div class="panel-title">
+          <span class="panel-label">Run history</span>
+          <span class="panel-agent">{historyAgent.name || historyAgent.id}</span>
+        </div>
+        <button class="close-btn" on:click={closeHistory}>✕</button>
+      </div>
+
+      <div class="panel-body">
+        {#if historyLoading}
+          <div class="panel-empty">Loading…</div>
+        {:else if historyError}
+          <div class="panel-empty err">{historyError}</div>
+        {:else if historyRuns.length === 0}
+          <div class="panel-empty">No runs recorded yet.</div>
+        {:else}
+          {#each historyRuns as run}
+            <div class="run" class:run-fail={run.status === 'failed'}>
+              <button class="run-hdr" on:click={() => toggleRun(run.sessionId)}>
+                <span class="run-badge" class:badge-ok={run.status === 'success'} class:badge-fail={run.status === 'failed'} class:badge-unk={run.status === 'unknown'}>
+                  {run.status === 'success' ? '✓ success' : run.status === 'failed' ? '✗ failed' : '? unknown'}
+                </span>
+                <span class="run-time">{run.startTime ? new Date(run.startTime).toLocaleString() : '—'}</span>
+                {#if run.channel}<span class="run-channel">{run.channel}</span>{/if}
+                <span class="run-chevron">{expandedRuns[run.sessionId] ? '▲' : '▼'}</span>
+              </button>
+              {#if expandedRuns[run.sessionId]}
+                <div class="run-output">
+                  {#if run.output}
+                    <pre>{run.output}</pre>
+                  {:else}
+                    <span class="no-output">No output captured.</span>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          {/each}
+        {/if}
       </div>
     </div>
   </div>
@@ -423,6 +545,61 @@ schedule:
     padding: .85rem 1rem; font-family: monospace; font-size: .8rem;
     color: #b0b5d8; line-height: 1.65; white-space: pre;
   }
+
+  /* History panel */
+  .panel-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 100;
+    display: flex; justify-content: flex-end;
+  }
+  .history-panel {
+    width: 520px; max-width: 92vw; height: 100%;
+    background: #141626; border-left: 1px solid #2a2f4a;
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .panel-hdr {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 1rem 1.25rem; border-bottom: 1px solid #1a1e36; flex-shrink: 0;
+  }
+  .panel-title { display: flex; flex-direction: column; gap: .2rem; }
+  .panel-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; color: #555a7a; font-weight: 600; }
+  .panel-agent { font-size: .95rem; font-weight: 600; color: #e0e1f0; }
+  .close-btn {
+    background: none; border: none; color: #555a7a; font-size: 1rem;
+    cursor: pointer; padding: .25rem .5rem; border-radius: 6px;
+  }
+  .close-btn:hover { background: #1c1f35; color: #c8cadf; }
+  .panel-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  .panel-empty { padding: 3rem 1.5rem; color: #555a7a; font-size: .85rem; text-align: center; }
+  .panel-empty.err { color: #f06060; }
+
+  .run { border-bottom: 1px solid #1a1e36; }
+  .run:last-child { border-bottom: none; }
+  .run-hdr {
+    width: 100%; background: none; border: none; cursor: pointer;
+    display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+    padding: .75rem 1.25rem; text-align: left;
+  }
+  .run-hdr:hover { background: rgba(255,255,255,.03); }
+  .run-fail .run-hdr { background: rgba(240,96,96,.04); }
+  .run-badge {
+    font-size: .7rem; font-weight: 600; padding: .15rem .55rem;
+    border-radius: 999px; flex-shrink: 0;
+  }
+  .badge-ok  { background: rgba(76,175,130,.15); color: #4caf82; }
+  .badge-fail{ background: rgba(240,96,96,.15);  color: #f06060; }
+  .badge-unk { background: rgba(100,100,120,.15); color: #888; }
+  .run-time    { font-size: .78rem; color: #7b82a8; flex: 1; }
+  .run-channel { font-size: .7rem; color: #555a7a; font-family: monospace; }
+  .run-chevron { font-size: .65rem; color: #555a7a; margin-left: auto; }
+  .run-output {
+    padding: .75rem 1.25rem 1rem; background: #0e1020;
+    border-top: 1px solid #1a1e36;
+  }
+  .run-output pre {
+    font-family: monospace; font-size: .78rem; color: #b0b5d8;
+    line-height: 1.65; white-space: pre-wrap; word-break: break-word; margin: 0;
+  }
+  .no-output { font-size: .78rem; color: #555a7a; font-style: italic; }
 
   /* Modal */
   .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 100; }

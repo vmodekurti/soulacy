@@ -37,7 +37,7 @@ export const api = {
     disable: (id)      => apiFetch(`/agents/${id}/disable`, { method: 'POST' }),
     trigger: (id)      => apiFetch(`/agents/${id}/trigger`, { method: 'POST' }),
     clone:   (id)      => apiFetch(`/agents/${id}/clone`,   { method: 'POST' }),
-    actions: (id, limit = 500) => apiFetch(`/agents/${id}/actions?limit=${limit}`),
+    actions: (id, limit = 500, types = '') => apiFetch(`/agents/${id}/actions?limit=${limit}${types ? '&types=' + encodeURIComponent(types) : ''}`),
   },
 
   templates: {
@@ -110,7 +110,9 @@ export const api = {
     update: (id, body)=> apiFetch(`/mcp/${encodeURIComponent(id)}`,            { method: 'PATCH',  body: JSON.stringify(body) }),
     delete: (id)      => apiFetch(`/mcp/${encodeURIComponent(id)}`,            { method: 'DELETE' }),
     test:           (body)    => apiFetch('/mcp/test',             { method: 'POST', body: JSON.stringify(body) }),
-    provisionGlama: (body)    => apiFetch('/mcp/provision-glama',  { method: 'POST', body: JSON.stringify(body) }),
+    provisionGlama:    (body)         => apiFetch('/mcp/provision-glama',    { method: 'POST', body: JSON.stringify(body) }),
+    registrySearch:    (q, cursor, limit) => apiFetch(`/mcp/registry/search?q=${encodeURIComponent(q||'')}&limit=${limit||20}${cursor?'&cursor='+encodeURIComponent(cursor):''}`),
+    provisionRegistry: (body)         => apiFetch('/mcp/provision-registry', { method: 'POST', body: JSON.stringify(body) }),
   },
 
   knowledge: {

@@ -86,8 +86,15 @@ func (s *Service) ListAvailable(names []string) []KBSummary {
 	return out
 }
 
-// Search embeds the query, runs a KNN against the named KB, and returns a
-// pre-formatted text block ready for the LLM to consume as a tool result.
+// Search embeds the query, runs a hybrid (vector + FTS5) search against the
+// named KB, and returns a pre-formatted text block ready for the LLM to
+// consume as a tool result.
+//
+// Internally this calls Store.SearchHybrid, which fuses vector KNN and BM25
+// results via Reciprocal Rank Fusion. If FTS5 is not compiled into the SQLite
+// build (hasFTS5 == false in the Store), SearchHybrid degrades gracefully to
+// vector-only results with no error — callers of Service.Search never need to
+// handle the FTS5-absent case specially.
 func (s *Service) Search(ctx context.Context, kbName, query string, topK int) (string, error) {
 	if s == nil || s.Store == nil {
 		return "", errors.New("knowledge: service not configured")
@@ -136,7 +143,7 @@ func (s *Service) Search(ctx context.Context, kbName, query string, topK int) (s
 		s.embedCacheMu.Unlock()
 	}
 
-	hits, err := s.Store.Search(kb, queryVec, topK)
+	hits, err := s.Store.SearchHybrid(kb, queryVec, query, topK)
 	if err != nil {
 		return "", err
 	}

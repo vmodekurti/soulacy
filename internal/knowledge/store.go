@@ -20,6 +20,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -61,12 +62,13 @@ type Document struct {
 
 // Chunk is one piece of a document, ready to embed or already embedded.
 type Chunk struct {
-	ID      string    `json:"id"`
-	DocID   string    `json:"doc_id"`
-	KBID    string    `json:"kb_id"`
-	Ordinal int       `json:"ordinal"`
-	Content string    `json:"content"`
-	Vector  []float32 `json:"-"`
+	ID            string    `json:"id"`
+	DocID         string    `json:"doc_id"`
+	KBID          string    `json:"kb_id"`
+	Ordinal       int       `json:"ordinal"`
+	Content       string    `json:"content"`
+	ParentChunkID string    `json:"parent_chunk_id,omitempty"`
+	Vector        []float32 `json:"-"`
 }
 
 // SearchHit is one result from a vector search.
@@ -81,9 +83,19 @@ type SearchHit struct {
 }
 
 // Store is the SQLite-backed knowledge store.
+//
+// Each KB gets its own vec0 virtual table (vec_<kb_id>) so KBs can use
+// different embedding dimensions. The FTS5 full-text search table
+// (chunks_fts) is shared across all KBs and filtered by kb_id at query time.
+//
+// hasFTS5 is detected at Open time by attempting to CREATE the FTS5 virtual
+// table. When the SQLite build in use was compiled without the fts5 module
+// (common in CGO-free test environments), hasFTS5 is false and all FTS5-
+// guarded paths are skipped, degrading gracefully to vector-only search.
 type Store struct {
-	db *sql.DB
-	mu sync.RWMutex // guards CREATE/DROP of per-KB vec0 tables
+	db      *sql.DB
+	mu      sync.RWMutex // guards CREATE/DROP of per-KB vec0 tables
+	hasFTS5 bool         // true when FTS5 extension is available in this SQLite build
 }
 
 var autoOnce sync.Once
@@ -138,6 +150,7 @@ func Open(path string) (*Store, error) {
 			kb_id TEXT NOT NULL,
 			ordinal INTEGER NOT NULL,
 			content TEXT NOT NULL,
+			parent_chunk_id TEXT DEFAULT NULL,
 			FOREIGN KEY(doc_id) REFERENCES documents(id) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_documents_kb ON documents(kb_id)`,
@@ -150,13 +163,23 @@ func Open(path string) (*Store, error) {
 		}
 	}
 
+	// Migration: add parent_chunk_id to existing DBs (ignore error if column
+	// already exists or was included in CREATE TABLE above).
+	db.Exec(`ALTER TABLE chunks ADD COLUMN parent_chunk_id TEXT DEFAULT NULL`) //nolint:errcheck
+
+	// FTS5 hybrid search table — best-effort. FTS5 may not be compiled into
+	// the SQLite driver in all environments (e.g. test builds without CGO tags).
+	// If creation fails, hybrid search degrades gracefully to vector-only.
+	_, ftsErr := db.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(chunk_id UNINDEXED, kb_id UNINDEXED, content, tokenize="porter unicode61")`)
+	hasFTS5 := ftsErr == nil
+
 	// Confirm vec0 is loaded so we fail fast instead of at first KB create.
 	var vecVer string
 	if err := db.QueryRow(`SELECT vec_version()`).Scan(&vecVer); err != nil {
 		return nil, fmt.Errorf("knowledge: sqlite-vec not loaded (vec_version() failed): %w", err)
 	}
 
-	return &Store{db: db}, nil
+	return &Store{db: db, hasFTS5: hasFTS5}, nil
 }
 
 // Close releases the database handle.
@@ -304,7 +327,22 @@ func (s *Store) DeleteKB(name string) error {
 }
 
 // AddDocument writes a document row and its chunks (with embeddings) atomically.
-// All chunks in `chunks` MUST have Vector populated and len(Vector) == kb.Dim.
+// Chunks with a non-empty Vector must have len(Vector) == kb.Dim.
+//
+// Parent-child chunking:
+//
+// When the gateway ingests a document it produces two chunk tiers:
+//   - Parent chunks (large context windows, ~4× chunk_size): stored in the
+//     chunks table only — they carry no embedding and are never inserted into
+//     the vec0 or FTS5 tables. They exist purely to provide a wider excerpt to
+//     the LLM after a child chunk retrieval hit.
+//   - Child chunks (small retrieval windows, chunk_size): embedded and inserted
+//     into both the vec0 KNN table and the FTS5 full-text table. Each child
+//     carries a parent_chunk_id FK that the Search query resolves to return the
+//     parent's broader context instead of the narrow child text.
+//
+// Chunks with len(Vector) == 0 are skipped for vec/FTS inserts — this is the
+// sentinel that marks parent-tier chunks.
 func (s *Store) AddDocument(kb *KB, doc Document, chunks []Chunk) (*Document, error) {
 	if kb == nil {
 		return nil, errors.New("knowledge: kb is nil")
@@ -324,8 +362,9 @@ func (s *Store) AddDocument(kb *KB, doc Document, chunks []Chunk) (*Document, er
 		doc.SHA256 = hex.EncodeToString(h.Sum(nil))
 	}
 
+	// Validate dimensions only for chunks that carry a vector.
 	for i, c := range chunks {
-		if len(c.Vector) != kb.Dim {
+		if len(c.Vector) > 0 && len(c.Vector) != kb.Dim {
 			return nil, fmt.Errorf("knowledge: chunk %d vector dim %d != kb dim %d", i, len(c.Vector), kb.Dim)
 		}
 	}
@@ -347,7 +386,7 @@ func (s *Store) AddDocument(kb *KB, doc Document, chunks []Chunk) (*Document, er
 		return nil, fmt.Errorf("knowledge: insert document: %w", err)
 	}
 
-	chunkStmt, err := tx.Prepare(`INSERT INTO chunks (id, doc_id, kb_id, ordinal, content) VALUES (?, ?, ?, ?, ?)`)
+	chunkStmt, err := tx.Prepare(`INSERT INTO chunks (id, doc_id, kb_id, ordinal, content, parent_chunk_id) VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return nil, err
 	}
@@ -359,6 +398,16 @@ func (s *Store) AddDocument(kb *KB, doc Document, chunks []Chunk) (*Document, er
 	}
 	defer vecStmt.Close()
 
+	// FTS5 insert stmt — only prepared when FTS5 is available.
+	var ftsStmt *sql.Stmt
+	if s.hasFTS5 {
+		ftsStmt, err = tx.Prepare(`INSERT INTO chunks_fts (chunk_id, kb_id, content) VALUES (?, ?, ?)`)
+		if err != nil {
+			return nil, fmt.Errorf("knowledge: prepare fts insert: %w", err)
+		}
+		defer ftsStmt.Close()
+	}
+
 	for i, c := range chunks {
 		if c.ID == "" {
 			c.ID = uuid.New().String()
@@ -366,15 +415,22 @@ func (s *Store) AddDocument(kb *KB, doc Document, chunks []Chunk) (*Document, er
 		c.DocID = doc.ID
 		c.KBID = kb.ID
 		c.Ordinal = i
-		if _, err := chunkStmt.Exec(c.ID, c.DocID, c.KBID, c.Ordinal, c.Content); err != nil {
+		if _, err := chunkStmt.Exec(c.ID, c.DocID, c.KBID, c.Ordinal, c.Content, nullableString(c.ParentChunkID)); err != nil {
 			return nil, fmt.Errorf("knowledge: insert chunk: %w", err)
 		}
-		blob, err := sqlite_vec.SerializeFloat32(c.Vector)
-		if err != nil {
-			return nil, fmt.Errorf("knowledge: serialize embedding: %w", err)
-		}
-		if _, err := vecStmt.Exec(c.ID, blob); err != nil {
-			return nil, fmt.Errorf("knowledge: insert vec: %w", err)
+		if len(c.Vector) > 0 {
+			blob, err := sqlite_vec.SerializeFloat32(c.Vector)
+			if err != nil {
+				return nil, fmt.Errorf("knowledge: serialize embedding: %w", err)
+			}
+			if _, err := vecStmt.Exec(c.ID, blob); err != nil {
+				return nil, fmt.Errorf("knowledge: insert vec: %w", err)
+			}
+			if ftsStmt != nil {
+				if _, err := ftsStmt.Exec(c.ID, c.KBID, c.Content); err != nil {
+					return nil, fmt.Errorf("knowledge: insert fts: %w", err)
+				}
+			}
 		}
 	}
 
@@ -383,6 +439,17 @@ func (s *Store) AddDocument(kb *KB, doc Document, chunks []Chunk) (*Document, er
 		return nil, err
 	}
 	return &doc, nil
+}
+
+// nullableString converts an empty string to nil so it is stored as SQL NULL
+// rather than an empty string. Used for the parent_chunk_id FK column, which
+// must be NULL for top-level and parent chunks so joins via COALESCE work
+// correctly in the Search query.
+func nullableString(s string) interface{} {
+	if s == "" {
+		return nil
+	}
+	return s
 }
 
 // ListDocuments returns documents in a KB, newest first.
@@ -420,7 +487,12 @@ func (s *Store) DeleteDocument(kbID, docID string) error {
 	}
 	defer tx.Rollback() //nolint:errcheck
 
-	// vec0 tables don't honour FK cascade, so wipe by id list first.
+	// FTS and vec0 tables don't honour FK cascade, so wipe by id list first.
+	if s.hasFTS5 {
+		if _, err := tx.Exec(`DELETE FROM chunks_fts WHERE chunk_id IN (SELECT id FROM chunks WHERE doc_id = ?)`, docID); err != nil {
+			return fmt.Errorf("knowledge: delete fts rows: %w", err)
+		}
+	}
 	if _, err := tx.Exec(fmt.Sprintf(
 		`DELETE FROM %s WHERE chunk_id IN (SELECT id FROM chunks WHERE doc_id = ?)`,
 		vecTable(kbID),
@@ -452,11 +524,15 @@ func (s *Store) Search(kb *KB, vector []float32, topK int) ([]SearchHit, error) 
 	}
 
 	query := fmt.Sprintf(`
-		SELECT v.chunk_id, v.distance, c.doc_id, c.ordinal, c.content,
+		SELECT v.chunk_id, v.distance,
+		       COALESCE(parent.doc_id, child.doc_id),
+		       COALESCE(parent.ordinal, child.ordinal),
+		       COALESCE(parent.content, child.content),
 		       d.title, COALESCE(d.source,'')
 		FROM %s v
-		JOIN chunks c ON c.id = v.chunk_id
-		JOIN documents d ON d.id = c.doc_id
+		JOIN chunks child ON child.id = v.chunk_id
+		LEFT JOIN chunks parent ON parent.id = child.parent_chunk_id
+		JOIN documents d ON d.id = COALESCE(parent.doc_id, child.doc_id)
 		WHERE v.embedding MATCH ?
 		  AND v.k = ?
 		ORDER BY v.distance`, vecTable(kb.ID))
@@ -476,6 +552,118 @@ func (s *Store) Search(kb *KB, vector []float32, topK int) ([]SearchHit, error) 
 		hits = append(hits, h)
 	}
 	return hits, rows.Err()
+}
+
+// SearchFTS runs a full-text search using the FTS5 virtual table.
+//
+// Results are ranked by BM25 (SQLite's built-in bm25() function). BM25 values
+// are negative floats — more negative means a stronger match — so the query
+// uses ORDER BY rank (ascending) to put the best hits first.
+//
+// When hasFTS5 is false (FTS5 not compiled into this SQLite build), the method
+// returns (nil, nil) so callers can treat it as an empty result set and fall
+// back to vector-only search without any error handling.
+//
+// The caller is expected to sanitize the query string before passing it here;
+// SearchHybrid does this by removing FTS5 special characters.
+func (s *Store) SearchFTS(kb *KB, query string, topK int) ([]SearchHit, error) {
+	if !s.hasFTS5 {
+		return nil, nil // FTS5 not available — caller falls back to vector-only
+	}
+	if topK <= 0 {
+		topK = 5
+	}
+	rows, err := s.db.Query(`
+		SELECT f.chunk_id, bm25(chunks_fts) as rank,
+		       c.doc_id, c.ordinal, c.content, d.title, COALESCE(d.source,'')
+		FROM chunks_fts f
+		JOIN chunks c ON c.id = f.chunk_id
+		JOIN documents d ON d.id = c.doc_id
+		WHERE chunks_fts MATCH ?
+		  AND f.kb_id = ?
+		ORDER BY rank
+		LIMIT ?`,
+		query, kb.ID, topK)
+	if err != nil {
+		return nil, fmt.Errorf("knowledge: fts search: %w", err)
+	}
+	defer rows.Close()
+	var hits []SearchHit
+	for rows.Next() {
+		var h SearchHit
+		var rank float64
+		if err := rows.Scan(&h.ChunkID, &rank, &h.DocID, &h.Ordinal, &h.Content, &h.DocTitle, &h.DocSource); err != nil {
+			return nil, err
+		}
+		h.Distance = rank
+		hits = append(hits, h)
+	}
+	return hits, rows.Err()
+}
+
+// SearchHybrid combines vector KNN search and FTS5 full-text search via
+// Reciprocal Rank Fusion (RRF), returning up to topK results.
+//
+// Algorithm:
+//
+//  1. Run vec KNN with fetchK = max(topK*2, 10) candidates.
+//  2. Run FTS5 BM25 with the same fetchK limit (FTS query sanitized of special
+//     chars to avoid parse errors).
+//  3. For each unique chunk across both result sets, compute the RRF score:
+//
+//	     score(d) = Σ  1 / (k + rank_i(d))
+//	            i ∈ {vec, fts}
+//
+//	     where k = 60 (the standard RRF constant from Cormack et al., 2009).
+//	     k = 60 was chosen because it reduces sensitivity to outlier ranks in
+//	     the tail; lower values make the top-1 rank dominate excessively.
+//
+//  4. Sort all candidates by descending RRF score and return the top topK.
+//
+// FTS failure is non-fatal: if FTS5 is unavailable or returns an error, the
+// method returns the vector-only results rather than an error.
+func (s *Store) SearchHybrid(kb *KB, vector []float32, query string, topK int) ([]SearchHit, error) {
+	fetchK := topK * 2
+	if fetchK < 10 {
+		fetchK = 10
+	}
+
+	vecHits, vecErr := s.Search(kb, vector, fetchK)
+	// FTS query: sanitize by removing special FTS5 chars that would cause parse errors.
+	safeQuery := strings.NewReplacer(`"`, `""`, `*`, ``, `:`, ``, `(`, ``, `)`, ``).Replace(query)
+	ftsHits, _ := s.SearchFTS(kb, safeQuery, fetchK) // FTS failure is non-fatal
+
+	if vecErr != nil && len(ftsHits) == 0 {
+		return nil, vecErr
+	}
+
+	type rrfEntry struct {
+		hit   SearchHit
+		score float64
+	}
+	scores := make(map[string]*rrfEntry, len(vecHits)+len(ftsHits))
+	for rank, h := range vecHits {
+		scores[h.ChunkID] = &rrfEntry{hit: h, score: 1.0 / float64(60+rank+1)}
+	}
+	for rank, h := range ftsHits {
+		if e, ok := scores[h.ChunkID]; ok {
+			e.score += 1.0 / float64(60+rank+1)
+		} else {
+			scores[h.ChunkID] = &rrfEntry{hit: h, score: 1.0 / float64(60+rank+1)}
+		}
+	}
+
+	out := make([]SearchHit, 0, len(scores))
+	for _, e := range scores {
+		out = append(out, e.hit)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return scores[out[i].ChunkID].score > scores[out[j].ChunkID].score
+	})
+	if len(out) > topK {
+		out = out[:topK]
+	}
+	return out, nil
 }
 
 func minInt(a, b int) int {

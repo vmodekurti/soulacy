@@ -179,6 +179,88 @@ func (vs *VectorStore) Search(ctx context.Context, query string, topK int) ([]Se
 	return results, rows.Err()
 }
 
+// SearchFiltered embeds the query and returns the top-K most similar memory
+// entries scoped to the given agent.
+//
+// Pre-filter vs. post-filter:
+//
+// The original Search method fetches the top-K globally and then discards rows
+// belonging to other agents in Go. That works when agents share the vector
+// space roughly equally, but breaks badly when one agent has thousands of
+// memories and another has dozens — the KNN scan uses up all K slots on the
+// dominant agent, returning zero results for everyone else.
+//
+// The fix is a SQL-level pre-filter:
+//
+//	WHERE mv.rowid IN (SELECT rowid FROM memory_vector_meta WHERE agent_id = ?)
+//
+// sqlite-vec evaluates this constraint inside the KNN loop and only counts
+// matching rows against the K budget, so agents with sparser memories still
+// get their fair share. There is a marginal overhead for the subquery but it
+// is dominated by the embedding I/O, making the trade-off strongly positive.
+func (vs *VectorStore) SearchFiltered(ctx context.Context, query string, topK int, agentID string) ([]SearchResult, error) {
+	if topK <= 0 {
+		topK = 5
+	}
+	if topK > 50 {
+		topK = 50
+	}
+	vec, err := vs.embedder.Embed(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("vector memory: embed query: %w", err)
+	}
+	vecJSON, _ := json.Marshal(vec)
+
+	var rows *sql.Rows
+	if agentID != "" {
+		rows, err = vs.db.QueryContext(ctx, `
+			SELECT mv.rowid, mv.distance,
+			       m.agent_id, m.session_id, m.scope, m.content, m.key, m.provenance, m.created_at
+			FROM memory_vectors mv
+			JOIN memory_vector_meta m ON mv.rowid = m.rowid
+			WHERE mv.embedding MATCH ?
+			  AND k = ?
+			  AND mv.rowid IN (SELECT rowid FROM memory_vector_meta WHERE agent_id = ?)
+			ORDER BY mv.distance
+		`, string(vecJSON), topK, agentID)
+	} else {
+		rows, err = vs.db.QueryContext(ctx, `
+			SELECT mv.rowid, mv.distance,
+			       m.agent_id, m.session_id, m.scope, m.content, m.key, m.provenance, m.created_at
+			FROM memory_vectors mv
+			JOIN memory_vector_meta m ON mv.rowid = m.rowid
+			WHERE mv.embedding MATCH ?
+			  AND k = ?
+			ORDER BY mv.distance
+		`, string(vecJSON), topK)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("vector memory: knn search filtered: %w", err)
+	}
+	defer rows.Close()
+
+	var results []SearchResult
+	for rows.Next() {
+		var rowID int64
+		var dist float64
+		var sr SearchResult
+		var scope, provenance string
+		if err := rows.Scan(
+			&rowID, &dist,
+			&sr.Entry.AgentID, &sr.Entry.SessionID,
+			&scope, &sr.Entry.Content,
+			&sr.Entry.Key, &provenance, &sr.Entry.CreatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("vector memory: scan: %w", err)
+		}
+		sr.Entry.Scope = Scope(scope)
+		sr.Entry.Provenance = ProvenanceLabel(provenance)
+		sr.Distance = dist
+		results = append(results, sr)
+	}
+	return results, rows.Err()
+}
+
 // Prune removes vector memory entries older than before for the given agentID.
 func (vs *VectorStore) Prune(ctx context.Context, agentID string, before time.Time) error {
 	rows, err := vs.db.QueryContext(ctx,
