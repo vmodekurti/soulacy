@@ -1451,6 +1451,149 @@ func (s *Server) handleProvisionGlama(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(resp)
 }
 
+// handleMCPRegistrySearch proxies search queries to registry.modelcontextprotocol.io.
+//
+// The GUI cannot call the registry directly because the registry does not set
+// CORS headers that would allow browser requests from a different origin. By
+// routing through this backend endpoint the browser talks only to the Soulacy
+// gateway (same origin), and the gateway makes the outbound call server-side.
+// This also provides a natural place to add caching or rate-limiting later
+// without touching the frontend.
+//
+// GET /api/v1/mcp/registry/search?q=...&limit=20&cursor=...
+func (s *Server) handleMCPRegistrySearch(c *fiber.Ctx) error {
+	query  := c.Query("q", "")
+	cursor := c.Query("cursor", "")
+	limit  := c.QueryInt("limit", 20)
+
+	servers, nextCursor, err := builder.SearchMCPRegistry(query, cursor, limit)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"error": "registry search failed: " + err.Error(),
+		})
+	}
+	return c.JSON(fiber.Map{
+		"servers":    servers,
+		"nextCursor": nextCursor,
+	})
+}
+
+// handleProvisionMCPRegistry installs an MCP server from the official registry.
+// Mirrors the two-phase flow used by handleProvisionGlama:
+//
+// Phase 1 — spec fetch + env-var check:
+//  1. Fetch the server detail from registry.modelcontextprotocol.io via
+//     builder.FetchMCPRegistryServer.
+//  2. Inspect the spec's EnvSchema for required fields not present in the
+//     request body's env map.
+//  3. If any required env vars are missing, return
+//     { "ok": false, "spec": {...}, "env_required": [...] } with HTTP 200.
+//     The GUI renders a form for the missing vars and resubmits.
+//
+// Phase 2 — save + hot-connect:
+//  4. Write the server config to config.yaml (stdio transport, command + args
+//     derived from the registry package, env vars from the request).
+//  5. Hot-connect via mcp.AddServer so the tools are available immediately
+//     without restarting the gateway.
+//
+// POST /api/v1/mcp/provision-registry
+//
+// Request:  { "server_name": "io.modelcontextprotocol/filesystem", "env": {...} }
+// Response: same shape as provision-glama (ok, spec, env_required, id, message)
+func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
+	if s.cfgPath == "" {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "config file path unknown — cannot persist",
+		})
+	}
+
+	var body struct {
+		ServerName string            `json:"server_name"`
+		Env        map[string]string `json:"env"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if strings.TrimSpace(body.ServerName) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "server_name is required"})
+	}
+
+	spec, err := builder.FetchMCPRegistryServer(body.ServerName)
+	if err != nil {
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"error": "could not fetch registry server spec: " + err.Error(),
+		})
+	}
+
+	// Collect required env vars that are missing.
+	var missing []string
+	for _, ev := range spec.EnvSchema {
+		if ev.Required {
+			if v := strings.TrimSpace(body.Env[ev.Name]); v == "" {
+				missing = append(missing, ev.Name)
+			}
+		}
+	}
+	if len(missing) > 0 {
+		return c.JSON(fiber.Map{
+			"ok":           false,
+			"spec":         spec,
+			"env_required": missing,
+		})
+	}
+
+	// Write to config.yaml.
+	raw, err := readRawConfig(s.cfgPath)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	mcpMap     := getOrCreateMap(raw, "mcp")
+	serversMap := getOrCreateMap(mcpMap, "servers")
+
+	id := spec.ID
+	serversMap[id] = mcpServerToYAML(mcpServerBody{
+		ID:        id,
+		Transport: "stdio",
+		Command:   spec.Command,
+		Args:      spec.Args,
+		Env:       body.Env,
+	})
+
+	if err := writeRawConfig(s.cfgPath, raw); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	s.log.Info("mcp registry provision: server saved",
+		zap.String("server", id),
+		zap.String("registry_name", body.ServerName),
+	)
+
+	// Hot-connect immediately.
+	connectErr := ""
+	if s.mcp != nil {
+		if err := s.mcp.AddServer(id, mcp.ServerConfig{
+			Transport: "stdio",
+			Command:   spec.Command,
+			Args:      spec.Args,
+			Env:       body.Env,
+		}); err != nil {
+			connectErr = err.Error()
+		}
+	}
+
+	resp := fiber.Map{
+		"ok":             true,
+		"id":             id,
+		"spec":           spec,
+		"restart_needed": false,
+		"message":        fmt.Sprintf("%q connected.", id),
+	}
+	if connectErr != "" {
+		resp["message"] = fmt.Sprintf("Saved, but connection failed: %s", connectErr)
+		resp["connect_error"] = connectErr
+	}
+	return c.Status(fiber.StatusCreated).JSON(resp)
+}
+
 // validMCPID accepts the same characters the rest of the codebase uses for
 // safe identifiers (filenames, table-name sanitisation, etc.).
 func validMCPID(id string) bool {
@@ -1470,8 +1613,23 @@ func validMCPID(id string) bool {
 	return true
 }
 
-// handleAgentActions returns the recent action log for one agent (tail of its
-// per-agent log file), plus the known on-disk path. Polled by the GUI's watcher.
+// handleAgentActions returns recent events from the agent's action log.
+//
+// The action log is an append-only record of every event the engine emits for
+// an agent: message.in, message.out, tool.call, tool.result, error, etc.
+// This handler tails the log and optionally filters it.
+//
+// Query params:
+//
+//	limit (int, default 500)  — maximum number of events to return (most recent)
+//	types (string, optional)  — comma-separated allowlist of event types.
+//	                            When supplied, only events whose Type field
+//	                            appears in the list are returned. Example:
+//	                            "message.in,message.out,error" returns only
+//	                            conversation turns and failures, omitting the
+//	                            verbose tool.call / tool.result lines that
+//	                            inflate the History view payload. When omitted,
+//	                            all event types are returned.
 func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if s.actions == nil {
@@ -1482,6 +1640,28 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	// Optional event-type filter — callers like the History panel only need a
+	// subset and passing types=message.in,message.out,error avoids returning
+	// thousands of tool.log lines that inflate the response and bury run boundaries.
+	if typesParam := c.Query("types", ""); typesParam != "" {
+		allowed := map[string]bool{}
+		for _, t := range strings.Split(typesParam, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				allowed[t] = true
+			}
+		}
+		if len(allowed) > 0 {
+			filtered := events[:0]
+			for _, ev := range events {
+				if allowed[ev.Type] {
+					filtered = append(filtered, ev)
+				}
+			}
+			events = filtered
+		}
+	}
+
 	return c.JSON(fiber.Map{
 		"agent_id": id,
 		"path":     s.actions.EventFilePath(id),

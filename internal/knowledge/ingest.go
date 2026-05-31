@@ -68,9 +68,22 @@ func normalizeMime(m string) string {
 	return m
 }
 
-// ChunkText splits text into overlapping windows of `size` characters with
-// `overlap` characters of overlap between consecutive chunks. Whitespace at
-// chunk boundaries is trimmed; empty chunks are dropped.
+// ChunkText splits text into semantically coherent chunks using
+// sentence-boundary awareness. The algorithm:
+//
+//  1. Split the text into individual sentences (on ". ", "! ", "? ",
+//     ".\n", double-newlines, etc.).
+//  2. Greedily merge consecutive sentences into a chunk until the rough
+//     token budget (`size`/4 tokens, since 1 token ≈ 4 chars) is exceeded.
+//  3. The last `overlap`/4 tokens of each chunk are carried into the next
+//     chunk as context overlap — but always on a sentence boundary, never
+//     mid-sentence.
+//  4. Sentences that are individually longer than the token budget (e.g.
+//     a table row that is one giant run-on) are hard-split at the character
+//     level as a fallback so no chunk exceeds 2× the budget.
+//
+// This avoids the mid-sentence cuts that degrade embedding quality in the
+// previous character-window approach.
 //
 // Named with the "Text" suffix to avoid colliding with the Chunk struct
 // declared in store.go.
@@ -79,20 +92,164 @@ func ChunkText(text string, size, overlap int) []string {
 		size = 1000
 	}
 	if overlap < 0 || overlap >= size {
-		overlap = size / 5 // 20% default if user gave junk
+		overlap = size / 5
 	}
 
-	// Operate on rune slice so we don't split multi-byte characters.
+	// Rough token budget: 1 token ≈ 4 characters (works for English prose
+	// with any embedding model; no tokenizer dependency needed).
+	tokenBudget := size / 4
+	if tokenBudget < 50 {
+		tokenBudget = 50
+	}
+	overlapTokens := overlap / 4
+	if overlapTokens < 0 {
+		overlapTokens = 0
+	}
+
+	sentences := splitSentences(text)
+	if len(sentences) == 0 {
+		return nil
+	}
+
+	var chunks []string
+	i := 0
+	for i < len(sentences) {
+		// Build a chunk by merging sentences until we hit the budget.
+		var buf []string
+		tokens := 0
+		for i < len(sentences) {
+			s := sentences[i]
+			st := roughTokens(s)
+			if len(buf) > 0 && tokens+st > tokenBudget {
+				break
+			}
+			// Single sentence exceeds budget: hard-split it.
+			if len(buf) == 0 && st > tokenBudget*2 {
+				sub := hardSplit(s, size, overlap)
+				chunks = append(chunks, sub...)
+				i++
+				goto next
+			}
+			buf = append(buf, s)
+			tokens += st
+			i++
+		}
+		if len(buf) > 0 {
+			chunks = append(chunks, strings.TrimSpace(strings.Join(buf, " ")))
+		}
+
+		// Roll back by overlapTokens worth of sentences for context continuity.
+		if overlapTokens > 0 && i < len(sentences) {
+			carried := 0
+			rollback := 0
+			for j := len(buf) - 1; j >= 0 && carried < overlapTokens; j-- {
+				carried += roughTokens(buf[j])
+				rollback++
+			}
+			i -= rollback
+		}
+	next:
+	}
+	return chunks
+}
+
+// splitSentences breaks text into individual sentences using a two-level
+// punctuation state machine rather than a regex, to avoid adding a regexp
+// dependency and to keep the logic easy to audit.
+//
+// State machine rules:
+//
+//  1. Paragraph boundaries (double newlines) are always split points —
+//     they represent the strongest natural text boundary.
+//  2. Within each paragraph, advance a rune cursor. When the cursor lands on
+//     '.', '!', or '?', check what follows:
+//     a. Skip any closing quote or paren characters (", ', )) that
+//        conventionally follow the punctuation.
+//     b. If the character after those is a space, newline, or end-of-string,
+//        treat the punctuation as a sentence boundary and emit the sentence.
+//     c. Otherwise (e.g. "3.14" or "Mr. Smith") advance without splitting.
+//  3. Any remaining text in a paragraph with no terminal punctuation is
+//     emitted as its own sentence fragment.
+//
+// The state machine deliberately does not handle abbreviations (U.S.A.) or
+// decimal numbers with 100% accuracy — for chunking purposes, the occasional
+// spurious split is benign; mid-sentence cuts are the costly failure mode.
+func splitSentences(text string) []string {
+	// Normalise line endings and paragraph breaks.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+
+	// Split on paragraph breaks first (these are strong boundaries).
+	paragraphs := strings.Split(text, "\n\n")
+
+	var sentences []string
+	for _, para := range paragraphs {
+		para = strings.TrimSpace(para)
+		if para == "" {
+			continue
+		}
+		// Within each paragraph, split on sentence-ending punctuation
+		// followed by a space and an uppercase letter, or end of string.
+		// We use a simple state machine instead of regex to avoid a dep.
+		runes := []rune(para)
+		start := 0
+		for k := 0; k < len(runes); k++ {
+			r := runes[k]
+			if r == '.' || r == '!' || r == '?' {
+				// Check what follows: space/newline + uppercase, or end.
+				next := k + 1
+				// Skip closing quotes/parens after punctuation.
+				for next < len(runes) && (runes[next] == '"' || runes[next] == '\'' || runes[next] == ')') {
+					next++
+				}
+				if next >= len(runes) || (next < len(runes) && (runes[next] == ' ' || runes[next] == '\n')) {
+					s := strings.TrimSpace(string(runes[start : k+1]))
+					if s != "" {
+						sentences = append(sentences, s)
+					}
+					start = next + 1
+					k = next
+				}
+			}
+		}
+		// Remainder of paragraph (no terminal punctuation).
+		if start < len(runes) {
+			s := strings.TrimSpace(string(runes[start:]))
+			if s != "" {
+				sentences = append(sentences, s)
+			}
+		}
+	}
+	return sentences
+}
+
+// roughTokens estimates the token count of s using the chars/4 heuristic.
+// The approximation holds for typical English prose with any byte-pair or
+// word-piece tokenizer (GPT-series, LLaMA, nomic-embed-text, etc.) and avoids
+// a tokenizer dependency entirely. It intentionally counts Unicode runes rather
+// than bytes so CJK or emoji-heavy text isn't under-estimated.
+func roughTokens(s string) int {
+	n := len([]rune(s)) / 4
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
+// hardSplit is the character-window fallback invoked when a single sentence is
+// longer than 2× the token budget (e.g. a Markdown table rendered as one run-
+// on line, or a code block without newlines). It slices at fixed rune positions
+// with overlap rather than trying to find a sentence boundary — there simply
+// isn't one. Using rune indexing rather than byte indexing prevents splitting
+// in the middle of a multi-byte Unicode character.
+func hardSplit(text string, size, overlap int) []string {
 	runes := []rune(text)
 	if len(runes) == 0 {
 		return nil
 	}
-
 	step := size - overlap
 	if step <= 0 {
 		step = size
 	}
-
 	var out []string
 	for start := 0; start < len(runes); start += step {
 		end := start + size

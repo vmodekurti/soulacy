@@ -77,6 +77,7 @@ func New(ctx context.Context, cfg Config) (*Store, error) {
 	if err := s.ensureCollection(ctx); err != nil {
 		return nil, fmt.Errorf("qdrant: ensure collection: %w", err)
 	}
+	s.ensureAgentIDIndex(ctx)
 	return s, nil
 }
 
@@ -191,6 +192,29 @@ func (s *Store) Close() error { return nil }
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+// ensureAgentIDIndex creates a keyword payload index on the "agent_id" field.
+//
+// Why a payload index is required for pre-filtered KNN:
+//
+// When all agents share a single Qdrant collection (the default deployment),
+// Search passes a payload filter {"must": [{"key": "agent_id", "match": ...}]}.
+// Without a payload index Qdrant must scan every point's payload at KNN time,
+// turning an O(log n) HNSW traversal into a linear scan. A keyword index lets
+// Qdrant pre-filter the candidate set before the ANN search, keeping latency
+// sub-millisecond even with millions of points.
+//
+// The call is best-effort and idempotent: Qdrant returns 200 OK whether the
+// index is new or already exists, and startup continues on any error (e.g.
+// older Qdrant builds that don't support the index endpoint).
+func (s *Store) ensureAgentIDIndex(ctx context.Context) {
+	url := fmt.Sprintf("%s/collections/%s/index", s.baseURL, s.collection)
+	body, _ := json.Marshal(map[string]any{
+		"field_name":   "agent_id",
+		"field_schema": map[string]any{"type": "keyword"},
+	})
+	_ = s.do(ctx, http.MethodPut, url, body, nil)
+}
 
 // ensureCollection creates the Qdrant collection if it doesn't already exist.
 // Uses a cosine distance metric (appropriate for normalised text embeddings).

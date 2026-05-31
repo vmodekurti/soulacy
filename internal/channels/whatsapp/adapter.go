@@ -78,15 +78,28 @@ func New(phoneNumberID, accessToken, verifyToken, appSecret, agentID string, log
 	}
 }
 
-// VerifySignature checks Meta's X-Hub-Signature-256 HMAC over the raw body.
-// Returns true if the signature matches OR if appSecret is empty (legacy
-// open mode — emits a warning). Constant-time hash compare. Operators
-// who want strict verification must populate `app_secret` in config.
+// VerifySignature verifies Meta's X-Hub-Signature-256 HMAC on an inbound webhook.
+//
+// Security change: empty appSecret now REJECTS (previously ACCEPTED)
+//
+// The old behaviour silently accepted all webhook requests when app_secret was
+// not configured, reasoning that the verify_token was sufficient protection.
+// That reasoning is wrong: the verify_token is exchanged once at subscription
+// time (GET request from Meta) and is not included on subsequent event POSTs.
+// Without an HMAC check, any caller who discovers the webhook URL can inject
+// arbitrary WhatsApp messages into the agent loop — a trivially exploitable
+// vector for prompt injection.
+//
+// The new behaviour hard-rejects any request when appSecret is empty and logs
+// an actionable error. Operators upgrading from an unconfigured deployment must
+// add channels.whatsapp.app_secret (found in the Meta App Dashboard under
+// App Settings → Basic → App Secret) before webhook delivery will resume.
 func (a *Adapter) VerifySignature(headerValue string, rawBody []byte) bool {
 	if a.appSecret == "" {
-		a.log.Warn("whatsapp: signature verification SKIPPED — app_secret not configured. " +
-			"Set channels.whatsapp.app_secret in config.yaml to enable HMAC verification.")
-		return true
+		a.log.Error("whatsapp: REJECTING webhook — app_secret not configured. " +
+			"Set channels.whatsapp.app_secret in config.yaml. " +
+			"Without it any caller can forge inbound WhatsApp messages.")
+		return false
 	}
 	const prefix = "sha256="
 	if !strings.HasPrefix(headerValue, prefix) {
