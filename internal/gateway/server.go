@@ -47,21 +47,21 @@ import (
 	"github.com/soulacy/soulacy/internal/auth/apikeys"
 	"github.com/soulacy/soulacy/internal/builder"
 	"github.com/soulacy/soulacy/internal/channels"
-	"github.com/soulacy/soulacy/internal/costs"
-	"github.com/soulacy/soulacy/internal/credentials"
-	"github.com/soulacy/soulacy/internal/mcp"
-	"github.com/soulacy/soulacy/internal/queue/dlq"
-	"github.com/soulacy/soulacy/internal/rbac"
-	"github.com/soulacy/soulacy/internal/ratelimit"
-	"github.com/soulacy/soulacy/internal/session"
-	"github.com/soulacy/soulacy/internal/storage"
 	httpchan "github.com/soulacy/soulacy/internal/channels/http"
 	wachan "github.com/soulacy/soulacy/internal/channels/whatsapp"
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/costs"
+	"github.com/soulacy/soulacy/internal/credentials"
 	"github.com/soulacy/soulacy/internal/llm"
+	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/queue/dlq"
+	"github.com/soulacy/soulacy/internal/ratelimit"
+	"github.com/soulacy/soulacy/internal/rbac"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/scheduler"
+	"github.com/soulacy/soulacy/internal/session"
+	"github.com/soulacy/soulacy/internal/storage"
 	"github.com/soulacy/soulacy/internal/webui"
 
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
@@ -70,28 +70,28 @@ import (
 
 // Server is the Soulacy gateway server.
 type Server struct {
-	cfg         *config.Config
-	cfgPath     string              // path to config file on disk; empty = unknown
-	app         *fiber.App
-	engine      *runtime.Engine
-	loader      *runtime.Loader
-	llmRouter   *llm.Router
-	channels    *channels.Registry
-	scheduler   *scheduler.Scheduler
-	httpChan    *httpchan.Adapter
-	waChan      *wachan.Adapter           // nil if WhatsApp not configured
-	skillLoader runtime.SkillLoader       // nil if no skills installed
-	actions     storage.ActionLogBackend  // nil if action logging disabled
-	mcp         *mcp.Client              // nil if no MCP servers configured
-	hub         *EventHub
-	authEngine      *auth.Engine             // nil until SetAuth() is called
-	rbacManager     *rbac.Manager            // nil until SetRBAC() is called
-	credVault       credentials.Vault        // nil until SetCredentialVault() is called
-	builderRegistry *builder.Registry        // nil until SetBuilderRegistry() is called
-	rateLimiter     *ratelimit.Manager       // nil until SetRateLimiter() is called
-	apiKeyStore     apikeys.Store            // nil until SetAPIKeyStore() is called
-	dlqStore        dlq.Store                // nil until SetDLQStore() is called
-	historyStore    session.HistoryStore     // nil until SetHistoryStore() is called
+	cfg             *config.Config
+	cfgPath         string // path to config file on disk; empty = unknown
+	app             *fiber.App
+	engine          *runtime.Engine
+	loader          *runtime.Loader
+	llmRouter       *llm.Router
+	channels        *channels.Registry
+	scheduler       *scheduler.Scheduler
+	httpChan        *httpchan.Adapter
+	waChan          *wachan.Adapter          // nil if WhatsApp not configured
+	skillLoader     runtime.SkillLoader      // nil if no skills installed
+	actions         storage.ActionLogBackend // nil if action logging disabled
+	mcp             *mcp.Client              // nil if no MCP servers configured
+	hub             *EventHub
+	authEngine      *auth.Engine         // nil until SetAuth() is called
+	rbacManager     *rbac.Manager        // nil until SetRBAC() is called
+	credVault       credentials.Vault    // nil until SetCredentialVault() is called
+	builderRegistry *builder.Registry    // nil until SetBuilderRegistry() is called
+	rateLimiter     *ratelimit.Manager   // nil until SetRateLimiter() is called
+	apiKeyStore     apikeys.Store        // nil until SetAPIKeyStore() is called
+	dlqStore        dlq.Store            // nil until SetDLQStore() is called
+	historyStore    session.HistoryStore // nil until SetHistoryStore() is called
 	log             *zap.Logger
 
 	// Tool-catalog TTL cache. See toolCatalog() / InvalidateToolCatalog().
@@ -286,9 +286,9 @@ func (s *Server) buildApp() *fiber.App {
 		// (the agent loader map, scheduler entries, cron closures). Without it, a
 		// later request's buffer reuse mutates those stored keys, producing
 		// corrupted "phantom" agents (e.g. "daily-briefing" → "e/statusiefing").
-		Immutable:             true,
-		ReadTimeout:           30 * time.Second,
-		WriteTimeout:          60 * time.Second,
+		Immutable:    true,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 60 * time.Second,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": err.Error(),
@@ -402,8 +402,8 @@ func (s *Server) buildApp() *fiber.App {
 	// GET: Meta webhook verification; POST: inbound messages.
 	if s.waChan != nil {
 		app.Get("/channels/whatsapp/webhook", func(c *fiber.Ctx) error {
-			mode      := c.Query("hub.mode")
-			token     := c.Query("hub.verify_token")
+			mode := c.Query("hub.mode")
+			token := c.Query("hub.verify_token")
 			challenge := c.Query("hub.challenge")
 			if ch, ok := s.waChan.Verify(mode, token, challenge); ok {
 				return c.SendString(ch)
@@ -487,9 +487,11 @@ func (s *Server) buildApp() *fiber.App {
 	// gates scraping. Scrape via:
 	//   curl -H 'Authorization: Bearer <key>' http://gw/api/v1/metrics
 	api.Get("/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), adaptor.HTTPHandler(metrics.Handler()))
+	api.Post("/admin/restart", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleRestart)
 
 	// Agents
 	api.Get("/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleListAgents)
+	api.Post("/agents/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleValidateAgent)
 	api.Get("/agents/:id", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgent)
 	api.Post("/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleCreateAgent)
 	api.Put("/agents/:id", s.rbacAgentMW(rbac.ActionWrite), s.handleUpdateAgent)
@@ -537,8 +539,8 @@ func (s *Server) buildApp() *fiber.App {
 	api.Patch("/mcp/:id", s.rbacMW(rbac.ResourceMCP, rbac.ActionWrite), s.handleUpdateMCPServer)
 	api.Delete("/mcp/:id", s.rbacMW(rbac.ResourceMCP, rbac.ActionDelete), s.handleDeleteMCPServer)
 	api.Post("/mcp/test", s.rbacMW(rbac.ResourceMCP, rbac.ActionRead), s.handleTestMCPServer)
-	api.Post("/mcp/provision-glama",    s.rbacMW(rbac.ResourceMCP, rbac.ActionWrite), s.handleProvisionGlama)
-	api.Get("/mcp/registry/search",     s.rbacMW(rbac.ResourceMCP, rbac.ActionRead),  s.handleMCPRegistrySearch)
+	api.Post("/mcp/provision-glama", s.rbacMW(rbac.ResourceMCP, rbac.ActionWrite), s.handleProvisionGlama)
+	api.Get("/mcp/registry/search", s.rbacMW(rbac.ResourceMCP, rbac.ActionRead), s.handleMCPRegistrySearch)
 	api.Post("/mcp/provision-registry", s.rbacMW(rbac.ResourceMCP, rbac.ActionWrite), s.handleProvisionMCPRegistry)
 
 	// Knowledge (RAG) — KBs, documents, search

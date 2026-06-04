@@ -87,7 +87,14 @@
 
   <!-- AgenticSkills provisioner modal -->
   {#if asModal}
-    <div class="modal-backdrop" on:click|self={closeASModal}>
+    <div
+      class="modal-backdrop"
+      role="button"
+      tabindex="0"
+      aria-label="Close AgenticSkills modal"
+      on:click|self={closeASModal}
+      on:keydown={(e) => e.key === 'Escape' && closeASModal()}
+    >
       <div class="modal">
         <div class="modal-header">
           <h2>Install from AgenticSkills</h2>

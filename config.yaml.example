@@ -56,6 +56,13 @@ log:
     level: info
 
 # ── MCP servers ───────────────────────────────────────────────────────────────
+# Connected servers are not automatically a security boundary. By default,
+# legacy agents see every connected MCP tool; restrict new/sensitive agents with
+# SOUL.yaml fields such as:
+#
+#   mcp_servers: [rocketmoney]                         # allow one server
+#   mcp_tools: [mcp__rocketmoney__get_transactions]    # allow one tool
+#   mcp_servers: []                                    # allow no MCP tools
 mcp:
     servers:
         filesystem:

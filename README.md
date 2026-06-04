@@ -97,6 +97,12 @@ sy chat --agent hello-world "Hello!"
 # Check gateway status
 sy server status
 
+# Validate an agent definition, including provider/model fit
+sy agent validate examples/agents/hello-world/SOUL.yaml
+
+# Run local diagnostics
+sy doctor
+
 # Stream live event log
 sy logs --follow
 ```

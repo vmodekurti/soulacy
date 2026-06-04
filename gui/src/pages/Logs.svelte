@@ -153,7 +153,6 @@
   .banner { padding: .65rem 1rem; border-radius: 8px; font-size: .82rem; flex-shrink: 0; }
   .err  { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
   .info { background: rgba(108,99,255,.08); border: 1px solid rgba(108,99,255,.2); color: #8b85ff; }
-  .info code { background: #1c1f35; padding: .1rem .3rem; border-radius: 3px; font-size: .78rem; }
 
   .active { background: rgba(108,99,255,.15) !important; color: #8b85ff !important; border-color: rgba(108,99,255,.4) !important; }
 

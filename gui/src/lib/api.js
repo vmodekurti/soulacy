@@ -32,6 +32,7 @@ export const api = {
     get:     (id)      => apiFetch(`/agents/${id}`),
     create:  (def)     => apiFetch('/agents',     { method: 'POST', body: JSON.stringify(def) }),
     update:  (id, def) => apiFetch(`/agents/${id}`, { method: 'PUT',  body: JSON.stringify(def) }),
+    validate:(def)     => apiFetch('/agents/validate', { method: 'POST', body: JSON.stringify(def) }),
     delete:  (id)      => apiFetch(`/agents/${id}`, { method: 'DELETE' }),
     enable:  (id)      => apiFetch(`/agents/${id}/enable`,  { method: 'POST' }),
     disable: (id)      => apiFetch(`/agents/${id}/disable`, { method: 'POST' }),
@@ -48,11 +49,15 @@ export const api = {
     ),
   },
 
-  chat: (agentId, text, userId = 'gui-user') =>
+  chat: (agentId, text, userId = 'gui-user', overrides = null) =>
     apiFetch('/chat', {
       method: 'POST',
-      body: JSON.stringify({ agent_id: agentId, user_id: userId, text }),
+      body: JSON.stringify({ agent_id: agentId, user_id: userId, text, ...(overrides ? { overrides } : {}) }),
     }),
+
+  admin: {
+    restart: () => apiFetch('/admin/restart', { method: 'POST' }),
+  },
 
   memory: {
     list: (agentId) => apiFetch(`/memory/${agentId}`),
@@ -111,8 +116,6 @@ export const api = {
     delete: (id)      => apiFetch(`/mcp/${encodeURIComponent(id)}`,            { method: 'DELETE' }),
     test:           (body)    => apiFetch('/mcp/test',             { method: 'POST', body: JSON.stringify(body) }),
     provisionGlama:    (body)         => apiFetch('/mcp/provision-glama',    { method: 'POST', body: JSON.stringify(body) }),
-    registrySearch:    (q, cursor, limit) => apiFetch(`/mcp/registry/search?q=${encodeURIComponent(q||'')}&limit=${limit||20}${cursor?'&cursor='+encodeURIComponent(cursor):''}`),
-    provisionRegistry: (body)         => apiFetch('/mcp/provision-registry', { method: 'POST', body: JSON.stringify(body) }),
   },
 
   knowledge: {

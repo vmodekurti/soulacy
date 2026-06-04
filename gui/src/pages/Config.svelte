@@ -8,6 +8,7 @@
   let error    = ''
   let saved    = false
   let writable = false
+  let restarting = false
 
   // Editable fields
   let logLevel  = 'info'
@@ -73,6 +74,19 @@
     }
   }
 
+  async function restartGateway() {
+    restarting = true
+    error = ''
+    try {
+      await api.admin.restart()
+      saved = false
+    } catch (e) {
+      error = e.message
+    } finally {
+      setTimeout(() => { restarting = false }, 5000)
+    }
+  }
+
   onMount(load)
 </script>
 
@@ -93,7 +107,12 @@
     <div class="banner err">{error}</div>
   {/if}
   {#if saved}
-    <div class="banner ok">✓ Config saved. Restart the gateway for changes to take full effect.</div>
+    <div class="banner ok restart-banner">
+      <span>✓ Config saved. Restart the gateway for changes to take full effect.</span>
+      <button class="btn-secondary" on:click={restartGateway} disabled={restarting}>
+        {restarting ? 'Restarting…' : 'Restart Gateway'}
+      </button>
+    </div>
   {/if}
   {#if !writable && config}
     <div class="banner warn">
@@ -201,6 +220,7 @@
   .page-header h1 { font-size: 1.2rem; font-weight: 600; }
   .header-actions { display: flex; gap: .5rem; }
   .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; }
+  .restart-banner { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
   .err  { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
   .ok   { background: rgba(76,175,130,.1); border: 1px solid rgba(76,175,130,.3); color: #4caf82; }
   .warn { background: rgba(240,160,96,.1); border: 1px solid rgba(240,160,96,.3); color: #f0a060; }

@@ -10,6 +10,9 @@
   let focused = null      // currently selected node (right-panel inspector)
   let error   = ''
   let loading = true
+  let dirty = false
+  let saving = false
+  let notice = ''
 
   // Svelte Flow uses stores
   const nodes = writable([])
@@ -28,8 +31,10 @@
   }
 
   function pick(agent) {
-    selected = agent
+    selected = structuredClone(agent)
     focused  = null
+    dirty = false
+    notice = ''
     const { ns, es } = buildGraph(agent)
     nodes.set(ns)
     edges.set(es)
@@ -146,6 +151,69 @@
     focused = detail.node
   }
 
+  function refreshGraph() {
+    if (!selected) return
+    const { ns, es } = buildGraph(selected)
+    nodes.set(ns)
+    edges.set(es)
+  }
+
+  function markDirty() {
+    dirty = true
+    notice = ''
+    refreshGraph()
+  }
+
+  function patchSelected(patch) {
+    selected = { ...selected, ...patch }
+    markDirty()
+  }
+
+  function patchLLM(field, value) {
+    selected = { ...selected, llm: { ...(selected.llm || {}), [field]: value } }
+    markDirty()
+  }
+
+  function patchMemory(field, value) {
+    selected = { ...selected, memory: { ...(selected.memory || {}), [field]: value } }
+    markDirty()
+  }
+
+  function patchSchedule(field, value) {
+    selected = { ...selected, schedule: { ...(selected.schedule || {}), [field]: value } }
+    markDirty()
+  }
+
+  function patchTool(index, field, value) {
+    const tools = [...(selected.tools || [])]
+    tools[index] = { ...(tools[index] || {}), [field]: value }
+    selected = { ...selected, tools }
+    markDirty()
+  }
+
+  function splitList(value) {
+    return String(value || '').split(',').map(s => s.trim()).filter(Boolean)
+  }
+
+  async function saveFlow() {
+    if (!selected) return
+    saving = true
+    error = ''
+    notice = ''
+    try {
+      const saved = await api.agents.update(selected.id, selected)
+      selected = structuredClone(saved)
+      agents = agents.map(a => a.id === selected.id ? selected : a)
+      dirty = false
+      notice = 'Flow saved.'
+      refreshGraph()
+    } catch (e) {
+      error = e.message
+    } finally {
+      saving = false
+    }
+  }
+
   // Build a friendly inspector body from the focused node + agent
   function inspectorBody(node, agent) {
     if (!node || !agent) return null
@@ -208,6 +276,8 @@
   }
 
   $: inspector = inspectorBody(focused, selected)
+  $: focusedToolIndex = focused?.id?.startsWith('tool-') ? parseInt(focused.id.slice(5), 10) : -1
+  $: focusedTool = focusedToolIndex >= 0 ? (selected?.tools || [])[focusedToolIndex] : null
 
   onMount(load)
 </script>
@@ -219,6 +289,7 @@
       <button class="btn-secondary small" on:click={load} disabled={loading}>↺</button>
     </header>
     {#if error}<div class="banner err">{error}</div>{/if}
+    {#if notice}<div class="banner ok">{notice}</div>{/if}
     {#if agents.length === 0}
       <div class="empty">No agents yet.</div>
     {:else}
@@ -240,7 +311,13 @@
           <span class="canvas-title">{selected.name || selected.id}</span>
           <span class="canvas-sub">{selected.description || ''}</span>
         </div>
-        <a class="btn-secondary small" href={'#agents'}>Edit agent →</a>
+        <div class="canvas-actions">
+          {#if dirty}<span class="dirty">Unsaved changes</span>{/if}
+          <button class="btn-primary small" on:click={saveFlow} disabled={!dirty || saving}>
+            {saving ? 'Saving…' : 'Save Flow'}
+          </button>
+          <a class="btn-secondary small" href={'#agents'}>Edit agent →</a>
+        </div>
       </header>
       <div class="canvas">
         <SvelteFlow {nodes} {edges} fitView on:nodeclick={onNodeClick}>
@@ -261,22 +338,94 @@
         <button class="ins-close" on:click={() => focused = null}>✕</button>
       </header>
       <div class="ins-body">
-        {#if inspector.textarea !== undefined}
-          <pre class="ins-pre">{inspector.textarea || '(empty)'}</pre>
-        {/if}
-        {#if inspector.fields}
-          {#each inspector.fields as [k, v]}
-            <div class="ins-row">
-              <span class="ins-k">{k}</span>
-              <span class="ins-v">{v}</span>
-            </div>
-          {/each}
-        {/if}
-        {#if inspector.json !== undefined}
+        {#if focused.id === 'trigger'}
+          <label class="edit-field">
+            <span>Type</span>
+            <select value={selected.trigger || 'channel'} on:change={(e) => patchSelected({ trigger: e.currentTarget.value })}>
+              <option value="channel">channel</option>
+              <option value="cron">cron</option>
+              <option value="oneshot">oneshot</option>
+              <option value="webhook">webhook</option>
+              <option value="internal">internal</option>
+            </select>
+          </label>
+          <label class="edit-field">
+            <span>Cron</span>
+            <input value={selected.schedule?.cron || ''} on:input={(e) => patchSchedule('cron', e.currentTarget.value)} placeholder="0 9 * * *" />
+          </label>
+          <label class="edit-field">
+            <span>Channels</span>
+            <input value={(selected.channels || []).join(', ')} on:input={(e) => patchSelected({ channels: splitList(e.currentTarget.value) })} placeholder="telegram, slack" />
+          </label>
+        {:else if focused.id === 'prompt'}
+          <label class="edit-field">
+            <span>System prompt</span>
+            <textarea rows="12" value={selected.system_prompt || ''} on:input={(e) => patchSelected({ system_prompt: e.currentTarget.value })}></textarea>
+          </label>
+        {:else if focused.id === 'memory'}
+          <label class="edit-field">
+            <span>Read scopes</span>
+            <input value={(selected.memory?.read_scopes || []).join(', ')} on:input={(e) => patchMemory('read_scopes', splitList(e.currentTarget.value))} />
+          </label>
+          <label class="edit-field">
+            <span>Write scopes</span>
+            <input value={(selected.memory?.write_scopes || []).join(', ')} on:input={(e) => patchMemory('write_scopes', splitList(e.currentTarget.value))} />
+          </label>
+          <label class="edit-field">
+            <span>Max tokens</span>
+            <input type="number" min="0" value={selected.memory?.max_tokens || ''} on:input={(e) => patchMemory('max_tokens', Number(e.currentTarget.value) || 0)} />
+          </label>
+        {:else if focused.id === 'llm'}
+          <label class="edit-field">
+            <span>Provider</span>
+            <input value={selected.llm?.provider || ''} on:input={(e) => patchLLM('provider', e.currentTarget.value)} placeholder="ollama" />
+          </label>
+          <label class="edit-field">
+            <span>Model</span>
+            <input value={selected.llm?.model || ''} on:input={(e) => patchLLM('model', e.currentTarget.value)} placeholder="llama3" />
+          </label>
+          <div class="edit-grid">
+            <label class="edit-field">
+              <span>Temperature</span>
+              <input type="number" min="0" max="2" step="0.1" value={selected.llm?.temperature ?? ''} on:input={(e) => patchLLM('temperature', Number(e.currentTarget.value))} />
+            </label>
+            <label class="edit-field">
+              <span>Max tokens</span>
+              <input type="number" min="1" value={selected.llm?.max_tokens || ''} on:input={(e) => patchLLM('max_tokens', Number(e.currentTarget.value) || 0)} />
+            </label>
+          </div>
+          <label class="edit-field">
+            <span>Max turns</span>
+            <input type="number" min="1" max="100" value={selected.max_turns || ''} on:input={(e) => patchSelected({ max_turns: Number(e.currentTarget.value) || 0 })} />
+          </label>
+          <label class="edit-field">
+            <span>Tool choice</span>
+            <input value={selected.llm?.tool_choice || ''} on:input={(e) => patchLLM('tool_choice', e.currentTarget.value)} placeholder="auto, none, required, tool name" />
+          </label>
+        {:else if focused.id === 'output'}
+          <label class="edit-field">
+            <span>Channels</span>
+            <input value={(selected.channels || []).join(', ')} on:input={(e) => patchSelected({ channels: splitList(e.currentTarget.value) })} placeholder="http, telegram" />
+          </label>
+        {:else if focusedTool}
+          <label class="edit-field">
+            <span>Name</span>
+            <input value={focusedTool.name || ''} on:input={(e) => patchTool(focusedToolIndex, 'name', e.currentTarget.value)} />
+          </label>
+          <label class="edit-field">
+            <span>Description</span>
+            <textarea rows="4" value={focusedTool.description || ''} on:input={(e) => patchTool(focusedToolIndex, 'description', e.currentTarget.value)}></textarea>
+          </label>
+          <label class="edit-field">
+            <span>Python file</span>
+            <input value={focusedTool.python_file || ''} on:input={(e) => patchTool(focusedToolIndex, 'python_file', e.currentTarget.value)} />
+          </label>
           <div class="ins-row" style="flex-direction: column; align-items: flex-start;">
             <span class="ins-k">Parameters</span>
-            <pre class="ins-pre">{JSON.stringify(inspector.json, null, 2)}</pre>
+            <pre class="ins-pre">{JSON.stringify(focusedTool.parameters || {}, null, 2)}</pre>
           </div>
+        {:else}
+          <div class="empty">Select an editable node.</div>
         {/if}
       </div>
     </aside>
@@ -297,6 +446,7 @@
   .empty.big { padding: 5rem; }
   .banner  { padding: .5rem .85rem; margin: .5rem; border-radius: 6px; font-size: .8rem; }
   .err     { background: rgba(240,96,96,.1); color: #f06060; border: 1px solid rgba(240,96,96,.3); }
+  .ok      { background: rgba(76,175,130,.1); color: #4caf82; border: 1px solid rgba(76,175,130,.3); }
 
   .rail-list { display: flex; flex-direction: column; gap: .3rem; padding: .5rem; overflow-y: auto; }
   .rail-item { background: #141626; color: #c8cadf; border: 1px solid #1a1e36; border-radius: 7px;
@@ -313,6 +463,8 @@
                 padding: .85rem 1.25rem; border-bottom: 1px solid #1a1e36; }
   .canvas-title { font-weight: 600; font-size: .95rem; }
   .canvas-sub   { color: #7b82a8; font-size: .78rem; margin-left: .8rem; }
+  .canvas-actions { display: flex; align-items: center; gap: .5rem; }
+  .dirty { color: #f0c060; font-size: .72rem; }
   .canvas { flex: 1; min-height: 0; background:
               radial-gradient(circle at 50% 50%, #14162a 0%, #0c0e1a 100%); }
 
@@ -349,8 +501,16 @@
   .ins-row    { display: flex; gap: .5rem; align-items: flex-start; justify-content: space-between;
                 font-size: .8rem; border-bottom: 1px solid #1a1e36; padding-bottom: .35rem; }
   .ins-k      { color: #6b7294; flex-shrink: 0; }
-  .ins-v      { color: #c8cadf; text-align: right; word-break: break-all; font-family: monospace; font-size: .76rem; }
   .ins-pre    { background: #0c0e1a; border: 1px solid #1a1e36; border-radius: 6px;
                 padding: .55rem .65rem; font-family: monospace; font-size: .72rem;
                 color: #b0b5d8; max-height: 360px; overflow: auto; white-space: pre-wrap; line-height: 1.5; }
+  .edit-field { display: flex; flex-direction: column; gap: .3rem; }
+  .edit-field span { color: #6b7294; font-size: .74rem; font-weight: 500; }
+  .edit-field input, .edit-field select, .edit-field textarea {
+    width: 100%; min-width: 0; background: #141626; color: #e8eaf6;
+    border: 1px solid #2a2f4a; border-radius: 6px; padding: .48rem .55rem;
+    font-size: .78rem;
+  }
+  .edit-field textarea { resize: vertical; line-height: 1.45; }
+  .edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .55rem; }
 </style>

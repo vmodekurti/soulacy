@@ -19,11 +19,7 @@ def get_cookie():
     1. ~/.soulacy/secrets/rocket_money_cookie  — written by refresh_cookie()
        or the manual refresh script; always wins when present so an explicit
        refresh is never immediately overwritten by stale Chrome cookies.
-    2. Chrome cookie DB via browser_cookie3     — only used as a fallback when
-       the secrets file is absent. Only accepted if Chrome has a non-trivial
-       auth_verification cookie (> 100 chars) indicating an active session;
-       if valid, the file is written so future calls are fast.
-    3. ROCKET_MONEY_COOKIE env var              — legacy fallback only.
+    2. ROCKET_MONEY_COOKIE env var              — legacy fallback only.
     """
     # 1. Secrets file — authoritative when present (written by rm_session_manager)
     if os.path.exists(_SECRETS_FILE):
@@ -57,6 +53,33 @@ def _try_playwright_refresh() -> bool:
 
 
 def gql(query, variables=None, _retry=True):
+    try:
+        data = _gql_once(query, variables)
+    except RuntimeError as e:
+        if str(e) == "AUTH_HTTP_401":
+            if _retry:
+                return _refresh_and_retry(query, variables)
+            raise RuntimeError(
+                "AUTH: Rocket Money session is still unauthorized after refresh. "
+                "Run setup: python3.11 ~/.soulacy/mcp-servers/rocketmoney/rm_session_manager.py --setup"
+            )
+        raise
+
+    # Auto-refresh on GraphQL auth errors and retry once.
+    errors = data.get("errors", [])
+    is_auth_error = any(
+        "Authentication" in e.get("message", "") or
+        e.get("code", "") == "GRAPHQL_REQUIRES_AUTHENTICATION"
+        for e in errors
+    )
+    if is_auth_error and _retry:
+        return _refresh_and_retry(query, variables)
+
+    if errors and not data.get("data"):
+        raise RuntimeError("; ".join(e["message"] for e in errors))
+    return data.get("data", {})
+
+def _gql_once(query, variables=None):
     headers = {
         "Content-Type": "application/json", "Accept": "application/json",
         "Cookie": get_cookie(), "Origin": "https://app.rocketmoney.com",
@@ -65,30 +88,22 @@ def gql(query, variables=None, _retry=True):
     }
     with httpx.Client(timeout=30) as client:
         r = client.post(GQL_URL, json={"query": query, **({"variables": variables} if variables else {})}, headers=headers)
+        if r.status_code == 401:
+            raise RuntimeError("AUTH_HTTP_401")
         r.raise_for_status()
-        data = r.json()
+        return r.json()
 
-    # Auto-refresh on auth errors and retry once
-    errors = data.get("errors", [])
-    is_auth_error = any(
-        "Authentication" in e.get("message", "") or
-        e.get("code", "") == "GRAPHQL_REQUIRES_AUTHENTICATION"
-        for e in errors
+def _refresh_and_retry(query, variables=None):
+    log.warning("Rocket Money auth failed — attempting automatic session refresh...")
+    if _try_playwright_refresh():
+        log.warning("Session refreshed — retrying request.")
+        # get_cookie() reads the secrets file each call, so the retry gets the
+        # fresh cookie written by rm_session_manager.py.
+        return gql(query, variables, _retry=False)
+    raise RuntimeError(
+        "AUTH: Rocket Money session expired and auto-refresh failed. "
+        "Run setup: python3.11 ~/.soulacy/mcp-servers/rocketmoney/rm_session_manager.py --setup"
     )
-    if is_auth_error and _retry:
-        log.warning("Rocket Money 401 — attempting automatic session refresh...")
-        if _try_playwright_refresh():
-            log.warning("Session refreshed — retrying request.")
-            # Invalidate the secrets file cache by re-reading in next get_cookie() call
-            return gql(query, variables, _retry=False)
-        raise RuntimeError(
-            "AUTH: Rocket Money session expired and auto-refresh failed. "
-            "Run setup: python3.11 ~/.soulacy/mcp-servers/rocketmoney/rm_session_manager.py --setup"
-        )
-
-    if errors and not data.get("data"):
-        raise RuntimeError("; ".join(e["message"] for e in errors))
-    return data.get("data", {})
 
 server = Server("rocketmoney")
 

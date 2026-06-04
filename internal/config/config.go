@@ -89,13 +89,13 @@ type Config struct {
 //	backend:               memory — or "redis" (multi-instance; requires redis_url)
 //	redis_url:             redis://localhost:6379
 type RateLimitConfig struct {
-	Enabled             bool   `mapstructure:"enabled"`
-	PerUserRPM          int    `mapstructure:"per_user_rpm"`
-	PerAgentRPM         int    `mapstructure:"per_agent_rpm"`
-	PerUserTokensDay    int    `mapstructure:"per_user_tokens_day"`
-	PerAgentTokensDay   int    `mapstructure:"per_agent_tokens_day"`
-	Backend             string `mapstructure:"backend"`
-	RedisURL            string `mapstructure:"redis_url"`
+	Enabled           bool   `mapstructure:"enabled"`
+	PerUserRPM        int    `mapstructure:"per_user_rpm"`
+	PerAgentRPM       int    `mapstructure:"per_agent_rpm"`
+	PerUserTokensDay  int    `mapstructure:"per_user_tokens_day"`
+	PerAgentTokensDay int    `mapstructure:"per_agent_tokens_day"`
+	Backend           string `mapstructure:"backend"`
+	RedisURL          string `mapstructure:"redis_url"`
 }
 
 // TelemetryConfig holds OpenTelemetry tracing configuration.
@@ -108,7 +108,7 @@ type TelemetryConfig struct {
 
 // CredentialsConfig holds credential vault settings.
 type CredentialsConfig struct {
-	KMSProvider    string `mapstructure:"kms_provider"`    // "local" (default), "hashicorp", "awskms"
+	KMSProvider    string `mapstructure:"kms_provider"` // "local" (default), "hashicorp", "awskms"
 	HashiCorpAddr  string `mapstructure:"hashicorp_addr"`
 	HashiCorpToken string `mapstructure:"hashicorp_token"`
 	AWSKMSKeyID    string `mapstructure:"aws_kms_key_id"`
@@ -133,7 +133,7 @@ type ServerConfig struct {
 type RuntimeConfig struct {
 	MaxConcurrentSessions int    `mapstructure:"max_concurrent_sessions"`
 	DefaultMaxTurns       int    `mapstructure:"default_max_turns"`
-	PythonBin             string `mapstructure:"python_bin"` // path to python3 interpreter
+	PythonBin             string `mapstructure:"python_bin"`   // path to python3 interpreter
 	ToolTimeout           string `mapstructure:"tool_timeout"` // e.g. "30s"
 
 	// Sandbox controls the per-Python-tool resource caps applied via the
@@ -176,9 +176,9 @@ type SandboxConfig struct {
 }
 
 type MemoryConfig struct {
-	Dir        string `mapstructure:"dir"`        // base directory for file memory
+	Dir        string `mapstructure:"dir"`         // base directory for file memory
 	SQLitePath string `mapstructure:"sqlite_path"` // path to SQLite archive
-	VectorDB   string `mapstructure:"vector_db"`  // "sqlite-vec" (built-in) or "" (disabled)
+	VectorDB   string `mapstructure:"vector_db"`   // "sqlite-vec" (built-in) or "" (disabled)
 	VectorURL  string `mapstructure:"vector_url"`
 	VectorDims int    `mapstructure:"vector_dims"` // embedding dimensions (default 768 for nomic-embed-text)
 	MaxHistory int    `mapstructure:"max_history"` // max messages to keep in hot memory
@@ -192,8 +192,8 @@ type MemoryConfig struct {
 //	postgres_log_dir: path where per-agent .log mirror files are written
 //	             (defaults to the same directory as Memory.Dir)
 type StorageConfig struct {
-	Backend        string `mapstructure:"backend"`         // "sqlite" (default) or "postgres"
-	PostgresDSN    string `mapstructure:"postgres_dsn"`    // libpq connection string
+	Backend        string `mapstructure:"backend"`          // "sqlite" (default) or "postgres"
+	PostgresDSN    string `mapstructure:"postgres_dsn"`     // libpq connection string
 	PostgresLogDir string `mapstructure:"postgres_log_dir"` // per-agent .log mirror directory
 }
 
@@ -353,7 +353,7 @@ func Load(cfgPath string) (*Config, string, error) {
 	v.SetDefault("memory.vector_db", "")
 	v.SetDefault("memory.vector_dims", 768)
 	v.SetDefault("storage.backend", "sqlite")
-	v.SetDefault("vector.backend", "")    // empty → inherit from memory.vector_db
+	v.SetDefault("vector.backend", "") // empty → inherit from memory.vector_db
 	v.SetDefault("vector.dims", 768)
 	v.SetDefault("executor.backend", "process")
 	v.SetDefault("executor.workers", 4)
@@ -375,28 +375,21 @@ func Load(cfgPath string) (*Config, string, error) {
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "console")
 
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, "", fmt.Errorf("cannot determine home directory: %w", err)
+	}
+	setHomeDefaults(v, home)
+
 	// Config file
 	if cfgPath != "" {
 		v.SetConfigFile(cfgPath)
 	} else {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return nil, "", fmt.Errorf("cannot determine home directory: %w", err)
-		}
 		// Search CWD first (project-level config wins for dev), then fall back to home dir.
 		v.AddConfigPath(".")
 		v.AddConfigPath(filepath.Join(home, ".soulacy"))
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
-
-		// Default agent and plugin dirs
-		v.SetDefault("agent_dirs", []string{filepath.Join(home, ".soulacy", "agents")})
-		v.SetDefault("plugin_dirs", []string{filepath.Join(home, ".soulacy", "plugins")})
-		v.SetDefault("memory.dir", filepath.Join(home, ".soulacy", "memory"))
-		v.SetDefault("memory.sqlite_path", filepath.Join(home, ".soulacy", "archive.db"))
-		v.SetDefault("knowledge.db_path", filepath.Join(home, ".soulacy", "knowledge.db"))
-		v.SetDefault("runtime.audit_dir", filepath.Join(home, ".soulacy", "audit"))
-		v.SetDefault("server.gui_static_dir", filepath.Join(home, ".soulacy", "gui"))
 	}
 
 	// Environment overrides: SOULACY_SERVER_PORT=8080, SOULACY_SERVER_API_KEY=…, etc.
@@ -426,6 +419,17 @@ func Load(cfgPath string) (*Config, string, error) {
 	}
 
 	return cfg, resolvedPath, nil
+}
+
+func setHomeDefaults(v *viper.Viper, home string) {
+	dataDir := filepath.Join(home, ".soulacy")
+	v.SetDefault("agent_dirs", []string{filepath.Join(dataDir, "agents")})
+	v.SetDefault("plugin_dirs", []string{filepath.Join(dataDir, "plugins")})
+	v.SetDefault("memory.dir", filepath.Join(dataDir, "memory"))
+	v.SetDefault("memory.sqlite_path", filepath.Join(dataDir, "archive.db"))
+	v.SetDefault("knowledge.db_path", filepath.Join(dataDir, "knowledge.db"))
+	v.SetDefault("runtime.audit_dir", filepath.Join(dataDir, "audit"))
+	v.SetDefault("server.gui_static_dir", filepath.Join(dataDir, "gui"))
 }
 
 // DataDir returns the Soulacy home directory (~/.soulacy).

@@ -125,6 +125,7 @@
   role="combobox"
   tabindex="-1"
   aria-expanded={showSuggestions}
+  aria-controls="chip-picker-suggestions"
 >
   <div class="chips-row">
     {#each value as v (v)}
@@ -150,7 +151,7 @@
   </div>
 
   {#if showSuggestions && suggestions.length > 0}
-    <div class="suggestions">
+    <div class="suggestions" id="chip-picker-suggestions">
       {#each groupedSuggestions as [groupName, items]}
         {#if groupName}
           <div class="suggestion-group">{groupName}</div>
@@ -163,6 +164,7 @@
             on:mousedown|preventDefault={() => addChip(s.value)}
             on:mouseenter={() => activeIndex = flatIdx}
             role="option"
+            tabindex="-1"
             aria-selected={flatIdx === activeIndex}
           >
             <span class="suggestion-label">{s.label}</span>

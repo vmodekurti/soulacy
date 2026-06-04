@@ -391,7 +391,14 @@
 </div>
 
 {#if showCreate}
-  <div class="modal-bg" on:click|self={() => showCreate = false}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close knowledge base modal"
+    on:click|self={() => showCreate = false}
+    on:keydown={(e) => e.key === 'Escape' && (showCreate = false)}
+  >
     <div class="modal">
       <h2>New knowledge base</h2>
       <label>
@@ -422,7 +429,14 @@
 {/if}
 
 {#if showIngest}
-  <div class="modal-bg" on:click|self={() => { if (!ingesting) showIngest = false }}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close ingest modal"
+    on:click|self={() => { if (!ingesting) showIngest = false }}
+    on:keydown={(e) => e.key === 'Escape' && !ingesting && (showIngest = false)}
+  >
     <div class="modal wide">
       <h2>Add document{ingest.files.length > 1 ? 's' : ''}</h2>
 

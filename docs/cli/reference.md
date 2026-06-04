@@ -12,6 +12,56 @@ The `soulacy` binary provides several commands.
 
 ---
 
+## `sy doctor`
+
+Run local diagnostics for a Soulacy installation.
+
+```bash
+sy doctor
+sy doctor --json
+```
+
+Checks:
+
+- config discovery
+- runtime directories
+- `agent_dirs`
+- Python interpreter
+- Ollama reachability
+- knowledge database
+- gateway health
+- MCP server status
+
+`sy doctor` exits nonzero only when a hard failure is found. Warnings identify suspicious but non-fatal configuration, such as a relative `agent_dirs` path or non-absolute `runtime.python_bin`.
+
+---
+
+## `sy agent validate`
+
+Validate an agent `SOUL.yaml` before deploying it.
+
+```bash
+sy agent validate examples/agents/hello-world/SOUL.yaml
+sy agent validate --file examples/agents/hello-world/SOUL.yaml --json
+```
+
+Checks:
+
+- unknown or malformed YAML fields
+- required `id`
+- trigger and schedule consistency
+- provider configuration and default-provider fallback
+- live model availability when the provider can be queried
+- model suitability warnings for tool-heavy or structured-output agents
+- bad Go duration strings in timeouts
+- negative numeric LLM and memory settings
+- missing local `python_file` tool paths
+- malformed `mcp_servers` and `mcp_tools` entries
+
+When a configured provider exposes a model list, validation suggests better alternatives instead of merely saying "wrong model." Warnings keep exit code 0. Errors return nonzero, making the command useful in CI.
+
+---
+
 ## `soulacy serve`
 
 Start the Soulacy server.

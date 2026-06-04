@@ -9,6 +9,7 @@
   let info    = ''
   let expanded = {}      // serverID → bool
   let restartNeeded = false
+  let restarting = false
 
   // Edit / create modal state. `editing` is null when the modal is closed.
   // When `editing.id` is set AND matches a row in `servers`, we're editing;
@@ -17,83 +18,6 @@
   let saving = false
   let testing = false
   let testResult = null  // { ok, message }
-
-  // Official MCP Registry browser
-  let regModal      = false
-  let regQuery      = ''
-  let regResults    = []
-  let regLoading    = false
-  let regError      = ''
-  let regCursor     = ''
-  let regSearchTimer = null
-  // Provision flow
-  let regSelected   = null   // MCPRegistryServer being installed
-  let regSpec       = null   // GlamaProvisionSpec from backend
-  let regEnvRequired= []
-  let regEnv        = {}
-  let regSaving     = false
-
-  function openRegModal() {
-    regModal = true; regQuery = ''; regResults = []; regError = ''
-    regCursor = ''; regSelected = null; regSpec = null; regEnvRequired = []; regEnv = {}
-    regSearch()
-  }
-  function closeRegModal() { regModal = false; regSelected = null }
-
-  async function regSearch() {
-    regLoading = true; regError = ''; regCursor = ''
-    try {
-      const res = await api.mcp.registrySearch(regQuery, '', 20)
-      regResults = res.servers || []
-      regCursor  = res.nextCursor || ''
-    } catch(e) { regError = e.message } finally { regLoading = false }
-  }
-
-  async function regLoadMore() {
-    if (!regCursor || regLoading) return
-    regLoading = true
-    try {
-      const res = await api.mcp.registrySearch(regQuery, regCursor, 20)
-      regResults = [...regResults, ...(res.servers || [])]
-      regCursor  = res.nextCursor || ''
-    } catch(e) { regError = e.message } finally { regLoading = false }
-  }
-
-  function regInputChange() {
-    clearTimeout(regSearchTimer)
-    regSearchTimer = setTimeout(regSearch, 400)
-  }
-
-  async function regInstall(srv) {
-    regSelected = srv; regSpec = null; regEnvRequired = []; regEnv = {}; regError = ''
-    regSaving = true
-    try {
-      const res = await api.mcp.provisionRegistry({ server_name: srv.name, env: {} })
-      if (res.ok) {
-        info = res.message || `Installed "${srv.name}".`
-        if (res.restart_needed) restartNeeded = true
-        closeRegModal(); await new Promise(r => setTimeout(r, 1000)); await load()
-      } else {
-        regSpec = res.spec; regEnvRequired = res.env_required || []
-        regEnv = {}; for (const k of regEnvRequired) regEnv[k] = ''
-      }
-    } catch(e) { regError = e.message } finally { regSaving = false }
-  }
-
-  async function regSaveWithEnv() {
-    regSaving = true; regError = ''
-    try {
-      const res = await api.mcp.provisionRegistry({ server_name: regSelected.name, env: regEnv })
-      if (res.ok) {
-        info = res.message || `Installed "${regSelected.name}".`
-        if (res.restart_needed) restartNeeded = true
-        closeRegModal(); await new Promise(r => setTimeout(r, 1000)); await load()
-      } else {
-        regError = 'Some required credentials are still missing.'
-        regEnvRequired = res.env_required || regEnvRequired
-      }
-    } catch(e) { regError = e.message } finally { regSaving = false }
-  }
 
   // Glama provisioner state
   let glamaModal = false
@@ -211,6 +135,20 @@
     }
   }
 
+  async function restartGateway() {
+    restarting = true
+    error = ''; info = ''
+    try {
+      await api.admin.restart()
+      info = 'Restart requested. Reconnect this page in a few seconds if it does not refresh automatically.'
+      restartNeeded = false
+    } catch (e) {
+      error = e.message
+    } finally {
+      setTimeout(() => { restarting = false }, 5000)
+    }
+  }
+
   // ── Glama provisioner ─────────────────────────────────────────────────────
   function openGlamaModal() {
     glamaModal = true
@@ -308,7 +246,6 @@
     <h1>MCP Servers</h1>
     <div class="header-actions">
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
-      <button class="btn-registry"   on:click={openRegModal}>🌐 Registry</button>
       <button class="btn-glama"     on:click={openGlamaModal}>⚡ Glama</button>
       <button class="btn-primary"   on:click={openNew}>+ New Server</button>
     </div>
@@ -316,8 +253,12 @@
 
   {#if restartNeeded}
     <div class="banner warn">
-      <strong>Restart needed.</strong> MCP config was modified — your changes are persisted in <code>config.yaml</code>
-      but won't be reflected in connected servers until you run <code>build-and-restart.command</code>.
+      <span>
+        <strong>Restart needed.</strong> MCP config was modified and persisted in <code>config.yaml</code>.
+      </span>
+      <button class="btn-secondary" on:click={restartGateway} disabled={restarting}>
+        {restarting ? 'Restarting…' : 'Restart Gateway'}
+      </button>
     </div>
   {/if}
   {#if error}<div class="banner err">{error}</div>{/if}
@@ -394,7 +335,14 @@
 </div>
 
 {#if editing}
-  <div class="modal-bg" on:click|self={closeModal}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close MCP server modal"
+    on:click|self={closeModal}
+    on:keydown={(e) => e.key === 'Escape' && closeModal()}
+  >
     <div class="modal wide">
       <h2>{servers.some(s => s.id === editing.id) ? 'Edit' : 'New'} MCP server</h2>
 
@@ -409,13 +357,13 @@
 
       <div class="row-2">
         <div class="field">
-          <label>Server ID <span class="req">*</span></label>
+          <span class="field-label">Server ID <span class="req">*</span></span>
           <input type="text" bind:value={editing.id}
                  placeholder="filesystem"
                  disabled={servers.some(s => s.id === editing.id)} />
         </div>
         <div class="field">
-          <label>Transport</label>
+          <span class="field-label">Transport</span>
           <select bind:value={editing.transport}>
             <option value="stdio">stdio (spawn local process)</option>
             <option value="http">http (remote endpoint)</option>
@@ -425,18 +373,18 @@
 
       {#if editing.transport === 'stdio'}
         <div class="field">
-          <label>Command <span class="req">*</span></label>
+          <span class="field-label">Command <span class="req">*</span></span>
           <input type="text" bind:value={editing.command} placeholder="npx" />
         </div>
         <div class="field">
-          <label>Arguments <span class="optional">(space-separated, double-quote to group)</span></label>
+          <span class="field-label">Arguments <span class="optional">(space-separated, double-quote to group)</span></span>
           <input type="text"
                  value={argsToString(editing.args)}
                  on:input={(e) => editing.args = stringToArgs(e.target.value)}
                  placeholder='-y "@modelcontextprotocol/server-filesystem" /Users/you/Documents' />
         </div>
         <div class="field">
-          <label>Environment variables <span class="optional">(merged onto os.Environ when the process starts)</span></label>
+          <span class="field-label">Environment variables <span class="optional">(merged onto os.Environ when the process starts)</span></span>
           <KeyValueEditor
             value={editing.env || {}}
             keyLabel="Variable" valueLabel="Value"
@@ -447,11 +395,11 @@
         </div>
       {:else}
         <div class="field">
-          <label>URL <span class="req">*</span></label>
+          <span class="field-label">URL <span class="req">*</span></span>
           <input type="text" bind:value={editing.url} placeholder="https://example.com/mcp" />
         </div>
         <div class="field">
-          <label>Headers <span class="optional">(sent on every request)</span></label>
+          <span class="field-label">Headers <span class="optional">(sent on every request)</span></span>
           <KeyValueEditor
             value={editing.headers || {}}
             keyLabel="Header" valueLabel="Value"
@@ -486,7 +434,14 @@
 {/if}
 
 {#if glamaModal}
-  <div class="modal-bg" on:click|self={closeGlamaModal}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close Glama install modal"
+    on:click|self={closeGlamaModal}
+    on:keydown={(e) => e.key === 'Escape' && closeGlamaModal()}
+  >
     <div class="modal wide">
       <h2>⚡ Install from Glama</h2>
       <p class="glama-hint">
@@ -495,7 +450,7 @@
       </p>
 
       <div class="field">
-        <label>Glama URL <span class="req">*</span></label>
+        <span class="field-label">Glama URL <span class="req">*</span></span>
         <input
           type="text"
           bind:value={glamaURL}
@@ -519,7 +474,7 @@
           <div class="glama-creds-label">Required credentials</div>
           {#each glamaEnvRequired as envKey}
             <div class="field">
-              <label>{envKey} <span class="req">*</span></label>
+              <span class="field-label">{envKey} <span class="req">*</span></span>
               {#if envKey.toLowerCase().includes('password') || envKey.toLowerCase().includes('token') || envKey.toLowerCase().includes('secret')}
                 <input type="password" bind:value={glamaEnv[envKey]}
                   placeholder={glamaSpec.env_schema?.find(e => e.name === envKey)?.description || envKey} />
@@ -549,104 +504,6 @@
   </div>
 {/if}
 
-<!-- Official MCP Registry browser -->
-{#if regModal}
-  <div class="modal-bg" on:click|self={closeRegModal}>
-    <div class="modal modal-wide">
-      <div class="modal-hdr">
-        <div>
-          <div class="modal-title">🌐 Official MCP Registry</div>
-          <div class="modal-sub">Browse and install servers from registry.modelcontextprotocol.io</div>
-        </div>
-        <button class="close-x" on:click={closeRegModal}>✕</button>
-      </div>
-
-      {#if !regSelected}
-        <!-- Search view -->
-        <input
-          class="reg-search"
-          type="search"
-          placeholder="Search servers…"
-          bind:value={regQuery}
-          on:input={regInputChange}
-        />
-
-        {#if regError}<div class="reg-err">{regError}</div>{/if}
-
-        <div class="reg-list">
-          {#if regLoading && regResults.length === 0}
-            <div class="reg-empty">Searching…</div>
-          {:else if regResults.length === 0 && !regLoading}
-            <div class="reg-empty">No results. Try a different search term.</div>
-          {:else}
-            {#each regResults as srv}
-              <div class="reg-item">
-                <div class="reg-item-info">
-                  <div class="reg-item-name">{srv.name}</div>
-                  {#if srv.description}<div class="reg-item-desc">{srv.description}</div>{/if}
-                  <div class="reg-item-meta">
-                    {#if srv.publisher}<span class="reg-tag">{srv.publisher}</span>{/if}
-                    {#if srv.runtime}<span class="reg-tag reg-runtime">{srv.runtime}</span>{/if}
-                    {#if srv.version}<span class="reg-tag">v{srv.version}</span>{/if}
-                  </div>
-                </div>
-                <button class="btn-registry xs" on:click={() => regInstall(srv)} disabled={regSaving}>
-                  Install
-                </button>
-              </div>
-            {/each}
-            {#if regCursor}
-              <button class="reg-more" on:click={regLoadMore} disabled={regLoading}>
-                {regLoading ? 'Loading…' : 'Load more'}
-              </button>
-            {/if}
-          {/if}
-        </div>
-
-        <div class="modal-row">
-          <button class="btn-secondary" on:click={closeRegModal}>Close</button>
-        </div>
-
-      {:else}
-        <!-- Env-var form for selected server -->
-        <div class="reg-selected-hdr">
-          <button class="back-btn" on:click={() => { regSelected = null; regSpec = null }}>← Back</button>
-          <span class="reg-selected-name">{regSelected.name}</span>
-        </div>
-
-        {#if regSpec && regSpec.description}
-          <p class="reg-desc-text">{regSpec.description}</p>
-        {/if}
-
-        {#if regError}<div class="reg-err">{regError}</div>{/if}
-
-        {#if regEnvRequired.length > 0}
-          <div class="env-section">
-            <p class="env-intro">This server requires the following credentials:</p>
-            {#each regEnvRequired as key}
-              <label class="field">
-                <span class="field-label">{key}</span>
-                <input type="text" bind:value={regEnv[key]} placeholder={key} />
-                {#if regSpec?.env_schema?.find(e => e.name === key)?.description}
-                  <span class="field-help">{regSpec.env_schema.find(e => e.name === key).description}</span>
-                {/if}
-              </label>
-            {/each}
-          </div>
-        {/if}
-
-        <div class="modal-row">
-          <button class="btn-secondary" on:click={closeRegModal}>Cancel</button>
-          <button class="btn-registry" on:click={regSaveWithEnv}
-            disabled={regSaving || regEnvRequired.some(k => !regEnv[k]?.trim())}>
-            {regSaving ? 'Installing…' : '🌐 Install'}
-          </button>
-        </div>
-      {/if}
-    </div>
-  </div>
-{/if}
-
 <style>
   .page        { padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem; }
   .page-header { display: flex; align-items: center; justify-content: space-between; }
@@ -654,6 +511,7 @@
   .header-actions { display: flex; gap: .5rem; }
 
   .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; }
+  .banner.warn { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
   .ok     { background: rgba(96,240,160,.08); border: 1px solid rgba(96,240,160,.3); color: #60f0a0; }
   .warn   { background: rgba(240,196,96,.08); border: 1px solid rgba(240,196,96,.3); color: #f0c460; }
@@ -727,7 +585,7 @@
 
   .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
   .field { display: flex; flex-direction: column; gap: .3rem; }
-  .field label { font-size: .72rem; color: #6b7294; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
+  .field-label { font-size: .72rem; color: #6b7294; text-transform: uppercase; letter-spacing: .06em; font-weight: 600; }
   .field input, .field select {
     background: #0e1020; border: 1px solid #2a2f4a; border-radius: 6px;
     color: #e8eaf6; font-size: .85rem; padding: .45rem .65rem; font-family: monospace;
@@ -761,50 +619,6 @@
   .btn-glama     { background: rgba(255,180,0,.12); color: #ffc533; border-color: rgba(255,180,0,.35); font-weight: 600; }
   .btn-glama:hover { background: rgba(255,180,0,.2); }
   .btn-glama:disabled { opacity: .5; cursor: not-allowed; }
-  .btn-registry  { background: rgba(100,160,255,.12); color: #64a0ff; border-color: rgba(100,160,255,.35); font-weight: 600; }
-  .btn-registry:hover { background: rgba(100,160,255,.22); }
-  .btn-registry:disabled { opacity: .5; cursor: not-allowed; }
-
-  /* Registry modal */
-  .modal-wide  { width: 640px; max-width: 96vw; max-height: 85vh; display: flex; flex-direction: column; }
-  .modal-hdr   { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
-  .modal-title { font-size: 1rem; font-weight: 600; }
-  .modal-sub   { font-size: .78rem; color: #555a7a; margin-top: .2rem; }
-  .close-x     { background: none; border: none; color: #555a7a; font-size: 1rem; cursor: pointer; padding: .2rem .45rem; border-radius: 6px; flex-shrink: 0; }
-  .close-x:hover { background: #1c1f35; color: #c8cadf; }
-
-  .reg-search  {
-    margin-top: .25rem; width: 100%; box-sizing: border-box;
-    background: #0e1020; border: 1px solid #2a2f4a; border-radius: 8px;
-    color: #e0e1f0; padding: .55rem .85rem; font-size: .85rem; outline: none;
-  }
-  .reg-search:focus { border-color: #64a0ff; }
-
-  .reg-list    { flex: 1; overflow-y: auto; margin-top: .5rem; display: flex; flex-direction: column; gap: .35rem; }
-  .reg-empty   { padding: 2rem 1rem; text-align: center; color: #555a7a; font-size: .85rem; }
-  .reg-err     { color: #f06060; font-size: .82rem; padding: .4rem 0; }
-  .reg-item    {
-    display: flex; align-items: center; gap: .75rem;
-    background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px;
-    padding: .7rem .9rem;
-  }
-  .reg-item:hover { border-color: #2a2f4a; }
-  .reg-item-info  { flex: 1; min-width: 0; }
-  .reg-item-name  { font-size: .85rem; font-weight: 600; color: #e0e1f0; font-family: monospace; }
-  .reg-item-desc  { font-size: .75rem; color: #7b82a8; margin-top: .2rem; line-height: 1.45; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .reg-item-meta  { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .35rem; }
-  .reg-tag        { font-size: .68rem; padding: .1rem .45rem; border-radius: 999px; background: #1c1f35; color: #6b7294; }
-  .reg-runtime    { background: rgba(100,160,255,.12); color: #64a0ff; }
-  .reg-more       { margin-top: .25rem; width: 100%; padding: .5rem; background: none; border: 1px dashed #2a2f4a; border-radius: 8px; color: #555a7a; cursor: pointer; font-size: .8rem; }
-  .reg-more:hover { border-color: #64a0ff; color: #64a0ff; }
-
-  .reg-selected-hdr { display: flex; align-items: center; gap: .75rem; margin-bottom: .25rem; }
-  .back-btn    { background: none; border: none; color: #64a0ff; cursor: pointer; font-size: .82rem; padding: 0; }
-  .back-btn:hover { text-decoration: underline; }
-  .reg-selected-name { font-size: .9rem; font-weight: 600; font-family: monospace; color: #e0e1f0; }
-  .reg-desc-text { font-size: .82rem; color: #7b82a8; line-height: 1.55; }
-  .env-section { display: flex; flex-direction: column; gap: .75rem; margin-top: .25rem; }
-  .env-intro   { font-size: .82rem; color: #b0b5d8; margin: 0; }
 
   .glama-hint { font-size: .82rem; color: #7b82a8; line-height: 1.6; margin: -.25rem 0 .25rem; }
   .glama-hint a { color: #ffc533; }

@@ -42,6 +42,7 @@ internal/webui/dist/*
 # ── Go workspace / coverage ───────────────────────────────────────────────────
 go.work
 go.work.sum
+.gocache/
 coverage.out
 coverage.html
 

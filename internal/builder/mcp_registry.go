@@ -65,25 +65,57 @@ type mcpRegEntry struct {
 }
 
 type mcpRegDetailResponse struct {
-	ID          string       `json:"id"`
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Version     string       `json:"version"`
-	Packages    []mcpRegPkg  `json:"packages"`
+	Server      *mcpRegServerDetail `json:"server"`
+	ID          string              `json:"id"`
+	Name        string              `json:"name"`
+	Title       string              `json:"title"`
+	Description string              `json:"description"`
+	Version     string              `json:"version"`
+	Packages    []mcpRegPkg         `json:"packages"`
+	Remotes     []mcpRegRemote      `json:"remotes"`
+}
+
+type mcpRegServerDetail struct {
+	ID          string         `json:"id"`
+	Name        string         `json:"name"`
+	Title       string         `json:"title"`
+	Description string         `json:"description"`
+	Version     string         `json:"version"`
+	Packages    []mcpRegPkg    `json:"packages"`
+	Remotes     []mcpRegRemote `json:"remotes"`
 }
 
 type mcpRegPkg struct {
 	RegistryName         string         `json:"registry_name"` // npm | pypi | docker | go
+	RegistryType         string         `json:"registryType"`  // official server.json spelling
 	Name                 string         `json:"name"`
+	Identifier           string         `json:"identifier"`
 	Version              string         `json:"version"`
 	RuntimeArguments     []string       `json:"runtime_arguments"`
 	EnvironmentVariables []mcpRegEnvVar `json:"environment_variables"`
+}
+
+type mcpRegRemote struct {
+	Type      string                    `json:"type"` // streamable-http | sse
+	URL       string                    `json:"url"`
+	Variables map[string]mcpRegVariable `json:"variables"`
+	Headers   []mcpRegEnvVar            `json:"headers"`
 }
 
 type mcpRegEnvVar struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
 	Required    bool   `json:"required"`
+	IsRequired  bool   `json:"isRequired"`
+	IsSecret    bool   `json:"isSecret"`
+}
+
+type mcpRegVariable struct {
+	Description string   `json:"description"`
+	Required    bool     `json:"required"`
+	IsRequired  bool     `json:"isRequired"`
+	Default     string   `json:"default"`
+	Choices     []string `json:"choices"`
 }
 
 // ── Search ────────────────────────────────────────────────────────────────────
@@ -205,16 +237,30 @@ func FetchMCPRegistryServer(name string) (*GlamaProvisionSpec, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
 		return nil, fmt.Errorf("decode registry detail: %w", err)
 	}
-	if len(detail.Packages) == 0 {
-		return nil, fmt.Errorf("server %q has no installable packages in registry", name)
+	return mcpRegistrySpecFromDetail(name, detail)
+}
+
+func mcpRegistrySpecFromDetail(name string, detail mcpRegDetailResponse) (*GlamaProvisionSpec, error) {
+	server := mcpRegServerDetail{
+		ID:          detail.ID,
+		Name:        detail.Name,
+		Title:       detail.Title,
+		Description: detail.Description,
+		Version:     detail.Version,
+		Packages:    detail.Packages,
+		Remotes:     detail.Remotes,
+	}
+	if detail.Server != nil {
+		server = *detail.Server
 	}
 
-	pkg := detail.Packages[0]
-	command, args := mcpRuntimeToCommand(pkg)
+	if len(server.Packages) == 0 && len(server.Remotes) == 0 {
+		return nil, fmt.Errorf("server %q has neither installable packages nor remote endpoints in registry", name)
+	}
 
 	var envSchema []EnvVarSpec
 	seen := map[string]bool{}
-	for _, p := range detail.Packages {
+	for _, p := range server.Packages {
 		for _, ev := range p.EnvironmentVariables {
 			if seen[ev.Name] {
 				continue
@@ -223,12 +269,12 @@ func FetchMCPRegistryServer(name string) (*GlamaProvisionSpec, error) {
 			envSchema = append(envSchema, EnvVarSpec{
 				Name:        ev.Name,
 				Description: ev.Description,
-				Required:    ev.Required,
+				Required:    ev.Required || ev.IsRequired,
 			})
 		}
 	}
 
-	displayName := detail.Name
+	displayName := server.Name
 	if displayName == "" {
 		displayName = name
 	}
@@ -237,15 +283,52 @@ func FetchMCPRegistryServer(name string) (*GlamaProvisionSpec, error) {
 		id = slugify(name)
 	}
 
-	return &GlamaProvisionSpec{
+	spec := &GlamaProvisionSpec{
 		ID:          id,
 		Name:        displayName,
-		Description: detail.Description,
-		Command:     command,
-		Args:        args,
+		Description: server.Description,
 		RegistryURL: fmt.Sprintf("%s/#/servers/%s", mcpRegistryBase, url.PathEscape(name)),
 		EnvSchema:   envSchema,
-	}, nil
+	}
+
+	if len(server.Packages) > 0 {
+		pkg := selectMCPPackage(server.Packages)
+		spec.Command, spec.Args = mcpRuntimeToCommand(pkg)
+		spec.SetupSteps = []string{
+			fmt.Sprintf("Soulacy will run `%s %s` as a local stdio MCP server.", spec.Command, strings.Join(spec.Args, " ")),
+			"Any required environment variables are stored in config.yaml for this MCP server.",
+			"After install, Soulacy will hot-connect the server and list its tools.",
+		}
+		return spec, nil
+	}
+
+	remote := selectMCPRemote(server.Remotes)
+	if remote.URL == "" {
+		return nil, fmt.Errorf("server %q remote endpoint is missing a URL", name)
+	}
+	spec.Transport = "http"
+	spec.URL = remote.URL
+	for key, variable := range remote.Variables {
+		spec.URLVariables = append(spec.URLVariables, EnvVarSpec{
+			Name:        key,
+			Description: variable.Description,
+			Required:    variable.Required || variable.IsRequired,
+		})
+	}
+	for _, header := range remote.Headers {
+		spec.HeaderSchema = append(spec.HeaderSchema, EnvVarSpec{
+			Name:        header.Name,
+			Description: header.Description,
+			Required:    header.Required || header.IsRequired,
+		})
+	}
+	spec.HeaderSchema = append(spec.HeaderSchema, inferredRemoteHeaders(remote.URL)...)
+	spec.SetupSteps = []string{
+		fmt.Sprintf("Soulacy will connect to the remote MCP endpoint `%s` over HTTP.", spec.URL),
+		"Required headers or URL variables are collected before saving the server.",
+		"After install, Soulacy will initialize the remote MCP session and fetch its tool list.",
+	}
+	return spec, nil
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -265,19 +348,74 @@ func FetchMCPRegistryServer(name string) (*GlamaProvisionSpec, error) {
 // suppresses the interactive install prompt). Docker is run with -i so the
 // container's stdin/stdout are wired for the stdio MCP transport.
 func mcpRuntimeToCommand(pkg mcpRegPkg) (command string, args []string) {
-	extra := pkg.RuntimeArguments
-	switch strings.ToLower(pkg.RegistryName) {
-	case "npm":
-		return "npx", append([]string{"-y", pkg.Name}, extra...)
-	case "pypi":
-		return "uvx", append([]string{pkg.Name}, extra...)
-	case "docker":
-		return "docker", append([]string{"run", "-i", "--rm", pkg.Name}, extra...)
-	case "go":
-		return "go", append([]string{"run", pkg.Name}, extra...)
-	default:
-		return pkg.Name, extra
+	registryName := pkg.RegistryName
+	if registryName == "" {
+		registryName = pkg.RegistryType
 	}
+	name := pkg.Name
+	if name == "" {
+		name = pkg.Identifier
+	}
+	extra := pkg.RuntimeArguments
+	switch strings.ToLower(registryName) {
+	case "npm":
+		return "npx", append([]string{"-y", name}, extra...)
+	case "pypi":
+		return "uvx", append([]string{name}, extra...)
+	case "docker", "oci":
+		return "docker", append([]string{"run", "-i", "--rm", name}, extra...)
+	case "go":
+		return "go", append([]string{"run", name}, extra...)
+	default:
+		return name, extra
+	}
+}
+
+func selectMCPPackage(pkgs []mcpRegPkg) mcpRegPkg {
+	for _, preferred := range []string{"npm", "pypi", "docker", "oci", "go"} {
+		for _, pkg := range pkgs {
+			kind := pkg.RegistryName
+			if kind == "" {
+				kind = pkg.RegistryType
+			}
+			if strings.EqualFold(kind, preferred) {
+				return pkg
+			}
+		}
+	}
+	return pkgs[0]
+}
+
+func selectMCPRemote(remotes []mcpRegRemote) mcpRegRemote {
+	for _, preferred := range []string{"streamable-http", "http"} {
+		for _, remote := range remotes {
+			if strings.EqualFold(remote.Type, preferred) && strings.Contains(strings.ToLower(remote.URL), "/mcp") {
+				return remote
+			}
+		}
+		for _, remote := range remotes {
+			if strings.EqualFold(remote.Type, preferred) {
+				return remote
+			}
+		}
+	}
+	return remotes[0]
+}
+
+func inferredRemoteHeaders(rawURL string) []EnvVarSpec {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil
+	}
+	host := strings.ToLower(u.Hostname())
+	if host == "api.inference.sh" || host == "sh.inference.ac" || strings.HasSuffix(host, ".inference.sh") {
+		return []EnvVarSpec{{
+			Name:        "Authorization",
+			Description: "Bearer inference.sh API key, for example: Bearer inf_...",
+			Required:    true,
+		}}
+	}
+	return nil
 }
 
 func mcpPublisher(name string) string {
