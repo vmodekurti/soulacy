@@ -7,7 +7,7 @@ Admin endpoints require `admin` role (server API key or JWT with `admin` role).
 No authentication required.
 
 ```
-GET /v1/health
+GET /api/v1/health
 ```
 
 ### Response
@@ -19,6 +19,28 @@ GET /v1/health
   "uptime_seconds": 3600
 }
 ```
+
+---
+
+## Restart gateway
+
+Requests an in-place gateway restart. Requires config write permission.
+
+```
+POST /api/v1/admin/restart
+Authorization: Bearer sy_your-server-key
+```
+
+### Response
+
+```json
+{
+  "ok": true,
+  "message": "Restart requested. A replacement gateway process is starting."
+}
+```
+
+The gateway starts a replacement process with the same executable and arguments, then exits. This is what the GUI **Restart Gateway** button uses after provider, channel, MCP, or config changes.
 
 ---
 

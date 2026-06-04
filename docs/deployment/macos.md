@@ -25,14 +25,14 @@ Edit the config with your API keys and settings.
 
 Create a plist:
 
-```xml title="~/Library/LaunchAgents/com.soulacy.server.plist"
+```xml title="~/Library/LaunchAgents/com.soulacy.soulacy.plist"
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.soulacy.server</string>
+  <string>com.soulacy.soulacy</string>
 
   <key>ProgramArguments</key>
   <array>
@@ -46,7 +46,10 @@ Create a plist:
   <true/>
 
   <key>KeepAlive</key>
-  <true/>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
 
   <key>StandardOutPath</key>
   <string>/usr/local/var/log/soulacy.log</string>
@@ -60,8 +63,8 @@ Create a plist:
 Load and start:
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.soulacy.server.plist
-launchctl start com.soulacy.server
+launchctl load ~/Library/LaunchAgents/com.soulacy.soulacy.plist
+launchctl start com.soulacy.soulacy
 ```
 
 ## Manage the service
@@ -74,12 +77,24 @@ launchctl list | grep soulacy
 tail -f /usr/local/var/log/soulacy.log
 
 # Restart
-launchctl stop com.soulacy.server
-launchctl start com.soulacy.server
+launchctl stop com.soulacy.soulacy
+launchctl start com.soulacy.soulacy
 
 # Unload (stop and disable autostart)
-launchctl unload ~/Library/LaunchAgents/com.soulacy.server.plist
+launchctl unload ~/Library/LaunchAgents/com.soulacy.soulacy.plist
 ```
+
+## Deploying from a development checkout
+
+From the repository root:
+
+```bash
+./deploy.sh
+```
+
+`deploy.sh` builds the GUI and Go binaries, installs `soulacy` and `sy`, syncs runtime files into `~/.soulacy`, and restarts the gateway.
+
+The web GUI **Restart Gateway** button is available after config-changing actions. It starts a replacement process with the same executable and arguments before the old process exits, so it works for both LaunchAgent installs and `deploy.sh` manual/nohup fallback installs.
 
 ## Data location
 

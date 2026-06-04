@@ -84,7 +84,7 @@ author: "Your Name"
 
 ### `name` (required)
 
-Unique identifier for the agent. Used in API paths (`/v1/agents/{name}/chat`) and log output. Must match `[a-z0-9-]+`.
+Unique identifier for the agent. Used by `/api/v1/chat` as `agent_id`, by channel mappings in `config.yaml`, and in log output. Must match `[a-z0-9-]+`.
 
 ### `model` (required)
 
@@ -133,7 +133,17 @@ Number of prior conversation turns to include in context. Default: `20`. Set to 
 
 ### `channels`
 
-Which messaging channels this agent is accessible on. Options: `http`, `telegram`, `slack`, `discord`, `whatsapp`.
+Which messaging channels this agent is intended to be accessible on. Options include `http`, `telegram`, `slack`, `discord`, and `whatsapp`.
+
+This field does not create platform credentials or choose the default inbound route. The runtime route is configured under `channels.<type>.agent_id` or `channels.<type>.bots[].agent_id` in `config.yaml`.
+
+```yaml title="config.yaml"
+channels:
+  telegram:
+    enabled: true
+    token: "..."
+    agent_id: assistant
+```
 
 ### `workflow`
 

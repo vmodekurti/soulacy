@@ -33,25 +33,39 @@ Use the generated OAuth2 URL to add the bot to your server.
 ```yaml title="config.yaml"
 channels:
   discord:
+    enabled: true
     token: "MTI3..."    # Bot token
-    agents:
-      - assistant
-    default_agent: assistant
+    agent_id: assistant
+    guild_id: ""        # optional: restrict to one guild/server
 ```
 
 ---
 
-## Routing by channel
+## Multiple Discord bots
 
-```yaml
+Use `bots:` when you want separate Discord bot credentials mapped to separate agents:
+
+```yaml title="config.yaml"
 channels:
   discord:
-    token: "..."
-    routes:
-      "support": support-agent      # channel name
-      "research": researcher
-    default_agent: assistant
+    enabled: true
+    bots:
+      - token: "BOT_TOKEN_1"
+        agent_id: system
+        guild_id: ""
+      - token: "BOT_TOKEN_2"
+        agent_id: moderator-agent
+        guild_id: ""
 ```
+
+This registers two adapter IDs:
+
+| Adapter ID | Agent |
+|------------|-------|
+| `discord` | `system` |
+| `discord-moderator-agent` | `moderator-agent` |
+
+You can configure this from the GUI: **Channels → Discord → Edit → Bot mappings**.
 
 ---
 

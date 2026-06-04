@@ -3,7 +3,7 @@
 ## Chat with an agent
 
 ```
-POST /v1/agents/{agent_id}/chat
+POST /api/v1/chat
 Authorization: Bearer <token>
 Content-Type: application/json
 ```
@@ -12,34 +12,35 @@ Content-Type: application/json
 
 ```json
 {
-  "message": "Summarise the latest AI news",
-  "session_id": "user-abc"
+  "agent_id": "assistant",
+  "user_id": "user-abc",
+  "text": "Summarise the latest AI news"
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `message` | string | ✅ | User message text |
-| `session_id` | string | — | Session ID for conversation history. Omit to start a new session. |
-| `attachments` | array | — | List of file/image attachments |
+| `agent_id` | string | ✅ | Agent to invoke |
+| `text` | string | ✅ | User message text |
+| `user_id` | string | — | Stable user/session key. Defaults to `api-user`. |
+| `username` | string | — | Display name. Defaults to `user_id`. |
+| `overrides` | object | — | One-run playground/test overrides. Does not mutate `SOUL.yaml`. |
 
-### Attachments
+### One-run overrides
 
 ```json
 {
-  "message": "What's in this image?",
-  "session_id": "u1",
-  "attachments": [
-    {
-      "type": "image",
-      "url": "https://example.com/photo.jpg"
-    },
-    {
-      "type": "document",
-      "url": "https://example.com/report.pdf",
-      "filename": "report.pdf"
-    }
-  ]
+  "agent_id": "assistant",
+  "user_id": "lab",
+  "text": "Answer deterministically.",
+  "overrides": {
+    "provider": "ollama",
+    "model": "qwen2.5:72b",
+    "temperature": 0,
+    "max_tokens": 800,
+    "max_turns": 4,
+    "tool_choice": "none"
+  }
 }
 ```
 
@@ -47,36 +48,29 @@ Content-Type: application/json
 
 ```json
 {
-  "reply": "Here's a summary of the latest AI news...",
-  "agent_id": "assistant",
-  "session_id": "user-abc",
-  "tokens_used": {
-    "input": 312,
-    "output": 128
-  }
+  "reply": "Here's a summary of the latest AI news..."
 }
 ```
 
 ### Streaming
 
-Add `Accept: text/event-stream` to receive token-by-token streaming via Server-Sent Events.
+Use `/api/v1/chat/stream` to receive Server-Sent Events.
 
 ```bash
-curl -N -X POST http://localhost:8080/v1/agents/assistant/chat \
+curl -N -X POST http://localhost:8080/api/v1/chat/stream \
   -H "Authorization: Bearer sk_..." \
   -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"message": "Tell me a joke", "session_id": "u1"}'
+  -d '{"agent_id":"assistant","user_id":"u1","text":"Tell me a joke"}'
 ```
 
 Events:
 
 ```
-data: {"delta": "Why"}
-data: {"delta": " don't"}
-data: {"delta": " scientists"}
+data: Why
+data:  don't
+data:  scientists
 ...
-data: {"done": true, "tokens_used": {"input": 8, "output": 22}}
+data: [DONE]
 ```
 
 ---
@@ -84,7 +78,7 @@ data: {"done": true, "tokens_used": {"input": 8, "output": 22}}
 ## List agents
 
 ```
-GET /v1/agents
+GET /api/v1/agents
 Authorization: Bearer <token>
 ```
 
@@ -116,7 +110,7 @@ Authorization: Bearer <token>
 ## Get agent
 
 ```
-GET /v1/agents/{agent_id}
+GET /api/v1/agents/{agent_id}
 Authorization: Bearer <token>
 ```
 

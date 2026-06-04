@@ -15,44 +15,54 @@ Connect your agents to Telegram using the Bot API.
 ```yaml title="config.yaml"
 channels:
   telegram:
+    enabled: true
     token: "1234567890:AAH..."
-    agents:
-      - assistant          # which agents are reachable on Telegram
-    webhook_url: "https://yourdomain.com/webhooks/telegram"   # optional
+    agent_id: assistant
+    allowed_user_ids: []   # optional allowlist of Telegram user IDs
 ```
 
-### 3. Webhook vs polling
+Telegram currently uses long polling by default, so it works on a laptop or private server without a public HTTPS URL.
 
-**Polling (default)** — Soulacy polls Telegram for new updates. Works without a public URL. Best for development.
+### 3. Allow specific Telegram users
 
-**Webhook** — Telegram pushes updates to your server. Requires a publicly reachable HTTPS URL. Best for production.
+Set `allowed_user_ids` to restrict who can talk to the bot:
 
 ```yaml
 channels:
   telegram:
+    enabled: true
     token: "..."
-    mode: webhook                            # polling (default) | webhook
-    webhook_url: "https://yourdomain.com/webhooks/telegram"
+    agent_id: assistant
+    allowed_user_ids: [123456789, 987654321]
 ```
-
-On startup, Soulacy automatically registers the webhook URL with Telegram.
 
 ---
 
-## Multi-agent routing
+## Multiple Telegram bots
 
-Route different Telegram commands to different agents:
+Use `bots:` when you want one Telegram bot per agent:
 
 ```yaml
 channels:
   telegram:
-    token: "..."
-    routes:
-      /start: assistant
-      /research: researcher
-      /summary: summarizer
-    default_agent: assistant    # fallback for messages without a command
+    enabled: true
+    bots:
+      - token: "BOT_TOKEN_1"
+        agent_id: system
+        allowed_user_ids: [123456789]
+      - token: "BOT_TOKEN_2"
+        agent_id: financial-agent
+        allowed_user_ids: [123456789]
 ```
+
+This registers two adapter IDs:
+
+| Adapter ID | Agent |
+|------------|-------|
+| `telegram` | `system` |
+| `telegram-financial-agent` | `financial-agent` |
+
+You can configure this from the GUI: **Channels → Telegram → Edit → Bot mappings**.
 
 ---
 
@@ -85,15 +95,20 @@ storage:
   path: ./soulacy.db
 channels:
   telegram:
+    enabled: true
     token: "1234567890:AAH..."
-    agents: [assistant]
-agents:
-  dir: ./agents
+    agent_id: assistant
+agent_dirs:
+  - ./agents
 ```
 
 ```yaml title="agents/assistant.soul.yaml"
-name: assistant
-model: gpt-4o-mini
+id: assistant
+name: Assistant
+trigger: channel
+llm:
+  provider: openai
+  model: gpt-4o-mini
 system_prompt: You are a helpful assistant on Telegram.
 channels:
   - telegram

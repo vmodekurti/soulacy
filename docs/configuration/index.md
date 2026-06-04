@@ -19,18 +19,17 @@ llm:           # LLM provider registry
   providers: { ... }
 
 storage:       # Persistence backend
-  type: sqlite
-  path: ./soulacy.db
+  backend: sqlite
 
 auth:          # Authentication & RBAC
   jwt_secret: "..."
   api_keys: { ... }
 
 channels:      # Messaging channel adapters
-  telegram: { ... }
-  slack: { ... }
-  discord: { ... }
-  whatsapp: { ... }
+  telegram:
+    enabled: true
+    token: "..."
+    agent_id: assistant
 
 rate_limit:    # Per-user/org rate limiting
   enabled: true
@@ -40,8 +39,8 @@ telemetry:     # OpenTelemetry & cost tracking
   enabled: true
   ...
 
-agents:        # Agent discovery
-  dir: ./agents
+agent_dirs:    # Agent discovery
+  - ./agents
 ```
 
 ## Environment variable overrides
@@ -58,6 +57,7 @@ export SOULACY__LLM__PROVIDERS__OPENAI__API_KEY="sk-..."
 | Section | Description |
 |---------|-------------|
 | [server](server.md) | Host, port, API key, TLS |
+| [gui](gui.md) | Built-in web console, restart button, bot mappings |
 | [llm](llm.md) | LLM providers and defaults |
 | [storage](storage.md) | SQLite, Postgres, Redis |
 | [auth](auth.md) | JWT, managed API keys, RBAC |

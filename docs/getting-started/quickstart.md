@@ -23,11 +23,10 @@ llm:
       api_key: "sk-..."
 
 storage:
-  type: sqlite
-  path: ./soulacy.db
+  backend: sqlite
 
-agents:
-  dir: ./agents
+agent_dirs:
+  - ./agents
 ```
 
 ---
@@ -41,9 +40,13 @@ mkdir agents
 Create `agents/assistant.soul.yaml`:
 
 ```yaml title="agents/assistant.soul.yaml"
-name: assistant
+id: assistant
+name: Assistant
 description: A helpful general-purpose assistant
-model: gpt-4o-mini
+trigger: channel
+llm:
+  provider: openai
+  model: gpt-4o-mini
 system_prompt: |
   You are a helpful, concise assistant.
 channels:
@@ -71,19 +74,17 @@ You should see:
 ## 4. Talk to your agent
 
 ```bash
-curl -X POST http://localhost:8080/v1/agents/assistant/chat \
+curl -X POST http://localhost:8080/api/v1/chat \
   -H "Authorization: Bearer your-server-api-key" \
   -H "Content-Type: application/json" \
-  -d '{"message": "Hello! What can you do?"}'
+  -d '{"agent_id":"assistant","user_id":"quickstart","text":"Hello! What can you do?"}'
 ```
 
 Response:
 
 ```json
 {
-  "reply": "Hi! I'm a helpful assistant. I can answer questions, help with writing, analysis, and much more. What would you like to do?",
-  "agent_id": "assistant",
-  "session_id": "sess_abc123"
+  "reply": "Hi! I'm a helpful assistant..."
 }
 ```
 
@@ -96,9 +97,9 @@ Get a bot token from [@BotFather](https://t.me/BotFather), then update your conf
 ```yaml title="config.yaml"
 channels:
   telegram:
+    enabled: true
     token: "1234567890:AAH..."
-    agents:
-      - assistant
+    agent_id: assistant
 ```
 
 Restart — your agent now replies in Telegram.

@@ -42,32 +42,39 @@ Under **Event Subscriptions**, enable and subscribe to:
 ```yaml title="config.yaml"
 channels:
   slack:
+    enabled: true
     bot_token: "xoxb-..."
     app_token: "xapp-..."        # Socket Mode token
-    signing_secret: "..."
-    agents:
-      - assistant
-    default_agent: assistant
+    agent_id: assistant
 ```
 
 ---
 
-## Webhook mode (alternative)
+## Multiple Slack bots
 
-If you prefer webhooks over Socket Mode:
+Use `bots:` when you want separate Slack bot credentials mapped to separate agents:
 
-```yaml
+```yaml title="config.yaml"
 channels:
   slack:
-    bot_token: "xoxb-..."
-    signing_secret: "..."
-    mode: webhook
-    webhook_path: /webhooks/slack
-    agents:
-      - assistant
+    enabled: true
+    bots:
+      - bot_token: "xoxb-system"
+        app_token: "xapp-system"
+        agent_id: system
+      - bot_token: "xoxb-support"
+        app_token: "xapp-support"
+        agent_id: support-agent
 ```
 
-Set the **Request URL** in Event Subscriptions to `https://yourdomain.com/webhooks/slack`.
+This registers two adapter IDs:
+
+| Adapter ID | Agent |
+|------------|-------|
+| `slack` | `system` |
+| `slack-support-agent` | `support-agent` |
+
+You can configure this from the GUI: **Channels → Slack → Edit → Bot mappings**.
 
 ---
 
@@ -81,21 +88,3 @@ Set the **Request URL** in Event Subscriptions to `https://yourdomain.com/webhoo
 | Block Kit formatting | ✅ |
 | File uploads | ✅ (text extracted) |
 | Slash commands | 🔜 Planned |
-
----
-
-## Routing by channel
-
-```yaml
-channels:
-  slack:
-    bot_token: "xoxb-..."
-    app_token: "xapp-..."
-    signing_secret: "..."
-    routes:
-      "#support": support-agent
-      "#research": researcher
-    default_agent: assistant
-```
-
-Messages in `#support` are routed to the `support-agent`, messages in `#research` to `researcher`, and DMs to `assistant`.
