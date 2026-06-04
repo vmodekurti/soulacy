@@ -5,7 +5,7 @@ The HTTP channel is always active and exposes a REST API for direct integration 
 ## Chat endpoint
 
 ```
-POST /v1/agents/{agent_id}/chat
+POST /api/v1/chat
 Authorization: Bearer <token>
 Content-Type: application/json
 ```
@@ -14,14 +14,9 @@ Content-Type: application/json
 
 ```json
 {
-  "message": "What is the capital of France?",
-  "session_id": "user-123",        // optional; omit to start a new session
-  "attachments": [                  // optional
-    {
-      "type": "image",
-      "url": "https://example.com/photo.jpg"
-    }
-  ]
+  "agent_id": "assistant",
+  "user_id": "user-123",
+  "text": "What is the capital of France?"
 }
 ```
 
@@ -29,13 +24,7 @@ Content-Type: application/json
 
 ```json
 {
-  "reply": "The capital of France is Paris.",
-  "agent_id": "assistant",
-  "session_id": "user-123",
-  "tokens_used": {
-    "input": 42,
-    "output": 12
-  }
+  "reply": "The capital of France is Paris."
 }
 ```
 
@@ -46,20 +35,19 @@ Content-Type: application/json
 For real-time token streaming, add `Accept: text/event-stream`:
 
 ```bash
-curl -N -X POST http://localhost:8080/v1/agents/assistant/chat \
+curl -N -X POST http://localhost:8080/api/v1/chat/stream \
   -H "Authorization: Bearer sy_your-key" \
   -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -d '{"message": "Tell me a short story", "session_id": "u1"}'
+  -d '{"agent_id":"assistant","user_id":"u1","text":"Tell me a short story"}'
 ```
 
 Events:
 
 ```
-data: {"delta": "Once"}
-data: {"delta": " upon"}
-data: {"delta": " a time"}
-data: {"done": true, "session_id": "u1", "tokens_used": {"input": 12, "output": 24}}
+data: Once
+data:  upon
+data:  a time
+data: [DONE]
 ```
 
 ---
@@ -70,37 +58,16 @@ Sessions persist conversation history. Use the same `session_id` across requests
 
 ```bash
 # Turn 1
-curl -X POST .../agents/assistant/chat \
-  -d '{"message": "My name is Alice", "session_id": "alice-session"}'
+curl -X POST .../api/v1/chat \
+  -d '{"agent_id":"assistant","user_id":"alice-session","text":"My name is Alice"}'
 
 # Turn 2 — agent remembers the name
-curl -X POST .../agents/assistant/chat \
-  -d '{"message": "What is my name?", "session_id": "alice-session"}'
+curl -X POST .../api/v1/chat \
+  -d '{"agent_id":"assistant","user_id":"alice-session","text":"What is my name?"}'
 # Response: "Your name is Alice."
 ```
 
 Sessions are stored in the configured storage backend and preserved across server restarts.
-
----
-
-## Attachments
-
-Pass images or documents in the request:
-
-```json
-{
-  "message": "What does this chart show?",
-  "session_id": "u1",
-  "attachments": [
-    {
-      "type": "image",
-      "url": "https://example.com/chart.png"
-    }
-  ]
-}
-```
-
-Requires a vision-capable model (`gpt-4o`, `claude-3-5-sonnet`, etc.) configured for the agent.
 
 ---
 

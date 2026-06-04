@@ -77,9 +77,10 @@ channels:
 ## Skill directory
 
 ```yaml title="config.yaml"
-agents:
-  dir: ./agents
-  skills_dir: ./skills   # default: ./skills
+agent_dirs:
+  - ./agents
+skill_dirs:
+  - ./skills
 ```
 
 ## Multiple skills

@@ -81,6 +81,7 @@ nav:
     - Your First Agent: getting-started/first-agent.md
   - Configuration:
     - Overview: configuration/index.md
+    - Web GUI: configuration/gui.md
     - Server: configuration/server.md
     - LLM Providers: configuration/llm.md
     - Storage: configuration/storage.md

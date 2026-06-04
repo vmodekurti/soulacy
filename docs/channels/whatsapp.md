@@ -33,20 +33,19 @@ In the WhatsApp section of your app, add and verify your business phone number.
 ```yaml title="config.yaml"
 channels:
   whatsapp:
+    enabled: true
     access_token: "EAA..."
     phone_number_id: "123456789"
     verify_token: "my-webhook-secret"
-    webhook_path: /webhooks/whatsapp
-    agents:
-      - assistant
-    default_agent: assistant
+    app_secret: "meta-app-secret"    # required for webhook signature verification
+    agent_id: assistant
 ```
 
 ### 5. Register the webhook
 
 In your Meta app under **WhatsApp → Configuration**, set:
 
-- **Callback URL**: `https://yourdomain.com/webhooks/whatsapp`
+- **Callback URL**: `https://yourdomain.com/channels/whatsapp/webhook`
 - **Verify Token**: the same string as `verify_token` above
 - Subscribe to: `messages`
 

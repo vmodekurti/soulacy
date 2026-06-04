@@ -1,6 +1,6 @@
 # Channels Overview
 
-Channels are adapters that connect agents to messaging platforms. Each channel handles authentication, message formatting, and webhook delivery for its platform.
+Channels are adapters that connect agents to messaging platforms. Each channel handles platform authentication, inbound message normalization, outbound replies, and live connection status.
 
 ## Supported channels
 
@@ -12,16 +12,70 @@ Channels are adapters that connect agents to messaging platforms. Each channel h
 | [Discord](discord.md) | ✅ Stable | `channels.discord` |
 | [WhatsApp](whatsapp.md) | ✅ Stable | `channels.whatsapp` |
 
-## How channels work
+## How channels route to agents
 
-1. A user sends a message on a platform (Telegram, Slack, etc.)
-2. The platform delivers a webhook to Soulacy
-3. The channel adapter normalises the message into a `Message` struct
-4. The runtime engine dispatches to the correct agent
-5. The agent produces a reply
-6. The channel adapter formats and sends the reply back
+There are two related configuration layers:
 
-All channels share the same agent engine and conversation history — a user can switch channels mid-conversation and context is preserved.
+1. `config.yaml` chooses which agent a channel adapter routes inbound messages to.
+2. The agent's `SOUL.yaml` `channels:` list declares which channels that agent is intended to be reachable on.
+
+For a simple single-bot channel, `agent_id` is the routing target:
+
+```yaml title="config.yaml"
+channels:
+  telegram:
+    enabled: true
+    token: "1234567890:AAH..."
+    agent_id: assistant
+```
+
+```yaml title="agents/assistant/SOUL.yaml"
+id: assistant
+trigger: channel
+channels:
+  - telegram
+  - http
+```
+
+At runtime, Telegram inbound messages become messages with `channel: telegram` and `agent_id: assistant`. The engine handles the message and the channel registry sends the reply back through the same adapter ID.
+
+## Multi-bot mappings
+
+Telegram, Slack, and Discord support multiple bot credentials under the same channel type. This is useful when you want separate platform bots mapped to separate agents.
+
+```yaml title="config.yaml"
+channels:
+  telegram:
+    enabled: true
+    bots:
+      - token: "BOT_TOKEN_FOR_SYSTEM"
+        agent_id: system
+        allowed_user_ids: [123456789]
+      - token: "BOT_TOKEN_FOR_FINANCE"
+        agent_id: financial-agent
+        allowed_user_ids: [123456789]
+```
+
+The first bot keeps the canonical adapter ID. Additional bots get deterministic adapter IDs:
+
+| Adapter ID | Agent |
+|------------|-------|
+| `telegram` | `system` |
+| `telegram-financial-agent` | `financial-agent` |
+
+The same pattern applies to Slack and Discord:
+
+- first bot: `slack` or `discord`
+- later bots: `slack-<agent_id>` or `discord-<agent_id>`
+
+## Managing mappings in the GUI
+
+Open **Channels** in the web UI:
+
+- Channel cards show **Agent mappings**, including adapter ID, agent ID, and connection state.
+- Click **Edit** on Telegram, Slack, or Discord to manage **Bot mappings**.
+- Bot mapping rows provide an agent ID dropdown populated from your installed agents.
+- After saving channel settings, click **Restart Gateway** from the banner to reconnect adapters.
 
 ## Multi-channel agents
 
@@ -37,6 +91,8 @@ channels:
   - slack
   - discord
 ```
+
+The channel must also be configured in `config.yaml`; the agent-side list alone does not create platform credentials.
 
 ## Channel-specific formatting
 
