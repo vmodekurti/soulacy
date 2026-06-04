@@ -160,11 +160,11 @@ func TestBuildAgentCallSchemas(t *testing.T) {
 // hard-blocked from any other provider at engine entry.
 //
 // The matrix covers:
-//   1. Empty/nil allowlist = legacy behaviour (every provider allowed).
-//   2. Single-provider allowlist matches its own provider.
-//   3. Single-provider allowlist rejects any other provider — the bug fix.
-//   4. Multi-entry allowlist accepts members + rejects non-members.
-//   5. Case sensitivity — names must match exactly (Ollama != ollama).
+//  1. Empty/nil allowlist = legacy behaviour (every provider allowed).
+//  2. Single-provider allowlist matches its own provider.
+//  3. Single-provider allowlist rejects any other provider — the bug fix.
+//  4. Multi-entry allowlist accepts members + rejects non-members.
+//  5. Case sensitivity — names must match exactly (Ollama != ollama).
 func TestProviderAllowed(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -187,6 +187,90 @@ func TestProviderAllowed(t *testing.T) {
 			if got != tc.want {
 				t.Errorf("providerAllowed(%v, %q) = %v, want %v",
 					tc.allowlist, tc.provider, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMCPToolAllowed(t *testing.T) {
+	serversRocket := []string{"rocketmoney"}
+	serversNone := []string{}
+	serversWildcard := []string{"*"}
+	toolsTxn := []string{"mcp__rocketmoney__get_transactions"}
+	toolsNone := []string{}
+
+	cases := []struct {
+		name     string
+		def      *agent.Definition
+		fullName string
+		want     bool
+	}{
+		{
+			name:     "legacy absent allowlists permit all MCP tools",
+			def:      &agent.Definition{ID: "legacy"},
+			fullName: "mcp__rocketmoney__get_accounts",
+			want:     true,
+		},
+		{
+			name:     "server allowlist permits every tool on that server",
+			def:      &agent.Definition{ID: "finance", MCPServers: &serversRocket},
+			fullName: "mcp__rocketmoney__get_accounts",
+			want:     true,
+		},
+		{
+			name:     "server allowlist blocks other servers",
+			def:      &agent.Definition{ID: "finance", MCPServers: &serversRocket},
+			fullName: "mcp__filesystem__read_file",
+			want:     false,
+		},
+		{
+			name:     "explicit empty server allowlist disables MCP",
+			def:      &agent.Definition{ID: "none", MCPServers: &serversNone},
+			fullName: "mcp__rocketmoney__get_accounts",
+			want:     false,
+		},
+		{
+			name:     "full tool allowlist permits one tool",
+			def:      &agent.Definition{ID: "finance", MCPTools: &toolsTxn},
+			fullName: "mcp__rocketmoney__get_transactions",
+			want:     true,
+		},
+		{
+			name:     "full tool allowlist blocks sibling tool",
+			def:      &agent.Definition{ID: "finance", MCPTools: &toolsTxn},
+			fullName: "mcp__rocketmoney__get_accounts",
+			want:     false,
+		},
+		{
+			name:     "explicit empty tool allowlist disables MCP",
+			def:      &agent.Definition{ID: "none", MCPTools: &toolsNone},
+			fullName: "mcp__rocketmoney__get_accounts",
+			want:     false,
+		},
+		{
+			name:     "wildcard server allowlist permits all MCP",
+			def:      &agent.Definition{ID: "all", MCPServers: &serversWildcard},
+			fullName: "mcp__filesystem__read_file",
+			want:     true,
+		},
+		{
+			name:     "unsanitized server allowlist matches sanitized tool prefix",
+			def:      &agent.Definition{ID: "mixed", MCPServers: &[]string{"Rocket Money"}},
+			fullName: "mcp__rocket_money__get_transactions",
+			want:     true,
+		},
+		{
+			name:     "malformed MCP name is rejected once filtering is active",
+			def:      &agent.Definition{ID: "bad", MCPServers: &serversRocket},
+			fullName: "mcp__rocketmoney",
+			want:     false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := mcpToolAllowed(tc.def, tc.fullName); got != tc.want {
+				t.Errorf("mcpToolAllowed(%+v, %q) = %v, want %v",
+					tc.def, tc.fullName, got, tc.want)
 			}
 		})
 	}

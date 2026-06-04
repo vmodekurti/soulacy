@@ -196,6 +196,19 @@ type Definition struct {
 	// in YAML so a GUI round-trip preserves the user's intent.
 	Builtins *[]string `yaml:"builtins,omitempty" json:"builtins,omitempty"`
 
+	// --- MCP tool allowlists (opt-in restriction) ---
+	// MCPServers limits which connected MCP servers this agent can see and call.
+	// Nil / absent preserves legacy behavior: all connected MCP servers are
+	// available. A present empty list means no MCP servers are available. Use
+	// ["*"] or ["all"] to explicitly allow every connected MCP server.
+	MCPServers *[]string `yaml:"mcp_servers,omitempty" json:"mcp_servers,omitempty"`
+
+	// MCPTools limits individual MCP tools by full namespaced tool name, e.g.
+	// "mcp__rocketmoney__get_transactions". It may be combined with
+	// MCPServers; a tool is allowed when either allowlist admits it. Nil means
+	// no per-tool restriction unless MCPServers is also set.
+	MCPTools *[]string `yaml:"mcp_tools,omitempty" json:"mcp_tools,omitempty"`
+
 	// SystemTools, when true, opts this agent into the OS-level built-in tool set
 	// (shell_exec, run_script, install_library, read_file, write_file, list_dir).
 	// ALSO requires runtime.allow_system_tools: true in config.yaml — both must
@@ -303,12 +316,12 @@ func (d *Definition) Clone() *Definition {
 	cp := *d // copy scalar fields
 
 	// Slices — each gets its own backing array.
-	cp.Tags          = cloneStrSlice(d.Tags)
-	cp.Channels      = cloneStrSlice(d.Channels)
-	cp.Skills        = cloneStrSlice(d.Skills)
-	cp.Knowledge     = cloneStrSlice(d.Knowledge)
-	cp.Agents        = cloneStrSlice(d.Agents)
-	cp.ConfirmTools  = cloneStrSlice(d.ConfirmTools)
+	cp.Tags = cloneStrSlice(d.Tags)
+	cp.Channels = cloneStrSlice(d.Channels)
+	cp.Skills = cloneStrSlice(d.Skills)
+	cp.Knowledge = cloneStrSlice(d.Knowledge)
+	cp.Agents = cloneStrSlice(d.Agents)
+	cp.ConfirmTools = cloneStrSlice(d.ConfirmTools)
 
 	// Memory slices.
 	cp.Memory = MemoryPolicy{
@@ -336,6 +349,14 @@ func (d *Definition) Clone() *Definition {
 	if d.Builtins != nil {
 		cloned := cloneStrSlice(*d.Builtins)
 		cp.Builtins = &cloned
+	}
+	if d.MCPServers != nil {
+		cloned := cloneStrSlice(*d.MCPServers)
+		cp.MCPServers = &cloned
+	}
+	if d.MCPTools != nil {
+		cloned := cloneStrSlice(*d.MCPTools)
+		cp.MCPTools = &cloned
 	}
 
 	// Tools — each ToolDef's Parameters map gets its own header copy.

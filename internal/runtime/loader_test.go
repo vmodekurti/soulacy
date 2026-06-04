@@ -84,6 +84,10 @@ agents:
   - peer-two
 knowledge:
   - kb-x
+mcp_servers:
+  - rocketmoney
+mcp_tools:
+  - mcp__filesystem__read_file
 `)
 	agentDir := filepath.Join(dir, "parse-test")
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -106,6 +110,12 @@ knowledge:
 	}
 	if len(def.Knowledge) != 1 || def.Knowledge[0] != "kb-x" {
 		t.Errorf("knowledge list: got %v", def.Knowledge)
+	}
+	if def.MCPServers == nil || len(*def.MCPServers) != 1 || (*def.MCPServers)[0] != "rocketmoney" {
+		t.Errorf("mcp_servers list: got %v", def.MCPServers)
+	}
+	if def.MCPTools == nil || len(*def.MCPTools) != 1 || (*def.MCPTools)[0] != "mcp__filesystem__read_file" {
+		t.Errorf("mcp_tools list: got %v", def.MCPTools)
 	}
 }
 
@@ -152,5 +162,26 @@ func TestDefinition_ResolvedRunTimeout(t *testing.T) {
 				t.Errorf("got %v, want %v", got, timeFromSec(tc.want))
 			}
 		})
+	}
+}
+
+func TestDefinitionCloneCopiesMCPAllowlists(t *testing.T) {
+	servers := []string{"rocketmoney"}
+	tools := []string{"mcp__rocketmoney__get_transactions"}
+	def := &agent.Definition{
+		ID:         "finance",
+		MCPServers: &servers,
+		MCPTools:   &tools,
+	}
+
+	cp := def.Clone()
+	(*cp.MCPServers)[0] = "filesystem"
+	(*cp.MCPTools)[0] = "mcp__filesystem__read_file"
+
+	if (*def.MCPServers)[0] != "rocketmoney" {
+		t.Fatalf("Clone aliased MCPServers: got %q", (*def.MCPServers)[0])
+	}
+	if (*def.MCPTools)[0] != "mcp__rocketmoney__get_transactions" {
+		t.Fatalf("Clone aliased MCPTools: got %q", (*def.MCPTools)[0])
 	}
 }

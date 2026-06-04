@@ -94,8 +94,8 @@ fi
 
 # ── LaunchAgent (auto-start on login) ────────────────────────────────────────
 PLIST_SRC="scripts/com.soulacy.gateway.plist"
-PLIST_DEST="${HOME}/Library/LaunchAgents/com.soulacy.gateway.plist"
-AGENT_LABEL="com.soulacy.gateway"
+PLIST_DEST="${HOME}/Library/LaunchAgents/com.soulacy.soulacy.plist"
+AGENT_LABEL="com.soulacy.soulacy"
 
 log "Installing LaunchAgent (auto-start on login)..."
 mkdir -p "${HOME}/Library/LaunchAgents"
@@ -139,7 +139,7 @@ echo -e "    ${BLUE}sy chat --agent hello-world \"Hi\"${NC}  Chat with an agent"
 echo -e "    ${BLUE}sy server status${NC}                 Check gateway status"
 echo ""
 echo "  To uninstall the LaunchAgent:"
-echo "    launchctl unload -w ~/Library/LaunchAgents/com.soulacy.gateway.plist"
+echo "    launchctl unload -w ~/Library/LaunchAgents/com.soulacy.soulacy.plist"
 echo ""
 
 # Open the GUI

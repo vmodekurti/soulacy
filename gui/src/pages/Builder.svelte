@@ -1,5 +1,5 @@
 <script>
-  import { onDestroy } from 'svelte'
+  import { onDestroy, onMount } from 'svelte'
   import { api } from '../lib/api.js'
 
   // ── Phase management ────────────────────────────────────────────────────────
@@ -25,6 +25,10 @@
   let error        = ''
   let messagesEl              // bind:this for scroll-to-bottom
   let inputEl                 // bind:this for auto-focus
+
+  onMount(() => {
+    inputEl?.focus()
+  })
 
   // ── Spark → first message ───────────────────────────────────────────────────
   async function startConversation() {
@@ -166,7 +170,6 @@
           rows="3"
           placeholder="e.g. Every morning, summarise my unread emails and send me a WhatsApp with the 3 most important ones."
           on:keydown={handleKey}
-          autofocus
         ></textarea>
         <button class="btn-primary spark-btn" on:click={startConversation} disabled={!inputText.trim()}>
           Start →
@@ -243,7 +246,7 @@
       <div class="blueprint-body">
         <!-- Confidence bar -->
         <div class="bp-section">
-          <label class="bp-label">Confidence</label>
+          <span class="bp-label">Confidence</span>
           <div class="conf-bar-track">
             <div class="conf-bar-fill" style="width: {confidence(understanding)}%"
                  class:low={confidence(understanding) < 40}
@@ -256,26 +259,26 @@
         {#if understanding}
           <!-- Name + description -->
           <div class="bp-section">
-            <label class="bp-label">Name</label>
+            <span class="bp-label">Name</span>
             <span class="bp-value mono">{understanding.name || '—'}</span>
           </div>
           {#if understanding.description}
             <div class="bp-section">
-              <label class="bp-label">Purpose</label>
+              <span class="bp-label">Purpose</span>
               <span class="bp-value">{understanding.description}</span>
             </div>
           {/if}
 
           <!-- Trigger -->
           <div class="bp-section">
-            <label class="bp-label">Trigger</label>
+            <span class="bp-label">Trigger</span>
             <span class="bp-chip">{triggerLabel(understanding)}</span>
           </div>
 
           <!-- Tools -->
           {#if understanding.tools?.length}
             <div class="bp-section">
-              <label class="bp-label">Tools</label>
+              <span class="bp-label">Tools</span>
               <div class="chip-row">
                 {#each understanding.tools as t}
                   <span class="bp-chip">{t.name}</span>
@@ -287,7 +290,7 @@
           <!-- Memory -->
           {#if understanding.memory}
             <div class="bp-section">
-              <label class="bp-label">Memory</label>
+              <span class="bp-label">Memory</span>
               <span class="bp-chip">
                 {understanding.memory.needs ? (understanding.memory.scope || 'session') : 'none'}
               </span>
@@ -297,7 +300,7 @@
           <!-- Outputs -->
           {#if understanding.outputs?.length}
             <div class="bp-section">
-              <label class="bp-label">Output</label>
+              <span class="bp-label">Output</span>
               <div class="chip-row">
                 {#each understanding.outputs as o}
                   <span class="bp-chip">{o.channel}</span>
@@ -309,7 +312,7 @@
           <!-- Missing -->
           {#if understanding.missing?.length}
             <div class="bp-section">
-              <label class="bp-label missing-label">Still needed</label>
+              <span class="bp-label missing-label">Still needed</span>
               <ul class="missing-list">
                 {#each understanding.missing as m}
                   <li>{m}</li>

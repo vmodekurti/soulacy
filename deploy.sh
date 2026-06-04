@@ -42,7 +42,9 @@ ok "Binary updated: $INSTALLED_BIN"
 echo "→ Syncing mcp-servers, agents, and skills..."
 mkdir -p "$RUNTIME_DIR"/{agents,mcp-servers,skills,logs}
 rsync -a --ignore-times "$REPO_DIR/mcp-servers/" "$RUNTIME_DIR/mcp-servers/"
-rsync -a --ignore-times "$REPO_DIR/examples/agents/" "$RUNTIME_DIR/agents/"
+rsync -a --ignore-times \
+    --filter="protect ai-article-podcast-agent/SOUL.yaml" \
+    "$REPO_DIR/examples/agents/" "$RUNTIME_DIR/agents/"
 rsync -a --ignore-times "$REPO_DIR/examples/skills/" "$RUNTIME_DIR/skills/"
 ok "Runtime files synced"
 

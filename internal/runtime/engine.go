@@ -17,9 +17,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	goruntime "runtime"
 	"regexp"
+	goruntime "runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +51,7 @@ type EventSink interface {
 
 // noopSink discards all events (used when no GUI is connected).
 type noopSink struct{}
+
 func (noopSink) Emit(_ message.Event) {}
 
 // SkillLoader is satisfied by *skills.Loader. Defined as an interface here to
@@ -673,7 +675,7 @@ func (e *Engine) appendSkillBuiltins(tools []BuiltinTool) []BuiltinTool {
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			skillName := argString(args, "skill_name")
-			relPath   := argString(args, "path")
+			relPath := argString(args, "path")
 			if skillName == "" || relPath == "" {
 				return "", fmt.Errorf("read_skill_file: skill_name and path are required")
 			}
@@ -728,8 +730,8 @@ func (e *Engine) buildKBSearchBuiltin() BuiltinTool {
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			kbName := argString(args, "kb")
-			query  := argString(args, "query")
-			topK   := argInt(args, "top_k", 10)
+			query := argString(args, "query")
+			topK := argInt(args, "top_k", 10)
 			if topK > 20 {
 				topK = 20
 			}
@@ -745,8 +747,8 @@ func (e *Engine) buildKBSearchBuiltin() BuiltinTool {
 // sqlite-vec. Only added when e.vectorStore is non-nil.
 func (e *Engine) buildSemanticMemoryBuiltin() BuiltinTool {
 	return BuiltinTool{
-		Name:  "semantic_memory_search",
-		Gate:  "",
+		Name:        "semantic_memory_search",
+		Gate:        "",
 		Description: "Search long-term semantic memory for past conversations, facts, and context that match a natural-language query. Use when the current conversation lacks background that the agent may have seen in previous sessions.",
 		Parameters: map[string]any{
 			"type": "object",
@@ -764,7 +766,7 @@ func (e *Engine) buildSemanticMemoryBuiltin() BuiltinTool {
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			query := argString(args, "query")
-			topK  := argInt(args, "top_k", 5)
+			topK := argInt(args, "top_k", 5)
 			if topK <= 0 {
 				topK = 5
 			}
@@ -795,8 +797,8 @@ func (e *Engine) buildSemanticMemoryBuiltin() BuiltinTool {
 func (e *Engine) buildSystemTools() []BuiltinTool {
 	return []BuiltinTool{
 		{
-			Name:  "shell_exec",
-			Gate:  "",
+			Name:        "shell_exec",
+			Gate:        "",
 			Description: "Execute a shell command on the host OS and return stdout + stderr combined. Runs via /bin/sh -c so pipes, redirects, and shell built-ins work. Use for system administration, process management, git commands, and anything else you'd do in a terminal.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -851,8 +853,8 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 			},
 		},
 		{
-			Name:  "run_script",
-			Gate:  "",
+			Name:        "run_script",
+			Gate:        "",
 			Description: "Run a script file (Python, Bash, Node.js, Ruby, etc.) on the host. Interpreter is inferred from the file extension (.py→python3, .sh→bash, .js→node) or can be specified explicitly.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -926,8 +928,8 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 			},
 		},
 		{
-			Name:  "install_library",
-			Gate:  "",
+			Name:        "install_library",
+			Gate:        "",
 			Description: "Install a library or package using pip (Python), npm (Node.js), brew (macOS), or apt (Linux). Returns installation output.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -998,8 +1000,8 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 			},
 		},
 		{
-			Name:  "read_file",
-			Gate:  "",
+			Name:        "read_file",
+			Gate:        "",
 			Description: "Read the contents of a file on the host filesystem. Returns the file content as text.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -1043,8 +1045,8 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 			},
 		},
 		{
-			Name:  "write_file",
-			Gate:  "",
+			Name:        "write_file",
+			Gate:        "",
 			Description: "Write content to a file on the host filesystem. Creates the file and any parent directories if they don't exist. By default overwrites; set append: true to add to the end.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -1065,7 +1067,7 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 				"required": []string{"path", "content"},
 			},
 			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				path    := argString(args, "path")
+				path := argString(args, "path")
 				content := argString(args, "content")
 				if strings.HasPrefix(path, "~/") {
 					if home, err := os.UserHomeDir(); err == nil {
@@ -1093,8 +1095,8 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 			},
 		},
 		{
-			Name:  "list_dir",
-			Gate:  "",
+			Name:        "list_dir",
+			Gate:        "",
 			Description: "List the contents of a directory. Returns entry names, types (file/dir), and sizes.",
 			Parameters: map[string]any{
 				"type": "object",
@@ -1345,9 +1347,9 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 					}
 				}
 
-				namePattern    := argString(args, "name_pattern")
+				namePattern := argString(args, "name_pattern")
 				contentPattern := argString(args, "content_pattern")
-				maxResults     := argInt(args, "max_results", 50)
+				maxResults := argInt(args, "max_results", 50)
 				if maxResults <= 0 {
 					maxResults = 50
 				}
@@ -1673,6 +1675,8 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	if def == nil {
 		return message.Message{}, fmt.Errorf("engine: unknown agent %q", msg.AgentID)
 	}
+	def = def.Clone()
+	applyPlaygroundOverrides(def, msg.Metadata)
 	if !def.Enabled {
 		return message.Message{}, fmt.Errorf("engine: agent %q is disabled", msg.AgentID)
 	}
@@ -2424,6 +2428,9 @@ func (e *Engine) executeToolCalls(ctx context.Context, def *agent.Definition, se
 func (e *Engine) runTool(ctx context.Context, def *agent.Definition, sessionID string, call message.ToolCall) (string, error) {
 	// MCP tools — namespaced as mcp__<server>__<tool>. Route to the MCP client.
 	if e.mcpClient != nil && strings.HasPrefix(call.Name, mcp.FullNamePrefix) {
+		if !mcpToolAllowed(def, call.Name) {
+			return "", fmt.Errorf("MCP tool %q is not allowed for agent %q", call.Name, def.ID)
+		}
 		tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
 		defer cancel()
 		return e.mcpClient.Call(tctx, call.Name, call.Arguments)
@@ -2672,9 +2679,9 @@ print(result if isinstance(result, str) else json.dumps(result))
 // channel is the inbound message's Channel field ("http", "telegram", etc.).
 // System tools (shell_exec, run_script, …) are only offered when ALL three
 // conditions hold:
-//   1. runtime.allow_system_tools = true  (server-level permit)
-//   2. def.SystemTools = true             (per-agent opt-in)
-//   3. channel == "http"                  (local web GUI only — never on bot channels)
+//  1. runtime.allow_system_tools = true  (server-level permit)
+//  2. def.SystemTools = true             (per-agent opt-in)
+//  3. channel == "http"                  (local web GUI only — never on bot channels)
 func (e *Engine) allToolSchemas(def *agent.Definition, channel string) []llm.ToolSchema {
 	schemas := make([]llm.ToolSchema, 0, len(def.Tools)+len(e.builtins))
 
@@ -2727,10 +2734,14 @@ func (e *Engine) allToolSchemas(def *agent.Definition, channel string) []llm.Too
 		})
 	}
 
-	// MCP tools from every connected server are offered to every agent
-	// (namespaced as mcp__<server>__<tool>).
+	// MCP tools from connected servers are offered according to the agent's
+	// mcp_servers / mcp_tools allowlists. For backwards compatibility, agents
+	// that omit both fields still see every connected MCP tool.
 	if e.mcpClient != nil {
 		for _, t := range e.mcpClient.AllTools() {
+			if !mcpToolAllowed(def, t.FullName()) {
+				continue
+			}
 			schemas = append(schemas, llm.ToolSchema{
 				Name:        t.FullName(),
 				Description: t.Description,
@@ -2774,6 +2785,86 @@ func (e *Engine) allToolSchemas(def *agent.Definition, channel string) []llm.Too
 	schemas = append(schemas, e.buildAgentCallSchemas(def)...)
 
 	return schemas
+}
+
+// mcpToolAllowed reports whether an agent may see/call a namespaced MCP tool.
+//
+// Backwards-compatible default: when both mcp_servers and mcp_tools are absent,
+// all MCP tools remain available. Once either field is present, MCP becomes
+// deny-by-default and a tool must match either the server allowlist or the full
+// tool-name allowlist. A present empty list is therefore an intentional "none".
+func mcpToolAllowed(def *agent.Definition, fullName string) bool {
+	if def == nil {
+		return false
+	}
+	if def.MCPServers == nil && def.MCPTools == nil {
+		return true
+	}
+	serverID, ok := mcpServerFromFullName(fullName)
+	if !ok {
+		return false
+	}
+	if allowMCPServer(def.MCPServers, serverID) {
+		return true
+	}
+	return allowMCPTool(def.MCPTools, fullName)
+}
+
+func mcpServerFromFullName(fullName string) (string, bool) {
+	if !strings.HasPrefix(fullName, mcp.FullNamePrefix) {
+		return "", false
+	}
+	rest := strings.TrimPrefix(fullName, mcp.FullNamePrefix)
+	parts := strings.SplitN(rest, "__", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", false
+	}
+	return parts[0], true
+}
+
+func allowMCPServer(allowlist *[]string, serverID string) bool {
+	if allowlist == nil {
+		return false
+	}
+	for _, allowed := range *allowlist {
+		allowed = strings.TrimSpace(allowed)
+		if allowed == "*" || allowed == "all" {
+			return true
+		}
+		if sanitizeMCPID(allowed) == serverID {
+			return true
+		}
+	}
+	return false
+}
+
+func allowMCPTool(allowlist *[]string, fullName string) bool {
+	if allowlist == nil {
+		return false
+	}
+	for _, allowed := range *allowlist {
+		allowed = strings.TrimSpace(allowed)
+		if allowed == "*" || allowed == "all" {
+			return true
+		}
+		if allowed == fullName {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizeMCPID(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_':
+			return r
+		case r >= 'A' && r <= 'Z':
+			return r + ('a' - 'A')
+		default:
+			return '_'
+		}
+	}, s)
 }
 
 // --- Multi-agent (agent-as-tool) ----------------------------------------------
@@ -2986,6 +3077,36 @@ func providerAllowed(allowlist []string, provider string) bool {
 		}
 	}
 	return false
+}
+
+func applyPlaygroundOverrides(def *agent.Definition, meta map[string]string) {
+	if def == nil || len(meta) == 0 {
+		return
+	}
+	if v := strings.TrimSpace(meta["playground.llm.provider"]); v != "" {
+		def.LLM.Provider = v
+	}
+	if v := strings.TrimSpace(meta["playground.llm.model"]); v != "" {
+		def.LLM.Model = v
+	}
+	if v := strings.TrimSpace(meta["playground.llm.temperature"]); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			def.LLM.Temperature = f
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.llm.max_tokens"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			def.LLM.MaxTokens = n
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.max_turns"]); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			def.MaxTurns = n
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.llm.tool_choice"]); v != "" {
+		def.LLM.ToolChoice = v
+	}
 }
 
 // skillCatalogFor builds the <available_skills> catalog for the named skills.

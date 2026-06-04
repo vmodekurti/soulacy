@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,9 @@ import (
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/agentvalidate"
 	"github.com/soulacy/soulacy/internal/builder"
+	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
@@ -42,9 +45,9 @@ import (
 //   - "ok"        all probed deps responded successfully
 //   - "degraded"  at least one dep failed but the gateway can still serve
 //   - "down"      a probe that's load-bearing for ANY work failed (e.g.
-//                 the SQLite archive). Currently we degrade rather than
-//                 returning down — operators can decide via the per-dep
-//                 statuses returned in the body.
+//     the SQLite archive). Currently we degrade rather than
+//     returning down — operators can decide via the per-dep
+//     statuses returned in the body.
 func (s *Server) handleHealth(c *fiber.Ctx) error {
 	deps := map[string]string{}
 
@@ -88,6 +91,41 @@ func (s *Server) handleHealth(c *fiber.Ctx) error {
 	})
 }
 
+func (s *Server) handleRestart(c *fiber.Ctx) error {
+	s.log.Warn("gateway restart requested via API", zap.Any("request_id", c.Locals("request_id")))
+	if err := startRestartChild(); err != nil {
+		s.log.Error("gateway restart failed to spawn child", zap.Error(err))
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "restart failed: " + err.Error(),
+		})
+	}
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		os.Exit(0)
+	}()
+	return c.Status(fiber.StatusAccepted).JSON(fiber.Map{
+		"ok":      true,
+		"message": "Restart requested. A replacement gateway process is starting.",
+	})
+}
+
+func startRestartChild() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	script := `sleep 0.75; exec "$@"`
+	args := append([]string{"-c", script, "soulacy-restart", exe}, os.Args[1:]...)
+	cmd := exec.Command("/bin/sh", args...)
+	cmd.Env = os.Environ()
+	if wd, err := os.Getwd(); err == nil {
+		cmd.Dir = wd
+	}
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Start()
+}
+
 // --- Agents ---
 
 func (s *Server) handleListAgents(c *fiber.Ctx) error {
@@ -101,6 +139,15 @@ func (s *Server) handleGetAgent(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
 	}
 	return c.JSON(def)
+}
+
+func (s *Server) handleValidateAgent(c *fiber.Ctx) error {
+	var def agent.Definition
+	if err := c.BodyParser(&def); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	report := agentvalidate.Definition(&def, "", s.agentValidationOptions(c.Context()), agentvalidate.Report{})
+	return c.JSON(report)
 }
 
 func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
@@ -144,9 +191,9 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	if err := c.BodyParser(&updates); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
-	updates.ID         = id               // ID cannot be changed via update
+	updates.ID = id // ID cannot be changed via update
 	updates.SourcePath = existing.SourcePath
-	updates.LoadedAt   = existing.LoadedAt
+	updates.LoadedAt = existing.LoadedAt
 
 	// Preserve fields the GUI doesn't render — prevents a Save from wiping them.
 	// Any field not exposed in the agent editor form must be copied here so that
@@ -156,6 +203,12 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	}
 	if updates.Builtins == nil {
 		updates.Builtins = existing.Builtins
+	}
+	if updates.MCPServers == nil {
+		updates.MCPServers = existing.MCPServers
+	}
+	if updates.MCPTools == nil {
+		updates.MCPTools = existing.MCPTools
 	}
 	if updates.Workflow == nil {
 		updates.Workflow = existing.Workflow
@@ -290,10 +343,18 @@ func (s *Server) uniqueAgentID(base string) string {
 // We call engine.Handle() directly so we never touch the async inbox path.
 func (s *Server) handleChat(c *fiber.Ctx) error {
 	var req struct {
-		AgentID  string `json:"agent_id"`
-		UserID   string `json:"user_id"`
-		Username string `json:"username"`
-		Text     string `json:"text"`
+		AgentID   string `json:"agent_id"`
+		UserID    string `json:"user_id"`
+		Username  string `json:"username"`
+		Text      string `json:"text"`
+		Overrides struct {
+			Provider    string   `json:"provider"`
+			Model       string   `json:"model"`
+			Temperature *float64 `json:"temperature"`
+			MaxTokens   *int     `json:"max_tokens"`
+			MaxTurns    *int     `json:"max_turns"`
+			ToolChoice  string   `json:"tool_choice"`
+		} `json:"overrides"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -319,6 +380,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		Username:  req.Username,
 		Role:      message.RoleUser,
 		Parts:     message.Text(req.Text),
+		Metadata:  chatOverrideMetadata(req.Overrides.Provider, req.Overrides.Model, req.Overrides.Temperature, req.Overrides.MaxTokens, req.Overrides.MaxTurns, req.Overrides.ToolChoice),
 		CreatedAt: time.Now().UTC(),
 	}
 
@@ -340,6 +402,32 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		}
 	}
 	return c.JSON(fiber.Map{"reply": replyText})
+}
+
+func chatOverrideMetadata(provider, model string, temperature *float64, maxTokens, maxTurns *int, toolChoice string) map[string]string {
+	meta := map[string]string{}
+	if provider = strings.TrimSpace(provider); provider != "" {
+		meta["playground.llm.provider"] = provider
+	}
+	if model = strings.TrimSpace(model); model != "" {
+		meta["playground.llm.model"] = model
+	}
+	if temperature != nil {
+		meta["playground.llm.temperature"] = fmt.Sprintf("%g", *temperature)
+	}
+	if maxTokens != nil && *maxTokens > 0 {
+		meta["playground.llm.max_tokens"] = fmt.Sprintf("%d", *maxTokens)
+	}
+	if maxTurns != nil && *maxTurns > 0 {
+		meta["playground.max_turns"] = fmt.Sprintf("%d", *maxTurns)
+	}
+	if toolChoice = strings.TrimSpace(toolChoice); toolChoice != "" {
+		meta["playground.llm.tool_choice"] = toolChoice
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 // handleChatStream is the SSE (Server-Sent Events) variant of handleChat.
@@ -462,7 +550,7 @@ func (s *Server) handleChatStream(c *fiber.Ctx) error {
 				fmt.Fprintf(w, "event: %s\n", ev.Event) //nolint:errcheck
 			}
 			fmt.Fprintf(w, "data: %s\n\n", ev.Data) //nolint:errcheck
-			w.Flush()                                //nolint:errcheck
+			w.Flush()                               //nolint:errcheck
 		}
 	}))
 
@@ -499,7 +587,7 @@ func (s *Server) handleToolConfirm(c *fiber.Ctx) error {
 type channelField struct {
 	Key      string `json:"key"`
 	Label    string `json:"label"`
-	Type     string `json:"type"`     // "text" or "password"
+	Type     string `json:"type"` // "text" or "password"
 	Required bool   `json:"required"`
 	Secret   bool   `json:"secret"`
 	Help     string `json:"help,omitempty"`
@@ -520,6 +608,7 @@ var channelSpecs = []channelSpec{
 	{ID: "telegram", Name: "Telegram", Fields: []channelField{
 		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "Get one from @BotFather"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "allowed_user_ids", Label: "Allowed user IDs", Type: "text", Required: false, Help: "Comma-separated Telegram user IDs"},
 	}},
 	{ID: "discord", Name: "Discord", Fields: []channelField{
 		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true},
@@ -548,6 +637,168 @@ func channelSpecByID(id string) *channelSpec {
 	return nil
 }
 
+func channelSupportsBots(id string) bool {
+	switch id {
+	case "telegram", "discord", "slack":
+		return true
+	default:
+		return false
+	}
+}
+
+func valuePresent(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(t) != ""
+	case []any:
+		return len(t) > 0
+	case []int64:
+		return len(t) > 0
+	case []int:
+		return len(t) > 0
+	default:
+		return true
+	}
+}
+
+func displayChannelValue(v any) any {
+	switch t := v.(type) {
+	case []any:
+		parts := make([]string, 0, len(t))
+		for _, item := range t {
+			parts = append(parts, fmt.Sprint(item))
+		}
+		return strings.Join(parts, ", ")
+	case []int64:
+		parts := make([]string, 0, len(t))
+		for _, item := range t {
+			parts = append(parts, strconv.FormatInt(item, 10))
+		}
+		return strings.Join(parts, ", ")
+	case []int:
+		parts := make([]string, 0, len(t))
+		for _, item := range t {
+			parts = append(parts, strconv.Itoa(item))
+		}
+		return strings.Join(parts, ", ")
+	default:
+		return t
+	}
+}
+
+func normalizeChannelValue(key, val string) any {
+	if key != "allowed_user_ids" {
+		return val
+	}
+	parts := strings.FieldsFunc(val, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\n' || r == '\t'
+	})
+	out := make([]int64, 0, len(parts))
+	for _, part := range parts {
+		if part = strings.TrimSpace(part); part != "" {
+			if n, err := strconv.ParseInt(part, 10, 64); err == nil {
+				out = append(out, n)
+			}
+		}
+	}
+	return out
+}
+
+func normalizeChannelBots(spec channelSpec, bots []map[string]any, existingRaw any) []map[string]any {
+	existing := rawBotList(existingRaw)
+	out := make([]map[string]any, 0, len(bots))
+	for i, bot := range bots {
+		row := map[string]any{}
+		var existingBot map[string]any
+		if i < len(existing) {
+			existingBot = existing[i]
+		}
+		for _, f := range spec.Fields {
+			raw, present := bot[f.Key]
+			if !present {
+				continue
+			}
+			val := strings.TrimSpace(fmt.Sprint(raw))
+			if f.Secret && (val == "" || val == "***") {
+				if existingBot != nil && valuePresent(existingBot[f.Key]) {
+					row[f.Key] = existingBot[f.Key]
+				}
+				continue
+			}
+			row[f.Key] = normalizeChannelValue(f.Key, val)
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func maskChannelBots(spec channelSpec, raw any, statuses map[string]channels.AdapterStatus) []fiber.Map {
+	botList := rawBotList(raw)
+	out := make([]fiber.Map, 0, len(botList))
+	for i, bot := range botList {
+		row := fiber.Map{}
+		for _, f := range spec.Fields {
+			rawVal := bot[f.Key]
+			if f.Secret && valuePresent(rawVal) {
+				row[f.Key] = "***"
+			} else {
+				row[f.Key] = displayChannelValue(rawVal)
+			}
+		}
+		agentID, _ := bot["agent_id"].(string)
+		adapterID := channelAdapterID(spec.ID, agentID, i)
+		st := statuses[adapterID]
+		row["_adapter_id"] = adapterID
+		row["_connected"] = st.Connected
+		row["_detail"] = st.Detail
+		out = append(out, row)
+	}
+	return out
+}
+
+func rawBotList(raw any) []map[string]any {
+	switch list := raw.(type) {
+	case []map[string]any:
+		return list
+	case []any:
+		out := make([]map[string]any, 0, len(list))
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func channelAdapterID(channelID, agentID string, index int) string {
+	if index == 0 {
+		return channelID
+	}
+	if agentID == "" {
+		return channelID + "-" + strconv.Itoa(index+1)
+	}
+	return channelID + "-" + sanitizeChannelID(agentID)
+}
+
+func sanitizeChannelID(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
+}
+
 // handleListChannels returns every supported channel merged with its current
 // config (secrets masked) and live connection status. This is an ARRAY so the
 // GUI can iterate it directly.
@@ -567,15 +818,19 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 		settings := make(fiber.Map, len(spec.Fields))
 		configured := false
 		for _, f := range spec.Fields {
-			raw, _ := cfg[f.Key].(string)
-			if raw != "" {
+			raw := cfg[f.Key]
+			if valuePresent(raw) {
 				configured = true
 			}
-			if f.Secret && raw != "" {
+			if f.Secret && valuePresent(raw) {
 				settings[f.Key] = "***"
 			} else {
-				settings[f.Key] = raw
+				settings[f.Key] = displayChannelValue(raw)
 			}
+		}
+		bots := maskChannelBots(spec, cfg["bots"], statuses)
+		if len(bots) > 0 {
+			configured = true
 		}
 
 		st, registered := statuses[spec.ID]
@@ -588,6 +843,9 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 			"configured": configured,
 			"registered": registered,
 			"schema":     spec.Fields,
+			"bot_schema": spec.Fields,
+			"multi_bot":  channelSupportsBots(spec.ID),
+			"bots":       bots,
 			"settings":   settings,
 			"status": fiber.Map{
 				"connected": st.Connected,
@@ -613,6 +871,7 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 	var req struct {
 		Enabled  *bool             `json:"enabled"`
 		Settings map[string]string `json:"settings"`
+		Bots     []map[string]any  `json:"bots"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -644,7 +903,16 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 			}
 			continue
 		}
-		chMap[f.Key] = val
+		chMap[f.Key] = normalizeChannelValue(f.Key, val)
+	}
+	if req.Bots != nil {
+		if len(req.Bots) == 0 {
+			delete(chMap, "bots")
+		} else if !channelSupportsBots(id) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": id + " does not support multiple bot mappings"})
+		} else {
+			chMap["bots"] = normalizeChannelBots(*spec, req.Bots, existing["bots"])
+		}
 	}
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
@@ -818,11 +1086,11 @@ func (s *Server) handleScheduleStatus(c *fiber.Ctx) error {
 
 // handleToolCatalog returns every tool an agent could be wired to:
 //   - python_tools: every *.py in ~/.soulacy/tools/ (the convention) and in
-//                   <agent_dir>/tools/ for each configured agent dir.
+//     <agent_dir>/tools/ for each configured agent dir.
 //   - mcp_tools:    every tool exposed by a currently-connected MCP server,
-//                   with the full namespaced name (mcp__<server>__<tool>).
+//     with the full namespaced name (mcp__<server>__<tool>).
 //   - builtins:     Go-native tools shipped with the engine (web_search,
-//                   read_skill, etc.).
+//     read_skill, etc.).
 //
 // Used by the Agents Edit page's python_file picker and by the Builder so the
 // LLM picks real tools instead of inventing names.
@@ -1462,9 +1730,9 @@ func (s *Server) handleProvisionGlama(c *fiber.Ctx) error {
 //
 // GET /api/v1/mcp/registry/search?q=...&limit=20&cursor=...
 func (s *Server) handleMCPRegistrySearch(c *fiber.Ctx) error {
-	query  := c.Query("q", "")
+	query := c.Query("q", "")
 	cursor := c.Query("cursor", "")
-	limit  := c.QueryInt("limit", 20)
+	limit := c.QueryInt("limit", 20)
 
 	servers, nextCursor, err := builder.SearchMCPRegistry(query, cursor, limit)
 	if err != nil {
@@ -1510,6 +1778,7 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 	var body struct {
 		ServerName string            `json:"server_name"`
 		Env        map[string]string `json:"env"`
+		Preview    bool              `json:"preview"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -1534,6 +1803,28 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 			}
 		}
 	}
+	for _, ev := range spec.URLVariables {
+		if ev.Required {
+			if v := strings.TrimSpace(body.Env[ev.Name]); v == "" {
+				missing = append(missing, ev.Name)
+			}
+		}
+	}
+	for _, ev := range spec.HeaderSchema {
+		if ev.Required {
+			if v := strings.TrimSpace(body.Env[ev.Name]); v == "" {
+				missing = append(missing, ev.Name)
+			}
+		}
+	}
+	if body.Preview {
+		return c.JSON(fiber.Map{
+			"ok":           false,
+			"preview":      true,
+			"spec":         spec,
+			"env_required": missing,
+		})
+	}
 	if len(missing) > 0 {
 		return c.JSON(fiber.Map{
 			"ok":           false,
@@ -1547,17 +1838,15 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	mcpMap     := getOrCreateMap(raw, "mcp")
+	mcpMap := getOrCreateMap(raw, "mcp")
 	serversMap := getOrCreateMap(mcpMap, "servers")
 
 	id := spec.ID
-	serversMap[id] = mcpServerToYAML(mcpServerBody{
-		ID:        id,
-		Transport: "stdio",
-		Command:   spec.Command,
-		Args:      spec.Args,
-		Env:       body.Env,
-	})
+	serverBody, err := registrySpecToServerBody(id, spec, body.Env)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	serversMap[id] = mcpServerToYAML(serverBody)
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -1571,10 +1860,12 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 	connectErr := ""
 	if s.mcp != nil {
 		if err := s.mcp.AddServer(id, mcp.ServerConfig{
-			Transport: "stdio",
-			Command:   spec.Command,
-			Args:      spec.Args,
-			Env:       body.Env,
+			Transport: serverBody.Transport,
+			Command:   serverBody.Command,
+			Args:      serverBody.Args,
+			Env:       serverBody.Env,
+			URL:       serverBody.URL,
+			Headers:   serverBody.Headers,
 		}); err != nil {
 			connectErr = err.Error()
 		}
@@ -1592,6 +1883,51 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 		resp["connect_error"] = connectErr
 	}
 	return c.Status(fiber.StatusCreated).JSON(resp)
+}
+
+func registrySpecToServerBody(id string, spec *builder.GlamaProvisionSpec, values map[string]string) (mcpServerBody, error) {
+	if spec == nil {
+		return mcpServerBody{}, fmt.Errorf("registry spec is missing")
+	}
+	transport := strings.ToLower(strings.TrimSpace(spec.Transport))
+	if transport == "" {
+		transport = "stdio"
+	}
+	switch transport {
+	case "stdio":
+		if strings.TrimSpace(spec.Command) == "" {
+			return mcpServerBody{}, fmt.Errorf("registry package did not provide a command")
+		}
+		return mcpServerBody{
+			ID:        id,
+			Transport: "stdio",
+			Command:   spec.Command,
+			Args:      spec.Args,
+			Env:       values,
+		}, nil
+	case "http", "https":
+		resolvedURL := spec.URL
+		for _, ev := range spec.URLVariables {
+			resolvedURL = strings.ReplaceAll(resolvedURL, "{"+ev.Name+"}", strings.TrimSpace(values[ev.Name]))
+		}
+		if strings.TrimSpace(resolvedURL) == "" {
+			return mcpServerBody{}, fmt.Errorf("registry remote did not provide a URL")
+		}
+		headers := map[string]string{}
+		for _, ev := range spec.HeaderSchema {
+			if v := strings.TrimSpace(values[ev.Name]); v != "" {
+				headers[ev.Name] = v
+			}
+		}
+		return mcpServerBody{
+			ID:        id,
+			Transport: "http",
+			URL:       resolvedURL,
+			Headers:   headers,
+		}, nil
+	default:
+		return mcpServerBody{}, fmt.Errorf("unsupported registry transport %q", spec.Transport)
+	}
 }
 
 // validMCPID accepts the same characters the rest of the codebase uses for
@@ -1674,7 +2010,7 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 
 func (s *Server) handleListMemory(c *fiber.Ctx) error {
 	agentID := c.Params("agent_id")
-	query   := c.Query("q", "")
+	query := c.Query("q", "")
 
 	var entries interface{}
 	var err error
@@ -1760,6 +2096,27 @@ func (s *Server) handleListModels(c *fiber.Ctx) error {
 		selected = pc.Model
 	}
 	return c.JSON(fiber.Map{"models": models, "selected": selected})
+}
+
+func (s *Server) agentValidationOptions(ctx context.Context) agentvalidate.Options {
+	opts := agentvalidate.Options{Config: s.cfg, ProviderModels: map[string][]string{}}
+	if s.llmRouter == nil {
+		return opts
+	}
+	opts.RegisteredProviders = s.llmRouter.ProviderIDs()
+	for _, id := range opts.RegisteredProviders {
+		p := s.llmRouter.Provider(id)
+		if p == nil {
+			continue
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		models, err := p.Models(probeCtx)
+		cancel()
+		if err == nil && len(models) > 0 {
+			opts.ProviderModels[id] = models
+		}
+	}
+	return opts
 }
 
 // handleSetProviderModel persists the chosen default model for a provider into
@@ -1934,8 +2291,9 @@ func (s *Server) handleGetSkill(c *fiber.Ctx) error {
 // installs it into ~/.soulacy/skills/ — no restart required.
 //
 // Request:  POST /api/skills/provision-agenticskills
-//   Body:   { "url": "https://agenticskills.io/skills/frontend-design" }
-//           or { "slug": "frontend-design" }
+//
+//	Body:   { "url": "https://agenticskills.io/skills/frontend-design" }
+//	        or { "slug": "frontend-design" }
 //
 // Response (success): { "ok": true, "slug": "...", "source": "org/repo@sha", "message": "..." }
 // Response (error):   { "ok": false, "error": "..." }

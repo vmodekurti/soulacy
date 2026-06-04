@@ -14,6 +14,8 @@
   let testResults     = {}   // provider → {ok, msg}
   let error           = ''
   let notice          = ''
+  let restartNeeded   = false
+  let restarting      = false
 
   // Add/edit-credentials modal state
   let showAdd  = false
@@ -75,6 +77,7 @@
         model:    addModel || undefined,
       })
       notice = res.message || 'Saved.'
+      restartNeeded = true
       showAdd = false
       await load()
     } catch (e) {
@@ -112,6 +115,7 @@
       // reflect immediately
       providers = { ...providers, [providerId]: { ...providers[providerId], model } }
       notice = res.message || `Saved ${model} as the default model for ${providerId}.`
+      restartNeeded = true
     } catch (e) {
       error = e.message
     } finally {
@@ -126,6 +130,20 @@
       testResults = { ...testResults, [providerId]: { ok: true, msg: 'Reachable ✓' } }
     } catch (e) {
       testResults = { ...testResults, [providerId]: { ok: false, msg: e.message } }
+    }
+  }
+
+  async function restartGateway() {
+    restarting = true
+    error = ''
+    try {
+      await api.admin.restart()
+      restartNeeded = false
+      notice = 'Restart requested. Reconnect this page in a few seconds if it does not refresh automatically.'
+    } catch (e) {
+      error = e.message
+    } finally {
+      setTimeout(() => { restarting = false }, 5000)
     }
   }
 
@@ -151,6 +169,14 @@
 
   {#if error}<div class="banner err">{error}</div>{/if}
   {#if notice}<div class="banner ok">{notice}</div>{/if}
+  {#if restartNeeded}
+    <div class="banner warn restart-banner">
+      <span>Provider settings were saved. Restart the gateway to reload provider registrations.</span>
+      <button class="btn-secondary" on:click={restartGateway} disabled={restarting}>
+        {restarting ? 'Restarting…' : 'Restart Gateway'}
+      </button>
+    </div>
+  {/if}
 
   {#if missingKnown.length > 0}
     <div class="suggest-card">
@@ -263,11 +289,18 @@
 </div>
 
 {#if showAdd}
-  <div class="modal-bg" on:click|self={() => showAdd = false}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close provider modal"
+    on:click|self={() => showAdd = false}
+    on:keydown={(e) => e.key === 'Escape' && (showAdd = false)}
+  >
     <div class="modal">
       <h2>{providers[addId] ? 'Edit' : 'Add'} provider</h2>
       <div class="modal-field">
-        <label>Provider</label>
+        <span class="field-label">Provider</span>
         <select bind:value={addId} on:change={() => { addBase = providers[addId]?.base_url || KNOWN_BASES[addId] || ''; addModel = providers[addId]?.model || KNOWN_MODELS[addId] || '' }}>
           {#each (known.length ? known : ['openai','anthropic','google','ollama']) as id}
             <option value={id}>{providerIcon(id)} {id}</option>
@@ -275,15 +308,15 @@
         </select>
       </div>
       <div class="modal-field">
-        <label>Base URL <span class="opt">(optional)</span></label>
+        <span class="field-label">Base URL <span class="opt">(optional)</span></span>
         <input type="text" bind:value={addBase} placeholder={KNOWN_BASES[addId] || ''} />
       </div>
       <div class="modal-field">
-        <label>API key</label>
+        <span class="field-label">API key</span>
         <input type="password" bind:value={addKey} placeholder={providers[addId]?.api_key ? 'Leave blank to keep current key' : 'sk-...'} />
       </div>
       <div class="modal-field">
-        <label>Default model</label>
+        <span class="field-label">Default model</span>
         <input type="text" bind:value={addModel} placeholder={KNOWN_MODELS[addId] || ''} />
       </div>
       <div class="modal-row">
@@ -334,7 +367,7 @@
   }
   .modal h2 { font-size: 1rem; font-weight: 600; }
   .modal-field { display: flex; flex-direction: column; gap: .35rem; }
-  .modal-field label { font-size: .78rem; color: #7b82a8; }
+  .field-label { font-size: .78rem; color: #7b82a8; }
   .modal-field .opt { color: #555a7a; font-weight: normal; }
   .modal-row { display: flex; gap: .75rem; justify-content: flex-end; margin-top: .25rem; }
   .modal-hint { font-size: .72rem; color: #555a7a; }
@@ -342,6 +375,8 @@
   .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; }
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
   .ok     { background: rgba(76,175,130,.1); border: 1px solid rgba(76,175,130,.3); color: #4caf82; }
+  .warn   { background: rgba(240,196,96,.08); border: 1px solid rgba(240,196,96,.3); color: #f0c460; }
+  .restart-banner { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
   .empty  { color: #6b7294; padding: 3rem; text-align: center; }
 
   .default-banner {

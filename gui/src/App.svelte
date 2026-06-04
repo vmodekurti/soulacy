@@ -68,7 +68,14 @@
 
 <!-- API Key modal -->
 {#if showKeyModal}
-  <div class="modal-bg" on:click|self={() => showKeyModal = false}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close API key modal"
+    on:click|self={() => showKeyModal = false}
+    on:keydown={(e) => e.key === 'Escape' && (showKeyModal = false)}
+  >
     <div class="modal">
       <h2>API Key</h2>
       <p>Enter your Soulacy API key. Find it in <code>~/.soulacy/config.yaml</code> or the <code>SOULACY_API_KEY</code> env var.</p>

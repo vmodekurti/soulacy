@@ -47,7 +47,7 @@ func main() {
 
 func buildRoot() *cobra.Command {
 	root := &cobra.Command{
-		Use: "sy",
+		Use:   "sy",
 		Short: "Soulacy CLI — manage your agentic framework from the terminal",
 		Long: `sy is the command-line interface for Soulacy.
 
@@ -96,7 +96,7 @@ Quick start:
 
 	// Sub-commands
 	root.AddCommand(
-		buildSetupCmd(),   // interactive setup wizard — show first
+		buildSetupCmd(), // interactive setup wizard — show first
 		buildAgentCmd(),
 		buildChatCmd(),
 		buildChannelCmd(),
@@ -105,8 +105,9 @@ Quick start:
 		buildSkillCmd(),
 		buildLogsCmd(),
 		buildServerCmd(),
-		buildPullCmd(),    // sy pull — agent marketplace
-		buildEvalCmd(),    // sy eval — evaluation framework
+		buildDoctorCmd(),
+		buildPullCmd(), // sy pull — agent marketplace
+		buildEvalCmd(), // sy eval — evaluation framework
 		buildVersionCmd(),
 	)
 	return root
@@ -151,6 +152,7 @@ func buildAgentCmd() *cobra.Command {
 	}
 	createCmd.Flags().StringVarP(&createFile, "file", "f", "", "Path to SOUL.yaml")
 	cmd.AddCommand(createCmd)
+	cmd.AddCommand(buildAgentValidateCmd())
 
 	// enable / disable
 	cmd.AddCommand(&cobra.Command{

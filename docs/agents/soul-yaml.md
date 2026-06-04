@@ -27,6 +27,14 @@ tools:
   - url_fetch
   - calculator
 
+# Restrict external MCP tools. If both fields are absent, legacy behavior
+# allows every connected MCP server. If either field is present, MCP is
+# deny-by-default and only matching entries are allowed.
+mcp_servers:
+  - rocketmoney
+mcp_tools:
+  - mcp__rocketmoney__get_transactions
+
 # ── Token budget ──────────────────────────────────────────────
 token_budget:
   max_input_tokens: 32000     # max context sent to LLM
@@ -97,6 +105,20 @@ The agent's base instructions. Supports multi-line YAML block syntax (`|`). The 
 ### `tools`
 
 List of built-in tools the agent can invoke. See [Built-in Tools](tools.md) for the full list.
+
+### `mcp_servers` / `mcp_tools`
+
+Restricts tools from configured MCP servers. If both fields are absent, the agent sees every connected MCP tool for backwards compatibility. Once either field is present, MCP is deny-by-default.
+
+```yaml
+mcp_servers:
+  - rocketmoney
+
+mcp_tools:
+  - mcp__filesystem__read_file
+```
+
+Use `mcp_servers: []` to explicitly expose no MCP tools. Use `["*"]` or `["all"]` to explicitly expose all MCP tools.
 
 ### `token_budget`
 

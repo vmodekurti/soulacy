@@ -115,9 +115,9 @@ ifeq ($(OS),Darwin)
 	@echo "→ Installing Mac LaunchAgent..."
 	@mkdir -p ~/Library/LaunchAgents
 	@sed "s|__INSTALL_DIR__|/usr/local/bin|g" scripts/com.soulacy.gateway.plist \
-	    > ~/Library/LaunchAgents/com.soulacy.gateway.plist
-	launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.soulacy.gateway.plist 2>/dev/null || \
-	launchctl load -w ~/Library/LaunchAgents/com.soulacy.gateway.plist
+	    > ~/Library/LaunchAgents/com.soulacy.soulacy.plist
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || \
+	launchctl load -w ~/Library/LaunchAgents/com.soulacy.soulacy.plist
 	@echo "✓ Soulacy LaunchAgent installed — starts automatically on login"
 else
 	@echo "→ Installing systemd service..."
@@ -131,8 +131,8 @@ endif
 ## Remove soulacy system service
 service-uninstall:
 ifeq ($(OS),Darwin)
-	launchctl unload ~/Library/LaunchAgents/com.soulacy.gateway.plist 2>/dev/null || true
-	rm -f ~/Library/LaunchAgents/com.soulacy.gateway.plist
+	launchctl unload ~/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || true
+	rm -f ~/Library/LaunchAgents/com.soulacy.soulacy.plist
 	@echo "✓ LaunchAgent removed"
 else
 	sudo systemctl disable --now soulacy 2>/dev/null || true

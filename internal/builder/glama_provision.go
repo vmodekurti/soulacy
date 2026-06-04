@@ -11,13 +11,18 @@ import (
 // GlamaProvisionSpec is the resolved, install-ready spec for one Glama MCP server.
 // Command and Args are filled in so the caller can write them directly to config.yaml.
 type GlamaProvisionSpec struct {
-	ID          string       `json:"id"`           // suggested config key (safe slug)
-	Name        string       `json:"name"`
-	Description string       `json:"description"`
-	Command     string       `json:"command"`      // e.g. "npx"
-	Args        []string     `json:"args"`         // e.g. ["-y", "icloud-mcp"]
-	RegistryURL string       `json:"registry_url"`
-	EnvSchema   []EnvVarSpec `json:"env_schema"`   // required/optional env vars
+	ID           string       `json:"id"` // suggested config key (safe slug)
+	Name         string       `json:"name"`
+	Description  string       `json:"description"`
+	SetupSteps   []string     `json:"setup_steps,omitempty"`
+	Transport    string       `json:"transport,omitempty"` // stdio (default) or http
+	Command      string       `json:"command"`             // e.g. "npx"
+	Args         []string     `json:"args"`                // e.g. ["-y", "icloud-mcp"]
+	URL          string       `json:"url,omitempty"`       // http transport endpoint
+	RegistryURL  string       `json:"registry_url"`
+	EnvSchema    []EnvVarSpec `json:"env_schema"`              // required/optional env vars
+	HeaderSchema []EnvVarSpec `json:"header_schema,omitempty"` // required/optional HTTP headers
+	URLVariables []EnvVarSpec `json:"url_variables,omitempty"` // variables in URL templates
 }
 
 // EnvVarSpec describes one environment variable expected by the MCP server.
@@ -75,7 +80,7 @@ func FetchGlamaServer(slug string) (*GlamaProvisionSpec, error) {
 		Repository  struct {
 			URL string `json:"url"`
 		} `json:"repository"`
-		Attributes []string `json:"attributes"` // e.g. ["hosting:local-only"]
+		Attributes                     []string `json:"attributes"` // e.g. ["hosting:local-only"]
 		EnvironmentVariablesJSONSchema *struct {
 			Properties map[string]struct {
 				Description string `json:"description"`

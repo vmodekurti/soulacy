@@ -9,6 +9,15 @@
   let ws      = null
   let error   = null
   let eventsEl
+  let eventFilter = 'all'
+
+  const EVENT_FILTERS = [
+    { id: 'all', label: 'All' },
+    { id: 'errors', label: 'Errors' },
+    { id: 'tools', label: 'Tools' },
+    { id: 'llm', label: 'LLM' },
+    { id: 'messages', label: 'Messages' },
+  ]
 
   async function load() {
     try {
@@ -64,6 +73,18 @@
     const s = typeof data === 'string' ? data : JSON.stringify(data)
     return s.slice(0, 140)
   }
+
+  function matchesFilter(ev) {
+    const type = ev.type || ''
+    if (eventFilter === 'all') return true
+    if (eventFilter === 'errors') return type.includes('error') || fmtData(ev.payload).toLowerCase().includes('error')
+    if (eventFilter === 'tools') return type.includes('tool')
+    if (eventFilter === 'llm') return type.includes('llm')
+    if (eventFilter === 'messages') return type.includes('message')
+    return true
+  }
+
+  $: filteredEvents = events.filter(matchesFilter)
 </script>
 
 <div class="page">
@@ -98,7 +119,7 @@
     <div class="card">
       <div class="card-label">Events (session)</div>
       <div class="card-value">{events.length}</div>
-      <div class="card-sub">{$connected ? 'streaming live' : 'reconnecting…'}</div>
+      <div class="card-sub">{filteredEvents.length} shown · {$connected ? 'streaming live' : 'reconnecting…'}</div>
     </div>
   </div>
 
@@ -107,6 +128,15 @@
     <div class="section-hdr">
       <span>Live Event Log</span>
       <span class="pill" class:pill-live={$connected}>{$connected ? '● Live' : '○ Reconnecting'}</span>
+      <div class="filter-tabs" aria-label="Event filters">
+        {#each EVENT_FILTERS as filter}
+          <button
+            class:active={eventFilter === filter.id}
+            on:click={() => eventFilter = filter.id}
+            type="button"
+          >{filter.label}</button>
+        {/each}
+      </div>
       {#if events.length}
         <button class="btn-secondary" style="padding:0.2rem 0.6rem;font-size:0.72rem"
                 on:click={() => events = []}>Clear</button>
@@ -116,8 +146,10 @@
     <div class="log" bind:this={eventsEl}>
       {#if events.length === 0}
         <div class="empty">No events yet — send a chat or trigger an agent to see activity.</div>
+      {:else if filteredEvents.length === 0}
+        <div class="empty">No events match this filter.</div>
       {:else}
-        {#each events as ev (ev._ts + (ev.id || ''))}
+        {#each filteredEvents as ev (ev._ts + (ev.id || ''))}
           <div class="log-row">
             <span class="log-time">{fmtTime(ev.timestamp)}</span>
             <span class="log-type" style="color:{eventColor(ev.type)}">{ev.type || 'event'}</span>
@@ -156,6 +188,13 @@
   }
   .pill      { font-size: .7rem; padding: .15rem .5rem; border-radius: 999px; background: #1c1f35; color: #6b7294; }
   .pill-live { background: rgba(76,175,130,.15); color: #4caf82; }
+  .filter-tabs { margin-left: auto; display: inline-flex; gap: .25rem; padding: .15rem; background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px; }
+  .filter-tabs button {
+    background: transparent; color: #7b82a8; border: 0; border-radius: 6px;
+    padding: .22rem .5rem; font-size: .72rem; cursor: pointer;
+  }
+  .filter-tabs button.active { background: #262b4c; color: #f0f2ff; }
+  .filter-tabs button:hover { color: #f0f2ff; }
 
   .log { flex: 1; overflow-y: auto; font-family: monospace; font-size: .78rem; max-height: 480px; }
   .log-row {

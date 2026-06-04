@@ -74,16 +74,18 @@ The **embedders** (`internal/llm/embed.go`) are deliberately separate from chat 
 
 The **knowledge base / RAG layer** (`internal/knowledge/`) wraps a SQLite database with the `sqlite-vec` extension auto-loaded via cgo. `Open` (`store.go:91`) creates `knowledge_bases`, `documents`, `chunks` tables plus one `vec_<kb_id>` virtual table per KB so different KBs can use different embedding dimensions. `Service` (`service.go`) is the high-level facade the engine talks to; it owns a small bounded LRU (`embedLRU`, 256 entries) that caches the *query* embedding so an agent re-asking the same question doesn't pay the embed round-trip twice.
 
-The **MCP integration** (`internal/mcp/`) is an MCP client (not a server): the gateway connects out to N configured MCP servers — stdio (spawned `npx ...` subprocesses) or HTTP/SSE — runs the MCP handshake (`initialize` + `initialized` notification), caches each server's tool list, and exposes the combined catalog to every agent under namespaced names like `mcp__filesystem__read_file`. Tool calls are routed to the right server via `Client.Call` (`engine.go:1035`). The MCP transport implementations live in `mcp/transport.go`.
+The **MCP integration** (`internal/mcp/`) is an MCP client (not a server): the gateway connects out to N configured MCP servers — stdio (spawned `npx ...` subprocesses) or HTTP/SSE — runs the MCP handshake (`initialize` + `initialized` notification), caches each server's tool list, and exposes tools under namespaced names like `mcp__filesystem__read_file`. By default, legacy agents that omit MCP allowlists still see every connected MCP tool; agents can restrict exposure with `mcp_servers: [rocketmoney]`, `mcp_tools: [mcp__rocketmoney__get_transactions]`, or disable MCP entirely with `mcp_servers: []`. Tool calls are routed to the right server via `Client.Call` after the same allowlist is enforced in the runtime. The MCP transport implementations live in `mcp/transport.go`.
 
 The **tool/skill catalog** is the union of four things the engine builds per-agent in `allToolSchemas` (`engine.go:1146`):
 
 1. Python tools declared in the agent's own `SOUL.yaml` (`tools:` list).
 2. Go-native built-ins — `web_search` (Ollama Web Search API, works with any LLM provider since it only needs `OLLAMA_API_KEY`), `read_skill` / `read_skill_file` (gated on the agent having opted into Skills), `kb_search` (gated on the agent declaring at least one KB).
-3. MCP tools from every connected server.
+3. MCP tools admitted by the agent's `mcp_servers` / `mcp_tools` allowlists.
 4. Peer-agent tools, one per declared peer, named `agent__<id>`.
 
 The agent's `builtins:` field controls which built-ins it actually sees: absent = default gating, `[]` = none (useful for pure orchestrators that should only delegate), explicit list = only those.
+
+The agent's `mcp_servers:` and `mcp_tools:` fields control which external MCP tools it sees and may call. If both fields are absent, all connected MCP tools are offered for backwards compatibility. If either field is present, MCP is deny-by-default and only matching servers/tools are allowed.
 
 **Agent Skills** (`internal/skills/`, `pkg/skill/skill.go`) follow the agentskills.io spec — each skill is a directory with a `SKILL.md` containing YAML frontmatter and markdown instructions. The loader scans `~/.agents/skills/`, `~/.soulacy/skills/`, and project-level equivalents at boot. Progressive disclosure: only the name+description are in the system prompt by default (cheap catalog), `read_skill` loads the full body on demand, `read_skill_file` reads resource files like `scripts/extract.py`.
 
@@ -271,7 +273,7 @@ mcp:
         GITHUB_TOKEN: ghp_...
 ```
 
-…or `POST /api/v1/mcp` at runtime — the gateway connects on the fly, caches the server's tools, and they appear in every agent's catalog as `mcp__github__*`. HTTP transports work too (set `transport: http` and `url`).
+…or `POST /api/v1/mcp` at runtime — the gateway connects on the fly and caches the server's tools. Legacy agents see them as `mcp__github__*`; restricted agents must list the server or individual tools in `mcp_servers:` / `mcp_tools:`. HTTP transports work too (set `transport: http` and `url`).
 
 **Adding a new Skill.** Create a directory with a `SKILL.md` at any of the scan paths (`~/.agents/skills/<name>/SKILL.md`, `~/.soulacy/skills/<name>/SKILL.md`, project-level equivalents, or an extra dir from `skill_dirs`). Frontmatter at minimum `name:` and `description:`; rest is markdown. Optional `scripts/`, `references/`, `assets/` subdirs are loadable via `read_skill_file`.
 

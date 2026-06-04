@@ -16,6 +16,6 @@ export default defineConfig({
   // Build output goes into the Go embed directory so 'make build' picks it up.
   build: {
     outDir: '../internal/webui/dist',
-    emptyOutDir: false,
+    emptyOutDir: true,
   },
 })

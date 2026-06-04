@@ -396,7 +396,14 @@ schedule:
 
 <!-- Edit modal -->
 {#if editing}
-  <div class="modal-bg" on:click|self={closeEdit}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close schedule edit modal"
+    on:click|self={closeEdit}
+    on:keydown={(e) => e.key === 'Escape' && closeEdit()}
+  >
     <div class="modal">
       <h2>Edit schedule — {editing.id}</h2>
       <label class="field">
@@ -418,7 +425,14 @@ schedule:
 
 <!-- History slide-out panel -->
 {#if historyAgent}
-  <div class="panel-bg" on:click|self={closeHistory}>
+  <div
+    class="panel-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close run history panel"
+    on:click|self={closeHistory}
+    on:keydown={(e) => e.key === 'Escape' && closeHistory()}
+  >
     <div class="history-panel">
       <div class="panel-hdr">
         <div class="panel-title">
@@ -465,7 +479,14 @@ schedule:
 
 <!-- Run-now / wait prompt (on click when imminent, or auto when a run approaches) -->
 {#if runPrompt}
-  <div class="modal-bg" on:click|self={promptWait}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Wait for scheduled run"
+    on:click|self={promptWait}
+    on:keydown={(e) => e.key === 'Escape' && promptWait()}
+  >
     <div class="modal">
       <h2>⏰ {runPrompt.agent.name || runPrompt.agent.id} is about to run</h2>
       <p>

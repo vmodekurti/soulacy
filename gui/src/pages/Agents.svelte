@@ -11,6 +11,8 @@
   let saveMsg  = ''
   let saving   = false
   let deleting = false
+  let validating = false
+  let validationReport = null
 
   // Tool catalog — fetched once, used by the python_file dropdown
   let catalog = { python_tools: [], mcp_tools: [], builtins: [] }
@@ -256,12 +258,31 @@
     editing.agents    = editing.agents    || []
     editing.channels  = editing.channels  || []
     saveMsg = ''
+    validationReport = null
   }
 
   function newAgent() {
     selected = null
     editing  = BLANK()
     saveMsg  = ''
+    validationReport = null
+  }
+
+  async function validateEditing() {
+    if (!editing || validating) return
+    validating = true
+    saveMsg = ''
+    try {
+      validationReport = await api.agents.validate(editing)
+    } catch (e) {
+      validationReport = {
+        valid: false,
+        errors: 1,
+        warnings: 0,
+        findings: [{ severity: 'error', field: 'validator', message: e.message }],
+      }
+    }
+    validating = false
   }
 
   async function save() {
@@ -326,6 +347,14 @@
   let playSending     = false
   let playError       = ''
   let playMsgListEl
+  let playOverridesOpen = false
+  let playUseOverrides = false
+  let playProvider = ''
+  let playModel = ''
+  let playTemperature = ''
+  let playMaxTokens = ''
+  let playMaxTurns = ''
+  let playToolChoice = ''
 
   // Derived: the current agent's transcript. We assign through the map so
   // Svelte sees the reactive change.
@@ -347,7 +376,7 @@
     playSending = true
     await scrollPlayBottom()
     try {
-      const res = await api.chat(agentId, text, 'gui-playground')
+      const res = await api.chat(agentId, text, 'gui-playground', playgroundOverrides())
       appendPlayMsg(agentId, { role: 'assistant', text: res.reply, ts: new Date() })
     } catch (e) {
       playError = e.message
@@ -365,6 +394,28 @@
 
   function playKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); playSend() }
+  }
+
+  function playgroundOverrides() {
+    if (!playUseOverrides) return null
+    const overrides = {}
+    if (playProvider.trim()) overrides.provider = playProvider.trim()
+    if (playModel.trim()) overrides.model = playModel.trim()
+    if (playTemperature !== '' && !Number.isNaN(Number(playTemperature))) overrides.temperature = Number(playTemperature)
+    if (playMaxTokens !== '' && Number(playMaxTokens) > 0) overrides.max_tokens = Number(playMaxTokens)
+    if (playMaxTurns !== '' && Number(playMaxTurns) > 0) overrides.max_turns = Number(playMaxTurns)
+    if (playToolChoice.trim()) overrides.tool_choice = playToolChoice.trim()
+    return Object.keys(overrides).length ? overrides : null
+  }
+
+  function useSelectedLLMForPlayground() {
+    if (!selected) return
+    playProvider = selected.llm?.provider || ''
+    playModel = selected.llm?.model || ''
+    playTemperature = selected.llm?.temperature ?? ''
+    playMaxTokens = selected.llm?.max_tokens || ''
+    playMaxTurns = selected.max_turns || ''
+    playToolChoice = selected.llm?.tool_choice || ''
   }
 
   function clearPlayChat() {
@@ -501,7 +552,10 @@ console.log(reply);` : ''
       {/if}
       {#each agents as agent}
         <div class="agent-card" class:active={selected?.id === agent.id}
-             on:click={() => select(agent)}>
+             role="button"
+             tabindex="0"
+             on:click={() => select(agent)}
+             on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), select(agent))}>
           <div>
             <div class="agent-name">{agent.name || agent.id}</div>
             <div class="agent-meta">
@@ -538,6 +592,9 @@ console.log(reply);` : ''
                   {deleting ? '…' : 'Delete'}
                 </button>
               {/if}
+              <button class="btn-secondary" on:click={validateEditing} disabled={validating}>
+                {validating ? 'Checking…' : 'Validate'}
+              </button>
               <button class="btn-primary" on:click={save} disabled={saving}>
                 {saving ? 'Saving…' : 'Save'}
               </button>
@@ -548,26 +605,62 @@ console.log(reply);` : ''
           </div>
 
           <div class="fields">
+            {#if validationReport}
+              <div class="validation-panel" class:ok={validationReport.valid && validationReport.warnings === 0}
+                   class:warn={validationReport.valid && validationReport.warnings > 0}
+                   class:fail={!validationReport.valid}>
+                <div class="validation-head">
+                  <span>
+                    {validationReport.valid ? (validationReport.warnings ? 'Validation warnings' : 'Validation passed') : 'Validation failed'}
+                  </span>
+                  <span>{validationReport.errors || 0} errors · {validationReport.warnings || 0} warnings</span>
+                </div>
+                {#if (validationReport.findings || []).length === 0}
+                  <div class="validation-empty">No findings.</div>
+                {:else}
+                  <div class="validation-list">
+                    {#each validationReport.findings as finding}
+                      <div class="validation-item" class:error={finding.severity === 'error'}>
+                        <div class="validation-line">
+                          <span class="severity">{finding.severity}</span>
+                          <code>{finding.field}</code>
+                          <span>{finding.message}</span>
+                        </div>
+                        {#if finding.suggestion}
+                          <div class="validation-suggestion">{finding.suggestion}</div>
+                        {/if}
+                        {#if finding.alternatives?.length}
+                          <div class="validation-alts">
+                            {#each finding.alternatives as alt}<span>{alt}</span>{/each}
+                          </div>
+                        {/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+
             <div class="row-2">
               <div class="field">
-                <label>ID <span class="req">*</span></label>
+                <span class="field-label">ID <span class="req">*</span></span>
                 <input bind:value={editing.id} placeholder="my-agent"
                        disabled={!!selected} />
               </div>
               <div class="field">
-                <label>Name</label>
+                <span class="field-label">Name</span>
                 <input bind:value={editing.name} placeholder="My Agent" />
               </div>
             </div>
 
             <div class="field">
-              <label>Description</label>
+              <span class="field-label">Description</span>
               <input bind:value={editing.description} placeholder="What this agent does" />
             </div>
 
             <div class="row-2">
               <div class="field">
-                <label>Trigger</label>
+                <span class="field-label">Trigger</span>
                 <select bind:value={editing.trigger}>
                   <option value="channel">channel (HTTP / Slack / Telegram…)</option>
                   <option value="cron">cron (scheduled)</option>
@@ -576,7 +669,7 @@ console.log(reply);` : ''
                 </select>
               </div>
               <div class="field">
-                <label>Enabled</label>
+                <span class="field-label">Enabled</span>
                 <select bind:value={editing.enabled}>
                   <option value={true}>Yes</option>
                   <option value={false}>No</option>
@@ -586,14 +679,14 @@ console.log(reply);` : ''
 
             {#if editing.trigger === 'cron'}
               <div class="field">
-                <label>Cron expression</label>
+                <span class="field-label">Cron expression</span>
                 <input bind:value={editing.schedule.cron}
                        placeholder="0 9 * * *  (9 AM every day)" />
               </div>
             {/if}
 
             <div class="field">
-              <label>System Prompt</label>
+              <span class="field-label">System Prompt</span>
               <textarea bind:value={editing.system_prompt} rows="7"
                         placeholder="You are a helpful Soulacy agent…"></textarea>
             </div>
@@ -602,7 +695,7 @@ console.log(reply);` : ''
 
             <div class="row-3">
               <div class="field">
-                <label>Provider</label>
+                <span class="field-label">Provider</span>
                 <select bind:value={editing.llm.provider}>
                   {#if providers.length === 0}
                     <option value={editing.llm.provider}>{editing.llm.provider || 'ollama'}</option>
@@ -616,7 +709,7 @@ console.log(reply);` : ''
                 </select>
               </div>
               <div class="field">
-                <label>
+                <span class="field-label">
                   Model
                   {#if modelsLoading[editing.llm.provider]}
                     <span class="mloading">loading…</span>
@@ -625,7 +718,7 @@ console.log(reply);` : ''
                   {:else if modelOptions.length > 0}
                     <span class="mhint">{modelOptions.length} options</span>
                   {/if}
-                </label>
+                </span>
                 <!-- Keyed {#each (m)} prevents Svelte from mutating <option> values
                      in-place during list updates. Current model is always at [0]
                      (from modelOptions), so bind:value always has a match and the
@@ -646,25 +739,25 @@ console.log(reply);` : ''
                 {/if}
               </div>
               <div class="field">
-                <label>Max tokens</label>
+                <span class="field-label">Max tokens</span>
                 <input type="number" bind:value={editing.llm.max_tokens} min="64" max="8192" />
               </div>
             </div>
 
             <div class="row-2">
               <div class="field">
-                <label>Temperature</label>
+                <span class="field-label">Temperature</span>
                 <input type="number" bind:value={editing.llm.temperature}
                        min="0" max="2" step="0.05" />
               </div>
               <div class="field">
-                <label>Max turns</label>
+                <span class="field-label">Max turns</span>
                 <input type="number" bind:value={editing.max_turns} min="1" max="50" />
               </div>
             </div>
 
             <div class="field">
-              <label>Tool choice <span class="optional">(controls turn-1 tool selection — agent__&lt;peer&gt; triggers the engine's auto-delegate path)</span></label>
+              <span class="field-label">Tool choice <span class="optional">(controls turn-1 tool selection — agent__&lt;peer&gt; triggers the engine's auto-delegate path)</span></span>
               <ChipPicker
                 value={editing.llm.tool_choice ? [editing.llm.tool_choice] : []}
                 options={toolChoiceOptions}
@@ -678,7 +771,7 @@ console.log(reply);` : ''
             <div class="sep">Memory</div>
             <div class="row-2">
               <div class="field">
-                <label>Read scopes <span class="optional">(which memory tiers the agent loads as context)</span></label>
+                <span class="field-label">Read scopes <span class="optional">(which memory tiers the agent loads as context)</span></span>
                 <ChipPicker
                   value={editing.memory?.read_scopes || []}
                   options={memoryScopeOptions}
@@ -687,7 +780,7 @@ console.log(reply);` : ''
                 />
               </div>
               <div class="field">
-                <label>Write scopes <span class="optional">(which memory tiers the agent persists into)</span></label>
+                <span class="field-label">Write scopes <span class="optional">(which memory tiers the agent persists into)</span></span>
                 <ChipPicker
                   value={editing.memory?.write_scopes || []}
                   options={memoryScopeOptions}
@@ -697,14 +790,14 @@ console.log(reply);` : ''
               </div>
             </div>
             <div class="field">
-              <label>Memory max tokens <span class="optional">(how many recent entries to inject into context)</span></label>
+              <span class="field-label">Memory max tokens <span class="optional">(how many recent entries to inject into context)</span></span>
               <input type="number" bind:value={editing.memory.max_tokens} min="0" max="100000" />
             </div>
 
             {#if editing.trigger === 'channel'}
               <div class="sep">Channels</div>
               <div class="field">
-                <label>Bound channels — pick from registered channel adapters</label>
+                <span class="field-label">Bound channels — pick from registered channel adapters</span>
                 <ChipPicker
                   value={editing.channels || []}
                   options={channelOptions}
@@ -743,7 +836,7 @@ console.log(reply);` : ''
                   </div>
 
                   <div class="field">
-                    <label>Python file</label>
+                    <span class="field-label">Python file</span>
                     {#if (catalog.python_tools || []).length > 0}
                       <select value={tool.python_file || ''}
                               on:change={(e) => onPythonFilePicked(i, e.target.value)}>
@@ -758,19 +851,19 @@ console.log(reply);` : ''
                   </div>
 
                   <div class="field">
-                    <label>Description (shown to the LLM)</label>
+                    <span class="field-label">Description (shown to the LLM)</span>
                     <input bind:value={tool.description}
                            placeholder="What this tool does. The LLM picks tools by description." />
                   </div>
 
                   <div class="field">
-                    <label>Timeout <span class="optional">(optional — overrides global; e.g. 30m, 1h)</span></label>
+                    <span class="field-label">Timeout <span class="optional">(optional — overrides global; e.g. 30m, 1h)</span></span>
                     <input bind:value={tool.timeout}
                            placeholder="30s (defaults to runtime.tool_timeout)" />
                   </div>
 
                   <div class="field">
-                    <label>Parameters schema (JSON)</label>
+                    <span class="field-label">Parameters schema (JSON)</span>
                     <textarea rows="5"
                               value={paramsJson(tool)}
                               on:input={(e) => updateParams(i, e.target.value)}
@@ -792,7 +885,7 @@ console.log(reply);` : ''
 
             <div class="sep">Skills</div>
             <div class="field">
-              <label>Skills available to this agent — pick from installed skills</label>
+              <span class="field-label">Skills available to this agent — pick from installed skills</span>
               <ChipPicker
                 value={editing.skills || []}
                 options={skillOptions}
@@ -804,7 +897,7 @@ console.log(reply);` : ''
 
             <div class="sep">Knowledge bases</div>
             <div class="field">
-              <label>KBs the agent may search via <code>kb_search</code> — pick from created KBs</label>
+              <span class="field-label">KBs the agent may search via <code>kb_search</code> — pick from created KBs</span>
               <ChipPicker
                 value={editing.knowledge || []}
                 options={kbOptions}
@@ -816,7 +909,7 @@ console.log(reply);` : ''
 
             <div class="sep">Peer agents</div>
             <div class="field">
-              <label>Other agents this agent may invoke as <code>agent__&lt;id&gt;</code> tools — pick from loaded agents</label>
+              <span class="field-label">Other agents this agent may invoke as <code>agent__&lt;id&gt;</code> tools — pick from loaded agents</span>
               <ChipPicker
                 value={editing.agents || []}
                 options={peerAgentOptions}
@@ -867,9 +960,55 @@ console.log(reply);` : ''
       <div class="play-col">
         <div class="play-hdr">
           <span>Playground · <code>{selected.id}</code></span>
-          <button class="btn-secondary small" on:click={clearPlayChat}
-                  disabled={playSending || playMessages.length === 0}>Clear</button>
+          <div class="play-hdr-actions">
+            <button class="btn-secondary small" class:on={playOverridesOpen} on:click={() => playOverridesOpen = !playOverridesOpen}>Params</button>
+            <button class="btn-secondary small" on:click={clearPlayChat}
+                    disabled={playSending || playMessages.length === 0}>Clear</button>
+          </div>
         </div>
+
+        {#if playOverridesOpen}
+          <div class="play-params">
+            <label class="check-row">
+              <input type="checkbox" bind:checked={playUseOverrides} />
+              Override this run
+            </label>
+            <div class="param-actions">
+              <button class="btn-secondary small" type="button" on:click={useSelectedLLMForPlayground}>Use agent defaults</button>
+            </div>
+            <div class="param-grid">
+              <label>
+                <span>Provider</span>
+                <select bind:value={playProvider} disabled={!playUseOverrides}>
+                  <option value="">unchanged</option>
+                  {#each providers as p}
+                    <option value={p.id}>{p.id}</option>
+                  {/each}
+                </select>
+              </label>
+              <label>
+                <span>Model</span>
+                <input bind:value={playModel} placeholder="unchanged" disabled={!playUseOverrides} />
+              </label>
+              <label>
+                <span>Temperature</span>
+                <input type="number" step="0.1" min="0" max="2" bind:value={playTemperature} placeholder="unchanged" disabled={!playUseOverrides} />
+              </label>
+              <label>
+                <span>Max tokens</span>
+                <input type="number" min="1" bind:value={playMaxTokens} placeholder="unchanged" disabled={!playUseOverrides} />
+              </label>
+              <label>
+                <span>Max turns</span>
+                <input type="number" min="1" max="100" bind:value={playMaxTurns} placeholder="unchanged" disabled={!playUseOverrides} />
+              </label>
+              <label>
+                <span>Tool choice</span>
+                <input bind:value={playToolChoice} placeholder="auto, none, required, tool name" disabled={!playUseOverrides} />
+              </label>
+            </div>
+          </div>
+        {/if}
 
         <div class="play-messages" bind:this={playMsgListEl}>
           {#if playMessages.length === 0}
@@ -916,7 +1055,14 @@ console.log(reply);` : ''
 </div>
 
 {#if showExport && selected}
-  <div class="modal-bg" on:click|self={() => showExport = false}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close API snippets modal"
+    on:click|self={() => showExport = false}
+    on:keydown={(e) => e.key === 'Escape' && (showExport = false)}
+  >
     <div class="modal wide">
       <h2>API · {selected.id}</h2>
       <div class="modal-sub">
@@ -942,7 +1088,14 @@ console.log(reply);` : ''
 {/if}
 
 {#if showTemplates}
-  <div class="modal-bg" on:click|self={() => { if (!instantiating) showTemplates = false }}>
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close template modal"
+    on:click|self={() => { if (!instantiating) showTemplates = false }}
+    on:keydown={(e) => e.key === 'Escape' && !instantiating && (showTemplates = false)}
+  >
     <div class="modal">
       <h2>Start from a template</h2>
       <div class="modal-sub">
@@ -1036,6 +1189,30 @@ console.log(reply);` : ''
 
   .fields  { padding: 1rem; display: flex; flex-direction: column; gap: .8rem; }
   .field   { display: flex; flex-direction: column; gap: .3rem; }
+  .field-label {
+    font-size: .72rem; color: #6b7294; text-transform: uppercase;
+    letter-spacing: .06em; font-weight: 600;
+  }
+  .validation-panel {
+    border-radius: 8px; padding: .8rem; display: flex; flex-direction: column; gap: .6rem;
+    background: #0e1020; border: 1px solid #2a2f4a;
+  }
+  .validation-panel.ok   { border-color: rgba(76,175,130,.35); background: rgba(76,175,130,.07); }
+  .validation-panel.warn { border-color: rgba(240,192,96,.35); background: rgba(240,192,96,.07); }
+  .validation-panel.fail { border-color: rgba(240,96,96,.35); background: rgba(240,96,96,.07); }
+  .validation-head { display: flex; align-items: center; justify-content: space-between; font-size: .8rem; color: #c8cadf; font-weight: 600; }
+  .validation-head span:last-child { color: #6b7294; font-weight: 500; }
+  .validation-empty { color: #4caf82; font-size: .8rem; }
+  .validation-list { display: flex; flex-direction: column; gap: .55rem; }
+  .validation-item { border-top: 1px solid rgba(255,255,255,.06); padding-top: .55rem; }
+  .validation-item:first-child { border-top: none; padding-top: 0; }
+  .validation-line { display: flex; gap: .45rem; align-items: baseline; color: #c8cadf; font-size: .8rem; line-height: 1.45; }
+  .validation-line code { font-size: .75rem; color: #8b85ff; background: #1a1e36; padding: .08rem .28rem; border-radius: 4px; }
+  .severity { color: #f0c060; text-transform: uppercase; font-size: .66rem; font-weight: 700; min-width: 42px; }
+  .validation-item.error .severity { color: #f06060; }
+  .validation-suggestion { margin-left: 48px; margin-top: .25rem; color: #8a90b8; font-size: .76rem; line-height: 1.45; }
+  .validation-alts { margin-left: 48px; margin-top: .35rem; display: flex; flex-wrap: wrap; gap: .3rem; }
+  .validation-alts span { font-family: monospace; font-size: .68rem; color: #b0b5d8; background: #1a1e36; padding: .12rem .4rem; border-radius: 4px; }
   label    { font-size: .72rem; color: #6b7294; text-transform: uppercase; letter-spacing: .05em; }
   .mloading { color: #8b85ff; text-transform: none; font-weight: 500; margin-left: .35rem; }
   .merror   { color: #f0c060; text-transform: none; font-weight: 500; margin-left: .35rem; cursor: help; }
@@ -1107,7 +1284,22 @@ console.log(reply);` : ''
     padding: .6rem .85rem; border-bottom: 1px solid #1a1e36; flex-shrink: 0;
     font-size: .82rem; color: #c8cadf;
   }
+  .play-hdr-actions { display: flex; gap: .35rem; align-items: center; }
   .play-hdr code { font-family: monospace; color: #4caf82; }
+  .play-params {
+    border-bottom: 1px solid #1a1e36; padding: .65rem .75rem;
+    display: flex; flex-direction: column; gap: .55rem; background: #101323;
+  }
+  .check-row { display: flex; align-items: center; gap: .45rem; font-size: .75rem; color: #c8cadf; }
+  .param-actions { display: flex; justify-content: flex-end; }
+  .param-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .5rem; }
+  .param-grid label { display: flex; flex-direction: column; gap: .25rem; min-width: 0; }
+  .param-grid span { font-size: .68rem; color: #7b82a8; }
+  .param-grid input, .param-grid select {
+    width: 100%; min-width: 0; background: #1c1f35; color: #e8eaf6;
+    border: 1px solid #2a2f4a; border-radius: 5px; padding: .38rem .45rem; font-size: .75rem;
+  }
+  .param-grid input:disabled, .param-grid select:disabled { opacity: .55; }
   .play-messages {
     flex: 1; overflow-y: auto; padding: .85rem;
     display: flex; flex-direction: column; gap: .65rem;
