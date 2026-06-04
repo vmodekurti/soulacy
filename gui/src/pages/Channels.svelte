@@ -3,6 +3,7 @@
   import { api } from '../lib/api.js'
 
   let channels = []
+  let agents   = []
   let loading  = true
   let error    = ''
   let notice   = ''
@@ -20,8 +21,12 @@
     loading = true
     error   = ''
     try {
-      const res = await api.channels.list()
-      channels  = res.channels || []
+      const [channelRes, agentRes] = await Promise.all([
+        api.channels.list(),
+        api.agents.list().catch(() => ({ agents })),
+      ])
+      channels = channelRes.channels || []
+      agents = agentRes.agents || []
     } catch (e) {
       error = e.message
     } finally {
@@ -140,6 +145,10 @@
 
   function updateBotField(index, key, value) {
     botsForm = botsForm.map((bot, i) => i === index ? { ...bot, [key]: value } : bot)
+  }
+
+  function agentLabel(agent) {
+    return agent.name && agent.name !== agent.id ? `${agent.id} — ${agent.name}` : agent.id
   }
 
   async function restartGateway() {
@@ -281,6 +290,13 @@
             {#if f.type === 'password'}
               <input type="password" bind:value={form[f.key]}
                 placeholder={editing.settings?.[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
+            {:else if f.key === 'agent_id' && agents.length}
+              <select bind:value={form[f.key]}>
+                <option value="">Select an agent…</option>
+                {#each agents as agent}
+                  <option value={agent.id}>{agentLabel(agent)}</option>
+                {/each}
+              </select>
             {:else}
               <input type="text" bind:value={form[f.key]} placeholder={f.help || ''} />
             {/if}
@@ -323,6 +339,16 @@
                             value={bot[f.key] || ''}
                             on:input={(e) => updateBotField(i, f.key, e.currentTarget.value)}
                             placeholder={bot[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
+                        {:else if f.key === 'agent_id' && agents.length}
+                          <select
+                            value={bot[f.key] || ''}
+                            on:change={(e) => updateBotField(i, f.key, e.currentTarget.value)}
+                          >
+                            <option value="">Select an agent…</option>
+                            {#each agents as agent}
+                              <option value={agent.id}>{agentLabel(agent)}</option>
+                            {/each}
+                          </select>
                         {:else}
                           <input type="text"
                             value={bot[f.key] || ''}
@@ -422,6 +448,10 @@
   .fields { display: flex; flex-direction: column; gap: .85rem; }
   .field  { display: flex; flex-direction: column; gap: .3rem; }
   .field-label { font-size: .8rem; color: #c8cadf; }
+  .field select {
+    background: #1c1f35; color: #e8eaf6; border: 1px solid #2a2f4a;
+    border-radius: 6px; padding: .5rem .65rem; font-size: .85rem;
+  }
   .req { color: #f06060; margin-left: .15rem; }
   .field-help { font-size: .72rem; color: #555a7a; }
   .modal-row { display: flex; gap: .75rem; justify-content: flex-end; }
