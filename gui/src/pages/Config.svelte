@@ -186,6 +186,31 @@
         </div>
 
         <div class="section">
+          <h2 class="section-title">Webhooks</h2>
+          {#if (config?.hooks || []).length === 0}
+            <p class="hint">
+              No outbound webhooks configured. Add a <code>hooks:</code> section
+              to <code>config.yaml</code> to deliver signed events
+              (run.failed, tool.call, …) to your own endpoints — see
+              <code>docs/EVENTS.md</code> for the payload schema and signature
+              verification.
+            </p>
+          {:else}
+            {#each config.hooks as h}
+              <div class="hook-row">
+                <code class="hook-url">{h.url}</code>
+                <span class="hook-meta">
+                  on: {(h.on || []).join(', ') || '—'}
+                  {#if (h.agents || []).length}· agents: {h.agents.join(', ')}{/if}
+                  {#if h.secret_env}· signed (secret from ${h.secret_env}){:else}· ⚠ unsigned{/if}
+                </span>
+              </div>
+            {/each}
+            <p class="hint">Edit webhooks in <code>config.yaml</code> (restart to apply).</p>
+          {/if}
+        </div>
+
+        <div class="section">
           <h2 class="section-title">Directories</h2>
           <div class="field">
             <label for="agent-dirs">Agent directories (one per line)</label>
@@ -263,4 +288,11 @@
     color: #7b82a8; padding: 1rem; overflow-x: auto;
     white-space: pre; max-height: 600px; overflow-y: auto;
   }
+
+  .hint { font-size: .78rem; color: #6b7294; line-height: 1.6; }
+  .hint code { background: #1c1f35; padding: .08rem .35rem; border-radius: 4px; font-size: .72rem; }
+  .hook-row { display: flex; flex-direction: column; gap: .15rem; padding: .5rem .65rem;
+              background: #10121f; border: 1px solid #1a1e36; border-radius: 8px; }
+  .hook-url { font-size: .78rem; color: #8b85ff; overflow-wrap: anywhere; }
+  .hook-meta { font-size: .7rem; font-family: monospace; color: #6b7294; }
 </style>

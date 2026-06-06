@@ -38,11 +38,25 @@ type wsClient struct {
 // events for that client rather than blocking — because Emit runs on the agent
 // execution path, and a blocked WriteMessage would otherwise freeze the agent
 // mid-run.
+// eventPublisher forwards events to an external sink (the queue backend,
+// story E1). Implemented by events.Publisher; must never block.
+type eventPublisher interface {
+	PublishEvent(message.Event)
+}
+
 type EventHub struct {
-	mu      sync.RWMutex
-	clients map[*wsClient]struct{}
-	log     *zap.Logger
-	actions storage.ActionLogBackend // nil = persistence disabled
+	mu        sync.RWMutex
+	clients   map[*wsClient]struct{}
+	log       *zap.Logger
+	actions   storage.ActionLogBackend // nil = persistence disabled
+	publisher eventPublisher           // nil = queue publishing disabled
+}
+
+// SetEventPublisher wires an external event publisher (story E1). Must be
+// called before the first request is served. When nil, events are only
+// persisted + broadcast to WebSocket clients, exactly as before.
+func (h *EventHub) SetEventPublisher(p eventPublisher) {
+	h.publisher = p
 }
 
 // NewEventHub creates an EventHub. actions may be nil to disable persistence.
@@ -60,6 +74,9 @@ func NewEventHub(log *zap.Logger, actions storage.ActionLogBackend) *EventHub {
 func (h *EventHub) Emit(event message.Event) {
 	if h.actions != nil {
 		h.actions.Append(event)
+	}
+	if h.publisher != nil {
+		h.publisher.PublishEvent(event) // non-blocking by contract
 	}
 	data, err := json.Marshal(event)
 	if err != nil {

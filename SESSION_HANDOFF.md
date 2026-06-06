@@ -22,8 +22,29 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   integration notes in the prompts) · M5: 12→13→14 (reliability/workboard
   depth; artifacts emit events via E1) · M6: E9–E13 (SDK & distribution) ·
   M7: 15 (polish incl. plugin GUI surfaces). E14 deferred.
-  **Work happens on branch `feature/integrated-roadmap`** (contains the
-  roadmap docs + Story 7). **Next up: E1.**
+  **Work happens on branch `feature/integrated-roadmap`**. **Next up:
+  Story 8 (Chat checkpoints & branching, milestone M2).**
+
+**E1+E2 (event stream + signed webhooks) — complete (TDD, all green). M1 done.**
+- `internal/events` — schema-v1 `Envelope` {schema,id,type,agent_id,
+  session_id,ts,data}; `Publisher` = buffered chan + worker (never blocks
+  engine; drops on full buffer like actionlog); subjects
+  `soulacy.events.<type>`. 6 tests incl. blocking-backend non-block proof.
+- `EventHub.SetEventPublisher` forwards every Emit; workboard runs now emit
+  `run.started/run.finished/run.failed` via `emitRunEvent` (data: task_id,
+  task_title, run_id, attempt, failure_reason). 2 gateway tests.
+- `internal/hooks` — webhook `Dispatcher` subscribes `soulacy.events.>`
+  (group "webhooks"), filters per `config.Hooks` (exact/"x.*"/"*" + agents),
+  POSTs envelope with `X-Soulacy-Signature: t=<unix>,v1=<hmac-sha256 of
+  "t.body">` (secret from `secret_env`), retries 5× exp backoff+jitter
+  (cap 10m), dead → onDead callback (default: webhook.dead warn log).
+  `Sign`/`VerifySignature` exported (5-min skew guard). 7 tests, fake
+  RoundTripper (no httptest per standing rules). 84% coverage.
+- `config.HookConfig` + `Hooks` field; wired in main.go after the queue
+  backend; Config GUI got a read-only Webhooks section.
+- **Contract doc: `docs/EVENTS.md`** (envelope, types incl. run.*, subjects,
+  compatibility rules, webhook signature verification, best-effort
+  semantics). Suite 55.4% all green; vitest 39/39; build clean.
 
 **Story 7 (Run Observability & Cost Signals) — complete (TDD, all green).**
 - `internal/costs/metrics.go` — `SessionMetrics(ctx, sessionID)` aggregates
