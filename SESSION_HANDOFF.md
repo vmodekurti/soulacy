@@ -1,6 +1,32 @@
 # Session Handoff
 
-Last updated: 2026-06-06 (backlog stories — session 5: Story 5 complete; previously: session 4 stories 1–4)
+Last updated: 2026-06-06 (session 5: Stories 5–6 complete + extensibility
+blueprint and E-track stories; previously: session 4 stories 1–4)
+
+---
+
+## Extensibility track (NEW — read before Story 7)
+
+- **Design doc:** `docs/EXTENSIBILITY.md` (architecture overview, tiers,
+  phase specs, disruption analysis, compatibility policy). Approved by Vasu.
+- **User stories:** `docs/BACKLOG.md` E1–E14 (E14 WASM is demand-gated
+  deferred). Constraints baked into every story: single static binary, no
+  dynamic loading, plugins as default-deny security principals, versioned
+  contracts, TDD, commit on green.
+- **Branch:** all extensibility work lives on
+  `feature/extensibility-blueprint` (currently checked out; contains the
+  design doc + E-stories). **Switch back to `main` for sprint stories 7–15.**
+- **Interleave plan:** Story 7 → E1–E2 (observer layer is Story 7's natural
+  exhaust) → Stories 8–9 → E3–E8 (after channels/whatsappweb work is stable)
+  → Stories 10–15 → E9–E13.
+- **Git workflow (Vasu's instruction):** commit whenever tests turn green;
+  stage selectively (only files you touched). Identity: Vasu
+  <hivasu@gmail.com> (already in git config).
+- **⚠️ Stale git locks:** the sandbox cannot delete `.git/HEAD.lock` and
+  `.git/index.lock` after git writes (mount quirk — "Operation not
+  permitted"). Commits still succeed but leave locks behind. Vasu must
+  `rm .git/HEAD.lock .git/index.lock` on the Mac when git complains. Check
+  for these before any git write.
 
 ---
 

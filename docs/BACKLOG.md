@@ -1,7 +1,15 @@
-# Soulacy Backlog — 15 Stories
+# Soulacy Backlog
 
-Source of truth for the current sprint (provided by Vasu, 2026-06-06).
-Progress is tracked in `SESSION_HANDOFF.md`.
+Source of truth for all planned work. Progress is tracked in
+`SESSION_HANDOFF.md`.
+
+Two tracks:
+- **Sprint stories 1–15** (provided by Vasu, 2026-06-06)
+- **Extensibility stories E1–E14** (derived from `docs/EXTENSIBILITY.md`,
+  2026-06-06) — make the framework extremely open to independent developers
+  without compromising the single-binary model or the security stack
+  (RBAC, vault, audit, sandbox). Recommended interleave: Story 7 → E1–E2 →
+  Stories 8–9 → E3–E8 → Stories 10–15 → E9–E13.
 
 ## Status
 
@@ -128,3 +136,151 @@ the browser title, tighten empty states, standardize button labels/icons,
 reduce visual noise in dense pages, and ensure destructive actions are clearly
 separated from routine actions. Prioritize consistency across Dashboard,
 Agents, Chat, Schedule, Workboard, Config, Logs, and Providers.
+
+---
+
+## Extensibility track (E1–E14)
+
+Design authority: `docs/EXTENSIBILITY.md`. Standing constraints for every
+story: single static binary preserved; no dynamic code loading; plugins are
+distinct security principals with manifest-declared, default-deny
+capabilities; all contracts versioned; TDD; commit on green.
+
+### Status
+
+| # | Story | Phase | Status |
+|---|-------|-------|--------|
+| E1 | Publish Internal Events To The Queue Backend | 1 | ⬜ |
+| E2 | Add Signed Outbound Webhooks | 1 | ⬜ |
+| E3 | Define The External Channel Protocol | 2 | ⬜ |
+| E4 | Add Sidecar Supervision And Lifecycle | 2 | ⬜ |
+| E5 | Introduce Plugin Principals And Capabilities | 2 | ⬜ |
+| E6 | Delegate Credentials From The Vault To Sidecars | 2 | ⬜ |
+| E7 | Implement Plugin Manifest v2 | 2 | ⬜ |
+| E8 | Add Plugin GUI Mounts | 2 | ⬜ |
+| E9 | Extract A Versioned Go SDK Module | 3 | ⬜ |
+| E10 | Add Factory Registries And Decompose main.go | 3 | ⬜ |
+| E11 | Ship Conformance Test Kits | 3 | ⬜ |
+| E12 | Build The Flavored-Binary Tool | 3 | ⬜ |
+| E13 | Add Plugin Discovery And Install UX | 3 | ⬜ |
+| E14 | WASM Transform Sandbox | 4 | ⏸ deferred (demand-gated) |
+
+### Story prompts
+
+### Story E1: Publish Internal Events To The Queue Backend
+Define event schema v1 (explicit `schema` field; types message.in,
+message.out, tool.call, tool.result, error, run.started, run.finished,
+run.failed including Workboard runs) and publish every EventHub emission to
+the existing queue backend (memory or NATS) without blocking the engine.
+Keep WebSocket behavior unchanged. Add focused tests for schema shape,
+non-blocking emit, and NATS subject layout. Document the schema and the
+additive-fields compatibility rule.
+
+### Story E2: Add Signed Outbound Webhooks
+Add a `hooks:` config section mapping event-type and agent filters to HTTPS
+endpoints. Deliver events from the queue buffer (never inline from Emit),
+sign payloads with HMAC-SHA256 over `<timestamp>.<body>` in an
+`X-Soulacy-Signature` header, retry with exponential backoff and jitter
+(default 5 attempts), and write a `webhook.dead` audit entry on exhaustion.
+Document the explicit best-effort delivery guarantee and signature
+verification with examples. Add a Hooks section to the Config GUI.
+
+### Story E3: Define The External Channel Protocol
+Generalize the WhatsApp Web sidecar's NDJSON-over-stdio framing into a
+documented External Channel Protocol v1: hello/hello_ack handshake with
+integer protocol version negotiation, status, message, send, error, and
+shutdown frames, unknown frames ignored for forward compatibility. Implement
+a generic ExternalChannelAdapter that satisfies channels.Adapter and spawns
+any declared command. Provide a reference sidecar in Node or Python and a
+protocol conformance fixture. Do not force-migrate the existing WhatsApp Web
+adapter.
+
+### Story E4: Add Sidecar Supervision And Lifecycle
+Supervise sidecar processes: handshake deadline, health tracking, crash
+restart with exponential backoff and a healthy-reset window, graceful
+shutdown (shutdown frame, SIGTERM grace, SIGKILL), and spawn through the
+existing rlimit `__exec-sandbox` wrapper as the portable sandbox baseline.
+Surface lifecycle state through AdapterStatus so the Channels GUI shows
+sidecar health without new UI work. Test restart/backoff behavior with a
+deliberately crashing fake sidecar.
+
+### Story E5: Introduce Plugin Principals And Capabilities
+Add a `plugin:<id>` security principal distinct from user roles. Define a
+capability grammar (`cap` + scope, e.g. vector.search limited to listed
+agents, channel.send limited to listed channels, events.subscribe limited to
+listed types) declared in the plugin manifest, default-deny. Enforce at the
+host-API boundary and record allow/deny decisions in the audit log. Keep the
+existing user RBAC model untouched. Start with a small capability set and
+document how new capabilities are added.
+
+### Story E6: Delegate Credentials From The Vault To Sidecars
+Let plugin manifests declare required credentials as vault paths scoped to
+the plugin's namespace. Inject only the declared secrets into the sidecar's
+environment at spawn. Restart the sidecar when a referenced credential is
+rotated (the vault already versions secrets). Never write secrets to disk or
+logs; document the env-transport limitations and the v2 handshake-delivery
+option. Test that undeclared credentials are never visible to the subprocess.
+
+### Story E7: Implement Plugin Manifest v2
+Extend `plugin.yaml` with `manifest_schema: 2` supporting: sidecar channels,
+OpenAI-compatible provider declarations, skills directories, GUI mounts,
+credentials, and permissions — alongside the existing Python tools. Wire the
+already-declared `pkg/plugin.Registry` so manifest channels become supervised
+sidecar adapters and providers reuse the existing OpenAI-compatible wrapper.
+Warn-and-skip on schema v1 manifests (no breakage). Validate manifests with
+clear error messages and add loader tests for each contribution type.
+
+### Story E8: Add Plugin GUI Mounts
+Serve plugin static assets at `/plugins/<id>/ui/` and render them in the
+Svelte shell inside a sandboxed iframe, with a nav entry taken from the
+manifest. Issue the iframe a scoped plugin token bound to the `plugin:<id>`
+principal and its declared capabilities — never the user's API key. Enforce
+the token at the API layer and test that a plugin token cannot reach
+endpoints outside its capability set.
+
+### Story E9: Extract A Versioned Go SDK Module
+Create `github.com/soulacy/soulacy/sdk` as a separate Go module with its own
+semver. Promote channels.Adapter, llm.Provider, and the queue/vector/storage
+backend interfaces into it, leaving type aliases at the old internal paths so
+every existing file and test compiles unchanged. Re-export pkg/message
+canonical types. Write the compatibility policy into the SDK README
+(extension interfaces for additive methods, never widening existing ones).
+
+### Story E10: Add Factory Registries And Decompose main.go
+Add database/sql-style factory registries to the SDK (RegisterFactory for
+channels, providers, backends) with init()-based driver self-registration and
+a generated blank-import file in cmd/soulacy. Resolve config entries against
+the registry with fallback to the existing hardcoded wiring (strangler);
+delete the hardcoded paths only when all built-ins are registry-routed and
+the suite is green. Extract an internal/app package exposing app.New(cfg,
+opts...) and shrink cmd/soulacy/main.go to a thin composition root,
+migrating one subsystem at a time with a green suite between steps.
+
+### Story E11: Ship Conformance Test Kits
+Export test suites from the SDK that extension authors run out-of-tree:
+channeltest.RunAdapterSuite, providertest.RunProviderSuite, and a sidecar
+protocol conformance runner that exercises handshake, framing, and lifecycle
+against any sidecar command. Run the kits against all built-in
+implementations in CI so the contract and the implementations cannot drift.
+
+### Story E12: Build The Flavored-Binary Tool
+Write `soulacy build --with <module>@<version>` (start as a script, promote
+to a subcommand) that generates the blank-import registration file, resolves
+modules, and compiles a single static binary containing the extra drivers.
+Verify the output runs the conformance kits. Document the custom-distribution
+workflow end to end with the Matrix-channel example.
+
+### Story E13: Add Plugin Discovery And Install UX
+Let users install plugins from a git URL or checksummed archive through the
+GUI: show the manifest's requested capabilities and credentials for explicit
+approval before activation, list installed plugins with enable/disable and
+remove, and re-prompt when an updated manifest requests new permissions.
+Local-first (no central marketplace dependency); design the metadata so a
+registry/marketplace can be layered on later.
+
+### Story E14: WASM Transform Sandbox (deferred)
+Demand-gated. Only if a concrete need emerges that skills and sidecars cannot
+serve: embed wazero (pure Go) to run uploaded WASM as pure bytes→bytes
+transforms with hard context deadlines, no filesystem, no network, and no
+host API beyond the input payload. Revisit the decision record in
+docs/EXTENSIBILITY.md §7 before starting.
