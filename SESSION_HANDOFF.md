@@ -16,17 +16,23 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
 - **Branch:** all extensibility work lives on
   `feature/extensibility-blueprint` (currently checked out; contains the
   design doc + E-stories). **Switch back to `main` for sprint stories 7–15.**
-- **Interleave plan:** Story 7 → E1–E2 (observer layer is Story 7's natural
-  exhaust) → Stories 8–9 → E3–E8 (after channels/whatsappweb work is stable)
-  → Stories 10–15 → E9–E13.
+- **Integrated roadmap (single sequence, see BACKLOG.md table):**
+  M1: 7→E1→E2 (observability arc) · M2: 8→9 (chat) · M3: E3–E8 (sidecar
+  foundation) · M4: 10→11 (voice — built ON the sidecar runtime, see
+  integration notes in the prompts) · M5: 12→13→14 (reliability/workboard
+  depth; artifacts emit events via E1) · M6: E9–E13 (SDK & distribution) ·
+  M7: 15 (polish incl. plugin GUI surfaces). E14 deferred.
+  **Next up: Story 7 (on `main`).**
 - **Git workflow (Vasu's instruction):** commit whenever tests turn green;
   stage selectively (only files you touched). Identity: Vasu
   <hivasu@gmail.com> (already in git config).
-- **⚠️ Stale git locks:** the sandbox cannot delete `.git/HEAD.lock` and
-  `.git/index.lock` after git writes (mount quirk — "Operation not
-  permitted"). Commits still succeed but leave locks behind. Vasu must
-  `rm .git/HEAD.lock .git/index.lock` on the Mac when git complains. Check
-  for these before any git write.
+- **⚠️ Stale git locks (workaround known):** the sandbox cannot `unlink`
+  `.git/*.lock` after git writes (mount quirk), so each commit leaves stale
+  locks that block the next git write. **`rm` fails but `mv` works** — before
+  any git write run:
+  `mkdir -p .git/stale-locks && for f in .git/*.lock; do [ -e "$f" ] && mv "$f" .git/stale-locks/$(basename $f).$(date +%s); done`
+  (Vasu can periodically delete `.git/stale-locks/` and stray
+  `.git/objects/*/tmp_obj_*` files on the Mac.)
 
 ---
 
