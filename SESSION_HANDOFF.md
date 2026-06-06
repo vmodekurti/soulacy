@@ -22,7 +22,31 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   integration notes in the prompts) · M5: 12→13→14 (reliability/workboard
   depth; artifacts emit events via E1) · M6: E9–E13 (SDK & distribution) ·
   M7: 15 (polish incl. plugin GUI surfaces). E14 deferred.
-  **Next up: Story 7 (on `main`).**
+  **Work happens on branch `feature/integrated-roadmap`** (contains the
+  roadmap docs + Story 7). **Next up: E1.**
+
+**Story 7 (Run Observability & Cost Signals) — complete (TDD, all green).**
+- `internal/costs/metrics.go` — `SessionMetrics(ctx, sessionID)` aggregates
+  token_usage per session: llm_calls, prompt/comp/total tokens, cost,
+  provider+model (most recent call), first/last call times. 2 tests.
+- `internal/actionlog/sessionstats.go` — `SessionStats(agentID, sessionID)`
+  on agent_events: events, tool.call count, first/last event time, last
+  error payload (extractErrorText handles {"error"|"detail"|"message"|
+  "reason"}). agentID optional. New idempotent index idx_events_session.
+  4 tests (async writer → tests poll with deadline).
+- `internal/gateway/runmetrics.go` + route `GET /api/v1/runs/:session_id/
+  metrics?agent_id=` (rbac metrics/read): combines both sources; duration
+  prefers event trail over LLM-call span; 503 neither store, 404 no data.
+  `s.actions` checked via `sessionStatser` type assertion (storagesqlite.
+  ActionLog promotes the Logger method). 5 tests in runmetrics_test.go.
+- GUI: `lib/metrics.js` formatters (8 vitest tests) + `lib/RunMetrics.svelte`
+  (self-fetching compact strip: provider/model · duration · tokens ↑↓ ·
+  cost · tools · ⚠ failure; renders nothing on 404). Wired into:
+  Chat (under controls, refreshKey bumped per reply), Schedule history
+  (inside expanded run), Activity (Σ run row after message.out/error),
+  Workboard run-history modal rows. Vitest 39/39 ✓, vite build ✓.
+- Suite: all packages green; total 55.0% (denominator grew with the new
+  channels/whatsappweb code).
 - **Git workflow (Vasu's instruction):** commit whenever tests turn green;
   stage selectively (only files you touched). Identity: Vasu
   <hivasu@gmail.com> (already in git config).

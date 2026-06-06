@@ -186,6 +186,11 @@ export const api = {
       }),
   },
 
+  runs: {
+    metrics: (sessionId, agentId = '') =>
+      apiFetch(`/runs/${encodeURIComponent(sessionId)}/metrics${agentId ? '?agent_id=' + encodeURIComponent(agentId) : ''}`),
+  },
+
   workboard: {
     list: (filters = {}) => {
       const params = new URLSearchParams()

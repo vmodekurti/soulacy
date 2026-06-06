@@ -3,6 +3,7 @@
   import { get } from 'svelte/store'
   import { api } from '../lib/api.js'
   import { activityAgent } from '../lib/stores.js'
+  import RunMetrics from '../lib/RunMetrics.svelte'
 
   let agents     = []
   let selectedId = ''
@@ -179,6 +180,13 @@
           <span class="badge" style="color:{m.color}">{m.icon} {m.label}</span>
           <span class="sum">{summary(ev)}</span>
         </div>
+        {#if (ev.type === 'message.out' || ev.type === 'error') && ev.session_id}
+          <div class="row metrics-row">
+            <span class="t"></span>
+            <span class="badge run-sum">Σ run</span>
+            <RunMetrics sessionId={ev.session_id} agentId={selectedId} />
+          </div>
+        {/if}
       {/each}
     {/if}
   </div>
@@ -229,4 +237,7 @@
   .t     { color: #555a7a; }
   .badge { font-weight: 700; font-size: .68rem; white-space: nowrap; }
   .sum   { color: #c8cadf; white-space: pre-wrap; word-break: break-word; }
+
+  .metrics-row { opacity: .85; }
+  .run-sum { color: #6b7294; }
 </style>
