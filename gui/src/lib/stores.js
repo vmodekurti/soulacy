@@ -26,3 +26,9 @@ export const chatAgentId  = writable('')
 export const chatMessages = writable([])
 export const chatSending  = writable(false)
 export const chatSessionId = writable(`gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
+
+// Chat branching (Story 8). chatBranches: [{sessionId, label}] — empty until
+// the first fork; chatBranchMessages: sessionId → message[] snapshots for
+// inactive branches so switching is instant and branches never mix.
+export const chatBranches = writable([])
+export const chatBranchMessages = writable({})

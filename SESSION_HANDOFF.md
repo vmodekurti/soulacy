@@ -23,7 +23,33 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   depth; artifacts emit events via E1) · M6: E9–E13 (SDK & distribution) ·
   M7: 15 (polish incl. plugin GUI surfaces). E14 deferred.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  Story 8 (Chat checkpoints & branching, milestone M2).**
+  Story 9 (token delta indicators in Chat, milestone M2).**
+
+**Story 8 (Chat checkpoints & branching) — complete (TDD, all green).**
+- Key architectural fact discovered: engine LLM context comes from
+  IN-MEMORY Session.History; the persistent history store is write-only
+  (appended after each turn, loaded only by the /history API). Fork
+  therefore has three parts:
+  1. `session.SQLiteHistoryStore.Fork(ctx, src, dst, uptoEntryID)`
+     (internal/session/fork.go) — tx-copies entries (id <= checkpoint) into
+     an empty target session; refuses non-empty target & self-fork; source
+     untouched; ms-offset created_at keeps order. 6 tests.
+  2. `Engine.SeedSessionHistory(agentID, sessionID, entries)` — initialises
+     the in-memory session from copied entries so the branch has context on
+     next Handle; NO-OP if session already live (never clobbers). 2 tests
+     (engine_fork_test.go) verifying seeded turns appear in LLM request
+     before the new message.
+  3. `POST /api/v1/history/:session_id/fork` {agent_id, upto_entry_id,
+     new_session_id?} → 201 {session_id, forked_from, copied, entries};
+     400/404/409/503 paths. rbac chat/write. 4 tests (fork_test.go).
+- GUI: `lib/chatbranch.js` (entryIdForMessage maps GUI msg index →
+  persisted entry id skipping local system rows; entriesToMessages;
+  nextBranchLabel) + 8 vitest tests. Chat.svelte: hover ⑂ button on
+  user/assistant bubbles, branch chips row (main/fork N, active
+  highlighted), per-branch message snapshots in stores
+  (chatBranches/chatBranchMessages), Clear resets branches. Vitest 47/47 ✓,
+  build ✓.
+- Suite total 55.6%, all green.
 
 **E1+E2 (event stream + signed webhooks) — complete (TDD, all green). M1 done.**
 - `internal/events` — schema-v1 `Envelope` {schema,id,type,agent_id,

@@ -1,10 +1,68 @@
 <script>
   import { onDestroy, onMount, tick } from 'svelte'
   import { api, createEventSocket } from '../lib/api.js'
-  import { chatAgentId, chatMessages, chatSending, chatSessionId, connected } from '../lib/stores.js'
+  import { chatAgentId, chatMessages, chatSending, chatSessionId, connected, chatBranches, chatBranchMessages } from '../lib/stores.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
+  import { entryIdForMessage, nextBranchLabel, entriesToMessages } from '../lib/chatbranch.js'
 
   let metricsRefresh = 0
+  let forking = false
+
+  // ── checkpoints & branching (Story 8) ───────────────────────────────
+  async function forkAt(mi) {
+    if (forking || $chatSending) return
+    forking = true
+    error = null
+    try {
+      const hist = await api.history.get($chatSessionId)
+      const entryId = entryIdForMessage(hist.entries || [], $chatMessages, mi)
+      if (!entryId) {
+        error = 'This message has no saved history yet — finish the turn first.'
+        return
+      }
+      const res = await api.history.fork($chatSessionId, {
+        agent_id: $chatAgentId,
+        upto_entry_id: entryId,
+      })
+
+      // Register branches (current session becomes "main" on first fork).
+      let branches = $chatBranches
+      if (branches.length === 0) {
+        branches = [{ sessionId: $chatSessionId, label: 'main' }]
+      }
+      const label = nextBranchLabel(branches)
+      branches = [...branches, { sessionId: res.session_id, label }]
+      chatBranches.set(branches)
+
+      // Snapshot the current branch, then switch to the fork.
+      chatBranchMessages.update(m => ({ ...m, [$chatSessionId]: $chatMessages }))
+      const forkedView = $chatMessages.slice(0, mi + 1)
+      chatSessionId.set(res.session_id)
+      chatMessages.set(forkedView)
+      metricsRefresh++
+    } catch (e) {
+      error = e.message || 'Fork failed'
+    } finally {
+      forking = false
+    }
+  }
+
+  async function switchBranch(sessionId) {
+    if (sessionId === $chatSessionId || $chatSending) return
+    error = null
+    chatBranchMessages.update(m => ({ ...m, [$chatSessionId]: $chatMessages }))
+    let msgs = $chatBranchMessages[sessionId]
+    if (!msgs) {
+      try {
+        const hist = await api.history.get(sessionId)
+        msgs = entriesToMessages(hist.entries)
+      } catch { msgs = [] }
+    }
+    chatSessionId.set(sessionId)
+    chatMessages.set(msgs || [])
+    metricsRefresh++
+    await scrollBottom()
+  }
 
   let agents    = []
   let input     = ''
@@ -74,6 +132,8 @@
     chatMessages.set([])
     chatSending.set(false)
     chatSessionId.set(newChatSessionId())
+    chatBranches.set([])
+    chatBranchMessages.set({})
     activeThinking = null
     activeRunKey = ''
   }
@@ -197,6 +257,19 @@
     <div class="banner err">⚠ {error}</div>
   {/if}
 
+  {#if $chatBranches.length > 0}
+    <div class="branches" role="tablist" aria-label="Conversation branches">
+      {#each $chatBranches as b (b.sessionId)}
+        <button class="branch-chip" class:active={b.sessionId === $chatSessionId}
+                role="tab" aria-selected={b.sessionId === $chatSessionId}
+                on:click={() => switchBranch(b.sessionId)}
+                title="Switch to {b.label}">
+          ⑂ {b.label}
+        </button>
+      {/each}
+    </div>
+  {/if}
+
   <div class="chat-wrap">
     <!-- Message list -->
     <div class="messages" bind:this={msgListEl}>
@@ -209,9 +282,14 @@
           {/if}
         </div>
       {:else}
-        {#each $chatMessages as msg}
+        {#each $chatMessages as msg, mi}
           <div class="msg-row" class:user={msg.role==='user'} class:sys={msg.role==='system'}>
             <div class="bubble">
+              {#if msg.role === 'user' || msg.role === 'assistant'}
+                <button class="fork-btn" on:click={() => forkAt(mi)} disabled={forking || $chatSending}
+                        title="Fork the conversation from this message"
+                        aria-label="Fork conversation from message {mi + 1}">⑂</button>
+              {/if}
               <div class="btext">{msg.text}</div>
               {#if msg.thinking}
                 <div class="thinking" class:open={msg.thinking.open}>
@@ -442,4 +520,26 @@
   }
   .input-row textarea { flex: 1; resize: none; }
   .send-btn { height: 40px; padding: 0 1rem; font-size: 1rem; align-self: flex-end; flex-shrink: 0; }
+
+  /* ── Branching (Story 8) ─────────────────────────────────────────── */
+  .branches { display: flex; gap: .4rem; flex-wrap: wrap; padding: 0 0 .15rem; }
+  .branch-chip {
+    background: #1c1f35; border: 1px solid #2a2f4a; color: #7b82a8;
+    font-size: .72rem; font-family: monospace;
+    padding: .2rem .65rem; border-radius: 999px;
+  }
+  .branch-chip:hover:not(.active) { background: #252840; color: #c8cadf; }
+  .branch-chip.active {
+    background: rgba(108, 99, 255, .15); border-color: rgba(108, 99, 255, .4);
+    color: #8b85ff; cursor: default;
+  }
+  .bubble { position: relative; }
+  .fork-btn {
+    position: absolute; top: .25rem; right: .35rem;
+    background: none; color: #4d5478; font-size: .8rem;
+    padding: .05rem .3rem; border-radius: 5px;
+    opacity: 0; transition: opacity .12s;
+  }
+  .bubble:hover .fork-btn { opacity: 1; }
+  .fork-btn:hover:not(:disabled) { background: rgba(108, 99, 255, .18); color: #8b85ff; }
 </style>

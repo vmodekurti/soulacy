@@ -453,6 +453,32 @@ func (e *Engine) SetCostStore(s agentCostStore) { e.costStore = s }
 // SetHistoryStore installs a conversation history store. Safe to call once at startup.
 func (e *Engine) SetHistoryStore(s session.HistoryStore) { e.historyStore = s }
 
+// SeedSessionHistory initialises the in-memory history of (agentID,
+// sessionID) from persisted conversation entries — used when forking a chat
+// session (Story 8) so the branch's copied turns become real LLM context on
+// the next Handle. A no-op when the in-memory session already has history:
+// live conversations are never clobbered.
+func (e *Engine) SeedSessionHistory(agentID, sessionID string, entries []session.ConversationEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	sess := e.getOrCreateSession(sessionID, agentID)
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.History) > 0 {
+		return
+	}
+	history := make([]llm.ChatMessage, 0, len(entries))
+	for _, en := range entries {
+		role := en.Role
+		if role != "user" && role != "assistant" && role != "system" {
+			continue
+		}
+		history = append(history, llm.ChatMessage{Role: role, Content: en.Content})
+	}
+	sess.History = history
+}
+
 // SetDLQStore installs a dead-letter queue store. Safe to call once at startup.
 func (e *Engine) SetDLQStore(s deadLetterStore) { e.dlqStore = s }
 

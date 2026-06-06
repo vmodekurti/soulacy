@@ -634,6 +634,10 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/costs", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetCosts)
 	api.Get("/costs/:agent_id", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetAgentCosts)
 
+	// --- Chat checkpoints & branching (Story 8) ---
+	// Fork a session's conversation at a checkpoint entry into a new branch.
+	api.Post("/history/:session_id/fork", s.rbacMW(rbac.ResourceChat, rbac.ActionWrite), s.handleForkSession)
+
 	// --- Run-level observability (Story 7) ---
 	// Stores checked at request time; 503 when neither costs nor action log
 	// is wired, 404 when the session has no recorded data.
