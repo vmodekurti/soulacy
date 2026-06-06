@@ -25,10 +25,27 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   **E15–E17 added by Vasu (2026-06-06, prompts in BACKLOG.md):** pluggable
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
-  **Work happens on branch `feature/integrated-roadmap`**. **M3 IS COMPLETE
-  (E3–E8). Next up: M4 — Story 10 (voice channel spike), then Story 11.**
+  **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
+  (E3–E8). M4: Story 10 ✅ spike done — next up: Story 11 (voice panel
+  MVP, follow docs/VOICE_SPIKE.md §3).**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**Story 10 (realtime voice spike) — complete (session 6).**
+- `docs/VOICE_SPIKE.md` — provider comparison verified against June-2026
+  web sources (OpenAI Realtime: WebRTC for browsers + ephemeral client
+  keys, gpt-realtime ≈$0.18–0.24/min, mini ≈$0.06–0.10/min; Gemini Live:
+  WS-only, v1alpha ephemeral tokens, ~order-of-magnitude cheaper).
+  **Decision: supervised sidecar bridge confirmed; OpenAI first, Gemini
+  second.** Key architecture: audio flows browser↔provider DIRECTLY
+  (WebRTC/WS with ephemeral creds minted by the sidecar) — the sidecar is
+  session control-plane only (no audio relay through the gateway, no
+  latency tax). MVP shape for Story 11 in §3; additive protocol-v2 frames
+  (usage, ephemeral_key_request/ephemeral_key) sketched in §4.
+- `scripts/poc-voice-sidecar.py` — dependency-free PoC: ECP v1 handshake,
+  voice-session status, transcript turns as message frames, v2 `usage`
+  frame riding over v1. Conformance-proven by the PERMANENT test
+  `internal/channels/external/poc_voice_test.go` (skips w/o python3).
 
 **E8 (plugin GUI mounts + scoped plugin tokens) — complete (TDD, all green,
 session 6). M3 done.**
