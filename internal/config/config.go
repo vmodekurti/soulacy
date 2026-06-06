@@ -79,8 +79,26 @@ type Config struct {
 	// schema contract in docs/EVENTS.md).
 	Hooks []HookConfig `mapstructure:"hooks"`
 
+	// Voice configures the realtime voice control plane (Story 11,
+	// docs/VOICE_SPIKE.md). Empty provider = voice panel disabled.
+	Voice VoiceConfig `mapstructure:"voice"`
+
 	// Logging
 	Log LogConfig `mapstructure:"log"`
+}
+
+// VoiceConfig selects the realtime voice provider for the Chat panel.
+//
+//	voice:
+//	  provider: openai            # only "openai" is supported (v1)
+//	  model: gpt-realtime-mini    # default
+//	  base_url: ""                # override for Azure/compatible endpoints
+//
+// The API key comes from llm.providers.openai.api_key or OPENAI_API_KEY.
+type VoiceConfig struct {
+	Provider string `mapstructure:"provider"`
+	Model    string `mapstructure:"model"`
+	BaseURL  string `mapstructure:"base_url"`
 }
 
 // HookConfig declares one outbound webhook endpoint.

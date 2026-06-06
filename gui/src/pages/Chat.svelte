@@ -5,6 +5,10 @@
   import RunMetrics from '../lib/RunMetrics.svelte'
   import { entryIdForMessage, nextBranchLabel, entriesToMessages } from '../lib/chatbranch.js'
   import { deltaMetrics, deltaLabel, deltaTitle } from '../lib/chatmetrics.js'
+  import {
+    nextVoiceState, realtimeCallURL, classifyRealtimeEvent,
+    addUsage, voiceUsageLabel, voiceHint,
+  } from '../lib/voice.js'
 
   let metricsRefresh = 0
   let forking = false
@@ -235,8 +239,133 @@
     return s.length > n ? s.slice(0, n) + '…' : s
   }
 
+  // ── realtime voice panel (Story 11, docs/VOICE_SPIKE.md) ─────────────
+  // Audio flows browser↔provider directly over WebRTC with an ephemeral
+  // key minted by the gateway; transcripts attach to this chat session.
+  let voiceState  = 'unavailable'
+  let voiceDetail = ''
+  let voiceModel  = ''
+  let voiceUsage  = null
+  let voicePC     = null   // RTCPeerConnection
+  let voiceMic    = null   // MediaStream
+  let voiceAudio  = null   // <audio> element for remote playback
+  let voiceDraftIdx = -1   // index of the streaming assistant bubble
+
+  async function loadVoiceStatus() {
+    try {
+      const st = await api.voice.status()
+      voiceDetail = st.detail || ''
+      voiceModel = st.model || ''
+      voiceState = nextVoiceState(voiceState, { type: 'status', available: !!st.available })
+    } catch {
+      voiceState = 'unavailable'
+    }
+  }
+
+  function voicePush(role, text, opts = {}) {
+    chatMessages.update(m => [...m, { role, text, voice: true, time: new Date(), ...opts }])
+    scrollBottom()
+    return $chatMessages.length - 1
+  }
+
+  function handleVoiceEvent(raw) {
+    let evt
+    try { evt = JSON.parse(raw) } catch { return }
+    const e = classifyRealtimeEvent(evt)
+    if (e.kind === 'user_transcript' && e.text.trim()) {
+      voicePush('user', e.text.trim())
+    } else if (e.kind === 'assistant_delta' && e.text) {
+      if (voiceDraftIdx < 0) {
+        voiceDraftIdx = voicePush('assistant', e.text)
+      } else {
+        chatMessages.update(m => {
+          const copy = [...m]
+          copy[voiceDraftIdx] = { ...copy[voiceDraftIdx], text: copy[voiceDraftIdx].text + e.text }
+          return copy
+        })
+      }
+    } else if (e.kind === 'assistant_done') {
+      if (voiceDraftIdx >= 0 && e.text) {
+        chatMessages.update(m => {
+          const copy = [...m]
+          copy[voiceDraftIdx] = { ...copy[voiceDraftIdx], text: e.text }
+          return copy
+        })
+      }
+      voiceDraftIdx = -1
+      scrollBottom()
+    } else if (e.kind === 'usage') {
+      voiceUsage = addUsage(voiceUsage, e.usage)
+    }
+  }
+
+  async function startVoice() {
+    if (voiceState !== 'idle') return
+    voiceState = nextVoiceState(voiceState, { type: 'start' })
+    error = null
+    try {
+      const eph = await api.voice.ephemeral()
+      voiceMic = await navigator.mediaDevices.getUserMedia({ audio: true })
+
+      const pc = new RTCPeerConnection()
+      voicePC = pc
+      for (const track of voiceMic.getTracks()) pc.addTrack(track, voiceMic)
+      pc.ontrack = (ev) => {
+        if (!voiceAudio) voiceAudio = new Audio()
+        voiceAudio.srcObject = ev.streams[0]
+        voiceAudio.play().catch(() => {})
+      }
+      const dc = pc.createDataChannel('oai-events')
+      dc.onmessage = (ev) => handleVoiceEvent(ev.data)
+      pc.onconnectionstatechange = () => {
+        if (pc.connectionState === 'connected') {
+          voiceState = nextVoiceState(voiceState, { type: 'connected' })
+        } else if (['failed', 'disconnected', 'closed'].includes(pc.connectionState) && voiceState === 'live') {
+          stopVoice()
+        }
+      }
+
+      const offer = await pc.createOffer()
+      await pc.setLocalDescription(offer)
+      const resp = await fetch(realtimeCallURL(eph.model), {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${eph.key}`, 'Content-Type': 'application/sdp' },
+        body: offer.sdp,
+      })
+      if (!resp.ok) throw new Error(`provider SDP exchange failed (${resp.status})`)
+      await pc.setRemoteDescription({ type: 'answer', sdp: await resp.text() })
+      voicePush('system', `🎤 voice session started (${eph.model})`)
+    } catch (e) {
+      voiceDetail = e.message || 'voice session failed'
+      voiceState = nextVoiceState(voiceState, { type: 'fail' })
+      teardownVoice()
+    }
+  }
+
+  function teardownVoice() {
+    if (voicePC) { try { voicePC.close() } catch {} voicePC = null }
+    if (voiceMic) { for (const t of voiceMic.getTracks()) t.stop(); voiceMic = null }
+    if (voiceAudio) { voiceAudio.srcObject = null }
+    voiceDraftIdx = -1
+  }
+
+  function stopVoice() {
+    teardownVoice()
+    if (voiceState === 'live' || voiceState === 'connecting') {
+      voicePush('system', '🎤 voice session ended')
+    }
+    voiceState = nextVoiceState(voiceState, { type: 'stop' })
+  }
+
+  function voiceClick() {
+    if (voiceState === 'idle') startVoice()
+    else if (voiceState === 'live' || voiceState === 'connecting') stopVoice()
+    else if (voiceState === 'error') voiceState = nextVoiceState(voiceState, { type: 'retry' })
+  }
+
   onMount(async () => {
     await loadAgents()
+    await loadVoiceStatus()
     connectEvents()
     // Scroll to bottom when returning to a conversation already in progress
     await scrollBottom()
@@ -245,6 +374,7 @@
   onDestroy(() => {
     stopEvents = true
     if (ws) ws.close()
+    teardownVoice()
   })
 </script>
 
@@ -263,6 +393,18 @@
         {/if}
       </select>
       <button class="btn-secondary" on:click={clearChat}>Clear</button>
+      <button class="voice-btn {voiceState}"
+              on:click={voiceClick}
+              disabled={voiceState === 'unavailable'}
+              title={voiceHint(voiceState, voiceDetail)}
+              aria-label="Voice conversation: {voiceHint(voiceState, voiceDetail)}">
+        {#if voiceState === 'live'}⏹ 🎤{:else if voiceState === 'connecting'}⏳ 🎤{:else if voiceState === 'error'}⚠ 🎤{:else}🎤{/if}
+      </button>
+      {#if voiceUsageLabel(voiceUsage)}
+        <span class="voice-usage" title="Realtime voice tokens this session ({voiceModel})">
+          🎤 {voiceUsageLabel(voiceUsage)}
+        </span>
+      {/if}
     </div>
   </div>
 
@@ -402,6 +544,22 @@
   .page-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
   .page-header h1 { font-size: 1.2rem; font-weight: 600; }
   .controls    { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; min-width: 0; }
+
+  /* ── voice panel (Story 11) ─────────────────────────────────────── */
+  .voice-btn {
+    background: #1a1f35; border: 1px solid #2a2f4a; border-radius: 6px;
+    padding: .4rem .7rem; cursor: pointer; font-size: .95rem; color: #e8eaf6;
+  }
+  .voice-btn:hover:not(:disabled) { border-color: #4a5380; }
+  .voice-btn:disabled { opacity: .45; cursor: not-allowed; }
+  .voice-btn.live { border-color: #e05656; background: #2a1520; animation: voicepulse 1.6s infinite; }
+  .voice-btn.connecting { border-color: #c9a227; }
+  .voice-btn.error { border-color: #e05656; }
+  @keyframes voicepulse { 0%,100% { box-shadow: 0 0 0 0 rgba(224,86,86,.35); } 50% { box-shadow: 0 0 0 5px rgba(224,86,86,0); } }
+  .voice-usage {
+    font-family: ui-monospace, monospace; font-size: .75rem; color: #8a91b4;
+    white-space: nowrap;
+  }
   .banner      { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; flex-shrink: 0; }
   .err         { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
 
