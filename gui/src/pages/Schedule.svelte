@@ -3,6 +3,7 @@
   import { api } from '../lib/api.js'
   import { activityAgent } from '../lib/stores.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
+  import { catchupLabel, catchupTitle } from '../lib/schedutils.js'
 
   function watchAgent(id) {
     activityAgent.set(id)
@@ -393,7 +394,7 @@
     {:else}
       <table class="tbl">
         <thead>
-          <tr><th>Agent</th><th>Next run</th><th>Last run</th></tr>
+          <tr><th>Agent</th><th>Next run</th><th>Last run</th><th>Missed runs</th></tr>
         </thead>
         <tbody>
           {#each schedule as entry}
@@ -401,10 +402,22 @@
               <td class="td-name">{agentName(entry.agent_id)}</td>
               <td class="td-hint">{entry.next ? new Date(entry.next).toLocaleString() : '—'}</td>
               <td class="td-hint">{entry.prev && !entry.prev.startsWith('0001') ? new Date(entry.prev).toLocaleString() : '—'}</td>
+              <td class="td-hint">
+                <span class="catchup" class:on={entry.catch_up} title={catchupTitle(entry)}>
+                  {entry.catch_up ? '⟳' : '—'} {catchupLabel(entry)}
+                </span>
+              </td>
             </tr>
           {/each}
         </tbody>
       </table>
+      <p class="field-help missed-help">
+        <strong>Missed runs:</strong> if the gateway is down at an agent's scheduled
+        time, agents with <code>run_missed_on_startup</code> run the <em>latest</em>
+        missed fire once at startup (within their window; default 24h). Older missed
+        fires are never replayed, and completed fires are remembered across restarts —
+        no duplicates. All other agents simply skip missed fires.
+      </p>
     {/if}
   </section>
 
@@ -683,6 +696,9 @@ schedule:
   .td-name   { font-weight: 500; }
   .td-mono   { font-family: monospace; font-size: .8rem; color: #8b85ff; }
   .td-hint   { color: #555a7a; font-size: .78rem; }
+  .catchup        { white-space: nowrap; cursor: help; }
+  .catchup.on     { color: #6fbf8f; }
+  .missed-help    { margin-top: .5rem; max-width: 70ch; }
   .td-action { text-align: right; }
   .actions   { display: flex; gap: .35rem; justify-content: flex-end; flex-wrap: wrap; }
   .xs { padding: .28rem .6rem; font-size: .75rem; border-radius: 6px; }
