@@ -202,6 +202,7 @@ func (s *Server) handleWorkboardRun(c *fiber.Ctx) error {
 		s.log.Warn("workboard: failed to mark task running", zap.Int64("task", task.ID), zap.Error(err))
 	}
 
+	s.emitRunEvent("run.started", run, task, "")
 	go s.executeWorkboardRun(run, task)
 	return c.Status(fiber.StatusAccepted).JSON(run)
 }
@@ -223,6 +224,7 @@ func (s *Server) executeWorkboardRun(run workboard.Run, task workboard.Task) {
 
 	if s.engine == nil {
 		finish(workboard.RunStatusFailed, "", "agent engine not available", workboard.StatusFailed)
+		s.emitRunEvent("run.failed", run, task, "agent engine not available")
 		return
 	}
 
@@ -252,9 +254,36 @@ func (s *Server) executeWorkboardRun(run workboard.Run, task workboard.Task) {
 	reply, err := s.engine.Handle(ctx, msg)
 	if err != nil {
 		finish(workboard.RunStatusFailed, "", err.Error(), workboard.StatusFailed)
+		s.emitRunEvent("run.failed", run, task, err.Error())
 		return
 	}
 	finish(workboard.RunStatusDone, wbResultSummary(reply), "", workboard.StatusNeedsReview)
+	s.emitRunEvent("run.finished", run, task, "")
+}
+
+// emitRunEvent publishes a workboard run lifecycle event (run.started,
+// run.finished, run.failed) through the EventHub so it reaches the WebSocket
+// stream, the action log, and the queue publisher (story E1).
+func (s *Server) emitRunEvent(eventType string, run workboard.Run, task workboard.Task, failureReason string) {
+	if s.hub == nil {
+		return
+	}
+	payload := map[string]any{
+		"task_id":    task.ID,
+		"task_title": task.Title,
+		"run_id":     run.ID,
+		"attempt":    run.Attempt,
+	}
+	if failureReason != "" {
+		payload["failure_reason"] = failureReason
+	}
+	s.hub.Emit(message.Event{
+		Type:      eventType,
+		AgentID:   task.AgentID,
+		SessionID: run.SessionID,
+		Payload:   payload,
+		Timestamp: time.Now().UTC(),
+	})
 }
 
 // wbResultSummary extracts a short text summary from the agent's reply.

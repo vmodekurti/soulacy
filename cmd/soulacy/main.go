@@ -34,10 +34,12 @@ import (
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/costs"
 	"github.com/soulacy/soulacy/internal/credentials"
+	"github.com/soulacy/soulacy/internal/events"
 	"github.com/soulacy/soulacy/internal/executor"
 	"github.com/soulacy/soulacy/internal/executor/pool"
 	"github.com/soulacy/soulacy/internal/executor/process"
 	"github.com/soulacy/soulacy/internal/gateway"
+	"github.com/soulacy/soulacy/internal/hooks"
 	"github.com/soulacy/soulacy/internal/knowledge"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
@@ -608,7 +610,25 @@ func run() error {
 		queueBackend = queuememory.New()
 		log.Info("queue backend: in-process memory")
 	}
-	_ = queueBackend // available for future use; not yet consumed by the engine
+	// ── Event publishing (extensibility E1) ───────────────────────────────────
+	// Every EventHub emission is wrapped in a schema-v1 envelope and published
+	// to the queue backend on "soulacy.events.<type>" (see docs/EVENTS.md).
+	eventPublisher := events.NewPublisher(queueBackend, log)
+	defer eventPublisher.Close()
+	hub.SetEventPublisher(eventPublisher)
+	log.Info("event publishing ready", zap.String("subject", "soulacy.events.>"))
+
+	// ── Outbound webhooks (extensibility E2) ──────────────────────────────────
+	// Queue-buffered, HMAC-signed, best-effort with bounded retries.
+	if len(cfg.Hooks) > 0 {
+		hookDispatcher := hooks.NewDispatcher(queueBackend, cfg.Hooks, log)
+		if err := hookDispatcher.Start(context.Background()); err != nil {
+			log.Warn("webhook dispatcher failed to start", zap.Error(err))
+		} else {
+			defer hookDispatcher.Close()
+			log.Info("webhooks ready", zap.Int("endpoints", len(cfg.Hooks)))
+		}
+	}
 
 	// pluginAdapter bridges plugins.Loader → runtime.PluginToolProvider.
 	// The runtime package defines its own PluginTool type to avoid an import

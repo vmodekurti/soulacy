@@ -75,8 +75,26 @@ type Config struct {
 	// RateLimit configures per-user and per-agent rate limiting (Task #33).
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 
+	// Hooks are signed outbound webhooks fed by the event stream (story E2,
+	// schema contract in docs/EVENTS.md).
+	Hooks []HookConfig `mapstructure:"hooks"`
+
 	// Logging
 	Log LogConfig `mapstructure:"log"`
+}
+
+// HookConfig declares one outbound webhook endpoint.
+//
+//	hooks:
+//	  - on: [run.failed, "tool.*"]    # event types; "*" = all, "x.*" = prefix
+//	    agents: [support-bot]          # optional agent filter (empty = all)
+//	    url: https://ops.example.com/soulacy
+//	    secret_env: SOULACY_HOOK_SECRET  # env var holding the HMAC secret
+type HookConfig struct {
+	On        []string `mapstructure:"on"`
+	Agents    []string `mapstructure:"agents"`
+	URL       string   `mapstructure:"url"`
+	SecretEnv string   `mapstructure:"secret_env"`
 }
 
 // RateLimitConfig controls per-user and per-agent request/token quotas.
@@ -304,7 +322,7 @@ type ProviderConfig struct {
 	//   0  = disabled (default — fast, no reasoning trace)
 	//  -1  = auto (model decides)
 	//   N  = up to N tokens of reasoning
-	ThinkingBudget int    `mapstructure:"thinking_budget"`
+	ThinkingBudget int `mapstructure:"thinking_budget"`
 	// SafetyLevel sets Gemini content-filter thresholds.
 	//   ""/"default" = Gemini defaults
 	//   "off"        = BLOCK_NONE on all categories (needed for most agent work)
