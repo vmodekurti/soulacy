@@ -17,8 +17,12 @@
   import Activity   from './pages/Activity.svelte'
   import Config     from './pages/Config.svelte'
   import Logs       from './pages/Logs.svelte'
+  import PluginFrame from './pages/PluginFrame.svelte'
+  import { api } from './lib/api.js'
+  import { pluginNavEntries, isPluginPage, pluginIdFromPage } from './lib/pluginui.js'
 
   let page = 'dashboard'
+  let pluginPages = []   // nav entries for mounted plugin UIs (E8)
   let showKeyModal = false
   let keyInput = ''
   let sidebarOpen = false   // mobile drawer state (≤768px)
@@ -51,11 +55,16 @@
   onMount(() => {
     const applyHash = () => {
       const h = location.hash.slice(1)
-      if (h && pages.find(p => p.id === h)) page = h
+      if (h && (pages.find(p => p.id === h) || isPluginPage(h))) page = h
     }
     applyHash()
     window.addEventListener('popstate', applyHash)
     window.addEventListener('hashchange', applyHash)
+
+    // Plugin GUI mounts (E8): populate the Plugins nav group.
+    api.plugins.ui()
+      .then((res) => { pluginPages = pluginNavEntries(res?.mounts) })
+      .catch(() => { pluginPages = [] }) // older gateways: no route, no nav group
   })
 
   function saveKey() {
@@ -130,6 +139,15 @@
           </button>
         {/each}
       {/each}
+      {#if pluginPages.length > 0}
+        <div class="nav-divider"></div>
+        {#each pluginPages as p}
+          <button class="nav-item" class:active={page === p.id} on:click={() => navigate(p.id)}>
+            <span class="nav-icon">{p.icon}</span>
+            <span class="nav-label">{p.label}</span>
+          </button>
+        {/each}
+      {/if}
     </nav>
 
     <div class="sidebar-footer">
@@ -181,6 +199,13 @@
       <Config />
     {:else if page === 'logs'}
       <Logs />
+    {:else if isPluginPage(page)}
+      {@const mount = pluginPages.find(p => p.id === page)}
+      <PluginFrame
+        pluginId={pluginIdFromPage(page)}
+        label={mount?.label || pluginIdFromPage(page)}
+        url={mount?.url || ''}
+      />
     {/if}
   </main>
 </div>

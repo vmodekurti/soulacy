@@ -25,10 +25,44 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   **E15–E17 added by Vasu (2026-06-06, prompts in BACKLOG.md):** pluggable
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
-  **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  E8 (plugin GUI mounts + scoped plugin tokens, milestone M3).**
+  **Work happens on branch `feature/integrated-roadmap`**. **M3 IS COMPLETE
+  (E3–E8). Next up: M4 — Story 10 (voice channel spike), then Story 11.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
-  stopping for approval between E-stories; keep this handoff updated.**
+  stopping for approval between stories; keep this handoff updated.**
+
+**E8 (plugin GUI mounts + scoped plugin tokens) — complete (TDD, all green,
+session 6). M3 done.**
+- `internal/gateway/plugins.go` — `PluginUIMount{ID,StaticDir,NavLabel,
+  NavIcon}`; `SetPluginUI`/`SetCapEnforcer` (request-time checks, callable
+  after New()); static serving `GET /plugins/:pid/ui/*` (no auth, same
+  policy as the GUI bundle; path-traversal hardened: PathUnescape + rooted
+  Clean + prefix check, dir→index.html); `GET /api/v1/plugins/ui` (nav
+  mounts) and `POST /api/v1/plugins/:id/token` (user-auth, rbac agents/read)
+  minting idempotent opaque `splg_<64hex>` tokens bound to `plugin:<id>` —
+  NEVER the user's key. `authWithPluginTokens` wraps the auth chain
+  (recognises splg_ bearers → sets Claims{Subject:"plugin:<id>"}); user auth
+  untouched otherwise. `pluginGateMW` (mounted on /api/v1 group right after
+  auth): plugin principals are DEFAULT-DENY against `pluginRoutePolicy` —
+  initial table: GET /api/v1/health (no cap), POST /api/v1/knowledge/:kb/
+  search (vector.search, unscoped check → agent-restricted grants refused).
+  No enforcer wired = deny. 13 gateway tests (static, traversal, nav, token
+  auth/404, out-of-set 403s incl. agents/config/chat/workboard, allowed
+  route passes gate, scoped-grant denial, garbage token 401).
+- `cmd/soulacy/main.go` — builds `caps.NewEnforcer(audit.New(auditDir))`,
+  registers every loaded plugin's Caps set, collects GUIMount()s →
+  `srv.SetPluginUI` + `srv.SetCapEnforcer`.
+- GUI — `lib/pluginui.js` (pluginNavEntries/isPluginPage/pluginIdFromPage/
+  iframeSrc [token in URL FRAGMENT, not query — stays out of access logs]/
+  IFRAME_SANDBOX = "allow-scripts allow-forms", explicitly NO
+  allow-same-origin) + 11 vitest tests; `api.plugins.ui/token`;
+  `pages/PluginFrame.svelte` (fetches scoped token, sandboxed iframe,
+  principal badge); App.svelte: plugins nav group after system, hash
+  routing accepts `plugin:<id>` pages. Vitest 64/64 ✓, vite build ✓ (to
+  /tmp in sandbox; REBUILD internal/webui/dist ON THE MAC).
+- Docs updated: PLUGIN_CAPABILITIES.md (gate + route table section),
+  PLUGIN_MANIFEST.md (GUI mount serving). WS /ws/events does NOT accept
+  plugin tokens yet (events.subscribe enforcement is future work when a
+  plugin-facing event API lands).
 
 **E7 (plugin manifest v2) — complete (TDD, all green, session 6).**
 - `pkg/plugin` — `ManifestSchema int`; `Channels` is now `[]ChannelEntry`

@@ -46,6 +46,7 @@ import (
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/auth/apikeys"
 	"github.com/soulacy/soulacy/internal/builder"
+	"github.com/soulacy/soulacy/internal/caps"
 	"github.com/soulacy/soulacy/internal/channels"
 	httpchan "github.com/soulacy/soulacy/internal/channels/http"
 	wachan "github.com/soulacy/soulacy/internal/channels/whatsapp"
@@ -109,6 +110,14 @@ type Server struct {
 	// SetWorkboardStore after construction. When nil, /api/v1/workboard
 	// handlers return 503.
 	workboardStore *workboard.Store
+
+	// Plugin GUI mounts + scoped plugin tokens (Story E8). Wired via
+	// SetPluginUI / SetCapEnforcer after construction; routes check at
+	// request time. pluginTokens maps opaque bearer token → plugin ID.
+	pluginMu     sync.RWMutex
+	pluginUIs    []PluginUIMount
+	pluginTokens map[string]string
+	capsEnforcer *caps.Enforcer
 }
 
 // New creates and configures the Fiber server but does not start listening.
@@ -483,13 +492,26 @@ func (s *Server) buildApp() *fiber.App {
 		app.Post("/api/v1/auth/refresh", s.authEngine.HandleRefresh)
 	}
 
+	// --- Plugin GUI mounts (Story E8) ---
+	// Static plugin UIs — no auth, same policy as the main GUI bundle below.
+	// Mounts are resolved at request time so SetPluginUI can run after New().
+	app.Get("/plugins/:pid/ui/*", s.handlePluginUIAsset)
+
 	// --- API routes ---
-	// Auth middleware runs first. Per-user rate limiting runs second (after
+	// Auth middleware runs first (recognising scoped plugin tokens, E8),
+	// then the plugin default-deny gate, then per-user rate limiting (after
 	// claims are populated). RBAC and per-agent limits are applied per-route.
-	api := app.Group("/api/v1", s.authHandler(), s.rlUserMW())
+	api := app.Group("/api/v1", s.authWithPluginTokens(), s.pluginGateMW(), s.rlUserMW())
 
 	// Health
 	api.Get("/health", s.handleHealth)
+
+	// Plugin UI discovery + scoped token issuance (Story E8). User-facing:
+	// the Svelte shell lists mounts for its nav and fetches a per-plugin
+	// token for the sandboxed iframe. Plugin tokens themselves cannot reach
+	// these routes (not in the gate's policy table).
+	api.Get("/plugins/ui", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleListPluginUIs)
+	api.Post("/plugins/:id/token", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleIssuePluginToken)
 
 	// Auth identity — returns claims from the current token; useful for GUI.
 	if s.authEngine != nil {

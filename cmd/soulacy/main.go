@@ -21,6 +21,7 @@ import (
 	"github.com/soulacy/soulacy/internal/actionlog"
 	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/audit"
+	"github.com/soulacy/soulacy/internal/caps"
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/auth/apikeys"
 	"github.com/soulacy/soulacy/internal/builder"
@@ -1160,6 +1161,30 @@ func run() error {
 	srv.SetRBAC(rbacManager)
 	if credVault != nil {
 		srv.SetCredentialVault(credVault)
+	}
+
+	// Plugin GUI mounts + capability enforcement for scoped plugin tokens
+	// (Story E8). Every loaded plugin's capability set registers with the
+	// enforcer; GUI mounts surface in the shell nav.
+	{
+		capsEnforcer := caps.NewEnforcer(audit.New(cfg.Runtime.AuditDir), log)
+		var uiMounts []gateway.PluginUIMount
+		for _, lp := range pluginLoader.All() {
+			if lp.Caps != nil {
+				capsEnforcer.SetPluginSet(lp.Caps)
+			}
+			if staticDir, nav, ok := lp.GUIMount(); ok {
+				uiMounts = append(uiMounts, gateway.PluginUIMount{
+					ID: lp.Manifest.ID, StaticDir: staticDir,
+					NavLabel: nav.Label, NavIcon: nav.Icon,
+				})
+			}
+		}
+		srv.SetCapEnforcer(capsEnforcer)
+		if len(uiMounts) > 0 {
+			srv.SetPluginUI(uiMounts)
+			log.Info("plugin GUI mounts ready", zap.Int("count", len(uiMounts)))
+		}
 	}
 
 	// Wire the cost store into the gateway so /api/v1/costs routes work.
