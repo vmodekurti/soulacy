@@ -68,10 +68,16 @@ Duplicate declarations of the same cap are merged (union of scopes).
   non-plugin principal sent through `Check` is denied, and plugin requests
   never reach the RBAC role policy with a role.
 
-Until plugin tokens exist (Story E8 issues scoped tokens bound to
-`plugin:<id>`), no request authenticates as a plugin principal, so wiring
-`RequireCapability` onto routes is part of E8. E5 delivers the model, the
-boundary middleware, manifest validation, and the audit trail.
+Scoped plugin tokens (Story E8) authenticate requests as plugin principals:
+`POST /api/v1/plugins/:id/token` (user-authenticated) mints an opaque
+`splg_…` bearer token bound to `plugin:<id>`. At the API layer plugin
+principals pass through `pluginGateMW` (internal/gateway/plugins.go): a
+route policy table maps allowed routes to capabilities — anything unlisted
+is 403, listed routes go through `Enforcer.Check`. Initial table: `GET
+/api/v1/health` (no cap) and `POST /api/v1/knowledge/:kb/search`
+(`vector.search`, unscoped — agent-restricted grants are refused there
+until per-agent scoping lands). Grow the table alongside the registry: one
+entry, one cap, one allow + one deny test.
 
 ## Adding a new capability
 

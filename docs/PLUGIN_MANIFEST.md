@@ -71,8 +71,14 @@ credentials:                    # vault delegation — see docs/PLUGIN_CREDENTIA
    - each provider is wrapped by the existing OpenAI-compatible
      `llm.Provider` and registered with the router under its `id`;
    - the capability set registers with the enforcer (`internal/caps`).
-4. GUI mounts are parsed and validated now; serving them (with scoped
-   plugin tokens) lands in Story E8.
+4. GUI mounts (E8): static assets are served at `/plugins/<id>/ui/` and the
+   Svelte shell shows a nav entry per mount, rendering the UI in a sandboxed
+   iframe (`allow-scripts allow-forms` — no same-origin). The shell fetches
+   a scoped plugin token (`POST /api/v1/plugins/:id/token`) and passes it in
+   the iframe URL fragment; the plugin uses it as a bearer token. At the API
+   the token authenticates as `plugin:<id>` and is default-denied outside
+   the capability route table (docs/PLUGIN_CAPABILITIES.md) — it is never
+   the user's API key.
 
 `pkg/plugin.Registry` is the contract behind step 3 — `internal/plugins`
 implements it against the live registries, and Go-native plugins get the

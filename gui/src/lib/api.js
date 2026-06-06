@@ -150,6 +150,11 @@ export const api = {
     provisionGlama:    (body)         => apiFetch('/mcp/provision-glama',    { method: 'POST', body: JSON.stringify(body) }),
   },
 
+  plugins: {
+    ui:    ()   => apiFetch('/plugins/ui'),
+    token: (id) => apiFetch(`/plugins/${encodeURIComponent(id)}/token`, { method: 'POST' }),
+  },
+
   knowledge: {
     list:   ()        => apiFetch('/knowledge'),
     create: (body)    => apiFetch('/knowledge', { method: 'POST', body: JSON.stringify(body) }),
