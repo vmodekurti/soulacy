@@ -32,3 +32,7 @@ export const chatSessionId = writable(`gui-${Date.now()}-${Math.random().toStrin
 // inactive branches so switching is instant and branches never mix.
 export const chatBranches = writable([])
 export const chatBranchMessages = writable({})
+
+// Per-session metrics snapshots (Story 9): sessionId → last-seen cumulative
+// session metrics, used to compute per-reply token/cost deltas.
+export const chatMetricsBaseline = writable({})

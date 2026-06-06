@@ -23,7 +23,22 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   depth; artifacts emit events via E1) · M6: E9–E13 (SDK & distribution) ·
   M7: 15 (polish incl. plugin GUI surfaces). E14 deferred.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  Story 9 (token delta indicators in Chat, milestone M2).**
+  E3 (External Channel Protocol, milestone M3 — sidecar foundation).**
+
+**Story 9 (token delta indicators) — complete. M2 done.**
+- `gui/src/lib/chatmetrics.js` — `deltaMetrics(prev, curr)` diffs
+  session-cumulative metrics snapshots (clamps negatives to 0),
+  `deltaLabel` ("+350 tok · $0.0035 · gpt-4o", empty when no movement),
+  `deltaTitle` tooltip (turn breakdown ↑↓, session totals, provider).
+  8 vitest tests.
+- Chat.svelte send(): pre-turn snapshot from `chatMetricsBaseline` store
+  (or fetched, 404→null on first turn), post-reply fetch → delta attached
+  to the assistant message (`msg.metrics`); baseline updated per session
+  (branches get independent baselines automatically; forked sessions start
+  fresh since costs aren't copied). Rendered as a subtle `.tok-delta`
+  monospace span beside the timestamp, hover for full breakdown.
+  Per-LLM-call tokens still visible live in the Thinking section
+  (llm.result events). Vitest 55/55 ✓, build ✓.
 
 **Story 8 (Chat checkpoints & branching) — complete (TDD, all green).**
 - Key architectural fact discovered: engine LLM context comes from

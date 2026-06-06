@@ -1,9 +1,10 @@
 <script>
   import { onDestroy, onMount, tick } from 'svelte'
   import { api, createEventSocket } from '../lib/api.js'
-  import { chatAgentId, chatMessages, chatSending, chatSessionId, connected, chatBranches, chatBranchMessages } from '../lib/stores.js'
+  import { chatAgentId, chatMessages, chatSending, chatSessionId, connected, chatBranches, chatBranchMessages, chatMetricsBaseline } from '../lib/stores.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
   import { entryIdForMessage, nextBranchLabel, entriesToMessages } from '../lib/chatbranch.js'
+  import { deltaMetrics, deltaLabel, deltaTitle } from '../lib/chatmetrics.js'
 
   let metricsRefresh = 0
   let forking = false
@@ -106,9 +107,20 @@
     chatMessages.update(m => [...m, { role: 'user', text, ts: new Date() }])
     chatSending.set(true)
     await scrollBottom()
+
+    // Pre-turn metrics snapshot for the token delta (Story 9). Cached per
+    // session; the first turn fetches (404 → null baseline = "all new").
+    let preTurn = $chatMetricsBaseline[runSessionId] ?? null
+    if (preTurn === null) {
+      preTurn = await api.runs.metrics(runSessionId, runAgentId).catch(() => null)
+    }
+
     try {
       const res = await api.chat(runAgentId, text, 'gui-user', null, runSessionId)
-      chatMessages.update(m => [...m, { role: 'assistant', text: res.reply, ts: new Date(), thinking: activeThinking }])
+      const curr = await api.runs.metrics(runSessionId, runAgentId).catch(() => null)
+      const delta = deltaMetrics(preTurn, curr)
+      if (curr) chatMetricsBaseline.update(b => ({ ...b, [runSessionId]: curr }))
+      chatMessages.update(m => [...m, { role: 'assistant', text: res.reply, ts: new Date(), thinking: activeThinking, metrics: delta }])
     } catch (e) {
       chatMessages.update(m => [...m, { role: 'system', text: '⚠ ' + e.message, ts: new Date(), thinking: activeThinking }])
     }
@@ -134,6 +146,7 @@
     chatSessionId.set(newChatSessionId())
     chatBranches.set([])
     chatBranchMessages.set({})
+    chatMetricsBaseline.set({})
     activeThinking = null
     activeRunKey = ''
   }
@@ -319,7 +332,12 @@
                   {/if}
                 </div>
               {/if}
-              <div class="btime">{fmtTime(msg.ts)}</div>
+              <div class="bmeta">
+                <span class="btime">{fmtTime(msg.ts)}</span>
+                {#if msg.metrics && deltaLabel(msg.metrics)}
+                  <span class="tok-delta" title={deltaTitle(msg.metrics)}>{deltaLabel(msg.metrics)}</span>
+                {/if}
+              </div>
             </div>
           </div>
         {/each}
@@ -542,4 +560,11 @@
   }
   .bubble:hover .fork-btn { opacity: 1; }
   .fork-btn:hover:not(:disabled) { background: rgba(108, 99, 255, .18); color: #8b85ff; }
+
+  .bmeta { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+  .tok-delta {
+    font-size: .68rem; font-family: monospace; color: #5a5f82;
+    cursor: help; white-space: nowrap;
+  }
+  .tok-delta:hover { color: #8b85ff; }
 </style>
