@@ -3,33 +3,32 @@
 Source of truth for all planned work. Progress is tracked in
 `SESSION_HANDOFF.md`.
 
-Two tracks:
+Two story sets, executed as **one integrated roadmap** (below):
 - **Sprint stories 1–15** (provided by Vasu, 2026-06-06)
 - **Extensibility stories E1–E14** (derived from `docs/EXTENSIBILITY.md`,
   2026-06-06) — make the framework extremely open to independent developers
   without compromising the single-binary model or the security stack
-  (RBAC, vault, audit, sandbox). Recommended interleave: Story 7 → E1–E2 →
-  Stories 8–9 → E3–E8 → Stories 10–15 → E9–E13.
+  (RBAC, vault, audit, sandbox).
 
-## Status
+## Integrated roadmap
 
-| # | Story | Status |
-|---|-------|--------|
-| 1 | Harden Auth And Secret Handling | ✅ done (session 4) |
-| 2 | Improve Mobile And Responsive Layout | ✅ done (session 4) |
-| 3 | Fix Modal Overflow And Form Accessibility | ✅ done (session 4) |
-| 4 | Clean Up Logs UI | ✅ done (session 4) |
-| 5 | Build Workboard MVP | ✅ done (session 5) |
-| 6 | Connect Workboard To Agent Execution | ✅ done (session 5) |
-| 7 | Add Run Observability And Cost Signals | ⬜ next |
-| 8 | Add Chat Checkpoints And Branching | ⬜ |
-| 9 | Add Token Delta Indicators In Chat | ⬜ |
-| 10 | Add Realtime Voice Exploration Spike | ⬜ |
-| 11 | Add Voice Panel MVP | ⬜ |
-| 12 | Improve Schedule Reliability And Missed Runs | ⬜ |
-| 13 | Add Workboard Artifact Tracking | ⬜ |
-| 14 | Add Task Collaboration Primitives | ⬜ |
-| 15 | Product Polish Pass | ⬜ |
+Stories are sequenced into milestones so each track feeds the other: Story 7
+produces the run-level data that E1/E2 publish; the sidecar foundation
+(E3–E8) lands before the voice stories so realtime providers can be built as
+supervised sidecars; the SDK work (E9–E12) comes after the protocols have
+stabilized through real use.
+
+| Order | Milestone | Stories (in order) | Status / notes |
+|-------|-----------|--------------------|----------------|
+| ✅ | M0 Foundation | 1, 2, 3, 4, 5, 6 | done (sessions 4–5) |
+| 1 | M1 Observability | **7 → E1 → E2** | next. Story 7 builds run-level metrics on costs/actionlog/workboard runs; E1 publishes them as schema-v1 events; E2 exposes signed webhooks. One coherent arc. |
+| 2 | M2 Chat depth | **8 → 9** | checkpoints/branching first, then token deltas (9 reuses Story 7's per-run metrics). |
+| 3 | M3 Sidecar foundation | **E3 → E4 → E5 → E6 → E7 → E8** | prereq: whatsappweb/channels work merged & stable (done, f6e05e5). Protocol → supervision → principals → credentials → manifest v2 → GUI mounts. |
+| 4 | M4 Voice | **10 → 11** | Story 10's spike must evaluate the External Channel Protocol/sidecar runtime (E3/E4) as the integration vehicle for OpenAI Realtime / Gemini Live; Story 11 should ship the voice bridge as a supervised sidecar with vault-delegated credentials (E6) rather than baking SDKs into the binary. |
+| 5 | M5 Reliability & workboard depth | **12 → 13 → 14** | Story 12 reuses the duplicate-run guard pattern from Story 6; Story 13's artifacts attach to workboard runs and emit `run.artifact` events through E1 so observers see outputs; Story 14 events likewise. |
+| 6 | M6 SDK & distribution | **E9 → E10 → E11 → E12 → E13** | structural investment, done once protocols are proven by M3/M4 consumers. |
+| 7 | M7 Polish | **15** | scope now includes plugin GUI surfaces from E8/E13 (nav consistency, install/permission dialogs, empty states). |
+| ⏸ | Deferred | E14 (WASM) | demand-gated; see EXTENSIBILITY.md §7. |
 
 ## Story prompts
 
@@ -104,12 +103,20 @@ capture, WebRTC/WebSocket transport, interruption handling, authentication,
 cost tracking, and provider configuration. Produce a small proof-of-concept or
 implementation plan, but do not commit to full product integration yet.
 
+*Integration (M4): the spike must also evaluate running the realtime bridge
+as a supervised stdio sidecar (External Channel Protocol, E3/E4) so provider
+SDKs and audio dependencies stay out of the core binary.*
+
 ### Story 11: Add Voice Panel MVP
 After the voice spike, implement a minimal push-to-talk voice panel in Chat.
 Support microphone permission flow, start/stop recording, stream audio to the
 selected realtime provider, display transcript, and attach responses to the
 current chat session. Include clear cost/status indicators and graceful
 fallback when no realtime provider is configured.
+
+*Integration (M4): implement the provider bridge as a supervised sidecar with
+vault-delegated credentials (E4/E6) if the Story 10 spike confirms the
+approach; the binary stays free of vendor audio SDKs.*
 
 ### Story 12: Improve Schedule Reliability And Missed Runs
 Finish hardening Soulacy scheduled agents. Verify service restart behavior on
@@ -124,6 +131,10 @@ files produced during a run when possible, attach them to the task, and show
 them in a task detail panel with open/download actions. Include artifact
 metadata such as path, size, created time, and originating tool/run.
 
+*Integration (M5): artifacts attach to workboard run records (Story 6 schema)
+and emit `run.artifact` events through the E1 event layer so webhooks and
+observers see produced files.*
+
 ### Story 14: Add Task Collaboration Primitives
 Add lightweight collaboration primitives for Workboard tasks: comments,
 reviewer notes, task owner, priority, tags, and due date. Keep the model
@@ -137,6 +148,10 @@ reduce visual noise in dense pages, and ensure destructive actions are clearly
 separated from routine actions. Prioritize consistency across Dashboard,
 Agents, Chat, Schedule, Workboard, Config, Logs, and Providers.
 
+*Integration (M7): scope includes the plugin-facing GUI surfaces added by
+E8/E13 — plugin nav entries, iframe panels, install/permission dialogs — so
+third-party UI feels native.*
+
 ---
 
 ## Extensibility track (E1–E14)
@@ -146,24 +161,8 @@ story: single static binary preserved; no dynamic code loading; plugins are
 distinct security principals with manifest-declared, default-deny
 capabilities; all contracts versioned; TDD; commit on green.
 
-### Status
-
-| # | Story | Phase | Status |
-|---|-------|-------|--------|
-| E1 | Publish Internal Events To The Queue Backend | 1 | ⬜ |
-| E2 | Add Signed Outbound Webhooks | 1 | ⬜ |
-| E3 | Define The External Channel Protocol | 2 | ⬜ |
-| E4 | Add Sidecar Supervision And Lifecycle | 2 | ⬜ |
-| E5 | Introduce Plugin Principals And Capabilities | 2 | ⬜ |
-| E6 | Delegate Credentials From The Vault To Sidecars | 2 | ⬜ |
-| E7 | Implement Plugin Manifest v2 | 2 | ⬜ |
-| E8 | Add Plugin GUI Mounts | 2 | ⬜ |
-| E9 | Extract A Versioned Go SDK Module | 3 | ⬜ |
-| E10 | Add Factory Registries And Decompose main.go | 3 | ⬜ |
-| E11 | Ship Conformance Test Kits | 3 | ⬜ |
-| E12 | Build The Flavored-Binary Tool | 3 | ⬜ |
-| E13 | Add Plugin Discovery And Install UX | 3 | ⬜ |
-| E14 | WASM Transform Sandbox | 4 | ⏸ deferred (demand-gated) |
+Status for all E-stories is tracked in the Integrated roadmap table above
+(milestones M1, M3, M6).
 
 ### Story prompts
 
