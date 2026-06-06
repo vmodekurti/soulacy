@@ -1,7 +1,7 @@
 # Session Handoff
 
-Last updated: 2026-06-06 (session 5: Stories 5–6 complete + extensibility
-blueprint and E-track stories; previously: session 4 stories 1–4)
+Last updated: 2026-06-06 (session 6: E5 complete; previously session 5:
+Stories 5–6 + extensibility blueprint and E-track stories)
 
 ---
 
@@ -26,7 +26,33 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  E5 (plugin principals and capabilities, milestone M3).**
+  E6 (vault credential delegation to sidecars, milestone M3).**
+
+**E5 (plugin principals & capabilities) — complete (TDD, all green, session 6).**
+- `internal/caps` (new pkg, 97.6% cov) — `Principal` (`plugin:<id>`, IsPlugin/
+  PluginID); `ParseCap` grammar `resource.action` (lowercase, one dot);
+  capability registry (`Register`/`ScopeKindOf`/`KnownCaps`) seeded with
+  `vector.search`(agents) / `channel.send`(channels) /
+  `events.subscribe`(types); `Set` (compiled per-plugin grants — default-deny
+  undeclared caps, empty scope list = unscoped grant, `"*"` wildcard,
+  restricted scope refuses unscoped checks, duplicate caps merged);
+  `Enforcer` (SetPluginSet/RemovePluginSet/Check + Fiber middleware
+  `RequireCapability`). Every allow AND deny audited via `internal/audit`
+  (SessionID=`plugin:<id>` → per-plugin audit files, Tool=`cap:<cap>`,
+  Denied flag, reason in Error). Non-plugin principals: denied by Check,
+  passed through by the middleware (user RBAC untouched).
+- `pkg/plugin` — `Permission{Cap,Agents,Channels,Types}` + 
+  `Manifest.Permissions` (pure data; validation lives in internal/caps).
+- `internal/plugins/loader.go` — manifests are now validated through
+  `caps.NewSet` at load; invalid permissions (unknown cap, wrong scope kind)
+  → plugin refused (warn+skip). `LoadedPlugin.Caps *caps.Set` exposed.
+  First tests for the loader package (37.4% cov, was 0).
+- Docs: `docs/PLUGIN_CAPABILITIES.md` (grammar, semantics table, initial cap
+  set, audit format, how to add a capability, compat policy).
+- Tests: 33 new (caps_test/set_test/enforcer_test/loader_caps_test). NOT yet
+  wired into gateway routes — no request can authenticate as a plugin until
+  E8 issues scoped plugin tokens; E7 (manifest v2) registers loaded plugins
+  with the Enforcer. Full suite green.
 
 **E4 (sidecar supervision & lifecycle) — complete (TDD, all green).**
 - `internal/channels/external/supervisor.go` — `Supervisor` wraps the E3
