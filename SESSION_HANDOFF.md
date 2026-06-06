@@ -23,7 +23,34 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   depth; artifacts emit events via E1) · M6: E9–E13 (SDK & distribution) ·
   M7: 15 (polish incl. plugin GUI surfaces). E14 deferred.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  E3 (External Channel Protocol, milestone M3 — sidecar foundation).**
+  E4 (sidecar supervision and lifecycle, milestone M3).**
+
+**E3 (External Channel Protocol v1) — complete (TDD, all green).**
+- `internal/channels/external/` — `protocol.go` (Frame superset type,
+  ParseFrame [unknown types OK, missing type = error], WriteFrame NDJSON,
+  Negotiate = min(gateway, sidecar), ProtocolVersion=1); `adapter.go`
+  (generic channels.Adapter spawning any command: async handshake with
+  configurable timeout [default 5s], hello→hello_ack, status/message/error
+  dispatch, ActivationPolicy filtering, session `<id>-<chat_id>`, send
+  frame, shutdown+3s grace+kill; `terminal` flag keeps failure verdicts
+  from being clobbered by waitExit; waitExit owns cmd.Wait, Stop watches
+  the `exited` channel); `conformance.go` (RunConformance: hello deadline,
+  negotiation, unknown-frame tolerance, send survival, shutdown exit ≤5s —
+  seed of the E11 kit).
+- Tests: 17 (protocol unit + adapter via TestHelperSidecar helper-process
+  pattern [modes happy/nohello/badversion] + conformance pass/fail), ~85%
+  coverage. **Cross-language proof:** RunConformance executed against the
+  real `scripts/reference-channel-sidecar.py` in-sandbox → PASS.
+- Docs: `docs/EXTERNAL_CHANNEL_PROTOCOL.md` (spec, compat rules,
+  conformance checklist). WhatsApp Web adapter NOT migrated (per story).
+- NOTE for E4: supervision should wrap `external.Adapter` (restart/backoff
+  on `exited`, health from Status), spawn via the rlimit `__exec-sandbox`
+  wrapper, and surface lifecycle in AdapterStatus so the Channels GUI
+  needs no changes.
+- ⚠️ gofmt/vitest leave undeletable `*.go.<digits>` / vitest timestamp temp
+  files on this mount; some had been committed accidentally — cleaned in
+  e7603d9. Sweep new ones into `.git/stale-locks/tmpfiles/` before
+  staging broad paths; never `git add` directories blindly.
 
 **Story 9 (token delta indicators) — complete. M2 done.**
 - `gui/src/lib/chatmetrics.js` — `deltaMetrics(prev, curr)` diffs
