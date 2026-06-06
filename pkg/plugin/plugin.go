@@ -29,6 +29,26 @@ type Manifest struct {
 	// is refused at the host-API boundary. Validation and enforcement live in
 	// internal/caps; this is pure manifest data.
 	Permissions []Permission `yaml:"permissions,omitempty"`
+
+	// Credentials declares the vault secrets this plugin's sidecars need.
+	// Only the listed secrets are injected into the sidecar environment at
+	// spawn; the vault path namespace must equal the plugin ID. Validation
+	// and delegation live in internal/plugins (E6).
+	Credentials []CredentialRef `yaml:"credentials,omitempty"`
+}
+
+// CredentialRef requests one vault secret for the plugin's sidecars.
+//
+//	credentials:
+//	  - key: MATRIX_TOKEN        # env var name in the sidecar
+//	    from: matrix-suite/token # vault path: <plugin-id>/<secret-key>
+//
+// Key must be an uppercase env-var name; From is `<namespace>/<key>` where
+// the namespace MUST be the plugin's own ID — plugins can never reference
+// another plugin's (or an agent's) secrets.
+type CredentialRef struct {
+	Key  string `yaml:"key" json:"key"`
+	From string `yaml:"from" json:"from"`
 }
 
 // Permission is one capability grant requested in plugin.yaml.

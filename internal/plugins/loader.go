@@ -114,6 +114,13 @@ func (l *Loader) loadPlugin(dir string) error {
 		return fmt.Errorf("invalid permissions: %w", err)
 	}
 
+	// Validate credential declarations (Story E6): own-namespace vault paths
+	// and unique, well-formed env keys. Invalid declarations refuse the
+	// plugin — silently spawning a sidecar without its secrets would be worse.
+	if err := ValidateCredentialRefs(m.ID, m.Credentials); err != nil {
+		return fmt.Errorf("invalid credentials: %w", err)
+	}
+
 	lp := &LoadedPlugin{Manifest: m, Dir: dir, Caps: capSet}
 
 	// m.Tools is []string — names of tool libraries declared in the manifest.

@@ -46,6 +46,28 @@ func TestHelperSidecar(t *testing.T) {
 		fmt.Fprintln(out, `{"type":"hello","protocol":1,"name":"flaky"}`)
 		time.Sleep(300 * time.Millisecond)
 		os.Exit(1)
+	case "envecho":
+		// Reports selected env vars in the status detail so tests can prove
+		// which variables the host injected (E6 credential delegation).
+		fmt.Fprintln(out, `{"type":"hello","protocol":1,"name":"envecho"}`)
+		for in.Scan() {
+			f, err := ParseFrame(in.Bytes())
+			if err != nil {
+				continue
+			}
+			switch f.Type {
+			case "hello_ack":
+				tok := os.Getenv("SIDE_TOKEN")
+				undecl, ok := os.LookupEnv("SIDE_UNDECLARED")
+				if !ok {
+					undecl = "<unset>"
+				}
+				fmt.Fprintf(out, `{"type":"status","connected":true,"detail":"token=%s undeclared=%s"}`+"\n", tok, undecl)
+			case "shutdown":
+				return
+			}
+		}
+		return
 	}
 
 	// happy mode: noise frame first (must be ignored), then hello.

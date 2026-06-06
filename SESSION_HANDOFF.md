@@ -26,7 +26,33 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  E6 (vault credential delegation to sidecars, milestone M3).**
+  E7 (plugin manifest v2, milestone M3).**
+  **Vasu's instruction (2026-06-06, session 6): keep developing without
+  stopping for approval between E-stories; keep this handoff updated.**
+
+**E6 (vault credential delegation) — complete (TDD, all green, session 6).**
+- `pkg/plugin` — `CredentialRef{Key,From}` + `Manifest.Credentials`.
+  `from: <ns>/<key>` where ns MUST equal the plugin's own ID.
+- `internal/plugins/delegation.go` — `PluginVaultNamespace(id)` =
+  `plugin:<id>` (plugin secrets disjoint from agent creds in the same
+  vault); `ValidateCredentialRefs` (env-name grammar, dup keys, own-
+  namespace paths; wired into loader → invalid creds refuse the plugin);
+  `Delegator.Env(ctx,id,refs)` builds the sidecar's COMPLETE env =
+  whitelisted base (PATH/HOME/TMPDIR/LANG/TZ/…) + declared secrets only —
+  host env never inherited; missing secret = spawn error. `WatchCredentials`
+  polls a SHA-256 fingerprint of declared secrets (hashes only, never
+  values) → onChange callback for rotation/replace/add/remove.
+- `internal/channels/external` — `Adapter.SetEnv` (complete env, nil =
+  inherit, pre-E6 compat); `SupervisorConfig.Env func()([]string,error)`
+  resolved ON EVERY SPAWN (restart picks up rotated secrets; resolver error
+  = crash → backoff retry); `Supervisor.Restart(reason)` stops the current
+  sidecar so the loop respawns it — wire WatchCredentials onChange →
+  Restart in E7. Helper sidecar gained `envecho` mode (reports SIDE_TOKEN/
+  SIDE_UNDECLARED in status detail) proving undeclared host vars are
+  invisible to the subprocess.
+- Docs: `docs/PLUGIN_CREDENTIALS.md` (rules, namespace, injection, rotation
+  flow, secret hygiene, env-transport limitations + v2 handshake-frame
+  option). Tests: 13 delegation + 4 external env tests. Suite green.
 
 **E5 (plugin principals & capabilities) — complete (TDD, all green, session 6).**
 - `internal/caps` (new pkg, 97.6% cov) — `Principal` (`plugin:<id>`, IsPlugin/

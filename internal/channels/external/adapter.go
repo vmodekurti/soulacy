@@ -38,6 +38,11 @@ type Adapter struct {
 	// Overridable in tests.
 	handshakeTimeout time.Duration
 
+	// env, when non-nil, is the COMPLETE environment for the sidecar process
+	// (the parent environment is NOT inherited). Used for credential
+	// delegation (E6): a minimal base env plus only the declared secrets.
+	env []string
+
 	mu          sync.Mutex
 	inbox       chan<- message.Message
 	cmd         *exec.Cmd
@@ -77,6 +82,16 @@ func New(id, command string, args []string, agentID string, activation channels.
 
 func (a *Adapter) ID() string { return a.id }
 
+// SetEnv fixes the sidecar's complete environment (no parent inheritance).
+// Must be called before Start. nil (the default) inherits the parent env,
+// preserving pre-E6 behaviour. Values are passed to the process only —
+// never logged or written to disk.
+func (a *Adapter) SetEnv(env []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.env = env
+}
+
 // Name reports the sidecar-announced name once the handshake completed.
 func (a *Adapter) Name() string {
 	a.mu.Lock()
@@ -101,6 +116,11 @@ func (a *Adapter) Start(ctx context.Context, inbox chan<- message.Message) error
 	a.mu.Unlock()
 
 	cmd := exec.CommandContext(ctx, a.command, a.args...)
+	a.mu.Lock()
+	if a.env != nil {
+		cmd.Env = a.env
+	}
+	a.mu.Unlock()
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return fmt.Errorf("external: stdout pipe: %w", err)

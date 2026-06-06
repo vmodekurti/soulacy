@@ -32,6 +32,13 @@ type SupervisorConfig struct {
 	// soulacy binary path (os.Executable()); empty disables wrapping.
 	SandboxSelf   string
 	SandboxLimits sandbox.Limits
+
+	// Env, when set, resolves the sidecar's COMPLETE environment before
+	// every spawn (credential delegation, E6). Re-running it per spawn means
+	// a restart — including the rotation-triggered Restart() — picks up
+	// fresh secrets. An error blocks the spawn and is retried through the
+	// normal crash/backoff loop. nil inherits the parent environment.
+	Env func() ([]string, error)
 }
 
 func (c *SupervisorConfig) defaults() {
@@ -115,16 +122,26 @@ func (s *Supervisor) buildCommand() (string, []string) {
 	return wrapped[0], wrapped[1:]
 }
 
-func (s *Supervisor) newAdapter() *Adapter {
+func (s *Supervisor) newAdapter() (*Adapter, error) {
 	command, args := s.buildCommand()
 	a := New(s.id, command, args, s.agentID, s.activation, s.log)
 	a.handshakeTimeout = s.handshakeTimeout
-	return a
+	if s.cfg.Env != nil {
+		env, err := s.cfg.Env()
+		if err != nil {
+			return nil, fmt.Errorf("external: resolve sidecar env: %w", err)
+		}
+		a.SetEnv(env)
+	}
+	return a, nil
 }
 
 // Start spawns the first sidecar and begins supervising.
 func (s *Supervisor) Start(ctx context.Context, inbox chan<- message.Message) error {
-	a := s.newAdapter()
+	a, err := s.newAdapter()
+	if err != nil {
+		return err
+	}
 	if err := a.Start(ctx, inbox); err != nil {
 		return err
 	}
@@ -182,20 +199,23 @@ func (s *Supervisor) supervise(ctx context.Context) {
 		case <-time.After(delay):
 		}
 
-		a := s.newAdapter()
-		inboxErr := func() error {
-			s.mu.Lock()
-			defer s.mu.Unlock()
-			if s.stopped {
-				return context.Canceled
-			}
-			return a.Start(ctx, s.inbox)
-		}()
+		a, envErr := s.newAdapter()
+		inboxErr := envErr
+		if inboxErr == nil {
+			inboxErr = func() error {
+				s.mu.Lock()
+				defer s.mu.Unlock()
+				if s.stopped {
+					return context.Canceled
+				}
+				return a.Start(ctx, s.inbox)
+			}()
+		}
 		s.mu.Lock()
 		s.inBackoff = false
 		if inboxErr != nil {
-			// Spawn failure counts as an immediate crash: loop again with
-			// a fake "already exited" adapter.
+			// Spawn (or env resolution) failure counts as an immediate
+			// crash: loop again with a fake "already exited" adapter.
 			s.detail = "restart failed: " + inboxErr.Error()
 			s.mu.Unlock()
 			if inboxErr == context.Canceled {
@@ -204,7 +224,7 @@ func (s *Supervisor) supervise(ctx context.Context) {
 			// Synthesize a closed Done so the loop re-enters backoff.
 			closed := make(chan struct{})
 			close(closed)
-			fake := s.newAdapter()
+			fake := New(s.id, s.command, s.args, s.agentID, s.activation, s.log)
 			fake.exited = closed
 			s.mu.Lock()
 			s.current = fake
@@ -227,6 +247,27 @@ func (s *Supervisor) backoff(attempt int) time.Duration {
 	}
 	jitter := time.Duration(rand.Int63n(int64(d)/5 + 1)) //nolint:gosec // jitter
 	return d - d/10 + jitter
+}
+
+// Restart stops the current sidecar so the supervision loop respawns it
+// (with a fresh environment when cfg.Env is set). Used for credential
+// rotation (E6): vault change → Restart → new secrets at next spawn.
+// No-op when the supervisor is stopped or not started.
+func (s *Supervisor) Restart(reason string) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	cur := s.current
+	if reason != "" {
+		s.detail = "restarting: " + reason
+	}
+	s.mu.Unlock()
+	if cur != nil {
+		s.log.Info("sidecar restart requested", zap.String("reason", reason))
+		_ = cur.Stop()
+	}
 }
 
 // Restarts reports how many times the sidecar has been restarted since the
