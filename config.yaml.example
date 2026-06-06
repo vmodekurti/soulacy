@@ -96,6 +96,16 @@ llm:
             base_url: http://localhost:11434
             model: llama3.3:70b
 
+# ── Realtime voice (Story 11, docs/VOICE_SPIKE.md) ────────────────────────────
+# Enables the push-to-talk voice panel in Chat. The browser connects to the
+# provider directly over WebRTC using a short-lived key minted by the gateway;
+# your real API key never reaches the browser. Key comes from
+# llm.providers.openai.api_key or the OPENAI_API_KEY env var.
+# voice:
+#     provider: openai            # only "openai" supported (v1)
+#     model: gpt-realtime-mini    # default; gpt-realtime for higher quality
+#     # base_url: ""              # override for Azure/compatible endpoints
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 log:
     file: /Users/yourname/.soulacy/logs/soulacy.log

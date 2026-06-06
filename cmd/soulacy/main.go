@@ -22,6 +22,7 @@ import (
 	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/audit"
 	"github.com/soulacy/soulacy/internal/caps"
+	"github.com/soulacy/soulacy/internal/voice"
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/auth/apikeys"
 	"github.com/soulacy/soulacy/internal/builder"
@@ -1185,6 +1186,25 @@ func run() error {
 			srv.SetPluginUI(uiMounts)
 			log.Info("plugin GUI mounts ready", zap.Int("count", len(uiMounts)))
 		}
+	}
+
+	// Realtime voice control plane (Story 11, docs/VOICE_SPIKE.md). Only the
+	// ephemeral-key minting lives host-side; audio is browser↔provider.
+	if cfg.Voice.Provider == "openai" {
+		voiceKey := os.Getenv("OPENAI_API_KEY")
+		if oc, ok := cfg.LLM.Providers["openai"]; ok && oc.APIKey != "" {
+			voiceKey = oc.APIKey
+		}
+		minter := voice.NewOpenAIMinter(voiceKey, cfg.Voice.Model, cfg.Voice.BaseURL)
+		srv.SetVoiceMinter(minter)
+		if ready, detail := minter.Ready(); ready {
+			log.Info("realtime voice ready", zap.String("provider", "openai"), zap.String("model", minter.Model()))
+		} else {
+			log.Warn("realtime voice configured but not ready", zap.String("detail", detail))
+		}
+	} else if cfg.Voice.Provider != "" {
+		log.Warn("unsupported voice provider; voice panel disabled",
+			zap.String("provider", cfg.Voice.Provider))
 	}
 
 	// Wire the cost store into the gateway so /api/v1/costs routes work.

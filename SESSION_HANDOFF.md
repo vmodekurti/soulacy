@@ -26,10 +26,38 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4: Story 10 ✅ spike done — next up: Story 11 (voice panel
-  MVP, follow docs/VOICE_SPIKE.md §3).**
+  (E3–E8). M4 COMPLETE (Stories 10–11). Next up: M5 — Story 12 (schedule
+  reliability), then 13 → 14.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**Story 11 (voice panel MVP) — complete (TDD, all green, session 6). M4 done.**
+- `internal/voice` (new pkg) — `OpenAIMinter` mints ephemeral Realtime
+  client keys via plain HTTPS POST /v1/realtime/client_secrets (current
+  {value,expires_at} AND legacy {client_secret:{…}} response shapes; no
+  vendor SDK in the binary). `Ready()` explains missing keys; errors never
+  echo the API key. SetClient for fake-RoundTripper tests (7 tests).
+- `internal/gateway/voice.go` — `VoiceMinter` seam + `SetVoiceMinter`;
+  GET /api/v1/voice/status (200 always: {available,provider,model,detail}
+  — graceful fallback) and POST /api/v1/voice/ephemeral (503 no/unready
+  minter, 502 provider error, 200 {key,expires_at,model,provider}); rbac
+  chat/chat; plugin tokens DENIED (not in gate table — test proves it).
+  8 gateway tests.
+- `internal/config` — `VoiceConfig{Provider,Model,BaseURL}` (`voice:`
+  section); key from llm.providers.openai.api_key or OPENAI_API_KEY.
+  Wired in main.go after the plugin block. config.yaml.example updated.
+- GUI — `lib/voice.js` (state machine unavailable/idle/connecting/live/
+  error, realtimeCallURL, classifyRealtimeEvent [GA + pre-GA event names],
+  addUsage/voiceUsageLabel, voiceHint) + 15 vitest tests. Chat.svelte: 🎤
+  button in controls (pulse while live, disabled+hint when unavailable),
+  WebRTC glue (getUserMedia → RTCPeerConnection → SDP exchange with
+  ephemeral key → remote audio element + oai-events data channel), live
+  transcripts appended to the chat session (user turns + streaming
+  assistant bubble), usage chip (🎤 ↑in ↓out tok), teardown on stop/
+  destroy. Vitest 79/79 ✓, vite build ✓.
+- **Verify on the Mac:** set `voice: {provider: openai}` + a real key,
+  rebuild dist, test mic permission prompt + a live conversation
+  (localhost counts as a secure context for getUserMedia).
 
 **Story 10 (realtime voice spike) — complete (session 6).**
 - `docs/VOICE_SPIKE.md` — provider comparison verified against June-2026

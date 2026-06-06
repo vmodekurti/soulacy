@@ -155,6 +155,11 @@ export const api = {
     token: (id) => apiFetch(`/plugins/${encodeURIComponent(id)}/token`, { method: 'POST' }),
   },
 
+  voice: {
+    status:    () => apiFetch('/voice/status'),
+    ephemeral: () => apiFetch('/voice/ephemeral', { method: 'POST' }),
+  },
+
   knowledge: {
     list:   ()        => apiFetch('/knowledge'),
     create: (body)    => apiFetch('/knowledge', { method: 'POST', body: JSON.stringify(body) }),

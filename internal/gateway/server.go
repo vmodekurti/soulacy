@@ -118,6 +118,11 @@ type Server struct {
 	pluginUIs    []PluginUIMount
 	pluginTokens map[string]string
 	capsEnforcer *caps.Enforcer
+
+	// voiceMinter is the realtime-voice control plane (Story 11). Wired via
+	// SetVoiceMinter; nil = voice unavailable (graceful fallback).
+	// Guarded by pluginMu (same wire-after-New lifecycle).
+	voiceMinter VoiceMinter
 }
 
 // New creates and configures the Fiber server but does not start listening.
@@ -533,6 +538,12 @@ func (s *Server) buildApp() *fiber.App {
 	api.Delete("/agents/:id", s.rbacAgentMW(rbac.ActionDelete), s.handleDeleteAgent)
 	api.Post("/agents/:id/enable", s.rbacAgentMW(rbac.ActionEnable), s.handleEnableAgent)
 	api.Post("/agents/:id/disable", s.rbacAgentMW(rbac.ActionEnable), s.handleDisableAgent)
+
+	// Realtime voice control plane (Story 11): availability + ephemeral
+	// client keys for the browser's direct provider connection. Same RBAC
+	// surface as chat (the panel lives in Chat).
+	api.Get("/voice/status", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleVoiceStatus)
+	api.Post("/voice/ephemeral", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleVoiceEphemeral)
 
 	// Chat — token-quota (user + agent) + per-agent RPM checks applied on top of user RPM.
 	api.Post("/chat", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChat)
