@@ -26,7 +26,7 @@ stabilized through real use.
 | 2 | M3 Sidecar foundation | **E3 → E4 → E5 → E6 → E7 → E8** | E3 ✅ done (protocol v1 + generic adapter + conformance + reference sidecar; docs/EXTERNAL_CHANNEL_PROTOCOL.md). E4 next: supervision. |
 | 4 | M4 Voice | **10 → 11** | Story 10's spike must evaluate the External Channel Protocol/sidecar runtime (E3/E4) as the integration vehicle for OpenAI Realtime / Gemini Live; Story 11 should ship the voice bridge as a supervised sidecar with vault-delegated credentials (E6) rather than baking SDKs into the binary. |
 | 5 | M5 Reliability & workboard depth | **12 → 13 → 14** | Story 12 reuses the duplicate-run guard pattern from Story 6; Story 13's artifacts attach to workboard runs and emit `run.artifact` events through E1 so observers see outputs; Story 14 events likewise. |
-| 6 | M6 SDK & distribution | **E9 → E10 → E11 → E12 → E13** | structural investment, done once protocols are proven by M3/M4 consumers. |
+| 6 | M6 SDK & distribution | **E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13** | structural investment, done once protocols are proven by M3/M4 consumers. E15 (pluggable reasoning) and E16 (plugin migrations) build directly on E9's SDK extraction; E17 (dynamic plugin config) feeds E13's install UX. |
 | 7 | M7 Polish | **15** | scope now includes plugin GUI surfaces from E8/E13 (nav consistency, install/permission dialogs, empty states). |
 | ⏸ | Deferred | E14 (WASM) | demand-gated; see EXTENSIBILITY.md §7. |
 
@@ -283,3 +283,45 @@ serve: embed wazero (pure Go) to run uploaded WASM as pure bytes→bytes
 transforms with hard context deadlines, no filesystem, no network, and no
 host API beyond the input payload. Revisit the decision record in
 docs/EXTENSIBILITY.md §7 before starting.
+
+### Story E15: Pluggable Reasoning Loops
+Extend the Soulacy reasoning engine to support custom, pluggable reasoning
+strategies (such as Tree of Thought, Self-Reflection, or Consensus Swarms)
+beyond the hardcoded ReAct and Plan-Execute loops. Promote the `LLMBackend`
+and reasoning interfaces to the `pkg/` SDK, establish a
+`RegisterReasoningStrategy` factory registry, and map agent
+`reasoning.strategy` keys in `SOUL.yaml` to these registered strategy
+executors at runtime. Include conformance tests verifying that a custom
+reasoning loop can be successfully injected and run.
+
+*Integration (M6): depends on E9's SDK module; the registry follows E10's
+factory pattern; the conformance test joins the E11 kits.*
+
+### Story E16: Plugin Database Migrations Hook
+Add support for plugin-specific database schemas, enabling dynamic plugins
+to create and manage their own SQLite tables without modifying the core
+system database schemas. Expose a `RegisterMigration(name string, upSQL
+string)` hook in the `pkg/storage` SDK that executing plugins can register
+during `Init()`. Ensure these migrations are run transactionally during the
+database boot phase and block plugins from executing raw DDL changes against
+core system tables (like `agents` or `runs`). Add integration tests
+verifying a plugin's ability to migrate and query its own tables.
+
+*Integration (M6): depends on E9; migration namespace ties into the E5
+plugin-principal model (a plugin may only touch its own `plugin_<id>_*`
+tables); guard list must cover all core schemas (token_usage, agent_events,
+conversation_history, workboard_tasks/runs, credentials, rbac).*
+
+### Story E17: Dynamic Plugin Configuration Schema
+Enhance the core gateway YAML parser and GUI configuration editor to support
+dynamic, plugin-specific settings without throwing unmarshaling errors on
+unrecognized keys. Update the configuration parser to collect arbitrary
+top-level settings under a generic `plugins_config map[string]any`
+dictionary, making this data accessible to plugins through the registry
+initialization context. Ensure that the GUI configuration editor
+(`Config.svelte`) preserves these custom data blocks unmutated when writing
+configuration updates back to `config.yaml`.
+
+*Integration (M6): pairs with E7 (manifest v2) and E13 (install UX shows
+plugin settings); config GET redaction (Story 1's safeChannelsView pattern)
+must extend to plugins_config so plugin secrets never reach the browser.*
