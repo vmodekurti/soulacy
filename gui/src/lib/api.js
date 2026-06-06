@@ -222,6 +222,7 @@ export const api = {
     delete: (id)        => apiFetch(`/workboard/tasks/${id}`,  { method: 'DELETE' }),
     run:    (id)        => apiFetch(`/workboard/tasks/${id}/run`,  { method: 'POST' }),
     runs:   (id)        => apiFetch(`/workboard/tasks/${id}/runs`),
+    artifacts: (id)     => apiFetch(`/workboard/tasks/${id}/artifacts`),
   },
 
   builder: {

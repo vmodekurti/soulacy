@@ -1,8 +1,9 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
-  import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel } from '../lib/workboard.js'
+  import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl } from '../lib/workboard.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
+  import { apiKey } from '../lib/stores.js'
 
   let tasks = []
   let agents = []
@@ -17,6 +18,10 @@
   // Run history shown in the editor modal.
   let runs = []
   let runsLoading = false
+
+  // Artifacts produced by this task's runs (Story 13).
+  let artifacts = []
+  let artifactsLoading = false
 
   $: columns = groupByStatus(
     agentFilter ? tasks.filter(t => t.agent_id === agentFilter) : tasks
@@ -52,11 +57,26 @@
   function newTask() {
     editing = { id: null, title: '', description: '', agent_id: agentFilter, status: 'todo' }
     runs = []
+    artifacts = []
   }
 
   function editTask(t) {
     editing = { id: t.id, title: t.title, description: t.description, agent_id: t.agent_id, status: t.status }
     loadRuns(t.id)
+    loadArtifacts(t.id)
+  }
+
+  async function loadArtifacts(taskId) {
+    artifactsLoading = true
+    artifacts = []
+    try {
+      const resp = await api.workboard.artifacts(taskId)
+      artifacts = resp?.artifacts || []
+    } catch {
+      artifacts = []
+    } finally {
+      artifactsLoading = false
+    }
   }
 
   async function loadRuns(taskId) {
@@ -281,6 +301,24 @@
             {/each}
           {/if}
         </div>
+
+        <div class="artifacts">
+          <h3>Artifacts</h3>
+          {#if artifactsLoading}
+            <p class="muted">Loading artifacts…</p>
+          {:else if artifacts.length === 0}
+            <p class="muted">No files produced yet. Files written by the agent during a run appear here.</p>
+          {:else}
+            {#each artifacts as a (a.id)}
+              <div class="artifact-row">
+                <span class="artifact-name" title={a.path}>📄 {artifactName(a.path)}</span>
+                <span class="artifact-meta">{formatBytes(a.size_bytes)} · {new Date(a.created_at).toLocaleString()} · {a.tool} · run #{a.run_id}</span>
+                <a class="artifact-dl" href={artifactDownloadUrl(a.id, $apiKey)} download
+                   title="Download {artifactName(a.path)}">⬇ Download</a>
+              </div>
+            {/each}
+          {/if}
+        </div>
       {/if}
 
       <div class="modal-row">
@@ -405,6 +443,13 @@
   }
   .run-fail { font-size: 0.78rem; color: #ff9a9a; overflow-wrap: anywhere; }
   .run-meta { font-size: 0.68rem; font-family: monospace; color: #4d5478; overflow-wrap: anywhere; }
+  .artifacts { margin-top: 1rem; }
+  .artifacts h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #8a91b4; margin-bottom: 0.5rem; }
+  .artifact-row { display: flex; align-items: baseline; gap: 0.6rem; flex-wrap: wrap; padding: 0.35rem 0; border-bottom: 1px solid #1d2138; }
+  .artifact-name { font-weight: 600; overflow-wrap: anywhere; }
+  .artifact-meta { font-size: 0.7rem; color: #555a7a; font-family: monospace; }
+  .artifact-dl { margin-left: auto; font-size: 0.75rem; color: #7aa2ff; text-decoration: none; white-space: nowrap; }
+  .artifact-dl:hover { text-decoration: underline; }
 
   /* ── Modal ──────────────────────────────────────────────────────── */
   .modal-bg {

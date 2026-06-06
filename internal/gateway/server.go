@@ -686,6 +686,9 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/workboard/tasks/:id/runs", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleWorkboardListRuns)
 	api.Patch("/workboard/tasks/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleWorkboardUpdate)
 	api.Delete("/workboard/tasks/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionDelete), s.handleWorkboardDelete)
+	// Artifact tracking (Story 13): files produced during runs.
+	api.Get("/workboard/tasks/:id/artifacts", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleWorkboardArtifacts)
+	api.Get("/workboard/artifacts/:id/download", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleWorkboardArtifactDownload)
 
 	// --- Credential Vault ---
 	// s.credVault is checked at request time so SetCredentialVault() can be

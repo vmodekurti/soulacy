@@ -255,10 +255,13 @@ func (s *Server) executeWorkboardRun(run workboard.Run, task workboard.Task) {
 	if err != nil {
 		finish(workboard.RunStatusFailed, "", err.Error(), workboard.StatusFailed)
 		s.emitRunEvent("run.failed", run, task, err.Error())
+		// Partial outputs from a failed run are still worth surfacing.
+		s.recordRunArtifacts(run, task)
 		return
 	}
 	finish(workboard.RunStatusDone, wbResultSummary(reply), "", workboard.StatusNeedsReview)
 	s.emitRunEvent("run.finished", run, task, "")
+	s.recordRunArtifacts(run, task) // Story 13: attach produced files + run.artifact events
 }
 
 // emitRunEvent publishes a workboard run lifecycle event (run.started,

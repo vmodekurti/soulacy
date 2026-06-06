@@ -26,10 +26,37 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5: Story 12 ✅ — next up: Story 13
-  (workboard artifact tracking), then 14.**
+  (E3–E8). M4 COMPLETE (10–11). M5: 12 ✅ 13 ✅ — next up: Story 14
+  (task collaboration primitives).**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**Story 13 (workboard artifact tracking) — complete (TDD, session 6).**
+- `internal/workboard/artifacts.go` — `workboard_artifacts` table
+  (UNIQUE(run_id,path): re-writing a file in one run upserts size/tool, no
+  dup rows), `Artifact{ID,TaskID,RunID,Path,SizeBytes,Tool,CreatedAt}`,
+  AddArtifacts/ListArtifacts(task, newest first)/ListRunArtifacts/
+  GetArtifact (ErrNotFound); task Delete cascades artifacts. 8 store tests;
+  times second-truncated per house style.
+- `internal/gateway/workboard_artifacts.go` — `detectArtifactPaths(events,
+  sessionID)` scans the run's tool.call trail for file-writing tools (map
+  `artifactTools` — currently write_file/path; grow it as new builtins
+  land), handles BOTH typed message.ToolCall and JSONL-round-trip map
+  payloads, expands ~/, dedupes (last wins). `recordRunArtifacts` (called
+  from executeWorkboardRun on success AND failure — partial outputs count):
+  Tail(agent, 2000) → detect → os.Stat (missing/dir = tool failed, skip) →
+  AddArtifacts → one `run.artifact` event per file via EventHub (E1 →
+  WS/action log/queue/webhooks; payload: task_id, task_title, run_id,
+  attempt, path, size_bytes, tool — added to docs/EVENTS.md). Routes:
+  GET /workboard/tasks/:id/artifacts (200 {artifacts,count}, 503 no
+  store), GET /workboard/artifacts/:id/download (Content-Disposition
+  attachment; 404 unknown, 410 Gone when the file vanished). 10 gateway
+  tests incl. fakeTailBackend (full ActionLogBackend fake).
+- GUI — workboard.js: artifactName/formatBytes/artifactDownloadUrl (+3
+  vitest suites); api.workboard.artifacts; Workboard task modal gained an
+  Artifacts panel (📄 name, size · time · tool · run #, ⬇ Download link w/
+  api_key query param — works in apikey mode; jwt-mode direct links would
+  need a different transport later). Vitest 87/87 ✓, build ✓.
 
 **Story 12 (schedule reliability & missed runs) — complete (TDD, session 6).**
 - Audit verdict: the missed-run machinery from earlier sessions was sound

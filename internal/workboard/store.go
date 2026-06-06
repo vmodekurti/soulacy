@@ -101,6 +101,10 @@ func NewStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(artifactsSchema); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -239,7 +243,10 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 	if n == 0 {
 		return ErrNotFound
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM workboard_runs WHERE task_id = ?`, id)
+	if _, err = s.db.ExecContext(ctx, `DELETE FROM workboard_runs WHERE task_id = ?`, id); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM workboard_artifacts WHERE task_id = ?`, id)
 	return err
 }
 
