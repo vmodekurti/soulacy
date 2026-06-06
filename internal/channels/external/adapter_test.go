@@ -36,6 +36,16 @@ func TestHelperSidecar(t *testing.T) {
 		fmt.Fprintln(out, `{"type":"hello","protocol":0,"name":"bad"}`)
 		time.Sleep(5 * time.Second)
 		return
+	case "crashloop":
+		// Valid handshake, then die fast — exercises supervised restarts.
+		fmt.Fprintln(out, `{"type":"hello","protocol":1,"name":"crashy"}`)
+		time.Sleep(50 * time.Millisecond)
+		os.Exit(1)
+	case "crashafter":
+		// Stays "healthy" long enough to trip the healthy-reset window.
+		fmt.Fprintln(out, `{"type":"hello","protocol":1,"name":"flaky"}`)
+		time.Sleep(300 * time.Millisecond)
+		os.Exit(1)
 	}
 
 	// happy mode: noise frame first (must be ignored), then hello.

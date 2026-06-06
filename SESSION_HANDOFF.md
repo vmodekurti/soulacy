@@ -26,7 +26,26 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  E4 (sidecar supervision and lifecycle, milestone M3).**
+  E5 (plugin principals and capabilities, milestone M3).**
+
+**E4 (sidecar supervision & lifecycle) — complete (TDD, all green).**
+- `internal/channels/external/supervisor.go` — `Supervisor` wraps the E3
+  Adapter and itself satisfies channels.Adapter (registry/GUI unchanged;
+  lifecycle surfaces via AdapterStatus.Detail). Crash → exponential
+  backoff (MinBackoff<<attempts, cap MaxBackoff, ±10% jitter) → fresh
+  adapter; attempt counter resets after HealthyReset uptime (default
+  10min); spawn failures count as crashes; Stop halts the loop and the
+  current sidecar; Send during backoff returns a clear error.
+  `SupervisorConfig.SandboxSelf/SandboxLimits` spawn sidecars through the
+  portable rlimit `__exec-sandbox` wrapper via `sandbox.Wrap` (buildCommand
+  unit-tested both wrapped and passthrough; Limits.Enabled must be true).
+- Adapter gained `Done() <-chan struct{}` (closed on process exit).
+- Tests: 8 supervisor tests using new crashloop/crashafter helper modes
+  (restarts counted, status shows "restart #N in X", healthy reset keeps
+  attempts ≤1, stop halts restarts, healthy delegation incl. send echo).
+  Package 83% coverage. Full suite green.
+- NOT yet wired into main.go/config — E7 (manifest v2) is where supervised
+  external channels get declared; nothing consumes Supervisor until then.
 
 **E3 (External Channel Protocol v1) — complete (TDD, all green).**
 - `internal/channels/external/` — `protocol.go` (Frame superset type,
