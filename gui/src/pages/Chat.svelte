@@ -2,6 +2,9 @@
   import { onDestroy, onMount, tick } from 'svelte'
   import { api, createEventSocket } from '../lib/api.js'
   import { chatAgentId, chatMessages, chatSending, chatSessionId, connected } from '../lib/stores.js'
+  import RunMetrics from '../lib/RunMetrics.svelte'
+
+  let metricsRefresh = 0
 
   let agents    = []
   let input     = ''
@@ -54,6 +57,7 @@
     activeThinking = null
     activeRunKey = ''
     chatSending.set(false)
+    metricsRefresh++   // re-fetch the session metrics strip (Story 7)
     await scrollBottom()
   }
 
@@ -175,6 +179,7 @@
   <div class="page-header">
     <h1>Chat Tester</h1>
     <div class="controls">
+      <RunMetrics sessionId={$chatSessionId} agentId={$chatAgentId} refreshKey={metricsRefresh} />
       <select bind:value={$chatAgentId} style="width:min(220px, 100%)" disabled={!agents.length}>
         {#if !agents.length}
           <option value="">No enabled agents</option>

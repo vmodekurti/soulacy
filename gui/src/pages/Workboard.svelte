@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
   import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel } from '../lib/workboard.js'
+  import RunMetrics from '../lib/RunMetrics.svelte'
 
   let tasks = []
   let agents = []
@@ -268,6 +269,9 @@
                   <span class="run-badge run-{r.status}">{r.status}</span>
                   <span class="run-time">{fmtTime(r.started_at)} → {fmtTime(r.ended_at)}</span>
                 </div>
+                {#if r.session_id}
+                  <RunMetrics sessionId={r.session_id} agentId={editing.agent_id} />
+                {/if}
                 {#if r.result}<div class="run-result">{r.result}</div>{/if}
                 {#if r.failure_reason}<div class="run-fail">{r.failure_reason}</div>{/if}
                 <div class="run-meta">

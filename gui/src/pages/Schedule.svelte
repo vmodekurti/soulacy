@@ -2,6 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
   import { activityAgent } from '../lib/stores.js'
+  import RunMetrics from '../lib/RunMetrics.svelte'
 
   function watchAgent(id) {
     activityAgent.set(id)
@@ -603,6 +604,9 @@ schedule:
               </button>
               {#if expandedRuns[run.sessionId]}
                 <div class="run-output">
+                  <div class="run-metrics-row">
+                    <RunMetrics sessionId={run.sessionId} agentId={historyAgent.id} />
+                  </div>
                   {#if run.output}
                     <pre>{run.output}</pre>
                   {:else}
@@ -803,4 +807,6 @@ schedule:
     background: #141626; padding-top: .6rem;
     box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.6);
   }
+
+  .run-metrics-row { padding: .2rem 0 .45rem; }
 </style>

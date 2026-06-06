@@ -634,6 +634,11 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/costs", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetCosts)
 	api.Get("/costs/:agent_id", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetAgentCosts)
 
+	// --- Run-level observability (Story 7) ---
+	// Stores checked at request time; 503 when neither costs nor action log
+	// is wired, 404 when the session has no recorded data.
+	api.Get("/runs/:session_id/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunMetrics)
+
 	// --- Workboard (Story 5) ---
 	// s.workboardStore is checked at request time so SetWorkboardStore() can
 	// be called after New() but before the server starts listening.

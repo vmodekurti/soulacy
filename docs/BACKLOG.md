@@ -21,7 +21,7 @@ stabilized through real use.
 | Order | Milestone | Stories (in order) | Status / notes |
 |-------|-----------|--------------------|----------------|
 | ✅ | M0 Foundation | 1, 2, 3, 4, 5, 6 | done (sessions 4–5) |
-| 1 | M1 Observability | **7 → E1 → E2** | next. Story 7 builds run-level metrics on costs/actionlog/workboard runs; E1 publishes them as schema-v1 events; E2 exposes signed webhooks. One coherent arc. |
+| 1 | M1 Observability | **7 → E1 → E2** | Story 7 ✅ done (session 5, branch feature/integrated-roadmap). E1 next: publish run metrics as schema-v1 events; E2: signed webhooks. |
 | 2 | M2 Chat depth | **8 → 9** | checkpoints/branching first, then token deltas (9 reuses Story 7's per-run metrics). |
 | 3 | M3 Sidecar foundation | **E3 → E4 → E5 → E6 → E7 → E8** | prereq: whatsappweb/channels work merged & stable (done, f6e05e5). Protocol → supervision → principals → credentials → manifest v2 → GUI mounts. |
 | 4 | M4 Voice | **10 → 11** | Story 10's spike must evaluate the External Channel Protocol/sidecar runtime (E3/E4) as the integration vehicle for OpenAI Realtime / Gemini Live; Story 11 should ship the voice bridge as a supervised sidecar with vault-delegated credentials (E6) rather than baking SDKs into the binary. |

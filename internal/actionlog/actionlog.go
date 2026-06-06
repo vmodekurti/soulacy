@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS agent_events (
     created_at  DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_events_agent ON agent_events(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_session ON agent_events(session_id, created_at);
 `
 
 // Logger writes agent action events to per-agent files and SQLite.
