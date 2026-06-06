@@ -22,6 +22,9 @@ blueprint and E-track stories; previously: session 4 stories 1–4)
   integration notes in the prompts) · M5: 12→13→14 (reliability/workboard
   depth; artifacts emit events via E1) · M6: E9–E13 (SDK & distribution) ·
   M7: 15 (polish incl. plugin GUI surfaces). E14 deferred.
+  **E15–E17 added by Vasu (2026-06-06, prompts in BACKLOG.md):** pluggable
+  reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
+  slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
   E4 (sidecar supervision and lifecycle, milestone M3).**
 
