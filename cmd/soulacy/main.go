@@ -375,11 +375,25 @@ func run() error {
 		}
 	}
 
+	// ── Plugin Loader ─────────────────────────────────────────────────────────
+	// Scans plugin_dirs for plugin.yaml manifests; loads Python tool libraries
+	// and (manifest_schema 2, E7) sidecar channels, providers, skills, GUI mounts.
+	// Missing dirs are silently skipped; malformed plugins are warned and skipped.
+	pluginLoader := plugins.New(cfg.PluginDirs, log)
+	if pluginLoader.Count() > 0 {
+		log.Info("plugins loaded", zap.Int("count", pluginLoader.Count()))
+	}
+
 	// ── Skill Loader ─────────────────────────────────────────────────────────
 	// Scans ~/.soulacy/skills/, ~/.agents/skills/, ./.agents/skills/, etc.
-	// Extra skill dirs can be added via config.skill_dirs (same map key as plugin_dirs).
+	// Extra skill dirs can be added via config.skill_dirs (same map key as
+	// plugin_dirs) and by manifest-v2 plugins (skills: directories, E7).
 	workDir, _ := os.Getwd()
-	skillLoader := skills.New(workDir, cfg.SkillDirs, log)
+	skillDirs := append([]string{}, cfg.SkillDirs...)
+	for _, lp := range pluginLoader.All() {
+		skillDirs = append(skillDirs, lp.SkillDirs()...)
+	}
+	skillLoader := skills.New(workDir, skillDirs, log)
 	if errs := skillLoader.Scan(); len(errs) > 0 {
 		for _, e := range errs {
 			log.Warn("skill load warning", zap.Error(e))
@@ -387,14 +401,6 @@ func run() error {
 	}
 	if skillLoader.Count() > 0 {
 		log.Info("agent skills loaded", zap.Int("count", skillLoader.Count()))
-	}
-
-	// ── Plugin Loader ─────────────────────────────────────────────────────────
-	// Scans plugin_dirs for plugin.yaml manifests; loads Python tool libraries.
-	// Missing dirs are silently skipped; malformed plugins are warned and skipped.
-	pluginLoader := plugins.New(cfg.PluginDirs, log)
-	if pluginLoader.Count() > 0 {
-		log.Info("plugins loaded", zap.Int("count", pluginLoader.Count()))
 	}
 
 	// ── Event Hub (GUI real-time stream + action-log persistence) ─────────────
@@ -711,12 +717,61 @@ func run() error {
 		}
 	}
 
+	// ── Credential Vault ──────────────────────────────────────────────────────
+	// Created before the channel registry so plugin sidecar channels (E6/E7)
+	// can resolve their delegated credentials at spawn.
+	var credVault credentials.Vault
+	localKMS, kmsErr := credentials.NewLocalKMS()
+	if kmsErr != nil {
+		log.Warn("credential vault KMS init failed, vault disabled", zap.Error(kmsErr))
+	} else {
+		vaultPath := filepath.Join(home, ".soulacy", "credentials.db")
+		if cv, cvErr := credentials.NewSQLiteVault(vaultPath, localKMS); cvErr != nil {
+			log.Warn("credential vault unavailable", zap.String("path", vaultPath), zap.Error(cvErr))
+		} else {
+			defer cv.Close()
+			credVault = cv
+			log.Info("credential vault ready", zap.String("path", vaultPath))
+		}
+	}
+
 	// ── Channel Registry ─────────────────────────────────────────────────────
 	chanReg := channels.NewRegistry(512)
 	chanReg.SetLogger(log)
 	sched.SetChannelRegistry(chanReg)
 	httpAdapter := httpchan.New()
 	chanReg.Register(httpAdapter)
+
+	// ── Plugin manifest-v2 contributions (E7) ─────────────────────────────────
+	// Sidecar channels become supervised external adapters (started by
+	// StartAll below); OpenAI-compatible providers join the LLM router.
+	// Best-effort: a broken plugin contribution logs a warning, never aborts.
+	if pluginLoader.Count() > 0 {
+		wireSandboxSelf := ""
+		wireSandboxLimits := sandbox.Limits{}
+		if sbx := cfg.Runtime.Sandbox; sbx.Enabled {
+			if selfPath, e := os.Executable(); e == nil {
+				wireSandboxSelf = selfPath
+				wireSandboxLimits = sandbox.Limits{
+					Enabled:    true,
+					CPUSeconds: sbx.CPUSeconds,
+					MemoryMB:   sbx.MemoryMB,
+					OpenFiles:  sbx.OpenFiles,
+					FileSizeMB: sbx.FileSizeMB,
+				}
+			}
+		}
+		for _, werr := range plugins.Wire(ctx, pluginLoader, plugins.WireDeps{
+			Channels:      chanReg,
+			LLM:           llmRouter,
+			Vault:         credVault,
+			Log:           log,
+			SandboxSelf:   wireSandboxSelf,
+			SandboxLimits: wireSandboxLimits,
+		}) {
+			log.Warn("plugin contribution skipped", zap.Error(werr))
+		}
+	}
 
 	// Start optional channel adapters based on config
 	chanCfg := cfg.Channels
@@ -1055,22 +1110,6 @@ func run() error {
 		log.Info("RBAC store ready", zap.String("path", rbacDBPath))
 	}
 	rbacManager := rbac.NewManager(rbacStore, log)
-
-	// ── Credential Vault ──────────────────────────────────────────────────────
-	var credVault credentials.Vault
-	localKMS, kmsErr := credentials.NewLocalKMS()
-	if kmsErr != nil {
-		log.Warn("credential vault KMS init failed, vault disabled", zap.Error(kmsErr))
-	} else {
-		vaultPath := filepath.Join(home, ".soulacy", "credentials.db")
-		if cv, cvErr := credentials.NewSQLiteVault(vaultPath, localKMS); cvErr != nil {
-			log.Warn("credential vault unavailable", zap.String("path", vaultPath), zap.Error(cvErr))
-		} else {
-			defer cv.Close()
-			credVault = cv
-			log.Info("credential vault ready", zap.String("path", vaultPath))
-		}
-	}
 
 	// ── Workflow Checkpoint Store (E5) ────────────────────────────────────────
 	checkpointPath := filepath.Join(home, ".soulacy", "checkpoints.db")

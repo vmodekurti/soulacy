@@ -4,19 +4,47 @@
 // and optional Go binary or Python package.
 package plugin
 
-// Manifest is loaded from plugin.yaml at the root of a plugin directory.
-type Manifest struct {
-	ID          string   `yaml:"id"`
-	Name        string   `yaml:"name"`
-	Version     string   `yaml:"version"`
-	Description string   `yaml:"description"`
-	Author      string   `yaml:"author"`
-	License     string   `yaml:"license"`
+import (
+	"fmt"
 
-	// What this plugin contributes
-	Channels  []string `yaml:"channels,omitempty"`  // channel adapter IDs
-	Providers []string `yaml:"providers,omitempty"` // LLM provider IDs
-	Tools     []string `yaml:"tools,omitempty"`     // tool library IDs
+	"gopkg.in/yaml.v3"
+)
+
+// Manifest is loaded from plugin.yaml at the root of a plugin directory.
+//
+// Two schema versions exist (see docs/EXTENSIBILITY.md §5.5):
+//
+//   - v1 (manifest_schema absent, 0, or 1): channels/providers are plain
+//     string ID lists (informational), tools are Python tool libraries.
+//   - v2 (manifest_schema: 2): channels declare runnable sidecars,
+//     providers declare OpenAI-compatible endpoints, plus skills
+//     directories, GUI mounts, credentials, and permissions.
+type Manifest struct {
+	ID          string `yaml:"id"`
+	Name        string `yaml:"name"`
+	Version     string `yaml:"version"`
+	Description string `yaml:"description"`
+	Author      string `yaml:"author"`
+	License     string `yaml:"license"`
+
+	// ManifestSchema selects the manifest grammar. 0/1 = legacy v1; 2 = v2.
+	// Loaders must warn-and-skip plugins with schemas they don't know.
+	ManifestSchema int `yaml:"manifest_schema,omitempty"`
+
+	// What this plugin contributes. ChannelEntry/ProviderEntry parse both
+	// the v1 string form ("telegram") and the v2 map form (id + sidecar /
+	// openai_compatible).
+	Channels  []ChannelEntry  `yaml:"channels,omitempty"`
+	Providers []ProviderEntry `yaml:"providers,omitempty"`
+	Tools     []string        `yaml:"tools,omitempty"` // Python tool library IDs
+
+	// Skills lists directories (relative to the plugin root) of agent
+	// skills to add to the skill loader's search path (v2).
+	Skills []string `yaml:"skills,omitempty"`
+
+	// GUI declares a static UI mount rendered by the shell in a sandboxed
+	// iframe (v2; serving lands with plugin tokens, E8).
+	GUI *GUISpec `yaml:"gui,omitempty"`
 
 	// Python package to install alongside this plugin
 	PythonPackage string `yaml:"python_package,omitempty"`
@@ -49,6 +77,86 @@ type Manifest struct {
 type CredentialRef struct {
 	Key  string `yaml:"key" json:"key"`
 	From string `yaml:"from" json:"from"`
+}
+
+// ---------------------------------------------------------------------------
+// Manifest v2 contribution types
+// ---------------------------------------------------------------------------
+
+// ChannelEntry is one entry under `channels:`. It accepts the legacy v1
+// scalar form (just an adapter ID string) and the v2 map form declaring a
+// runnable sidecar (External Channel Protocol,
+// docs/EXTERNAL_CHANNEL_PROTOCOL.md).
+type ChannelEntry struct {
+	ID      string       `yaml:"id" json:"id"`
+	AgentID string       `yaml:"agent_id,omitempty" json:"agent_id,omitempty"`
+	Sidecar *SidecarSpec `yaml:"sidecar,omitempty" json:"sidecar,omitempty"`
+}
+
+// UnmarshalYAML accepts `- telegram` (v1) and `- {id: …, sidecar: …}` (v2).
+func (c *ChannelEntry) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		c.ID = node.Value
+		return nil
+	}
+	type raw ChannelEntry // avoid recursion
+	var r raw
+	if err := node.Decode(&r); err != nil {
+		return fmt.Errorf("channel entry: %w", err)
+	}
+	*c = ChannelEntry(r)
+	return nil
+}
+
+// SidecarSpec is the subprocess implementing an external channel.
+type SidecarSpec struct {
+	Command string   `yaml:"command" json:"command"`
+	Args    []string `yaml:"args,omitempty" json:"args,omitempty"`
+}
+
+// ProviderEntry is one entry under `providers:`. Scalar form (v1) names a
+// provider ID; map form (v2) declares an OpenAI-compatible endpoint that the
+// host wraps with its existing provider implementation.
+type ProviderEntry struct {
+	ID               string                `yaml:"id" json:"id"`
+	OpenAICompatible *OpenAICompatibleSpec `yaml:"openai_compatible,omitempty" json:"openai_compatible,omitempty"`
+}
+
+// UnmarshalYAML accepts `- ollama` (v1) and `- {id: …, openai_compatible: …}` (v2).
+func (p *ProviderEntry) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		p.ID = node.Value
+		return nil
+	}
+	type raw ProviderEntry
+	var r raw
+	if err := node.Decode(&r); err != nil {
+		return fmt.Errorf("provider entry: %w", err)
+	}
+	*p = ProviderEntry(r)
+	return nil
+}
+
+// OpenAICompatibleSpec points at any OpenAI-compatible inference endpoint.
+// APIKeyEnv names an environment variable of the HOST process holding the
+// key (optional for keyless local servers).
+type OpenAICompatibleSpec struct {
+	BaseURL   string `yaml:"base_url" json:"base_url"`
+	APIKeyEnv string `yaml:"api_key_env,omitempty" json:"api_key_env,omitempty"`
+	Model     string `yaml:"model,omitempty" json:"model,omitempty"`
+}
+
+// GUISpec declares a plugin UI mount (v2). Static is a directory relative to
+// the plugin root; Nav describes the shell navigation entry.
+type GUISpec struct {
+	Nav    NavSpec `yaml:"nav" json:"nav"`
+	Static string  `yaml:"static" json:"static"`
+}
+
+// NavSpec is the navigation entry for a plugin GUI mount.
+type NavSpec struct {
+	Label string `yaml:"label" json:"label"`
+	Icon  string `yaml:"icon,omitempty" json:"icon,omitempty"`
 }
 
 // Permission is one capability grant requested in plugin.yaml.

@@ -106,6 +106,21 @@ func (l *Loader) loadPlugin(dir string) error {
 		return fmt.Errorf("manifest missing required field 'id'")
 	}
 
+	// Schema gate (Story E7). Unknown future schemas are skipped outright;
+	// v1 manifests keep loading but any v2-only declarations are ignored
+	// with a warning; v2 manifests get full contribution validation.
+	switch {
+	case m.ManifestSchema > SupportedManifestSchema:
+		return fmt.Errorf("manifest_schema %d is newer than supported (%d); upgrade soulacy or pin an older plugin version",
+			m.ManifestSchema, SupportedManifestSchema)
+	case m.ManifestSchema == 2:
+		if err := validateManifestV2(m, dir); err != nil {
+			return fmt.Errorf("manifest_schema 2 validation: %w", err)
+		}
+	default: // v1 (absent, 0, or 1)
+		warnSkippedV2Contributions(m, l.log)
+	}
+
 	// Validate declared capabilities (Story E5). Plugins are default-deny
 	// principals; a manifest asking for unknown capabilities or mismatched
 	// scopes is refused outright rather than silently narrowed.

@@ -26,9 +26,42 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **Next up:
-  E7 (plugin manifest v2, milestone M3).**
+  E8 (plugin GUI mounts + scoped plugin tokens, milestone M3).**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between E-stories; keep this handoff updated.**
+
+**E7 (plugin manifest v2) — complete (TDD, all green, session 6).**
+- `pkg/plugin` — `ManifestSchema int`; `Channels` is now `[]ChannelEntry`
+  and `Providers` `[]ProviderEntry`, BOTH with custom UnmarshalYAML
+  accepting the v1 scalar form ("telegram") and the v2 map form
+  (id + sidecar{command,args} + agent_id / id + openai_compatible{base_url,
+  api_key_env,model}); `Skills []string`; `GUI *GUISpec{Nav{label,icon},
+  Static}`. (No other code read the old []string fields.)
+- `internal/plugins/manifest2.go` — schema gate in loader: schema>2 =
+  warn-and-skip plugin; schema 2 = validateManifestV2 (channel needs
+  id+sidecar.command+agent_id, provider needs openai_compatible.base_url,
+  skills/gui dirs must exist, gui needs nav.label) — violations refuse the
+  plugin with precise errors; v1 = v2-only declarations warned+skipped but
+  plugin (and its tools) still loads. Accessors on LoadedPlugin:
+  `SidecarChannels()/OpenAIProviders()/SkillDirs()/GUIMount()` (all empty
+  for v1).
+- `internal/plugins/wire.go` — `Wire(ctx, loader, WireDeps{Channels, LLM,
+  Vault, Enforcer, Log, SandboxSelf/Limits, WatchInterval})`: per v2 plugin
+  registers the caps Set with the Enforcer; each sidecar channel becomes an
+  `external.Supervisor` (per-spawn credential env via Delegator,
+  WatchCredentials → sup.Restart on rotation, sandbox wrapper) registered
+  into the channel registry; providers wrap `llm.NewOpenAIProvider`
+  (api key read from host env per api_key_env). Best-effort: []error
+  returned, gateway logs and continues. `hostRegistry` implements the
+  long-declared pkg/plugin.Registry contract (tool-library registration
+  deferred to E9/E10 SDK).
+- `cmd/soulacy/main.go` — plugin loader moved BEFORE skill loader (plugin
+  SkillDirs feed skills.New); credential vault creation moved BEFORE the
+  channel registry; plugins.Wire called after chanReg + httpAdapter and
+  before chanReg.StartAll (so sidecar channels start with everything else).
+  GUI mounts parsed/validated only — serving + plugin tokens are E8.
+- Docs: `docs/PLUGIN_MANIFEST.md` (schema table, full v2 example, boot
+  flow, compat rules). Tests: 14 manifest2/wire tests. Suite green.
 
 **E6 (vault credential delegation) — complete (TDD, all green, session 6).**
 - `pkg/plugin` — `CredentialRef{Key,From}` + `Manifest.Credentials`.
