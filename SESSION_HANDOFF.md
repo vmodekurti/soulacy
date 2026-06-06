@@ -26,10 +26,35 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (Stories 10–11). Next up: M5 — Story 12 (schedule
-  reliability), then 13 → 14.**
+  (E3–E8). M4 COMPLETE (10–11). M5: Story 12 ✅ — next up: Story 13
+  (workboard artifact tracking), then 14.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**Story 12 (schedule reliability & missed runs) — complete (TDD, session 6).**
+- Audit verdict: the missed-run machinery from earlier sessions was sound
+  (latest-only selection, atomic tmp+rename state writes, TryStartRun
+  overlap guard). Hardening added on top:
+- `internal/scheduler/scheduler12_test.go` (10 new tests): multiple missed
+  fires → ONLY the latest runs (hourly cron, 4 missed); invalid/negative
+  missed_startup_window falls back to 24h default (doesn't disable
+  catch-up); disabled agents never catch up; CORRUPT state file degrades
+  to empty state (catch-up still fires, no crash); markScheduleCompleted
+  never regresses on out-of-order completions + zero time → now; full
+  restart sequence boot1-detect→complete→boot2-no-dup→boot3-next-day
+  (proves "no duplicate runs" across restarts); Entries() surfaces
+  catch-up settings. Package coverage 70→73.3%.
+- `ScheduleEntry` gained `catch_up`/`catch_up_window` JSON fields
+  (loader-sourced, "24h" default shown) — flows through the existing
+  /api/v1/schedule handler with no gateway change.
+- GUI: `lib/schedutils.js` (catchupLabel/catchupTitle + 5 vitest tests);
+  Schedule page "Missed runs" column (⟳ catch up · Nh window / — skip,
+  hover for full semantics) + explanatory copy under the Active schedules
+  table. Vitest 84/84 ✓, build ✓.
+- **Manual item left (needs real hosts):** service-restart smoke on
+  macOS launchd + Docker (Linux covered by the restart-sequence test
+  logic; the unit tests simulate restarts via fresh Scheduler instances
+  sharing the state file).
 
 **Story 11 (voice panel MVP) — complete (TDD, all green, session 6). M4 done.**
 - `internal/voice` (new pkg) — `OpenAIMinter` mints ephemeral Realtime

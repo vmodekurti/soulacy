@@ -581,11 +581,23 @@ func (s *Scheduler) Entries() []ScheduleEntry {
 	var entries []ScheduleEntry
 	for agentID, entryID := range s.entries {
 		e := s.cron.Entry(entryID)
-		entries = append(entries, ScheduleEntry{
+		se := ScheduleEntry{
 			AgentID: agentID,
 			Next:    e.Next,
 			Prev:    e.Prev,
-		})
+		}
+		// Surface missed-run catch-up settings (Story 12) so the Schedule
+		// GUI can explain restart behaviour per agent.
+		if s.loader != nil {
+			if def := s.loader.Get(agentID); def != nil && def.Schedule != nil && def.Schedule.RunMissedOnStartup {
+				se.CatchUp = true
+				se.CatchUpWindow = strings.TrimSpace(def.Schedule.MissedStartupWindow)
+				if se.CatchUpWindow == "" {
+					se.CatchUpWindow = "24h" // documented default
+				}
+			}
+		}
+		entries = append(entries, se)
 	}
 	for agentID := range s.oneshot {
 		entries = append(entries, ScheduleEntry{
@@ -602,4 +614,10 @@ type ScheduleEntry struct {
 	Type    string    `json:"type,omitempty"` // "cron" or "oneshot"
 	Next    time.Time `json:"next,omitempty"`
 	Prev    time.Time `json:"prev,omitempty"`
+
+	// CatchUp reports run_missed_on_startup; CatchUpWindow is the
+	// missed_startup_window ("24h" default). Story 12: lets the GUI show
+	// which agents recover missed fires after a restart.
+	CatchUp       bool   `json:"catch_up,omitempty"`
+	CatchUpWindow string `json:"catch_up_window,omitempty"`
 }
