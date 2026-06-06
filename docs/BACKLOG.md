@@ -23,7 +23,7 @@ stabilized through real use.
 | ✅ | M0 Foundation | 1, 2, 3, 4, 5, 6 | done (sessions 4–5) |
 | ✅ | M1 Observability | **7 → E1 → E2** | done (session 5, branch feature/integrated-roadmap). Run metrics API+GUI; schema-v1 events on soulacy.events.>; signed webhooks w/ retries. See docs/EVENTS.md. |
 | ✅ | M2 Chat depth | **8 → 9** | done (session 5). Branching via /history/:id/fork + engine seeding; per-reply token deltas diffing session metrics. |
-| 2 | M3 Sidecar foundation | **E3 → E4 → E5 → E6 → E7 → E8** | E3 ✅ done (protocol v1 + generic adapter + conformance + reference sidecar; docs/EXTERNAL_CHANNEL_PROTOCOL.md). E4 next: supervision. |
+| 2 | M3 Sidecar foundation | **E3 → E4 → E5 → E6 → E7 → E8** | E3 ✅ E4 ✅ done (protocol v1 + generic adapter + conformance + supervised lifecycle w/ backoff + sandbox baseline). E5 next: plugin principals. |
 | 4 | M4 Voice | **10 → 11** | Story 10's spike must evaluate the External Channel Protocol/sidecar runtime (E3/E4) as the integration vehicle for OpenAI Realtime / Gemini Live; Story 11 should ship the voice bridge as a supervised sidecar with vault-delegated credentials (E6) rather than baking SDKs into the binary. |
 | 5 | M5 Reliability & workboard depth | **12 → 13 → 14** | Story 12 reuses the duplicate-run guard pattern from Story 6; Story 13's artifacts attach to workboard runs and emit `run.artifact` events through E1 so observers see outputs; Story 14 events likewise. |
 | 6 | M6 SDK & distribution | **E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13** | structural investment, done once protocols are proven by M3/M4 consumers. E15 (pluggable reasoning) and E16 (plugin migrations) build directly on E9's SDK extraction; E17 (dynamic plugin config) feeds E13's install UX. |

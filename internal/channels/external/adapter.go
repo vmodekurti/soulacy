@@ -349,6 +349,14 @@ func (a *Adapter) Stop() error {
 	return err
 }
 
+// Done returns a channel closed when the sidecar process exits. Nil before
+// Start. Used by the supervisor (E4) to drive restarts.
+func (a *Adapter) Done() <-chan struct{} {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.exited
+}
+
 func (a *Adapter) Status() channels.AdapterStatus {
 	a.mu.Lock()
 	defer a.mu.Unlock()
