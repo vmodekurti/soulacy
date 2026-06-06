@@ -1,158 +1,361 @@
 # SOUL.yaml Reference
 
-Every agent is defined by a `*.soul.yaml` file in your agents directory. This page documents every field.
+Every Soulacy agent is defined by one `SOUL.yaml` file under an agent directory,
+normally `<agent_dir>/<agent_id>/SOUL.yaml`. The schema below reflects
+`pkg/agent/types.go`, which is the source of truth used by the loader, API, GUI,
+and validator.
 
-## Complete schema
+## Minimal Agent
 
 ```yaml
-# ── Identity ──────────────────────────────────────────────────
-name: my-agent                # required; used as the agent ID in URLs and logs
-description: "What this agent does"
-version: "1.0.0"              # optional; for marketplace/registry
+id: assistant
+name: Assistant
+description: General-purpose helper
 
-# ── Model ─────────────────────────────────────────────────────
-model: gpt-4o-mini            # required
-# Formats:
-#   gpt-4o-mini                 → uses default_provider
-#   anthropic/claude-3-5-haiku → explicit provider prefix
-#   ollama/llama3.2            → local Ollama model
-
-# ── Prompt ────────────────────────────────────────────────────
-system_prompt: |
-  You are a helpful assistant.
-
-# ── Tools ─────────────────────────────────────────────────────
-tools:
-  - web_search
-  - url_fetch
-  - calculator
-
-# Restrict external MCP tools. If both fields are absent, legacy behavior
-# allows every connected MCP server. If either field is present, MCP is
-# deny-by-default and only matching entries are allowed.
-mcp_servers:
-  - rocketmoney
-mcp_tools:
-  - mcp__rocketmoney__get_transactions
-
-# ── Token budget ──────────────────────────────────────────────
-token_budget:
-  max_input_tokens: 32000     # max context sent to LLM
-  max_output_tokens: 1024     # max tokens in response
-
-# ── Session / history ─────────────────────────────────────────
-session:
-  history_turns: 20           # prior turns to include in context
-
-# ── Channels ──────────────────────────────────────────────────
+trigger: channel
 channels:
   - http
-  - telegram
-  - slack
-  - discord
-  - whatsapp
 
-# ── Workflow (optional) ───────────────────────────────────────
-workflow:
-  steps:
-    - id: gather
-      agent: researcher
-      input:
-        query: "{{input.message}}"
-    - id: write
-      agent: writer
-      input:
-        research: "{{steps.gather.output}}"
-        topic: "{{input.message}}"
-      depends_on: [gather]
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  temperature: 0.2
 
-# ── Capabilities ──────────────────────────────────────────────
-capabilities:
-  - web_search
-  - code_execution
+system_prompt: |
+  You are concise, helpful, and careful.
 
-# ── Metadata ──────────────────────────────────────────────────
-tags:
-  - productivity
-  - research
-author: "Your Name"
+max_turns: 6
+enabled: true
 ```
 
----
+`id` is the stable runtime identifier. It is used in URLs, channel mappings,
+logs, peer-agent tool names, and the agent directory name. `name` is display
+text.
 
-## Field reference
-
-### `name` (required)
-
-Unique identifier for the agent. Used by `/api/v1/chat` as `agent_id`, by channel mappings in `config.yaml`, and in log output. Must match `[a-z0-9-]+`.
-
-### `model` (required)
-
-LLM model to use. Use a bare name for the default provider, or prefix with `provider/` to select a specific one.
+## Complete Example
 
 ```yaml
-model: gpt-4o-mini                              # openai (default)
-model: anthropic/claude-3-5-haiku-20241022      # anthropic
-model: ollama/llama3.2                          # ollama (local)
-model: together/meta-llama/Meta-Llama-3.1-70B  # together
-model: qwen/qwen-max                            # qwen
+id: research-writer
+name: Research Writer
+description: Researches current topics, searches local knowledge, and writes a brief.
+version: "1.0.0"
+tags: [research, writing]
+labels:
+  owner: ops
+
+trigger: channel
+channels: [http, telegram]
+
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  temperature: 0.2
+  max_tokens: 2048
+  allowed_providers: [anthropic]
+  tool_choice: auto
+  output_schema:
+    type: object
+    properties:
+      summary: { type: string }
+      sources:
+        type: array
+        items: { type: string }
+    required: [summary, sources]
+
+system_prompt: |
+  Produce a short brief. Cite source filenames or URLs when available.
+
+tools:
+  - name: summarize_csv
+    description: Summarize a CSV file and return compact JSON.
+    python_file: tools/summarize_csv.py
+    timeout: 2m
+    parameters:
+      type: object
+      properties:
+        path: { type: string }
+      required: [path]
+
+builtins:
+  - web_search
+  - kb_search
+
+knowledge:
+  - company-docs
+
+skills:
+  - csv-analysis
+
+mcp_servers:
+  - github
+mcp_tools:
+  - mcp__github__search_repositories
+
+agents:
+  - critic
+
+system_tools: false
+confirm_tools:
+  - write_file
+  - shell_exec
+
+memory:
+  read_scopes: [agent, session]
+  write_scopes: [agent]
+  max_tokens: 2000
+
+reasoning:
+  strategy: react
+  max_steps: 6
+  step_timeout: 30s
+  total_timeout: 3m
+
+brain_memory:
+  episodic:
+    enabled: true
+    max_inject: 5
+  semantic:
+    enabled: true
+    max_inject: 5
+  procedural:
+    enabled: true
+    auto_update: false
+
+schedule:
+  cron: "0 8 * * *"
+  run_missed_on_startup: true
+  missed_startup_window: 24h
+  output:
+    channel: telegram
+    to: "123456789"
+    bot_name: "Daily Bot"
+    template: "{reply}"
+
+notify_on_failure:
+  channel: telegram
+  to: "123456789"
+  include_error: true
+
+security:
+  passphrase: "change-me"
+  passphrase_prompt: "Please provide the access passphrase."
+
+max_turns: 10
+stream_reply: true
+enabled: true
+run_timeout: 10m
 ```
 
-### `system_prompt`
+## Identity
 
-The agent's base instructions. Supports multi-line YAML block syntax (`|`). The system prompt is prepended to every conversation context.
+| Field | Type | Notes |
+|-------|------|-------|
+| `id` | string | Required stable runtime ID. Avoid whitespace and path separators. |
+| `name` | string | Human-readable display name. |
+| `description` | string | Also shown to other agents when this agent is exposed as a peer tool. |
+| `version` | string | Optional package/marketplace metadata. |
+| `tags` | string list | Optional filtering metadata. |
+| `labels` | map | Optional operator metadata. |
 
-### `tools`
+## Trigger and Channels
 
-List of built-in tools the agent can invoke. See [Built-in Tools](tools.md) for the full list.
+`trigger` controls how the agent starts:
 
-### `mcp_servers` / `mcp_tools`
+| Trigger | Meaning |
+|---------|---------|
+| `channel` | Inbound channel traffic such as HTTP, Telegram, Slack, Discord, or WhatsApp. |
+| `cron` | Run on a cron schedule. Requires `schedule.cron`. |
+| `oneshot` | Run once at `schedule.at`. |
+| `webhook` | Reserved for webhook-triggered definitions. |
+| `internal` | Callable by peer agents, not normally user-facing. |
 
-Restricts tools from configured MCP servers. If both fields are absent, the agent sees every connected MCP tool for backwards compatibility. Once either field is present, MCP is deny-by-default.
+`channels` declares the channel IDs this agent is intended to serve. The actual
+platform credentials and inbound routing live in `config.yaml`.
+
+## Schedule
+
+Cron agents can optionally catch up after host downtime. When
+`schedule.run_missed_on_startup` is `true`, Soulacy records completed cron runs
+in the scheduler state file and, on startup, runs the latest missed fire if it
+falls within `schedule.missed_startup_window` (default `24h`). Only one missed
+fire is replayed per startup, so a long outage does not flood downstream
+channels.
+
+```yaml
+trigger: cron
+schedule:
+  cron: "0 8 * * *"
+  run_missed_on_startup: true
+  missed_startup_window: 24h
+```
+
+## LLM
+
+`llm.provider` and `llm.model` select the model. Empty `provider` falls back to
+`llm.default_provider` in `config.yaml`.
+
+Useful fields:
+
+| Field | Notes |
+|-------|-------|
+| `temperature` | Sampling temperature. |
+| `max_tokens` | Output token cap. |
+| `base_url` | Per-agent override for OpenAI-compatible endpoints. |
+| `allowed_providers` | Optional guard; if set, the engine refuses to run on any provider outside this list. |
+| `tool_choice` | First-turn tool policy: `auto`, `none`, `required`, or a specific tool name such as `agent__researcher`. |
+| `output_schema` | JSON Schema enforced on the final reply with one repair attempt. |
+
+## Tools
+
+Agent-local tools are declared as objects with JSON Schema parameters and either
+`python_file` or `inline` implementation.
+
+```yaml
+tools:
+  - name: get_weather
+    description: Fetch weather for a city.
+    python_file: tools/get_weather.py
+    parameters:
+      type: object
+      properties:
+        location: { type: string }
+      required: [location]
+```
+
+`timeout` uses Go duration syntax such as `30s`, `2m`, or `1h`. Relative
+`python_file` paths resolve from the `SOUL.yaml` directory.
+
+## Built-ins
+
+`builtins` controls Go-native tools offered by the engine.
+
+| Value | Meaning |
+|-------|---------|
+| Field absent | Default gating. Tools appear when their prerequisites are met. |
+| `builtins: []` | No built-ins. Useful for pure peer-agent orchestrators. |
+| `builtins: ["*"]` or `["all"]` | Explicitly allow all gated built-ins. |
+| `builtins: [web_search, kb_search]` | Allow only the listed built-ins, still subject to their gates. |
+
+Common built-ins include:
+
+- `web_search` for Ollama Web Search API.
+- `kb_search` when `knowledge:` is non-empty.
+- `read_skill` and `read_skill_file` when `skills:` is non-empty.
+- System tools such as `shell_exec`, `read_file`, and `write_file` only when
+  both gateway config and the agent opt in.
+
+## MCP Tools
+
+Connected MCP tools are namespaced as `mcp__<server>__<tool>`.
+
+If `mcp_servers` and `mcp_tools` are both absent, legacy behavior exposes all
+connected MCP tools. Once either field is present, MCP is deny-by-default and a
+tool must match one of the allowlists.
 
 ```yaml
 mcp_servers:
   - rocketmoney
-
 mcp_tools:
   - mcp__filesystem__read_file
 ```
 
-Use `mcp_servers: []` to explicitly expose no MCP tools. Use `["*"]` or `["all"]` to explicitly expose all MCP tools.
+Use an empty list to expose none, or `["*"]` / `["all"]` to expose all.
 
-### `token_budget`
+## Skills, Knowledge, and Peer Agents
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `max_input_tokens` | provider max | Maximum tokens in the context window sent to the LLM |
-| `max_output_tokens` | provider max | Maximum tokens the LLM may generate |
+`skills` exposes Agent Skills by name. `["*"]` exposes all installed skills.
 
-### `session.history_turns`
+`knowledge` exposes named knowledge bases through `kb_search`.
 
-Number of prior conversation turns to include in context. Default: `20`. Set to `0` to disable memory (stateless agent).
+`agents` exposes peer agents as callable tools named `agent__<id>`. Self-calls
+are dropped, and recursive peer calls are depth-limited.
 
-### `channels`
+## System Tools and Confirmation
 
-Which messaging channels this agent is intended to be accessible on. Options include `http`, `telegram`, `slack`, `discord`, and `whatsapp`.
+`system_tools: true` opts the agent into OS-level built-ins, but those tools are
+only available when `runtime.allow_system_tools: true` is also set in
+`config.yaml`.
 
-This field does not create platform credentials or choose the default inbound route. The runtime route is configured under `channels.<type>.agent_id` or `channels.<type>.bots[].agent_id` in `config.yaml`.
+Use `confirm_tools` to require operator approval before sensitive built-ins run:
 
-```yaml title="config.yaml"
-channels:
-  telegram:
-    enabled: true
-    token: "..."
-    agent_id: assistant
+```yaml
+system_tools: true
+confirm_tools:
+  - shell_exec
+  - write_file
 ```
 
-### `workflow`
+`confirm_tools: ["*"]` requires confirmation for every built-in tool call.
 
-Defines a multi-step DAG pipeline. See [Workflow DAGs](workflow.md).
+## Memory and Reasoning
 
-### `capabilities`
+`memory` controls classic session/cross-session memory injection:
 
-Declares what this agent can do — used by the capability gap detector to surface missing configuration at startup.
+```yaml
+memory:
+  read_scopes: [agent, session]
+  write_scopes: [agent]
+  max_tokens: 2000
+```
 
-### `tags` / `author`
+`reasoning` enables the newer multi-step loop. Supported strategies are
+`react`, `plan_execute`, and `auto`.
 
-Metadata for the agent marketplace. Optional.
+`brain_memory` controls the episodic, semantic, and procedural memory layers
+when a composite brain-memory store is wired into the gateway.
+
+## Schedule and Notifications
+
+Cron and one-shot agents use `schedule`. By default scheduled replies are only
+logged. Add `schedule.output` to publish successful results through a channel:
+
+```yaml
+trigger: cron
+schedule:
+  cron: "0 8 * * *"
+  output:
+    channel: telegram-financial-agent
+    to: "123456789"
+    bot_name: "Finance Bot"
+    template: "{reply}"
+```
+
+Use `notify_on_failure` for errors, especially for cron agents:
+
+```yaml
+notify_on_failure:
+  channel: telegram
+  to: "123456789"
+  include_error: true
+```
+
+## Workflow
+
+`workflow` defines a checkpointed sequence of tool steps. When present, the
+runtime delegates to the workflow executor instead of the free-form agent loop.
+
+```yaml
+workflow:
+  steps:
+    - id: gather
+      tool: web_search
+      input: '{"query":"{{.trigger}}"}'
+      output: search
+      on_error: retry
+    - id: write
+      tool: summarize_csv
+      input: '{"text":{{.search}}}'
+      output: brief
+```
+
+Each step supports `id`, `tool`, `prompt`, `if`, `on_error`, `input`, and
+`output`.
+
+## Validation
+
+Validate before deploying:
+
+```bash
+sy agent validate path/to/SOUL.yaml
+sy agent validate path/to/SOUL.yaml --json
+```

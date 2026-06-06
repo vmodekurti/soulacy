@@ -1,125 +1,106 @@
-# Workflow DAGs
+# Workflow Steps
 
-Workflows let you chain multiple agents into multi-step pipelines with typed inputs, outputs, and dependency resolution.
+`workflow` turns an agent into a checkpointed sequence of tool calls. When an
+agent declares `workflow:`, the runtime delegates to the workflow executor
+instead of the free-form LLM loop.
 
-## Concepts
+Current workflows are sequential tool pipelines with checkpoint persistence.
+They are useful for repeatable jobs where you want restart/resume behavior and
+clear step status.
 
-- **Step** — a single agent invocation within the workflow
-- **DAG** — directed acyclic graph of steps; Soulacy resolves the execution order automatically
-- **Template variables** — `{{input.*}}` and `{{steps.id.output}}` for passing data between steps
+## Basic Example
 
-## Basic example
-
-```yaml title="agents/report-writer.soul.yaml"
-name: report-writer
-description: Research a topic and produce a polished report
-model: gpt-4o
-system_prompt: Orchestrate the research and writing pipeline.
-channels:
-  - http
+```yaml title="agents/report-writer/SOUL.yaml"
+id: report-writer
+name: Report Writer
+description: Run a repeatable reporting pipeline
+trigger: channel
+channels: [http]
+llm:
+  provider: openai
+  model: gpt-4o
+system_prompt: Run the reporting workflow.
 
 workflow:
   steps:
-    - id: research
-      agent: researcher
-      input:
-        query: "{{input.message}}"
+    - id: search
+      tool: web_search
+      input: '{"query":"{{.trigger}}"}'
+      output: search_results
+      on_error: retry
 
-    - id: outline
-      agent: outliner
-      input:
-        research_notes: "{{steps.research.output}}"
-      depends_on: [research]
+    - id: summarize
+      tool: summarize_report
+      input: '{"search_results":{{.search_results}}}'
+      output: report
+      on_error: abort
 
-    - id: write
-      agent: writer
-      input:
-        outline: "{{steps.outline.output}}"
-        research: "{{steps.research.output}}"
-      depends_on: [outline]
+enabled: true
 ```
 
-When a user messages `report-writer`, the pipeline runs:
+## Step Fields
 
-1. `researcher` runs with the user's message as `query`
-2. `outliner` runs once `researcher` completes
-3. `writer` runs once `outliner` completes, receiving both the outline and raw research
+| Field | Description |
+|-------|-------------|
+| `id` | Unique step ID within the workflow. Used as the checkpoint key. |
+| `tool` | Tool name to invoke. |
+| `prompt` | Optional prompt text for future LLM-assisted step behavior. |
+| `if` | Go template condition. Empty, `false`, or `0` skips the step. |
+| `on_error` | `abort` (default), `retry`, or `skip`. |
+| `input` | Go template that renders the tool input string. |
+| `output` | Variable name used to store this step's parsed JSON result. |
 
-The final output is the result of the last step (`write`).
+## Template Variables
 
-## Parallel steps
-
-Steps without `depends_on` (or with the same dependencies) run in parallel:
-
-```yaml
-workflow:
-  steps:
-    - id: search_web
-      agent: web-researcher
-      input:
-        query: "{{input.message}}"
-
-    - id: search_docs
-      agent: doc-searcher
-      input:
-        query: "{{input.message}}"
-
-    # Both search_web and search_docs run in parallel.
-    # synthesizer waits for both.
-    - id: synthesize
-      agent: synthesizer
-      input:
-        web_results: "{{steps.search_web.output}}"
-        doc_results: "{{steps.search_docs.output}}"
-      depends_on: [search_web, search_docs]
-```
-
-## Template variables
+The workflow starts with:
 
 | Variable | Description |
 |----------|-------------|
-| `{{input.message}}` | The original user message |
-| `{{input.session_id}}` | The session ID |
-| `{{input.agent_id}}` | The workflow agent's ID |
-| `{{steps.<id>.output}}` | The output of a completed step |
+| `.trigger` | Flattened inbound message text/parts. |
 
-## Error handling
+When a step has `output: some_name`, its result becomes available as
+`.some_name` to later steps.
 
-By default, if any step fails, the workflow fails and returns an error. Failed steps are pushed to the dead-letter queue for inspection.
+Example:
 
 ```yaml
 workflow:
   steps:
-    - id: risky-step
-      agent: external-api-caller
-      input:
-        url: "{{input.message}}"
-      retry:
-        max_attempts: 3
-        backoff: exponential
-        initial_delay: 1s
+    - id: gather
+      tool: web_search
+      input: '{"query":"{{.trigger}}"}'
+      output: search
+
+    - id: write
+      tool: write_brief
+      input: '{"topic":"{{.trigger}}","search":{{.search}}}'
+      output: brief
 ```
 
-## Retry policy
+## Error Handling
 
-```yaml
-retry:
-  max_attempts: 3          # default: 1
-  backoff: exponential     # linear | exponential | fixed
-  initial_delay: 500ms
-  max_delay: 30s
-```
+`on_error` controls step failure:
 
-## Step timeout
+| Value | Behavior |
+|-------|----------|
+| `abort` or empty | Mark the step failed and stop the workflow. |
+| `retry` | Retry the tool once, then abort if it still fails. |
+| `skip` | Mark the step completed with no state and continue. |
 
-```yaml
-- id: slow-step
-  agent: data-processor
-  input:
-    data: "{{input.message}}"
-  timeout: 60s
-```
+## Checkpoints
 
-## Viewing workflow runs
+After each step, Soulacy stores the step status and output. If a workflow run is
+resumed with the same run ID, completed steps are skipped and their saved output
+is restored into the template variable map.
 
-Workflow execution produces OTEL traces — each step appears as a child span. View in Jaeger or any OTLP-compatible backend.
+## When To Use Workflows
+
+Use workflows for deterministic operational jobs:
+
+- scheduled reports,
+- ingest-and-summarize tasks,
+- multi-step sync jobs,
+- pipelines where retry/skip behavior matters.
+
+Use peer agents and normal tool calling when the model should decide the plan at
+runtime.

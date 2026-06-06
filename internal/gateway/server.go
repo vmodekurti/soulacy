@@ -63,6 +63,7 @@ import (
 	"github.com/soulacy/soulacy/internal/session"
 	"github.com/soulacy/soulacy/internal/storage"
 	"github.com/soulacy/soulacy/internal/webui"
+	"github.com/soulacy/soulacy/internal/workboard"
 
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"strconv"
@@ -103,6 +104,11 @@ type Server struct {
 	// Wired via SetCostStore after construction. When nil, the /api/v1/costs
 	// handlers return 503.
 	costStore *costs.Store
+
+	// workboardStore is the optional Kanban task store (Story 5). Wired via
+	// SetWorkboardStore after construction. When nil, /api/v1/workboard
+	// handlers return 503.
+	workboardStore *workboard.Store
 }
 
 // New creates and configures the Fiber server but does not start listening.
@@ -182,6 +188,13 @@ func (s *Server) SetBuilderRegistry(r *builder.Registry) {
 // 503.
 func (s *Server) SetCostStore(cs *costs.Store) {
 	s.costStore = cs
+}
+
+// SetWorkboardStore wires a workboard task store into the server (Story 5).
+// Must be called before the first request is served. When nil,
+// /api/v1/workboard handlers return 503.
+func (s *Server) SetWorkboardStore(ws *workboard.Store) {
+	s.workboardStore = ws
 }
 
 // SetRateLimiter wires a rate-limit Manager into the server (Task #33). Must
@@ -508,6 +521,7 @@ func (s *Server) buildApp() *fiber.App {
 	// Channels
 	api.Get("/channels", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleListChannels)
 	api.Patch("/channels/:id", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleUpdateChannel)
+	api.Post("/channels/whatsapp_web/pair", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleStartWhatsAppWebPairing)
 	api.Post("/channels/:id/enable", s.rbacMW(rbac.ResourceChannels, rbac.ActionEnable), s.handleEnableChannel)
 	api.Post("/channels/:id/disable", s.rbacMW(rbac.ResourceChannels, rbac.ActionEnable), s.handleDisableChannel)
 
@@ -518,9 +532,19 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/agents/:id/clone", s.rbacAgentMW(rbac.ActionWrite), s.handleCloneAgent)
 	api.Get("/agents/:id/actions", s.rbacAgentMW(rbac.ActionRead), s.handleAgentActions)
 
-	// Memory
+	// Session memory (existing)
 	api.Get("/memory/:agent_id", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleListMemory)
 	api.Delete("/memory/:agent_id/:session_id", s.rbacMW(rbac.ResourceMemory, rbac.ActionDelete), s.handleDeleteMemorySession)
+
+	// Brain memory — three-layer long-term agent memory (episodic / procedural / semantic)
+	api.Get("/brain-memory", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleBrainMemoryStats)
+	api.Get("/brain-memory/:agentID/episodic", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleGetEpisodic)
+	api.Post("/brain-memory/:agentID/episodic", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleWriteEpisodic)
+	api.Delete("/brain-memory/:agentID/episodic", s.rbacMW(rbac.ResourceMemory, rbac.ActionDelete), s.handleClearEpisodic)
+	api.Get("/brain-memory/:agentID/procedural", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleGetProcedural)
+	api.Put("/brain-memory/:agentID/procedural", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleUpdateProcedural)
+	api.Delete("/brain-memory/:agentID/procedural", s.rbacMW(rbac.ResourceMemory, rbac.ActionDelete), s.handleClearProcedural)
+	api.Post("/brain-memory/:agentID/context-preview", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleContextPreview)
 
 	// Providers
 	api.Get("/providers", s.rbacMW(rbac.ResourceProviders, rbac.ActionRead), s.handleListProviders)
@@ -609,6 +633,17 @@ func (s *Server) buildApp() *fiber.App {
 	// reads from s.costStore at request time so the nil guard works.
 	api.Get("/costs", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetCosts)
 	api.Get("/costs/:agent_id", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetAgentCosts)
+
+	// --- Workboard (Story 5) ---
+	// s.workboardStore is checked at request time so SetWorkboardStore() can
+	// be called after New() but before the server starts listening.
+	api.Get("/workboard/tasks", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleWorkboardList)
+	api.Post("/workboard/tasks", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleWorkboardCreate)
+	api.Get("/workboard/tasks/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleWorkboardGet)
+	api.Post("/workboard/tasks/:id/run", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleWorkboardRun)
+	api.Get("/workboard/tasks/:id/runs", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleWorkboardListRuns)
+	api.Patch("/workboard/tasks/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleWorkboardUpdate)
+	api.Delete("/workboard/tasks/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionDelete), s.handleWorkboardDelete)
 
 	// --- Credential Vault ---
 	// s.credVault is checked at request time so SetCredentialVault() can be

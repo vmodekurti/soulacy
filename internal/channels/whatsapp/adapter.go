@@ -9,8 +9,9 @@
 //  4. Subscribe to the "messages" webhook field.
 //
 // Message flow:
-//   Inbound: Meta POST → /channels/whatsapp/webhook → inbox → Engine.Handle → reply
-//   Outbound: Engine reply → Meta Graph API POST → user's WhatsApp
+//
+//	Inbound: Meta POST → /channels/whatsapp/webhook → inbox → Engine.Handle → reply
+//	Outbound: Engine reply → Meta Graph API POST → user's WhatsApp
 package whatsapp
 
 import (
@@ -52,11 +53,12 @@ type Adapter struct {
 	// backward compatibility with existing deployments). Once we're past
 	// the migration window the empty case should hard-fail.
 	// (PRODUCTION_AUDIT → CRITICAL/Security)
-	appSecret string
-	agentID   string
-	log       *zap.Logger
-	inbox     chan<- message.Message
-	client    *http.Client
+	appSecret  string
+	agentID    string
+	activation channels.ActivationPolicy
+	log        *zap.Logger
+	inbox      chan<- message.Message
+	client     *http.Client
 }
 
 // New creates a new WhatsApp adapter.
@@ -64,15 +66,22 @@ type Adapter struct {
 //   - accessToken:   permanent or temporary access token for the app
 //   - verifyToken:   arbitrary string you set in Meta Webhooks config
 //   - appSecret:     Meta App secret used to verify X-Hub-Signature-256.
-//                    Empty = unverified (logged loudly).
+//     Empty = unverified (logged loudly).
 //   - agentID:       Soulacy agent that handles WhatsApp messages
 func New(phoneNumberID, accessToken, verifyToken, appSecret, agentID string, log *zap.Logger) *Adapter {
+	return NewWithActivation(phoneNumberID, accessToken, verifyToken, appSecret, agentID, channels.ActivationPolicy{}, log)
+}
+
+// NewWithActivation creates a WhatsApp adapter with shared channel activation
+// guardrails.
+func NewWithActivation(phoneNumberID, accessToken, verifyToken, appSecret, agentID string, activation channels.ActivationPolicy, log *zap.Logger) *Adapter {
 	return &Adapter{
 		phoneNumberID: phoneNumberID,
 		accessToken:   accessToken,
 		verifyToken:   verifyToken,
 		appSecret:     appSecret,
 		agentID:       agentID,
+		activation:    activation,
 		log:           log,
 		client:        &http.Client{Timeout: 15 * time.Second},
 	}
@@ -115,7 +124,7 @@ func (a *Adapter) VerifySignature(headerValue string, rawBody []byte) bool {
 	return subtle.ConstantTimeCompare(got, want) == 1
 }
 
-func (a *Adapter) ID()   string { return "whatsapp" }
+func (a *Adapter) ID() string   { return "whatsapp" }
 func (a *Adapter) Name() string { return "WhatsApp (Meta Business Cloud)" }
 
 // Start wires up the shared inbox. WhatsApp is webhook-driven so there is no
@@ -220,6 +229,10 @@ func (a *Adapter) Dispatch(body []byte) {
 						break
 					}
 				}
+				text, ok := a.activation.Apply(wamsg.Text.Body, wamsg.From, wamsg.From, false)
+				if !ok {
+					continue
+				}
 
 				msg := message.Message{
 					ID:        wamsg.ID,
@@ -230,7 +243,7 @@ func (a *Adapter) Dispatch(body []byte) {
 					UserID:    wamsg.From,
 					Username:  username,
 					Role:      message.RoleUser,
-					Parts:     message.Text(wamsg.Text.Body),
+					Parts:     message.Text(text),
 					CreatedAt: time.Now().UTC(),
 				}
 

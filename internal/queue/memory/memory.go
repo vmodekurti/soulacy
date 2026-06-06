@@ -59,13 +59,12 @@ func newSubscriber(pattern, group string) *subscriber {
 	}
 }
 
-// stop closes quit and drains the channel so the dispatch goroutine exits.
+// stop closes quit so the dispatch goroutine exits after its current handler
+// returns. No drain is needed because send() uses a non-blocking select, so no
+// goroutine is ever blocked waiting to write to s.ch.
 func (s *subscriber) stop() {
 	s.once.Do(func() {
 		close(s.quit)
-		// drain to unblock any blocked sender
-		for range s.ch {
-		}
 	})
 }
 

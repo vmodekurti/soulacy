@@ -6,9 +6,19 @@ package runtime
 
 import (
 	"context"
+	"sort"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/soulacy/soulacy/internal/knowledge"
+	"github.com/soulacy/soulacy/internal/llm"
+	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/pkg/agent"
+	"github.com/soulacy/soulacy/pkg/message"
+	"github.com/soulacy/soulacy/pkg/skill"
+	"go.uber.org/zap"
 )
 
 // TestGetOrCreateSession_IsolatesByAgent guards against the session-bleed
@@ -273,5 +283,784 @@ func TestMCPToolAllowed(t *testing.T) {
 					tc.def, tc.fullName, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestAllToolSchemasBuiltinsGate(t *testing.T) {
+	none := []string{}
+	webOnly := []string{"web_search"}
+	all := []string{"*"}
+	knowledgeOnly := []string{"kb_search"}
+
+	cases := []struct {
+		name  string
+		def   *agent.Definition
+		want  []string
+		avoid []string
+	}{
+		{
+			name: "absent builtins uses default gates",
+			def:  &agent.Definition{ID: "default"},
+			want: []string{"web_search"},
+			avoid: []string{
+				"kb_search",
+				"read_skill",
+				"read_skill_file",
+			},
+		},
+		{
+			name:  "empty builtins disables every builtin",
+			def:   &agent.Definition{ID: "none", Builtins: &none, Knowledge: []string{"kb"}, Skills: []string{"csv"}},
+			avoid: []string{"web_search", "kb_search", "read_skill", "read_skill_file"},
+		},
+		{
+			name: "explicit builtin permits only that builtin",
+			def:  &agent.Definition{ID: "web", Builtins: &webOnly, Knowledge: []string{"kb"}, Skills: []string{"csv"}},
+			want: []string{"web_search"},
+			avoid: []string{
+				"kb_search",
+				"read_skill",
+				"read_skill_file",
+			},
+		},
+		{
+			name: "wildcard builtins still respect gates",
+			def:  &agent.Definition{ID: "all", Builtins: &all, Knowledge: []string{"kb"}, Skills: []string{"csv"}},
+			want: []string{"web_search", "kb_search", "read_skill", "read_skill_file"},
+		},
+		{
+			name:  "listing gated builtin without prerequisite does not expose it",
+			def:   &agent.Definition{ID: "nogate", Builtins: &knowledgeOnly},
+			avoid: []string{"kb_search", "web_search"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &Engine{
+				skillLoader: fakeSkillLoader{},
+				knowledge:   nonNilKnowledgeServiceForSchemaGate(),
+			}
+			e.builtins = e.buildBuiltins()
+
+			names := toolSchemaNameSet(e.allToolSchemas(tc.def, "http"))
+			for _, name := range tc.want {
+				if !names[name] {
+					t.Fatalf("expected %q in schemas; got %v", name, sortedSchemaNames(names))
+				}
+			}
+			for _, name := range tc.avoid {
+				if names[name] {
+					t.Fatalf("did not expect %q in schemas; got %v", name, sortedSchemaNames(names))
+				}
+			}
+		})
+	}
+}
+
+func TestAllToolSchemasSystemToolsRequireDoubleOptInAndHTTP(t *testing.T) {
+	cases := []struct {
+		name             string
+		allowSystemTools bool
+		defSystemTools   bool
+		channel          string
+		wantSystemTools  bool
+	}{
+		{
+			name:             "global and agent opt-in on http exposes system tools",
+			allowSystemTools: true,
+			defSystemTools:   true,
+			channel:          "http",
+			wantSystemTools:  true,
+		},
+		{
+			name:             "global off blocks agent opt-in",
+			allowSystemTools: false,
+			defSystemTools:   true,
+			channel:          "http",
+			wantSystemTools:  false,
+		},
+		{
+			name:             "agent off blocks global opt-in",
+			allowSystemTools: true,
+			defSystemTools:   false,
+			channel:          "http",
+			wantSystemTools:  false,
+		},
+		{
+			name:             "bot channel blocks both opt-ins",
+			allowSystemTools: true,
+			defSystemTools:   true,
+			channel:          "telegram",
+			wantSystemTools:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := &Engine{allowSystemTools: tc.allowSystemTools}
+			e.builtins = e.buildBuiltins()
+			names := toolSchemaNameSet(e.allToolSchemas(&agent.Definition{
+				ID:          "sys",
+				SystemTools: tc.defSystemTools,
+			}, tc.channel))
+
+			got := names["shell_exec"] && names["read_file"] && names["write_file"]
+			if got != tc.wantSystemTools {
+				t.Fatalf("system tool exposure = %v, want %v; schemas=%v",
+					got, tc.wantSystemTools, sortedSchemaNames(names))
+			}
+		})
+	}
+}
+
+func TestHandleReturnsFinalLLMResponse(t *testing.T) {
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID:           "assistant",
+		Name:         "Assistant",
+		Enabled:      true,
+		SystemPrompt: "Be helpful.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		Builtins:     strListPtr(),
+	})
+	provider.responses = []llm.CompletionResponse{{Content: "final answer"}}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("assistant", "session-1", "hello"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := flattenParts(reply.Parts); got != "final answer" {
+		t.Fatalf("reply = %q, want final answer", got)
+	}
+
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("provider calls = %d, want 1", len(reqs))
+	}
+	if len(reqs[0].Tools) != 0 {
+		t.Fatalf("tools = %#v, want none", reqs[0].Tools)
+	}
+	if reqs[0].Model != "fake-model" {
+		t.Fatalf("model = %q, want fake-model", reqs[0].Model)
+	}
+	if !chatMessagesContain(reqs[0].Messages, "user", "hello") {
+		t.Fatalf("messages missing user text: %#v", reqs[0].Messages)
+	}
+}
+
+func TestHandleExecutesToolThenSynthesizesFinalResponse(t *testing.T) {
+	var toolCalls int
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID:           "assistant",
+		Name:         "Assistant",
+		Enabled:      true,
+		SystemPrompt: "Use tools.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		Builtins:     strListPtr("lookup"),
+	})
+	e.builtins = []BuiltinTool{{
+		Name:        "lookup",
+		Description: "Looks up a value.",
+		Parameters:  map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			toolCalls++
+			if args["query"] != "soulacy" {
+				t.Fatalf("tool args = %#v", args)
+			}
+			return "lookup result", nil
+		},
+	}}
+	provider.responses = []llm.CompletionResponse{
+		{ToolCalls: []message.ToolCall{{ID: "call-1", Name: "lookup", Arguments: map[string]any{"query": "soulacy"}}}},
+		{Content: "final from lookup"},
+	}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("assistant", "session-1", "research soulacy"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := flattenParts(reply.Parts); got != "final from lookup" {
+		t.Fatalf("reply = %q, want final from lookup", got)
+	}
+	if toolCalls != 1 {
+		t.Fatalf("tool calls = %d, want 1", toolCalls)
+	}
+
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 2 {
+		t.Fatalf("provider calls = %d, want 2", len(reqs))
+	}
+	if !toolSchemasContain(reqs[0].Tools, "lookup") {
+		t.Fatalf("first request tools = %#v", reqs[0].Tools)
+	}
+	if !chatMessagesContain(reqs[1].Messages, "tool", "lookup result") {
+		t.Fatalf("second request missing tool result: %#v", reqs[1].Messages)
+	}
+}
+
+func TestHandleDuplicateToolCallRunsToolOnlyOnceThenSynthesizes(t *testing.T) {
+	var toolCalls int
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID:           "assistant",
+		Name:         "Assistant",
+		Enabled:      true,
+		SystemPrompt: "Use tools.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     4,
+		Builtins:     strListPtr("lookup"),
+	})
+	e.builtins = []BuiltinTool{{
+		Name:        "lookup",
+		Description: "Looks up a value.",
+		Parameters:  map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			toolCalls++
+			return "first result", nil
+		},
+	}}
+	duplicateCall := message.ToolCall{ID: "call-1", Name: "lookup", Arguments: map[string]any{"query": "same"}}
+	provider.responses = []llm.CompletionResponse{
+		{ToolCalls: []message.ToolCall{duplicateCall}},
+		{ToolCalls: []message.ToolCall{duplicateCall}},
+		{Content: "done after duplicate"},
+	}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("assistant", "session-1", "repeat"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := flattenParts(reply.Parts); got != "done after duplicate" {
+		t.Fatalf("reply = %q, want done after duplicate", got)
+	}
+	if toolCalls != 1 {
+		t.Fatalf("tool calls = %d, want duplicate guard to run tool once", toolCalls)
+	}
+
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 3 {
+		t.Fatalf("provider calls = %d, want 3", len(reqs))
+	}
+	if len(reqs[2].Tools) != 0 {
+		t.Fatalf("final synthesis tools = %#v, want none", reqs[2].Tools)
+	}
+	if !chatMessagesContain(reqs[2].Messages, "system", "Now write your final response") {
+		t.Fatalf("third request missing final synthesis prompt: %#v", reqs[2].Messages)
+	}
+}
+
+func TestHandleRetriesInvalidStructuredOutput(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"answer": map[string]any{"type": "string"},
+		},
+		"required": []any{"answer"},
+	}
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID:           "assistant",
+		Name:         "Assistant",
+		Enabled:      true,
+		SystemPrompt: "Return JSON.",
+		LLM: agent.LLMConfig{
+			Provider:     "test",
+			Model:        "fake-model",
+			OutputSchema: schema,
+		},
+		MaxTurns: 3,
+		Builtins: strListPtr(),
+	})
+	provider.responses = []llm.CompletionResponse{
+		{Content: "not json"},
+		{Content: `{"answer":"fixed"}`},
+	}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("assistant", "session-1", "json please"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := flattenParts(reply.Parts); got != `{"answer":"fixed"}` {
+		t.Fatalf("reply = %q, want corrected JSON", got)
+	}
+
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 2 {
+		t.Fatalf("provider calls = %d, want structured retry", len(reqs))
+	}
+	if reqs[1].ResponseFormat != "json_schema" {
+		t.Fatalf("retry response format = %q, want json_schema", reqs[1].ResponseFormat)
+	}
+	if reqs[1].JSONSchema == nil {
+		t.Fatal("retry JSONSchema is nil")
+	}
+	if !chatMessagesContain(reqs[1].Messages, "system", "Your previous response was not valid JSON") {
+		t.Fatalf("retry messages missing corrective prompt: %#v", reqs[1].Messages)
+	}
+}
+
+type fakeSkillLoader struct{}
+
+func (fakeSkillLoader) BuildCatalog() string { return "" }
+func (fakeSkillLoader) Get(string) *skill.Skill {
+	return nil
+}
+func (fakeSkillLoader) All() []*skill.Skill { return nil }
+
+func nonNilKnowledgeServiceForSchemaGate() *knowledge.Service {
+	return &knowledge.Service{}
+}
+
+func toolSchemaNameSet(schemas []llm.ToolSchema) map[string]bool {
+	out := make(map[string]bool, len(schemas))
+	for _, schema := range schemas {
+		out[schema.Name] = true
+	}
+	return out
+}
+
+func sortedSchemaNames(names map[string]bool) []string {
+	out := make([]string, 0, len(names))
+	for name := range names {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+type fakeHandleProvider struct {
+	mu        sync.Mutex
+	responses []llm.CompletionResponse
+	requests  []llm.CompletionRequest
+}
+
+func (p *fakeHandleProvider) ID() string { return "test" }
+
+func (p *fakeHandleProvider) Complete(ctx context.Context, req llm.CompletionRequest) (*llm.CompletionResponse, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.requests = append(p.requests, req)
+	idx := len(p.requests) - 1
+	if idx >= len(p.responses) {
+		return &llm.CompletionResponse{Content: "default fake response"}, nil
+	}
+	resp := p.responses[idx]
+	return &resp, nil
+}
+
+func (p *fakeHandleProvider) Models(context.Context) ([]string, error) {
+	return []string{"fake-model"}, nil
+}
+
+func (p *fakeHandleProvider) requestsSnapshot() []llm.CompletionRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	out := make([]llm.CompletionRequest, len(p.requests))
+	copy(out, p.requests)
+	return out
+}
+
+func newHandleTestEngine(t *testing.T, def *agent.Definition) (*Engine, *fakeHandleProvider) {
+	t.Helper()
+	agentDir := t.TempDir()
+	loader := NewLoader([]string{agentDir})
+	if err := loader.Upsert(agentDir, def); err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+	provider := &fakeHandleProvider{}
+	router := llm.NewRouter("test")
+	router.Register(provider)
+	mem, err := memory.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory store: %v", err)
+	}
+	return NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil), provider
+}
+
+func testUserMessage(agentID, sessionID, text string) message.Message {
+	return message.Message{
+		ID:        "msg-1",
+		SessionID: sessionID,
+		AgentID:   agentID,
+		Channel:   "http",
+		ThreadID:  "thread-1",
+		UserID:    "user-1",
+		Username:  "Ada",
+		Role:      message.RoleUser,
+		Parts:     message.Text(text),
+		CreatedAt: time.Now().UTC(),
+	}
+}
+
+func strListPtr(values ...string) *[]string {
+	out := append([]string(nil), values...)
+	return &out
+}
+
+func toolSchemasContain(schemas []llm.ToolSchema, name string) bool {
+	for _, schema := range schemas {
+		if schema.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func chatMessagesContain(messages []llm.ChatMessage, role, contentSubstr string) bool {
+	for _, msg := range messages {
+		if msg.Role == role && strings.Contains(msg.Content, contentSubstr) {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3D: Engine.Handle hardening — peer delegation, confirmation,
+// unknown/disabled agent, provider allowlist, and cost recording.
+// ---------------------------------------------------------------------------
+
+// TestHandleUnknownAgent verifies Handle returns a clear error for an agent
+// ID that was never registered in the loader.
+func TestHandleUnknownAgent(t *testing.T) {
+	e, _ := newHandleTestEngine(t, &agent.Definition{
+		ID: "real-agent", Name: "Real", Enabled: true,
+		LLM: agent.LLMConfig{Provider: "test", Model: "fake-model"},
+	})
+	_, err := e.Handle(context.Background(), testUserMessage("ghost-agent", "session-1", "hello"))
+	if err == nil {
+		t.Fatal("expected error for unknown agent, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown agent") {
+		t.Fatalf("error should mention 'unknown agent': %v", err)
+	}
+}
+
+// TestHandleDisabledAgent verifies Handle returns a clear error when the
+// target agent has Enabled: false.
+func TestHandleDisabledAgent(t *testing.T) {
+	e, _ := newHandleTestEngine(t, &agent.Definition{
+		ID: "bot", Name: "Bot", Enabled: false,
+		LLM: agent.LLMConfig{Provider: "test", Model: "fake-model"},
+	})
+	_, err := e.Handle(context.Background(), testUserMessage("bot", "session-1", "hello"))
+	if err == nil {
+		t.Fatal("expected error for disabled agent, got nil")
+	}
+	if !strings.Contains(err.Error(), "is disabled") {
+		t.Fatalf("error should mention 'is disabled': %v", err)
+	}
+}
+
+// TestHandleProviderNotAllowed verifies that an agent whose allowed_providers
+// list excludes the configured provider returns a clear error — the
+// "fat-finger GUI dropdown" guard introduced 2026-05-28.
+func TestHandleProviderNotAllowed(t *testing.T) {
+	e, _ := newHandleTestEngine(t, &agent.Definition{
+		ID: "cron-bot", Name: "Cron Bot", Enabled: true,
+		LLM: agent.LLMConfig{
+			Provider:         "anthropic",
+			Model:            "claude-3-haiku",
+			AllowedProviders: []string{"ollama"},
+		},
+	})
+	_, err := e.Handle(context.Background(), testUserMessage("cron-bot", "session-1", "run"))
+	if err == nil {
+		t.Fatal("expected provider-not-allowed error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not in allowed_providers") {
+		t.Fatalf("error should mention 'not in allowed_providers': %v", err)
+	}
+}
+
+// TestHandlePeerAgentDelegation verifies the full peer-agent delegation path:
+// the LLM returns an agent__<id> tool call, the engine routes it to the peer
+// via a sub-Handle call, injects the peer's reply as a tool result, and
+// synthesises a final answer on the next LLM turn.
+func TestHandlePeerAgentDelegation(t *testing.T) {
+	agentDir := t.TempDir()
+	loader := NewLoader([]string{agentDir})
+
+	callerDef := &agent.Definition{
+		ID: "caller", Name: "Caller", Enabled: true,
+		SystemPrompt: "Delegate research to peer.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		Builtins:     strListPtr(), // no builtins — peer calls only
+		Agents:       []string{"peer"},
+	}
+	peerDef := &agent.Definition{
+		ID: "peer", Name: "Peer", Enabled: true,
+		SystemPrompt: "Answer research questions.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     2,
+		Builtins:     strListPtr(),
+	}
+	for _, d := range []*agent.Definition{callerDef, peerDef} {
+		if err := loader.Upsert(agentDir, d); err != nil {
+			t.Fatalf("upsert %s: %v", d.ID, err)
+		}
+	}
+
+	provider := &fakeHandleProvider{}
+	router := llm.NewRouter("test")
+	router.Register(provider)
+	mem, err := memory.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory store: %v", err)
+	}
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+
+	// Provider responses in call order:
+	//   0. Caller's first LLM turn → delegates to agent__peer
+	//   1. Peer's LLM turn         → returns peer's answer
+	//   2. Caller's second turn    → synthesises final answer using tool result
+	provider.responses = []llm.CompletionResponse{
+		{ToolCalls: []message.ToolCall{{
+			ID:        "call-peer",
+			Name:      AgentToolPrefix + "peer",
+			Arguments: map[string]any{"message": "what is the capital of France?"},
+		}}},
+		{Content: "The capital of France is Paris."},
+		{Content: "According to my peer: Paris is the capital of France."},
+	}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("caller", "session-1", "what is the capital of France?"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got := flattenParts(reply.Parts)
+	if !strings.Contains(got, "Paris") {
+		t.Fatalf("reply should mention Paris, got: %q", got)
+	}
+
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 3 {
+		t.Fatalf("expected 3 provider calls (caller turn1, peer, caller turn2), got %d", len(reqs))
+	}
+	// Caller's synthesis turn must see the peer's answer as a tool result.
+	if !chatMessagesContain(reqs[2].Messages, "tool", "Paris") {
+		t.Fatalf("caller's second turn should have peer's answer in context: %#v", reqs[2].Messages)
+	}
+}
+
+// TestHandleConfirmationApproved verifies that when a tool is listed in
+// ConfirmTools and the user approves via WithConfirmSender, the tool executes
+// normally and the engine produces its final answer.
+func TestHandleConfirmationApproved(t *testing.T) {
+	var executions int
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID: "gated", Name: "Gated", Enabled: true,
+		SystemPrompt: "Use safe_op.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		Builtins:     strListPtr("safe_op"),
+		ConfirmTools: []string{"safe_op"},
+	})
+	e.builtins = []BuiltinTool{{
+		Name:        "safe_op",
+		Description: "Performs a safe operation.",
+		Parameters:  map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			executions++
+			return "op done", nil
+		},
+	}}
+	provider.responses = []llm.CompletionResponse{
+		{ToolCalls: []message.ToolCall{{ID: "c1", Name: "safe_op", Arguments: map[string]any{}}}},
+		{Content: "safe_op completed successfully"},
+	}
+
+	// Confirm sender that immediately approves every request.
+	confirmSender := ConfirmSenderFunc(func(req ConfirmRequest) <-chan bool {
+		ch := make(chan bool, 1)
+		ch <- true
+		return ch
+	})
+	ctx := WithConfirmSender(context.Background(), confirmSender)
+
+	reply, err := e.Handle(ctx, testUserMessage("gated", "session-1", "run safe_op"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if executions != 1 {
+		t.Fatalf("expected tool to execute once after approval, got %d executions", executions)
+	}
+	if got := flattenParts(reply.Parts); !strings.Contains(got, "completed") {
+		t.Fatalf("reply = %q, want string containing 'completed'", got)
+	}
+}
+
+// TestHandleConfirmationDenied verifies that when a tool is listed in
+// ConfirmTools and the user denies, the tool does NOT execute; instead
+// the denial error is surfaced as the tool result so the LLM can explain
+// it to the user.
+func TestHandleConfirmationDenied(t *testing.T) {
+	var executions int
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID: "gated", Name: "Gated", Enabled: true,
+		SystemPrompt: "Use safe_op.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		Builtins:     strListPtr("safe_op"),
+		ConfirmTools: []string{"safe_op"},
+	})
+	e.builtins = []BuiltinTool{{
+		Name:        "safe_op",
+		Description: "Performs a safe operation.",
+		Parameters:  map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			executions++ // must NOT be reached
+			return "op done", nil
+		},
+	}}
+	provider.responses = []llm.CompletionResponse{
+		{ToolCalls: []message.ToolCall{{ID: "c1", Name: "safe_op", Arguments: map[string]any{}}}},
+		{Content: "The operation was denied by the user; I cannot proceed."},
+	}
+
+	// Confirm sender that immediately denies every request.
+	confirmSender := ConfirmSenderFunc(func(req ConfirmRequest) <-chan bool {
+		ch := make(chan bool, 1)
+		ch <- false
+		return ch
+	})
+	ctx := WithConfirmSender(context.Background(), confirmSender)
+
+	reply, err := e.Handle(ctx, testUserMessage("gated", "session-1", "run safe_op"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if executions != 0 {
+		t.Fatalf("tool should not have executed after denial, got %d executions", executions)
+	}
+
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(reqs))
+	}
+	// The second LLM call must see the denial error in its tool-result context.
+	if !chatMessagesContain(reqs[1].Messages, "tool", "denied") {
+		t.Fatalf("second provider call should have denial message in context: %#v", reqs[1].Messages)
+	}
+	if got := flattenParts(reply.Parts); got == "" {
+		t.Fatal("expected a non-empty final reply even after denial")
+	}
+}
+
+// TestHandleCostRecording verifies that recordUsage is called with the token
+// counts from the LLM response when a cost store is wired. Silently no-ops
+// when both counts are zero (exercised here with non-zero values).
+func TestHandleCostRecording(t *testing.T) {
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID: "cost-bot", Name: "Cost Bot", Enabled: true,
+		SystemPrompt: "Be helpful.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     2,
+		Builtins:     strListPtr(),
+	})
+
+	cs := &fakeCostStore{}
+	e.SetCostStore(cs)
+
+	provider.responses = []llm.CompletionResponse{{
+		Content:      "Here is the answer.",
+		InputTokens:  120,
+		OutputTokens: 40,
+	}}
+
+	_, err := e.Handle(context.Background(), testUserMessage("cost-bot", "session-cost", "give me an answer"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	cs.mu.Lock()
+	records := cs.records
+	cs.mu.Unlock()
+
+	if len(records) == 0 {
+		t.Fatal("expected at least one cost record, got none")
+	}
+	r := records[0]
+	if r.agentID != "cost-bot" {
+		t.Errorf("agentID = %q, want 'cost-bot'", r.agentID)
+	}
+	if r.promptTokens != 120 {
+		t.Errorf("promptTokens = %d, want 120", r.promptTokens)
+	}
+	if r.compTokens != 40 {
+		t.Errorf("compTokens = %d, want 40", r.compTokens)
+	}
+	if r.model != "fake-model" {
+		t.Errorf("model = %q, want 'fake-model'", r.model)
+	}
+}
+
+// fakeCostStore is a test double for the agentCostStore interface.
+type fakeCostStore struct {
+	mu      sync.Mutex
+	records []fakeCostRecord
+}
+
+type fakeCostRecord struct {
+	agentID, sessionID, provider, model string
+	promptTokens, compTokens            int
+}
+
+func (f *fakeCostStore) Record(_ context.Context, agentID, sessionID, provider, model string,
+	promptTokens, compTokens, _ int, _ float64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.records = append(f.records, fakeCostRecord{
+		agentID:      agentID,
+		sessionID:    sessionID,
+		provider:     provider,
+		model:        model,
+		promptTokens: promptTokens,
+		compTokens:   compTokens,
+	})
+	return nil
+}
+
+// TestHandleExecutesSystemTool verifies that when allowSystemTools and def.SystemTools are true,
+// the engine can execute OS-level built-in tools like shell_exec and synthesise the final response.
+func TestHandleExecutesSystemTool(t *testing.T) {
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID:           "sys-bot",
+		Name:         "System Bot",
+		Enabled:      true,
+		SystemPrompt: "Use shell_exec.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		SystemTools:  true,
+	})
+	e.allowSystemTools = true
+
+	provider.responses = []llm.CompletionResponse{
+		{ToolCalls: []message.ToolCall{{
+			ID:   "call-sys",
+			Name: "shell_exec",
+			Arguments: map[string]any{
+				"command": "echo hello",
+			},
+		}}},
+		{Content: "Command output was hello"},
+	}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("sys-bot", "session-1", "run echo"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got := flattenParts(reply.Parts)
+	if got != "Command output was hello" {
+		t.Fatalf("reply = %q, want 'Command output was hello'", got)
+	}
+
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(reqs))
+	}
+	if !chatMessagesContain(reqs[1].Messages, "tool", "hello") {
+		t.Fatalf("second request missing tool result 'hello': %#v", reqs[1].Messages)
 	}
 }

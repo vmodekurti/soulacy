@@ -2,12 +2,13 @@
 // Uses Discord's Gateway WebSocket API (with reconnection) and REST for replies.
 //
 // Configuration:
-//   channels:
-//     discord:
-//       enabled: true
-//       token: "Bot YOUR_BOT_TOKEN"
-//       agent_id: "my-agent"
-//       guild_id: ""     # empty = all guilds
+//
+//	channels:
+//	  discord:
+//	    enabled: true
+//	    token: "Bot YOUR_BOT_TOKEN"
+//	    agent_id: "my-agent"
+//	    guild_id: ""     # empty = all guilds
 package discord
 
 import (
@@ -28,25 +29,26 @@ import (
 )
 
 const (
-	discordAPI      = "https://discord.com/api/v10"
-	discordGateway  = "wss://gateway.discord.gg/?v=10&encoding=json"
-	opDispatch      = 0
-	opHeartbeat     = 1
-	opIdentify      = 2
-	opHeartbeatACK  = 11
+	discordAPI     = "https://discord.com/api/v10"
+	discordGateway = "wss://gateway.discord.gg/?v=10&encoding=json"
+	opDispatch     = 0
+	opHeartbeat    = 1
+	opIdentify     = 2
+	opHeartbeatACK = 11
 )
 
 // Adapter connects to the Discord Gateway WebSocket.
 type Adapter struct {
-	id        string // "discord" for the primary bot; "discord-<agentID>" for extras
-	token     string
-	agentID   string
-	guildID   string
-	client    *http.Client
-	inbox     chan<- message.Message
-	connected bool
-	stopCh    chan struct{}
-	stopOnce  sync.Once // guards close(stopCh) so Stop() is idempotent
+	id         string // "discord" for the primary bot; "discord-<agentID>" for extras
+	token      string
+	agentID    string
+	guildID    string
+	activation channels.ActivationPolicy
+	client     *http.Client
+	inbox      chan<- message.Message
+	connected  bool
+	stopCh     chan struct{}
+	stopOnce   sync.Once // guards close(stopCh) so Stop() is idempotent
 }
 
 // New creates a Discord adapter with the default channel ID "discord".
@@ -58,13 +60,20 @@ func New(token, agentID, guildID string) *Adapter {
 // running multiple bots — each bot needs a unique ID (e.g. "discord-system")
 // so the registry can route replies back to the correct bot.
 func NewWithID(id, token, agentID, guildID string) *Adapter {
+	return NewWithIDAndActivation(id, token, agentID, guildID, channels.ActivationPolicy{})
+}
+
+// NewWithIDAndActivation creates a Discord adapter with shared channel
+// activation guardrails.
+func NewWithIDAndActivation(id, token, agentID, guildID string, activation channels.ActivationPolicy) *Adapter {
 	return &Adapter{
-		id:      id,
-		token:   token,
-		agentID: agentID,
-		guildID: guildID,
-		client:  &http.Client{Timeout: 10 * time.Second},
-		stopCh:  make(chan struct{}),
+		id:         id,
+		token:      token,
+		agentID:    agentID,
+		guildID:    guildID,
+		activation: activation,
+		client:     &http.Client{Timeout: 10 * time.Second},
+		stopCh:     make(chan struct{}),
 	}
 }
 
@@ -138,7 +147,7 @@ func (a *Adapter) run(ctx context.Context) error {
 			identify := map[string]any{
 				"op": opIdentify,
 				"d": map[string]any{
-					"token": a.token,
+					"token":   a.token,
 					"intents": 1 << 9, // GUILD_MESSAGES + MESSAGE_CONTENT
 					"properties": map[string]string{
 						"os": "linux", "browser": "soulacy", "device": "soulacy",
@@ -179,6 +188,10 @@ func (a *Adapter) run(ctx context.Context) error {
 				if a.guildID != "" && dm.GuildID != a.guildID {
 					continue
 				}
+				text, ok := a.activation.Apply(dm.Content, dm.ChannelID, dm.Author.ID, dm.GuildID != "")
+				if !ok {
+					continue
+				}
 				msg := message.Message{
 					ID:        uuid.New().String(),
 					SessionID: fmt.Sprintf("%s-%s", a.id, dm.ChannelID),
@@ -188,7 +201,7 @@ func (a *Adapter) run(ctx context.Context) error {
 					UserID:    dm.Author.ID,
 					Username:  dm.Author.Username,
 					Role:      message.RoleUser,
-					Parts:     message.Text(dm.Content),
+					Parts:     message.Text(text),
 					CreatedAt: time.Now().UTC(),
 				}
 				// Non-blocking send so a wedged engine doesn't wedge the

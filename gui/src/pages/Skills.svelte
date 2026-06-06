@@ -109,6 +109,7 @@
         <input
           class="as-input"
           type="url"
+          aria-label="AgenticSkills skill URL"
           placeholder="https://agenticskills.io/skills/frontend-design"
           bind:value={asURL}
           disabled={asFetching}
@@ -255,7 +256,7 @@
   }
   .modal {
     background: #141626; border: 1px solid #2a2f4a; border-radius: 12px;
-    padding: 1.5rem; width: 520px; max-width: 95vw;
+    padding: 1.5rem; width: 520px; max-width: 95vw; max-height: 88vh; overflow-y: auto;
     display: flex; flex-direction: column; gap: 1rem;
   }
   .modal-header { display: flex; align-items: center; justify-content: space-between; }

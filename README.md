@@ -92,7 +92,7 @@ pip install soulacy
 sy agent list
 
 # Chat with an agent
-sy chat --agent hello-world "Hello!"
+sy chat --agent system "Hello!"
 
 # Check gateway status
 sy server status
@@ -141,6 +141,10 @@ name: Daily Briefing
 trigger: cron
 schedule:
   cron: "0 7 * * *"   # 7 AM every day
+  output:
+    channel: "telegram-daily-briefing"
+    to: "123456789"
+    bot_name: "Daily Briefing Bot"
 
 llm:
   provider: ollama

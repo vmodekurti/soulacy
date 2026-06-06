@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
+  import { stripAnsi, logLevel, LEVEL_COLORS, LEVEL_BADGES } from '../lib/logutils.js'
 
   let lines      = []
   let source     = ''
@@ -12,6 +13,10 @@
   let autoRefresh = false
   let timer      = null
   let logEl
+  let levelFilter = 'all'   // all | error | warn | info | debug
+  let wrap        = true    // wrap long lines vs. horizontal scroll
+
+  const LEVELS = ['all', 'error', 'warn', 'info', 'debug']
 
   async function load() {
     loading = true
@@ -45,26 +50,23 @@
     }
   }
 
-  function levelColor(line = '') {
-    const l = line.toLowerCase()
-    if (l.includes('"error"') || l.includes('error\t') || l.includes('level=error')) return '#f06060'
-    if (l.includes('"warn"')  || l.includes('warn\t')  || l.includes('level=warn'))  return '#f0a060'
-    if (l.includes('"debug"') || l.includes('debug\t') || l.includes('level=debug')) return '#555a7a'
-    return '#b0b5d8'
-  }
-
-  function levelBadge(line = '') {
-    const l = line.toLowerCase()
-    if (l.includes('"error"') || l.includes('error\t') || l.includes('level=error')) return { text: 'ERR', color: '#f06060' }
-    if (l.includes('"warn"')  || l.includes('warn\t')  || l.includes('level=warn'))  return { text: 'WRN', color: '#f0a060' }
-    if (l.includes('"info"')  || l.includes('info\t')  || l.includes('level=info'))  return { text: 'INF', color: '#4caf82' }
-    if (l.includes('"debug"') || l.includes('debug\t') || l.includes('level=debug')) return { text: 'DBG', color: '#555a7a' }
-    return { text: '   ', color: '#555a7a' }
-  }
-
   function handleFilterKey(e) {
     if (e.key === 'Enter') load()
   }
+
+  // Pre-process once per load: strip ANSI escapes and classify severity.
+  $: processed = lines.map(raw => {
+    const text = stripAnsi(raw)
+    const level = logLevel(raw)
+    return { text, level }
+  })
+  $: levelCounts = processed.reduce((acc, l) => {
+    acc[l.level] = (acc[l.level] || 0) + 1
+    return acc
+  }, {})
+  $: visible = levelFilter === 'all'
+    ? processed
+    : processed.filter(l => l.level === levelFilter)
 
   onMount(load)
   onDestroy(() => { if (timer) clearInterval(timer) })
@@ -100,15 +102,29 @@
         <button class="clear-filter" on:click={() => { filter = ''; load() }}>✕</button>
       {/if}
     </div>
-    <select bind:value={lineCount} on:change={load} class="lines-select">
+    <select bind:value={lineCount} on:change={load} class="lines-select" aria-label="Number of lines to show">
       <option value={100}>Last 100 lines</option>
       <option value={500}>Last 500 lines</option>
       <option value={1000}>Last 1 000 lines</option>
       <option value={5000}>Last 5 000 lines</option>
     </select>
+    <button class="btn-secondary small-btn" class:active={!wrap} on:click={() => wrap = !wrap}
+            title={wrap ? 'Long lines wrap — click for horizontal scroll' : 'Long lines scroll — click to wrap'}>
+      {wrap ? '↩ Wrap' : '↔ Scroll'}
+    </button>
     {#if lines.length > 0}
       <button class="btn-secondary small-btn" on:click={() => lines = []}>Clear view</button>
     {/if}
+  </div>
+
+  <div class="level-tabs" role="group" aria-label="Filter by log level">
+    {#each LEVELS as lv}
+      <button class="level-tab" class:lt-active={levelFilter === lv}
+              style={levelFilter === lv && lv !== 'all' ? `color:${LEVEL_COLORS[lv]}` : ''}
+              on:click={() => levelFilter = lv}>
+        {lv === 'all' ? `All (${lines.length})` : `${LEVEL_BADGES[lv]} (${levelCounts[lv] || 0})`}
+      </button>
+    {/each}
   </div>
 
   {#if source}
@@ -119,12 +135,14 @@
     </div>
   {/if}
 
-  <div class="log-panel" bind:this={logEl}>
+  <div class="log-panel" class:nowrap={!wrap} bind:this={logEl}>
     {#if loading && lines.length === 0}
       <div class="empty">Loading logs…</div>
-    {:else if lines.length === 0}
+    {:else if visible.length === 0}
       <div class="empty">
-        {#if filter}
+        {#if lines.length > 0}
+          No {levelFilter} lines in the current view.
+        {:else if filter}
           No lines match <strong>"{filter}"</strong>.
         {:else}
           No log lines available.
@@ -134,11 +152,10 @@
         {/if}
       </div>
     {:else}
-      {#each lines as line, i}
-        {@const badge = levelBadge(line)}
-        <div class="log-line" style="color:{levelColor(line)}">
-          <span class="log-badge" style="color:{badge.color}">{badge.text}</span>
-          <span class="log-text">{line}</span>
+      {#each visible as line}
+        <div class="log-line" style="color:{LEVEL_COLORS[line.level]}">
+          <span class="log-badge" style="color:{LEVEL_COLORS[line.level]}">{LEVEL_BADGES[line.level]}</span>
+          <span class="log-text">{line.text}</span>
         </div>
       {/each}
     {/if}
@@ -179,12 +196,27 @@
   .source-path  { font-size: .78rem; color: #7b82a8; flex: 1; word-break: break-all; }
   .source-count { font-size: .72rem; color: #555a7a; flex-shrink: 0; }
 
+  .level-tabs {
+    display: inline-flex; gap: .25rem; padding: .15rem; flex-shrink: 0; align-self: flex-start;
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px;
+    flex-wrap: wrap;
+  }
+  .level-tab {
+    background: transparent; color: #7b82a8; border: 0; border-radius: 6px;
+    padding: .25rem .6rem; font-size: .72rem; font-family: monospace; cursor: pointer;
+  }
+  .level-tab:hover { color: #f0f2ff; }
+  .level-tab.lt-active { background: #262b4c; color: #f0f2ff; }
+
   .log-panel {
     flex: 1; min-height: 0; overflow-y: auto;
     background: #0a0c17; border: 1px solid #1a1e36; border-radius: 10px;
     font-family: 'JetBrains Mono', 'Fira Code', monospace; font-size: .76rem;
     line-height: 1.55;
   }
+  .log-panel.nowrap { overflow-x: auto; }
+  .log-panel.nowrap .log-line { width: max-content; min-width: 100%; }
+  .log-panel.nowrap .log-text { white-space: pre; }
   .empty {
     padding: 3rem 2rem; text-align: center; color: #555a7a; font-family: inherit;
   }

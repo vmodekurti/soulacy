@@ -120,7 +120,7 @@
 
     // Output (where the reply lands)
     const outLabel = a.trigger === 'cron'
-      ? '📤 Output\n(scheduled run reply)'
+      ? `📤 Output\n${scheduleOutputLabel(a)}`
       : `📤 Output\n${(a.channels || []).join(', ') || 'http'}`
     ns.push({
       id: 'output', type: 'output',
@@ -253,7 +253,7 @@
         return {
           title: 'Output',
           fields: [
-            ['Channels', (agent.channels || []).join(', ') || '(scheduled — no channel reply)'],
+            ['Destination', agent.trigger === 'cron' ? scheduleOutputLabel(agent) : ((agent.channels || []).join(', ') || 'http')],
           ],
         }
       default:
@@ -278,6 +278,13 @@
   $: inspector = inspectorBody(focused, selected)
   $: focusedToolIndex = focused?.id?.startsWith('tool-') ? parseInt(focused.id.slice(5), 10) : -1
   $: focusedTool = focusedToolIndex >= 0 ? (selected?.tools || [])[focusedToolIndex] : null
+
+  function scheduleOutputLabel(agent) {
+    const out = agent.schedule?.output
+    if (!out?.channel) return 'internal only'
+    const name = out.bot_name || out.channel
+    return `${name}${out.to ? ' → ' + out.to : ''}`
+  }
 
   onMount(load)
 </script>

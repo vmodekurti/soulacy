@@ -3,9 +3,6 @@
 //   1. Hot (file-based JSONL) — recent session history, fast reads, human-inspectable.
 //   2. Archive (SQLite) — long-term memory with full text search.
 //   3. Semantic (vector DB, optional) — embedding-based retrieval for large memory sets.
-//
-// All memories carry a ProvenanceLabel so the runtime can decide how much trust
-// to place in each piece: confirmed facts drive actions, inferred memories inform drafts.
 package memory
 
 import (
@@ -20,16 +17,6 @@ import (
 	"github.com/google/uuid"
 )
 
-// ProvenanceLabel classifies the reliability of a memory entry.
-type ProvenanceLabel string
-
-const (
-	ProvenanceConfirmed  ProvenanceLabel = "confirmed"  // verified by user or external source
-	ProvenanceInferred   ProvenanceLabel = "inferred"   // derived by the agent from context
-	ProvenanceEphemeral  ProvenanceLabel = "ephemeral"  // valid only for this session
-	ProvenanceSystem     ProvenanceLabel = "system"     // written by Soulacy infrastructure
-)
-
 // Scope determines which agents can access a memory entry.
 type Scope string
 
@@ -41,16 +28,15 @@ const (
 
 // Entry is a single unit of memory.
 type Entry struct {
-	ID         string            `json:"id"`
-	AgentID    string            `json:"agent_id"`
-	SessionID  string            `json:"session_id"`
-	Scope      Scope             `json:"scope"`
-	Provenance ProvenanceLabel   `json:"provenance"`
-	Key        string            `json:"key,omitempty"` // optional structured key
-	Content    string            `json:"content"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
-	ExpiresAt  *time.Time        `json:"expires_at,omitempty"`
+	ID        string            `json:"id"`
+	AgentID   string            `json:"agent_id"`
+	SessionID string            `json:"session_id"`
+	Scope     Scope             `json:"scope"`
+	Key       string            `json:"key,omitempty"` // optional structured key
+	Content   string            `json:"content"`
+	Metadata  map[string]string `json:"metadata,omitempty"`
+	CreatedAt time.Time         `json:"created_at"`
+	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
 }
 
 // Embedder is the interface VectorStore uses to turn text into a float vector.

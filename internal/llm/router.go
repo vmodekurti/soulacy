@@ -67,6 +67,13 @@ type CompletionResponse struct {
 	// Usage statistics
 	InputTokens  int
 	OutputTokens int
+	// Prompt caching statistics (Anthropic only; zero on other providers).
+	// CacheCreationTokens is the number of input tokens written to cache this
+	// turn (billed at 1.25× standard input rate).
+	// CacheReadTokens is the number of input tokens served from cache this
+	// turn (billed at 0.1× standard input rate — 90% discount).
+	CacheCreationTokens int
+	CacheReadTokens     int
 	// If Stream is true, tokens arrive on this channel. Closed when done.
 	Stream <-chan string
 }

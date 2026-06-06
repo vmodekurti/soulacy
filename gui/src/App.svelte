@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte'
-  import { apiKey, connected } from './lib/stores.js'
+  import { apiKey, connected, authRequired } from './lib/stores.js'
   import Dashboard  from './pages/Dashboard.svelte'
   import Builder    from './pages/Builder.svelte'
   import Flow       from './pages/Flow.svelte'
@@ -9,6 +9,7 @@
   import Memory     from './pages/Memory.svelte'
   import Knowledge  from './pages/Knowledge.svelte'
   import Channels   from './pages/Channels.svelte'
+  import Workboard  from './pages/Workboard.svelte'
   import Schedule   from './pages/Schedule.svelte'
   import Skills     from './pages/Skills.svelte'
   import Providers  from './pages/Providers.svelte'
@@ -20,6 +21,7 @@
   let page = 'dashboard'
   let showKeyModal = false
   let keyInput = ''
+  let sidebarOpen = false   // mobile drawer state (≤768px)
 
   const pages = [
     { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'    },
@@ -27,8 +29,9 @@
     { id: 'flow',      icon: '⌘', label: 'Flow',        group: 'main'    },
     { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'    },
     { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'    },
-    { id: 'memory',    icon: '⊞', label: 'Memory',      group: 'main'    },
+    { id: 'memory',    icon: '🧠', label: 'Brain Mem',   group: 'main'    },
     { id: 'knowledge', icon: '📚', label: 'Knowledge',   group: 'main'    },
+    { id: 'workboard', icon: '▦', label: 'Workboard',  group: 'main'    },
     { id: 'channels',  icon: '📡', label: 'Channels',   group: 'ops'     },
     { id: 'schedule',  icon: '⏱', label: 'Schedule',   group: 'ops'     },
     { id: 'skills',    icon: '🧩', label: 'Skills',     group: 'ops'     },
@@ -41,6 +44,7 @@
 
   function navigate(p) {
     page = p
+    sidebarOpen = false
     history.pushState({}, '', '#' + p)
   }
 
@@ -91,8 +95,23 @@
 {/if}
 
 <div class="layout">
+  <!-- Mobile top bar (hidden on desktop) -->
+  <header class="topbar">
+    <button class="hamburger" on:click={() => sidebarOpen = !sidebarOpen}
+            aria-label="Toggle navigation" aria-expanded={sidebarOpen}>☰</button>
+    <span class="brand-icon">⬡</span>
+    <span class="brand-name">Soulacy</span>
+  </header>
+
+  <!-- Backdrop behind the mobile drawer -->
+  {#if sidebarOpen}
+    <div class="backdrop" role="button" tabindex="-1" aria-label="Close navigation"
+         on:click={() => sidebarOpen = false}
+         on:keydown={(e) => e.key === 'Escape' && (sidebarOpen = false)}></div>
+  {/if}
+
   <!-- Sidebar -->
-  <aside class="sidebar">
+  <aside class="sidebar" class:open={sidebarOpen}>
     <div class="brand">
       <span class="brand-icon">⬡</span>
       <span class="brand-name">Soulacy</span>
@@ -114,9 +133,16 @@
     </nav>
 
     <div class="sidebar-footer">
-      <span class="conn-dot" class:live={$connected} title={$connected ? 'Event stream live' : 'Disconnected from event stream'}>
-        {$connected ? '● Live' : '○ Offline'}
-      </span>
+      {#if $authRequired}
+        <button class="conn-dot auth-required" on:click={openKeyModal}
+                title="The gateway rejected your API key — click to set it">
+          🔒 Authentication required
+        </button>
+      {:else}
+        <span class="conn-dot" class:live={$connected} title={$connected ? 'Event stream live' : 'Disconnected from event stream'}>
+          {$connected ? '● Live' : '○ Offline'}
+        </span>
+      {/if}
       <button class="icon-btn" on:click={openKeyModal} title="Set API key">🔑</button>
     </div>
   </aside>
@@ -137,6 +163,8 @@
       <Memory />
     {:else if page === 'knowledge'}
       <Knowledge />
+    {:else if page === 'workboard'}
+      <Workboard />
     {:else if page === 'channels'}
       <Channels />
     {:else if page === 'schedule'}
@@ -216,12 +244,63 @@
   /* ── Layout ─────────────────────────────────────────────────────── */
   .layout { display: flex; height: 100vh; overflow: hidden; }
 
+  /* ── Mobile top bar + drawer (≤768px) ───────────────────────────── */
+  .topbar { display: none; }
+  .backdrop { display: none; }
+
   /* ── Sidebar ─────────────────────────────────────────────────────── */
   .sidebar {
     width: 210px; flex-shrink: 0;
     background: #0e1020;
     border-right: 1px solid #1a1e36;
     display: flex; flex-direction: column;
+  }
+
+  @media (max-width: 768px) {
+    .layout { flex-direction: column; }
+
+    .topbar {
+      display: flex; align-items: center; gap: 0.6rem;
+      padding: 0.55rem 0.9rem;
+      background: #0e1020;
+      border-bottom: 1px solid #1a1e36;
+      flex-shrink: 0;
+    }
+    .hamburger {
+      background: none; color: #c8cadf;
+      font-size: 1.25rem; line-height: 1;
+      padding: 0.25rem 0.5rem; border-radius: 6px;
+    }
+    .hamburger:hover { background: #181b30; }
+
+    /* Sidebar becomes an off-canvas drawer */
+    .sidebar {
+      position: fixed; top: 0; bottom: 0; left: 0;
+      width: min(260px, 80vw);
+      transform: translateX(-105%);
+      transition: transform 0.2s ease;
+      z-index: 90;
+      box-shadow: 4px 0 24px rgba(0, 0, 0, 0.5);
+    }
+    .sidebar.open { transform: translateX(0); }
+
+    .backdrop {
+      display: block;
+      position: fixed; inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 80;
+      border: none;
+    }
+
+    /* Slightly larger touch targets in the drawer */
+    .nav-item { padding: 0.75rem 1rem; }
+  }
+
+  /* App-wide responsive defaults for page content */
+  @media (max-width: 768px) {
+    :global(.page) { padding: 1rem !important; }
+    :global(.page-header) { flex-wrap: wrap; gap: 0.6rem; row-gap: 0.6rem; }
+    :global(.page-header h1) { font-size: 1.15rem; }
   }
 
   .brand {
@@ -253,6 +332,11 @@
   }
   .conn-dot { font-size: 0.72rem; font-family: monospace; color: #5a3030; }
   .conn-dot.live { color: #4caf82; }
+  .conn-dot.auth-required {
+    background: none; color: #f0a060; padding: 0;
+    font-size: 0.72rem; font-family: monospace; text-align: left;
+  }
+  .conn-dot.auth-required:hover { color: #ffc08a; text-decoration: underline; }
   .icon-btn { background: none; color: #6b7294; font-size: 0.85rem; padding: 0.15rem; }
   .icon-btn:hover { color: #e8eaf6; }
 
@@ -268,7 +352,7 @@
   }
   .modal {
     background: #141626; border: 1px solid #2a2f4a; border-radius: 12px;
-    padding: 1.5rem; width: 420px;
+    padding: 1.5rem; width: 420px; max-width: 92vw; max-height: 88vh; overflow-y: auto;
     display: flex; flex-direction: column; gap: 1rem;
   }
   .modal h2 { font-size: 1rem; font-weight: 600; }

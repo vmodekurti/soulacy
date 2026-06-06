@@ -248,17 +248,16 @@ func scanEntries(rows *sql.Rows) ([]ConversationEntry, error) {
 	var out []ConversationEntry
 	for rows.Next() {
 		var e ConversationEntry
-		var createdAtStr string
+		// Scan created_at directly into time.Time so the mattn/go-sqlite3 driver
+		// handles the format conversion — the same fix as internal/auth/apikeys.
+		// Scanning into string and parsing "2006-01-02 15:04:05" breaks because
+		// the driver reformats DATETIME columns as RFC3339 when the scan target
+		// is a string.
 		if err := rows.Scan(
-			&e.ID, &e.SessionID, &e.AgentID, &e.Role, &e.Content, &e.Tokens, &createdAtStr,
+			&e.ID, &e.SessionID, &e.AgentID, &e.Role, &e.Content, &e.Tokens, &e.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("session/history: scan row: %w", err)
 		}
-		t, err := time.Parse("2006-01-02 15:04:05", createdAtStr)
-		if err != nil {
-			return nil, fmt.Errorf("session/history: parse created_at %q: %w", createdAtStr, err)
-		}
-		e.CreatedAt = t.UTC()
 		out = append(out, e)
 	}
 	return out, rows.Err()

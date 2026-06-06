@@ -28,6 +28,7 @@ import (
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/audit"
 	"github.com/soulacy/soulacy/internal/executor"
 	"github.com/soulacy/soulacy/internal/knowledge"
@@ -95,7 +96,8 @@ type Engine struct {
 
 	// ollamaAPIKey is used by the built-in web_search tool (Ollama Web Search API).
 	// Falls back to the OLLAMA_API_KEY env var at call time.
-	ollamaAPIKey string
+	ollamaAPIKeyMu sync.RWMutex
+	ollamaAPIKey   string
 
 	// mcpClient routes MCP tool calls to configured external MCP servers.
 	// All tools from connected servers are offered to every agent, namespaced
@@ -133,6 +135,11 @@ type Engine struct {
 	// Powered by sqlite-vec in the same archive DB as the long-term memory.
 	vectorStore *memory.VectorStore
 
+	// brainStore, when non-nil, enables three-layer long-term memory
+	// (episodic / semantic / procedural) for agents that declare brain_memory
+	// in their SOUL.yaml. Set via SetBrainMemory after construction.
+	brainStore *agentmemory.CompositeStore
+
 	// pluginProvider, when non-nil, provides plugin-contributed tools.
 	// Satisfied by *plugins.Loader via an adapter in main.go.
 	pluginProvider PluginToolProvider
@@ -149,6 +156,10 @@ type Engine struct {
 	ssrfProtection bool
 	// allowPrivateHosts mirrors config.Runtime.AllowPrivateHosts.
 	allowPrivateHosts []string
+	// allowedToolDirs mirrors config.Runtime.AllowedToolDirs. When non-empty,
+	// any python_file path that does not resolve under one of these prefixes is
+	// rejected before the subprocess is forked. Empty = all paths permitted.
+	allowedToolDirs []string
 
 	// pyExecutor is the optional pre-forked Python worker pool. When nil,
 	// the engine falls back to the original exec-per-call subprocess path.
@@ -323,11 +334,41 @@ func (e *Engine) Broker() *ConfirmBroker { return e.broker }
 // SetAuditLog installs an audit logger. Safe to call before traffic starts.
 func (e *Engine) SetAuditLog(l *audit.Logger) { e.auditLog = l }
 
+// SetOllamaAPIKey refreshes the hosted Ollama API key used by web_search.
+func (e *Engine) SetOllamaAPIKey(key string) {
+	e.ollamaAPIKeyMu.Lock()
+	defer e.ollamaAPIKeyMu.Unlock()
+	e.ollamaAPIKey = strings.TrimSpace(key)
+}
+
+func (e *Engine) getOllamaAPIKey() string {
+	e.ollamaAPIKeyMu.RLock()
+	defer e.ollamaAPIKeyMu.RUnlock()
+	return e.ollamaAPIKey
+}
+
 // SetSSRF configures SSRF protection for the HTTP-fetching built-in tools.
 func (e *Engine) SetSSRF(enabled bool, allowedHosts []string) {
 	e.ssrfProtection = enabled
 	e.allowPrivateHosts = allowedHosts
 }
+
+// SetAllowedToolDirs installs the python_file path allowlist. When dirs is
+// non-empty, executePythonTool rejects any python_file that does not resolve
+// under one of the listed directory prefixes.
+func (e *Engine) SetAllowedToolDirs(dirs []string) {
+	e.allowedToolDirs = dirs
+}
+
+// SetBrainMemory wires the three-layer agent memory store (MEM-03).
+// When non-nil, agents with brain_memory.episodic.enabled=true will have their
+// task history injected before each run (RL-10) and persisted after (RL-09).
+func (e *Engine) SetBrainMemory(store *agentmemory.CompositeStore) {
+	e.brainStore = store
+}
+
+// BrainStore returns the CompositeStore, or nil if not configured.
+func (e *Engine) BrainStore() *agentmemory.CompositeStore { return e.brainStore }
 
 // SetExecutor installs an executor.Backend for Python tool dispatch.
 // When set to a pool backend, Python tool cold-start latency is eliminated by
@@ -809,7 +850,7 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 					},
 					"working_dir": map[string]any{
 						"type":        "string",
-						"description": "Working directory (default: home directory)",
+						"description": "Optional working directory (must be a valid absolute path on the host. Do NOT guess paths like /home/user. Omit this parameter entirely to run in the default home directory.)",
 					},
 					"timeout_seconds": map[string]any{
 						"type":        "integer",
@@ -824,8 +865,13 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 					return "", fmt.Errorf("shell_exec: command is required")
 				}
 				workDir := argString(args, "working_dir")
+				homeDir, _ := os.UserHomeDir()
 				if workDir == "" {
-					workDir, _ = os.UserHomeDir()
+					workDir = homeDir
+				} else if workDir == "~" {
+					workDir = homeDir
+				} else if strings.HasPrefix(workDir, "~/") {
+					workDir = filepath.Join(homeDir, workDir[2:])
 				}
 				timeoutSecs := argInt(args, "timeout_seconds", 60)
 				if timeoutSecs <= 0 {
@@ -1556,7 +1602,7 @@ func (e *Engine) ollamaWebSearch(ctx context.Context, args map[string]any) (stri
 
 	key := os.Getenv("OLLAMA_API_KEY")
 	if key == "" {
-		key = e.ollamaAPIKey
+		key = e.getOllamaAPIKey()
 	}
 	if key == "" {
 		return "", fmt.Errorf("web_search: no Ollama API key. Create one at https://ollama.com/settings/keys, then set the OLLAMA_API_KEY environment variable or llm.providers.ollama.api_key in config.yaml")
@@ -1679,6 +1725,9 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	applyPlaygroundOverrides(def, msg.Metadata)
 	if !def.Enabled {
 		return message.Message{}, fmt.Errorf("engine: agent %q is disabled", msg.AgentID)
+	}
+	if def.ID == SystemAgentID && msg.Channel != "http" {
+		return message.Message{}, fmt.Errorf("engine: system agent is only available on http channel")
 	}
 
 	// Provider allowlist guard. Closes the "GUI dropdown fat-finger →
@@ -1808,7 +1857,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// Persist inbound message to memory
 	_ = e.memory.Write(memory.Entry{
 		AgentID: msg.AgentID, SessionID: msg.SessionID,
-		Scope: memory.ScopeSession, Provenance: memory.ProvenanceConfirmed,
+		Scope:   memory.ScopeSession,
 		Content: fmt.Sprintf("[%s] %s", msg.Username, flattenParts(msg.Parts)),
 	})
 
@@ -1816,6 +1865,9 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// hot-reload between user messages picks up the new def's catalogs.
 	// (PRODUCTION_AUDIT → MED/Engine.)
 	sess.mu.Lock()
+	sess.History = append(sess.History, llm.ChatMessage{
+		Role: "user", Content: flattenParts(msg.Parts),
+	})
 	sess.cachedPrefix = e.buildSystemPrefix(def)
 	sess.mu.Unlock()
 	defer func() {
@@ -1996,12 +2048,6 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		// No tool calls → we have a final answer
 		if len(resp.ToolCalls) == 0 {
 			finalContent = resp.Content
-			// Append assistant turn to session history
-			sess.mu.Lock()
-			sess.History = append(sess.History, llm.ChatMessage{
-				Role: "assistant", Content: resp.Content,
-			})
-			sess.mu.Unlock()
 			break
 		}
 
@@ -2012,8 +2058,9 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		allDup := len(resp.ToolCalls) > 0
 		for _, tc := range resp.ToolCalls {
 			aj, _ := json.Marshal(tc.Arguments)
+			name := normalizeToolCallName(tc.Name)
 			seenMu.Lock()
-			_, ok := seen[tc.Name+"|"+string(aj)]
+			_, ok := seen[name+"|"+string(aj)]
 			seenMu.Unlock()
 			if !ok {
 				allDup = false
@@ -2081,12 +2128,31 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		})
 	}
 
-	// Persist reply to memory
+	// Append final assistant response to the in-memory session history
+	sess.mu.Lock()
+	sess.History = append(sess.History, llm.ChatMessage{
+		Role: "assistant", Content: finalContent,
+	})
+	sess.mu.Unlock()
+
+	// Persist reply to session memory
 	_ = e.memory.Write(memory.Entry{
 		AgentID: msg.AgentID, SessionID: msg.SessionID,
-		Scope: memory.ScopeSession, Provenance: memory.ProvenanceConfirmed,
+		Scope:   memory.ScopeSession,
 		Content: fmt.Sprintf("[%s] %s", def.Name, finalContent),
 	})
+
+	// RL-09: persist task + reply as an episodic brain memory record.
+	// Fires when brainStore is wired and either (a) episodic is explicitly enabled,
+	// or (b) reasoning is enabled and brain_memory wasn't configured (auto-default).
+	episodicOn := def.BrainMemory.Episodic.Enabled ||
+		(def.Reasoning.Strategy != "" && !def.BrainMemory.Episodic.Enabled &&
+			!def.BrainMemory.Semantic.Enabled && !def.BrainMemory.Procedural.Enabled)
+	if e.brainStore != nil && episodicOn {
+		taskInput := flattenParts(msg.Parts)
+		rec := agentmemory.ResultToEpisodicRecord(msg.AgentID, taskInput, finalContent, nil)
+		_ = e.brainStore.Write(rec)
+	}
 
 	reply = message.Message{
 		ID:        msg.ID, // correlate reply to request
@@ -2276,6 +2342,42 @@ func (e *Engine) getOrCreateSession(sessionID, agentID string) *Session {
 // concatenation per turn × turns × agents.
 func (e *Engine) buildSystemPrefix(def *agent.Definition) string {
 	systemPrompt := def.SystemPrompt
+
+	// RL-10: inject brain memory context before any other prompt additions.
+	// When brainStore is wired, memory is ON BY DEFAULT for any agent that
+	// has a reasoning strategy configured — no explicit brain_memory: block
+	// needed in SOUL.yaml. Defaults: episodic max_inject=5, semantic max_inject=8.
+	// Explicit brain_memory: settings always take precedence when present.
+	if e.brainStore != nil {
+		bm := def.BrainMemory
+		reasoningEnabled := def.Reasoning.Strategy != ""
+		// Apply defaults when reasoning is on but brain_memory wasn't configured.
+		anyExplicit := bm.Episodic.Enabled || bm.Semantic.Enabled || bm.Procedural.Enabled
+		if reasoningEnabled && !anyExplicit {
+			bm.Episodic.Enabled = true
+			bm.Episodic.MaxInject = 5
+			bm.Procedural.Enabled = true
+		}
+		if bm.Episodic.Enabled || bm.Semantic.Enabled || bm.Procedural.Enabled {
+			maxEp, maxSem := bm.Episodic.MaxInject, bm.Semantic.MaxInject
+			if maxEp <= 0 {
+				maxEp = 5
+			}
+			if maxSem <= 0 {
+				maxSem = 8
+			}
+			result, err := e.brainStore.Retrieve(agentmemory.RetrieveQuery{
+				AgentID:     def.ID,
+				MaxEpisodic: maxEp,
+				MaxSemantic: maxSem,
+			})
+			if err == nil {
+				if block := agentmemory.BuildContextBlock(result); block != "" {
+					systemPrompt += "\n\n" + block
+				}
+			}
+		}
+	}
 	if e.skillLoader != nil && len(def.Skills) > 0 {
 		if catalog := e.skillCatalogFor(def.Skills); catalog != "" {
 			systemPrompt += "\n\n" +
@@ -2355,11 +2457,6 @@ func (e *Engine) buildContext(def *agent.Definition, sess *Session, incoming mes
 	msgs = append(msgs, sess.History...)
 	sess.mu.Unlock()
 
-	// Current incoming message
-	msgs = append(msgs, llm.ChatMessage{
-		Role: "user", Content: flattenParts(incoming.Parts),
-	})
-
 	return msgs
 }
 
@@ -2374,6 +2471,7 @@ func (e *Engine) executeToolCalls(ctx context.Context, def *agent.Definition, se
 		wg.Add(1)
 		go func(idx int, tc message.ToolCall) {
 			defer wg.Done()
+			tc = normalizeToolCall(tc)
 			e.sink.Emit(message.Event{
 				Type: "tool.call", AgentID: def.ID, SessionID: sessionID,
 				Payload: tc, Timestamp: time.Now().UTC(),
@@ -2423,6 +2521,61 @@ func (e *Engine) executeToolCalls(ctx context.Context, def *agent.Definition, se
 	}
 	wg.Wait()
 	return results
+}
+
+func normalizeToolCall(call message.ToolCall) message.ToolCall {
+	call.Name = normalizeToolCallName(call.Name)
+	if call.Name == "web_search" {
+		call.Arguments = normalizeWebSearchArgs(call.Arguments)
+	}
+	return call
+}
+
+func normalizeToolCallName(name string) string {
+	name = strings.TrimSpace(name)
+	for _, prefix := range []string{"agent:", "tool:", "function:", "functions."} {
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimSpace(strings.TrimPrefix(name, prefix))
+			break
+		}
+	}
+	switch strings.ToLower(name) {
+	case "google:search", "google_search", "browser.search", "browser_search", "search", "web.search", "web-search":
+		return "web_search"
+	}
+	return name
+}
+
+func normalizeWebSearchArgs(args map[string]any) map[string]any {
+	if args == nil {
+		return args
+	}
+	if _, ok := args["query"]; ok {
+		return args
+	}
+	if q, ok := args["q"]; ok {
+		args["query"] = q
+		return args
+	}
+	if query, ok := args["queries"]; ok {
+		switch v := query.(type) {
+		case string:
+			args["query"] = v
+		case []string:
+			args["query"] = strings.Join(v, " ")
+		case []any:
+			parts := make([]string, 0, len(v))
+			for _, item := range v {
+				if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
+					parts = append(parts, s)
+				}
+			}
+			args["query"] = strings.Join(parts, " ")
+		default:
+			args["query"] = fmt.Sprint(v)
+		}
+	}
+	return args
 }
 
 func (e *Engine) runTool(ctx context.Context, def *agent.Definition, sessionID string, call message.ToolCall) (string, error) {
@@ -2512,6 +2665,31 @@ print(result if isinstance(result, str) else json.dumps(result))
 		return result, err
 	}
 
+	// Check system tools (shell_exec, run_script, etc.) if allowed
+	if e.allowSystemTools && def.SystemTools {
+		for _, b := range e.buildSystemTools() {
+			if b.Name != call.Name {
+				continue
+			}
+
+			// Confirmation gate: pause and ask the user before executing tools
+			// that are listed in def.ConfirmTools (or "*" for all built-ins).
+			if err := e.maybeConfirm(ctx, def, call); err != nil {
+				return "", err
+			}
+
+			tstart := time.Now()
+			tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+			defer cancel()
+			result, err := b.Handler(tctx, call.Arguments)
+
+			// Audit log every built-in call.
+			e.logAudit(ctx, def, call, result, tstart, false, err)
+
+			return result, err
+		}
+	}
+
 	// Find the agent's Python tool definition
 	var toolDef *agent.ToolDef
 	for i := range def.Tools {
@@ -2538,6 +2716,28 @@ print(result if isinstance(result, str) else json.dumps(result))
 		if strings.HasPrefix(pyFile, "~/") {
 			if home, err := os.UserHomeDir(); err == nil {
 				pyFile = filepath.Join(home, pyFile[2:])
+			}
+		}
+		// Privilege boundary: reject paths outside the configured allowlist.
+		// This prevents a crafted SOUL.yaml from executing arbitrary host files.
+		// The check is skipped when AllowedToolDirs is empty (default single-user
+		// mode where all SOUL.yaml authors are already trusted operators).
+		if len(e.allowedToolDirs) > 0 {
+			clean := filepath.Clean(pyFile)
+			allowed := false
+			for _, dir := range e.allowedToolDirs {
+				prefix := filepath.Clean(dir) + string(filepath.Separator)
+				if strings.HasPrefix(clean, prefix) || clean == filepath.Clean(dir) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				return "", fmt.Errorf(
+					"tool %q: python_file %q is outside the configured allowed_tool_dirs — "+
+						"update runtime.allowed_tool_dirs in config.yaml to permit this path",
+					call.Name, pyFile,
+				)
 			}
 		}
 		script = fmt.Sprintf(`
@@ -2897,6 +3097,27 @@ func withAgentCallDepth(ctx context.Context, d int) context.Context {
 	return context.WithValue(ctx, agentCallDepthKey{}, d)
 }
 
+// chainDeadlineKey carries a wall-clock deadline for the entire nested-agent
+// chain. It is stamped once at depth 0 (the first agent call from a tool
+// handler) and propagated unchanged through every sub-agent invocation.
+//
+// Without this, a 5-deep chain of agents each with a 5-minute run_timeout
+// could hang the gateway for up to 25 minutes before any cancellation fires.
+// With it, the whole fan-out is bounded to a single run_timeout budget.
+type chainDeadlineKey struct{}
+
+// withChainDeadline stamps deadline into ctx if no chain deadline exists yet
+// (depth 0 case). At depth > 0 the existing deadline is preserved unchanged so
+// the budget is not reset on every recursive call.
+func withChainDeadline(ctx context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	if _, already := ctx.Value(chainDeadlineKey{}).(time.Time); already {
+		// Deadline already set by an ancestor — inherit it unchanged.
+		return ctx, func() {}
+	}
+	ctx = context.WithValue(ctx, chainDeadlineKey{}, deadline)
+	return context.WithDeadline(ctx, deadline)
+}
+
 // resolveAgentRefs expands the SOUL.yaml `agents:` list into actual peer
 // Definitions. Supports "*" / "all" wildcards. Always excludes the caller
 // itself — agents can't accidentally invoke themselves through a wildcard,
@@ -3017,9 +3238,21 @@ func (e *Engine) runAgentCall(ctx context.Context, callerDef *agent.Definition, 
 		zap.Int("depth", depth+1),
 	)
 
-	// Fresh session for the sub-agent — no shared history with the caller,
-	// so the LLM has to provide a self-contained message.
-	subCtx := withAgentCallDepth(ctx, depth+1)
+	// Wall-clock chain budget: at depth 0 (first sub-agent call) stamp a
+	// deadline equal to the CALLER's run_timeout so the entire nested chain
+	// is bounded to one timeout budget, not one per depth level.
+	// withChainDeadline is a no-op at depth > 0 — the ancestor deadline is
+	// preserved unchanged through all recursive calls.
+	chainTimeout := e.toolTimeout // fallback if agent has no run_timeout
+	if callerDef.RunTimeout != "" {
+		if d, err := time.ParseDuration(callerDef.RunTimeout); err == nil && d > 0 {
+			chainTimeout = d
+		}
+	}
+	subCtx, chainCancel := withChainDeadline(ctx, time.Now().Add(chainTimeout))
+	defer chainCancel()
+
+	subCtx = withAgentCallDepth(subCtx, depth+1)
 	reply, err := e.Handle(subCtx, message.Message{
 		AgentID:   targetID,
 		SessionID: "agent-call-" + uuidShort(),
@@ -3221,6 +3454,9 @@ func (e *Engine) skillNamesCSV() string {
 
 // MemoryList returns up to limit archived entries for an agent, newest first.
 func (e *Engine) MemoryList(agentID string, limit int) ([]memory.Entry, error) {
+	if e.archive == nil {
+		return []memory.Entry{}, nil
+	}
 	if limit <= 0 {
 		limit = 200
 	}
@@ -3237,6 +3473,9 @@ func (e *Engine) MemoryList(agentID string, limit int) ([]memory.Entry, error) {
 // MemorySearch performs a substring search over an agent's archived memories.
 // If query is empty it falls back to MemoryList.
 func (e *Engine) MemorySearch(agentID, query string, limit int) ([]memory.Entry, error) {
+	if e.archive == nil {
+		return []memory.Entry{}, nil
+	}
 	if limit <= 0 {
 		limit = 200
 	}

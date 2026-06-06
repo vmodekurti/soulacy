@@ -26,6 +26,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -238,7 +239,351 @@ func buildChannelCmd() *cobra.Command {
 			return apiGet("/channels", "channels")
 		},
 	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status <id>",
+		Short: "Show one channel adapter status",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ch, err := getChannel(args[0])
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				return printJSON(ch)
+			}
+			printChannelSummary(ch)
+			return nil
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "enable <id>",
+		Short: "Enable a configured channel",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return apiPost("/channels/"+args[0]+"/enable", nil)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "disable <id>",
+		Short: "Disable a channel",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return apiPost("/channels/"+args[0]+"/disable", nil)
+		},
+	})
+
+	var setFields []string
+	updateCmd := &cobra.Command{
+		Use:   "update <id> --set key=value",
+		Short: "Update channel settings",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(setFields) == 0 {
+				return fmt.Errorf("at least one --set key=value is required")
+			}
+			settings := map[string]any{}
+			for _, item := range setFields {
+				key, value, ok := strings.Cut(item, "=")
+				key = strings.TrimSpace(key)
+				if !ok || key == "" {
+					return fmt.Errorf("invalid --set %q; expected key=value", item)
+				}
+				settings[key] = parseCLIValue(value)
+			}
+			body, _ := json.Marshal(map[string]any{"settings": settings})
+			return apiPatch("/channels/"+args[0], body)
+		},
+	}
+	updateCmd.Flags().StringArrayVar(&setFields, "set", nil, "Setting assignment, repeatable: --set key=value")
+	cmd.AddCommand(updateCmd)
+	cmd.AddCommand(
+		buildHTTPChannelCmd(),
+		buildTelegramChannelCmd(),
+		buildSlackChannelCmd(),
+		buildDiscordChannelCmd(),
+		buildWhatsAppChannelCmd(),
+		buildWhatsAppWebChannelCmd(),
+	)
 	return cmd
+}
+
+func buildHTTPChannelCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "http", Short: "Inspect the always-on HTTP channel"}
+	addAdapterCommonCommands(cmd, "http", false)
+	return cmd
+}
+
+func buildTelegramChannelCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "telegram", Short: "Configure Telegram channel"}
+	var token, agentID string
+	safety := addSafetyFlags(cmd, "groups")
+	configure := &cobra.Command{
+		Use:   "configure",
+		Short: "Configure Telegram credentials, routing, and activation safety",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			settings := map[string]any{}
+			addChangedString(cmd, settings, "token", token)
+			addChangedString(cmd, settings, "agent", agentID, "agent_id")
+			addSafetySettings(cmd, settings, safety)
+			return patchChannelSettings("telegram", settings)
+		},
+	}
+	configure.Flags().StringVar(&token, "token", "", "Telegram bot token")
+	configure.Flags().StringVar(&agentID, "agent", "", "Default agent ID")
+	addSafetyFlagsTo(configure, &safety, "groups")
+	cmd.AddCommand(configure)
+	addAdapterCommonCommands(cmd, "telegram", false)
+	return cmd
+}
+
+func buildSlackChannelCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "slack", Short: "Configure Slack channel"}
+	var botToken, appToken, agentID string
+	safety := addSafetyFlags(cmd, "channels")
+	configure := &cobra.Command{
+		Use:   "configure",
+		Short: "Configure Slack credentials, routing, and activation safety",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			settings := map[string]any{}
+			addChangedString(cmd, settings, "bot-token", botToken, "bot_token")
+			addChangedString(cmd, settings, "app-token", appToken, "app_token")
+			addChangedString(cmd, settings, "agent", agentID, "agent_id")
+			addSafetySettings(cmd, settings, safety)
+			return patchChannelSettings("slack", settings)
+		},
+	}
+	configure.Flags().StringVar(&botToken, "bot-token", "", "Slack bot token (xoxb-...)")
+	configure.Flags().StringVar(&appToken, "app-token", "", "Slack app token (xapp-...)")
+	configure.Flags().StringVar(&agentID, "agent", "", "Default agent ID")
+	addSafetyFlagsTo(configure, &safety, "channels")
+	cmd.AddCommand(configure)
+	addAdapterCommonCommands(cmd, "slack", false)
+	return cmd
+}
+
+func buildDiscordChannelCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "discord", Short: "Configure Discord channel"}
+	var token, agentID, guildID string
+	safety := addSafetyFlags(cmd, "servers")
+	configure := &cobra.Command{
+		Use:   "configure",
+		Short: "Configure Discord credentials, routing, and activation safety",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			settings := map[string]any{}
+			addChangedString(cmd, settings, "token", token)
+			addChangedString(cmd, settings, "agent", agentID, "agent_id")
+			addChangedString(cmd, settings, "guild", guildID, "guild_id")
+			addSafetySettings(cmd, settings, safety)
+			return patchChannelSettings("discord", settings)
+		},
+	}
+	configure.Flags().StringVar(&token, "token", "", "Discord bot token")
+	configure.Flags().StringVar(&agentID, "agent", "", "Default agent ID")
+	configure.Flags().StringVar(&guildID, "guild", "", "Optional Discord guild ID")
+	addSafetyFlagsTo(configure, &safety, "servers")
+	cmd.AddCommand(configure)
+	addAdapterCommonCommands(cmd, "discord", false)
+	return cmd
+}
+
+func buildWhatsAppChannelCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "whatsapp", Short: "Configure official WhatsApp Cloud API channel"}
+	var phoneNumberID, accessToken, verifyToken, appSecret, agentID string
+	safety := addSafetyFlags(cmd, "groups")
+	configure := &cobra.Command{
+		Use:   "configure",
+		Short: "Configure WhatsApp Cloud API credentials, routing, and activation safety",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			settings := map[string]any{}
+			addChangedString(cmd, settings, "phone-number-id", phoneNumberID, "phone_number_id")
+			addChangedString(cmd, settings, "access-token", accessToken, "access_token")
+			addChangedString(cmd, settings, "verify-token", verifyToken, "verify_token")
+			addChangedString(cmd, settings, "app-secret", appSecret, "app_secret")
+			addChangedString(cmd, settings, "agent", agentID, "agent_id")
+			addSafetySettings(cmd, settings, safety)
+			return patchChannelSettings("whatsapp", settings)
+		},
+	}
+	configure.Flags().StringVar(&phoneNumberID, "phone-number-id", "", "Meta WhatsApp phone number ID")
+	configure.Flags().StringVar(&accessToken, "access-token", "", "Meta WhatsApp access token")
+	configure.Flags().StringVar(&verifyToken, "verify-token", "", "Meta webhook verify token")
+	configure.Flags().StringVar(&appSecret, "app-secret", "", "Meta app secret for webhook HMAC verification")
+	configure.Flags().StringVar(&agentID, "agent", "", "Default agent ID")
+	addSafetyFlagsTo(configure, &safety, "groups")
+	cmd.AddCommand(configure)
+	addAdapterCommonCommands(cmd, "whatsapp", false)
+	return cmd
+}
+
+func buildWhatsAppWebChannelCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "whatsapp-web",
+		Aliases: []string{"wa-web", "whatsappweb"},
+		Short:   "Configure and pair WhatsApp Web",
+	}
+
+	var agentID, triggerPhrase, allowedChats, allowedSenders, command, args, sessionDir, accountID string
+	var allowGroups bool
+	var waitSeconds int
+	pairCmd := &cobra.Command{
+		Use:   "pair",
+		Short: "Start WhatsApp Web pairing and print the QR payload",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(agentID) == "" {
+				return fmt.Errorf("--agent is required")
+			}
+			body, _ := json.Marshal(map[string]any{
+				"agent_id":           agentID,
+				"trigger_phrase":     triggerPhrase,
+				"ignore_groups":      !allowGroups,
+				"allowed_chat_ids":   allowedChats,
+				"allowed_sender_ids": allowedSenders,
+			})
+			if _, err := apiCall("POST", "/channels/whatsapp_web/pair", body); err != nil {
+				return err
+			}
+			if !outputJSON {
+				fmt.Println("WhatsApp Web pairing started.")
+				fmt.Printf("Safety: trigger phrase %q, groups %s.\n", triggerPhrase, groupPolicyLabel(!allowGroups))
+			}
+			ch, err := waitForChannelQR("whatsapp_web", waitSeconds)
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				return printJSON(ch)
+			}
+			printWhatsAppWebQR(ch)
+			return nil
+		},
+	}
+	pairCmd.Flags().StringVar(&agentID, "agent", "", "Agent ID to route WhatsApp messages to")
+	pairCmd.Flags().StringVar(&triggerPhrase, "trigger", "!soulacy", "Only messages starting with this phrase trigger the agent")
+	pairCmd.Flags().BoolVar(&allowGroups, "allow-groups", false, "Allow group chats to trigger the agent")
+	pairCmd.Flags().StringVar(&allowedChats, "allowed-chats", "", "Comma-separated WhatsApp chat JIDs to allow")
+	pairCmd.Flags().StringVar(&allowedSenders, "allowed-senders", "", "Comma-separated WhatsApp sender JIDs to allow")
+	pairCmd.Flags().IntVar(&waitSeconds, "wait", 20, "Seconds to wait for a QR payload")
+	cmd.AddCommand(pairCmd)
+	configure := &cobra.Command{
+		Use:   "configure",
+		Short: "Configure WhatsApp Web sidecar, routing, and activation safety",
+		RunE: func(cmd *cobra.Command, argsList []string) error {
+			settings := map[string]any{}
+			addChangedString(cmd, settings, "agent", agentID, "agent_id")
+			addChangedString(cmd, settings, "command", command)
+			addChangedString(cmd, settings, "args", args)
+			addChangedString(cmd, settings, "session-dir", sessionDir, "session_dir")
+			addChangedString(cmd, settings, "account-id", accountID, "account_id")
+			addChangedString(cmd, settings, "trigger", triggerPhrase, "trigger_phrase")
+			if cmd.Flags().Changed("allow-groups") {
+				settings["ignore_groups"] = !allowGroups
+			}
+			addChangedString(cmd, settings, "allowed-chats", allowedChats, "allowed_chat_ids")
+			addChangedString(cmd, settings, "allowed-senders", allowedSenders, "allowed_sender_ids")
+			return patchChannelSettings("whatsapp_web", settings)
+		},
+	}
+	configure.Flags().StringVar(&agentID, "agent", "", "Default agent ID")
+	configure.Flags().StringVar(&command, "command", "", "Runtime executable; defaults to node")
+	configure.Flags().StringVar(&args, "args", "", "Sidecar args, e.g. scripts/whatsapp-web-sidecar.mjs")
+	configure.Flags().StringVar(&sessionDir, "session-dir", "", "Where QR-linked auth state is stored")
+	configure.Flags().StringVar(&accountID, "account-id", "", "Session subdirectory for this linked account")
+	configure.Flags().StringVar(&triggerPhrase, "trigger", "!soulacy", "Only messages starting with this phrase trigger the agent")
+	configure.Flags().BoolVar(&allowGroups, "allow-groups", false, "Allow group chats to trigger the agent")
+	configure.Flags().StringVar(&allowedChats, "allowed-chats", "", "Comma-separated WhatsApp chat JIDs to allow")
+	configure.Flags().StringVar(&allowedSenders, "allowed-senders", "", "Comma-separated WhatsApp sender JIDs to allow")
+	cmd.AddCommand(configure)
+
+	addAdapterCommonCommands(cmd, "whatsapp_web", true)
+	return cmd
+}
+
+type channelSafetyFlags struct {
+	trigger         string
+	allowGroups     bool
+	allowedChats    string
+	allowedUsers    string
+	groupNounPlural string
+}
+
+func addSafetyFlags(_ *cobra.Command, groupNounPlural string) channelSafetyFlags {
+	return channelSafetyFlags{
+		trigger:         "!soulacy",
+		groupNounPlural: groupNounPlural,
+	}
+}
+
+func addSafetyFlagsTo(cmd *cobra.Command, safety *channelSafetyFlags, groupNounPlural string) {
+	cmd.Flags().StringVar(&safety.trigger, "trigger", safety.trigger, "Only messages starting with this phrase trigger the agent")
+	cmd.Flags().BoolVar(&safety.allowGroups, "allow-groups", false, "Allow "+groupNounPlural+" to trigger the agent")
+	cmd.Flags().StringVar(&safety.allowedChats, "allowed-chats", "", "Comma-separated platform chat/channel IDs to allow")
+	cmd.Flags().StringVar(&safety.allowedUsers, "allowed-users", "", "Comma-separated platform user/sender IDs to allow")
+}
+
+func addSafetySettings(cmd *cobra.Command, settings map[string]any, safety channelSafetyFlags) {
+	addChangedString(cmd, settings, "trigger", safety.trigger, "trigger_phrase")
+	if cmd.Flags().Changed("allow-groups") {
+		settings["ignore_groups"] = !safety.allowGroups
+	}
+	addChangedString(cmd, settings, "allowed-chats", safety.allowedChats, "allowed_chat_ids")
+	addChangedString(cmd, settings, "allowed-users", safety.allowedUsers, "allowed_user_ids")
+}
+
+func addAdapterCommonCommands(cmd *cobra.Command, channelID string, includeQR bool) {
+	cmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show channel adapter status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ch, err := getChannel(channelID)
+			if err != nil {
+				return err
+			}
+			if outputJSON {
+				return printJSON(ch)
+			}
+			printChannelSummary(ch)
+			if includeQR {
+				printWhatsAppWebQR(ch)
+			}
+			return nil
+		},
+	})
+	if channelID == "http" {
+		return
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "enable",
+		Short: "Enable this channel",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return apiPost("/channels/"+channelID+"/enable", nil)
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "disable",
+		Short: "Disable this channel",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return apiPost("/channels/"+channelID+"/disable", nil)
+		},
+	})
+}
+
+func addChangedString(cmd *cobra.Command, settings map[string]any, flagName string, value string, settingName ...string) {
+	if !cmd.Flags().Changed(flagName) {
+		return
+	}
+	key := flagName
+	if len(settingName) > 0 {
+		key = settingName[0]
+	}
+	settings[key] = value
+}
+
+func patchChannelSettings(channelID string, settings map[string]any) error {
+	if len(settings) == 0 {
+		return fmt.Errorf("no settings provided")
+	}
+	body, _ := json.Marshal(map[string]any{"settings": settings})
+	return apiPatch("/channels/"+channelID, body)
 }
 
 // ── Schedule ─────────────────────────────────────────────────────────────────
@@ -510,6 +855,18 @@ func apiPost(path string, body []byte) error {
 	return nil
 }
 
+func apiPatch(path string, body []byte) error {
+	if body == nil {
+		body = []byte("{}")
+	}
+	data, err := apiCall("PATCH", path, body)
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(data))
+	return nil
+}
+
 func apiDelete(path string) error {
 	_, err := apiCall("DELETE", path, nil)
 	if err != nil {
@@ -517,4 +874,148 @@ func apiDelete(path string) error {
 	}
 	fmt.Println("deleted.")
 	return nil
+}
+
+func getChannel(id string) (map[string]any, error) {
+	data, err := apiCall("GET", "/channels", nil)
+	if err != nil {
+		return nil, err
+	}
+	var result struct {
+		Channels []map[string]any `json:"channels"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, err
+	}
+	for _, ch := range result.Channels {
+		if fmt.Sprint(ch["id"]) == id {
+			return ch, nil
+		}
+	}
+	return nil, fmt.Errorf("channel %q not found", id)
+}
+
+func waitForChannelQR(id string, seconds int) (map[string]any, error) {
+	if seconds < 0 {
+		seconds = 0
+	}
+	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
+	for {
+		ch, err := getChannel(id)
+		if err != nil {
+			return nil, err
+		}
+		status := mapValue(ch, "status")
+		if stringValue(status, "qr_code") != "" || boolValue(status, "connected") || time.Now().After(deadline) {
+			return ch, nil
+		}
+		time.Sleep(time.Second)
+	}
+}
+
+func printChannelSummary(ch map[string]any) {
+	status := mapValue(ch, "status")
+	settings := mapValue(ch, "settings")
+	fmt.Printf("%s (%s)\n", fmt.Sprint(ch["name"]), fmt.Sprint(ch["id"]))
+	fmt.Printf("  enabled:    %v\n", ch["enabled"])
+	fmt.Printf("  configured: %v\n", ch["configured"])
+	fmt.Printf("  connected:  %v\n", boolValue(status, "connected"))
+	if detail := stringValue(status, "detail"); detail != "" {
+		fmt.Printf("  detail:     %s\n", detail)
+	}
+	if fmt.Sprint(ch["id"]) == "whatsapp_web" {
+		trigger := stringValue(settings, "trigger_phrase")
+		if trigger == "" {
+			trigger = "!soulacy"
+		}
+		fmt.Printf("  trigger:    %s\n", trigger)
+		fmt.Printf("  groups:     %s\n", groupPolicyLabel(parseBoolSetting(settings["ignore_groups"], true)))
+	}
+}
+
+func printWhatsAppWebQR(ch map[string]any) {
+	status := mapValue(ch, "status")
+	qr := stringValue(status, "qr_code")
+	if qr == "" {
+		if boolValue(status, "connected") {
+			fmt.Println("WhatsApp Web is already connected.")
+		} else {
+			fmt.Println("No QR payload available yet. Run `sy channel whatsapp-web status` again, or use the Channels GUI for a rendered QR.")
+		}
+		return
+	}
+	fmt.Println()
+	fmt.Println("QR payload:")
+	fmt.Println(qr)
+	fmt.Println()
+	fmt.Println("Use the Channels GUI for a rendered QR, or render this payload in a trusted terminal QR tool.")
+}
+
+func printJSON(v any) error {
+	pretty, err := json.MarshalIndent(v, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(pretty))
+	return nil
+}
+
+func parseCLIValue(value string) any {
+	value = strings.TrimSpace(value)
+	switch strings.ToLower(value) {
+	case "true":
+		return true
+	case "false":
+		return false
+	default:
+		return value
+	}
+}
+
+func mapValue(m map[string]any, key string) map[string]any {
+	raw, ok := m[key]
+	if !ok {
+		return map[string]any{}
+	}
+	asMap, ok := raw.(map[string]any)
+	if ok {
+		return asMap
+	}
+	return map[string]any{}
+}
+
+func stringValue(m map[string]any, key string) string {
+	if v, ok := m[key]; ok {
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+	return ""
+}
+
+func boolValue(m map[string]any, key string) bool {
+	if v, ok := m[key]; ok {
+		return parseBoolSetting(v, false)
+	}
+	return false
+}
+
+func parseBoolSetting(v any, fallback bool) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		switch strings.ToLower(strings.TrimSpace(t)) {
+		case "true", "yes", "1", "on":
+			return true
+		case "false", "no", "0", "off":
+			return false
+		}
+	}
+	return fallback
+}
+
+func groupPolicyLabel(ignoreGroups bool) string {
+	if ignoreGroups {
+		return "ignored"
+	}
+	return "allowed"
 }

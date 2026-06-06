@@ -157,6 +157,6 @@ Content-Type: application/json
 ```json
 {
   "status": "installed",
-  "path": "./agents/web-researcher.soul.yaml"
+  "path": "./agents/web-researcher/SOUL.yaml"
 }
 ```

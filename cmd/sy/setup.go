@@ -54,28 +54,28 @@ type setupConfig struct {
 	APIKey string
 
 	// LLM
-	LLMProvider string
-	LLMModel    string
-	OllamaURL   string
-	OpenAIKey   string
+	LLMProvider  string
+	LLMModel     string
+	OllamaURL    string
+	OpenAIKey    string
 	AnthropicKey string
 
 	// Channels
-	TelegramToken  string
-	TelegramAgent  string
-	DiscordToken   string
-	DiscordAgent   string
-	SlackBotToken  string
-	SlackAppToken  string
-	SlackAgent     string
+	TelegramToken   string
+	TelegramAgent   string
+	DiscordToken    string
+	DiscordAgent    string
+	SlackBotToken   string
+	SlackAppToken   string
+	SlackAgent      string
 	WAPhoneNumberID string
 	WAAccessToken   string
 	WAVerifyToken   string
 	WAAgent         string
 
 	// Runtime
-	PythonBin   string
-	LogLevel    string
+	PythonBin string
+	LogLevel  string
 
 	// Paths
 	DataDir    string
@@ -298,20 +298,20 @@ func setupChannels(cfg *setupConfig) {
 	if confirm("  Enable Telegram?", false) {
 		fmt.Printf("  %s Get your token from @BotFather on Telegram\n", gray("→"))
 		cfg.TelegramToken = prompt("  Bot token", "")
-		cfg.TelegramAgent = prompt("  Default agent ID to handle messages", "hello-world")
+		cfg.TelegramAgent = prompt("  Default agent ID to handle messages (create this agent before enabling)", "assistant")
 	}
 
 	if confirm("  Enable Discord?", false) {
 		fmt.Printf("  %s Create a bot at discord.com/developers/applications\n", gray("→"))
 		cfg.DiscordToken = prompt("  Bot token (Bot YOUR_TOKEN)", "")
-		cfg.DiscordAgent = prompt("  Default agent ID to handle messages", "hello-world")
+		cfg.DiscordAgent = prompt("  Default agent ID to handle messages (create this agent before enabling)", "assistant")
 	}
 
 	if confirm("  Enable Slack?", false) {
 		fmt.Printf("  %s Enable Socket Mode in your Slack app settings\n", gray("→"))
 		cfg.SlackBotToken = prompt("  Bot token (xoxb-...)", "")
 		cfg.SlackAppToken = prompt("  App-level token (xapp-...)", "")
-		cfg.SlackAgent = prompt("  Default agent ID to handle messages", "hello-world")
+		cfg.SlackAgent = prompt("  Default agent ID to handle messages (create this agent before enabling)", "assistant")
 	}
 
 	if confirm("  Enable WhatsApp?", false) {
@@ -319,9 +319,9 @@ func setupChannels(cfg *setupConfig) {
 		fmt.Printf("  %s Add the WhatsApp product, then get your Phone Number ID and access token.\n", gray("→"))
 		fmt.Printf("  %s Point your Meta webhook to: https://YOUR-DOMAIN/channels/whatsapp/webhook\n", gray("→"))
 		cfg.WAPhoneNumberID = prompt("  Phone Number ID", "")
-		cfg.WAAccessToken   = prompt("  Access token (permanent)", "")
-		cfg.WAVerifyToken   = prompt("  Verify token (choose any string — matches your Meta webhook config)", "")
-		cfg.WAAgent         = prompt("  Default agent ID to handle messages", "hello-world")
+		cfg.WAAccessToken = prompt("  Access token (permanent)", "")
+		cfg.WAVerifyToken = prompt("  Verify token (choose any string — matches your Meta webhook config)", "")
+		cfg.WAAgent = prompt("  Default agent ID to handle messages (create this agent before enabling)", "assistant")
 	}
 
 	fmt.Println()
@@ -470,39 +470,9 @@ func createDataDirs(cfg *setupConfig) error {
 }
 
 func installExampleAgent(cfg *setupConfig) {
-	agentDir := filepath.Join(cfg.DataDir, "agents")
-	dest := filepath.Join(agentDir, "hello-world.yaml")
-	// Always write so that model/provider changes from re-running setup take effect.
-	// The user can customise the agent further in the GUI.
-
-	content := fmt.Sprintf(`id: hello-world
-name: Hello World Agent
-description: A simple greeting agent — edit me!
-version: "1.0"
-
-trigger: channel
-channels: [http]
-
-system_prompt: |
-  You are Claw, a friendly Soulacy assistant.
-  Keep replies concise and helpful.
-
-llm:
-  provider: %s
-  model: %s
-  temperature: 0.7
-  max_tokens: 512
-
-memory:
-  read_scopes: [session]
-  write_scopes: [session]
-  max_tokens: 20
-
-max_turns: 5
-enabled: true
-`, cfg.LLMProvider, cfg.LLMModel)
-
-	_ = os.WriteFile(dest, []byte(content), 0644)
+	// The built-in "system" agent is seeded in memory by the runtime loader.
+	// Do not write any default SOUL.yaml here; user-defined agents should be
+	// created explicitly through the GUI, CLI, or templates.
 }
 
 // ── Success screen ────────────────────────────────────────────────────────────
@@ -549,10 +519,10 @@ func printSuccess(cfg *setupConfig) {
 	fmt.Printf("  %s\n", bold("Test it:"))
 	if cfg.APIKey != "" {
 		fmt.Printf("    %s\n", cyan(fmt.Sprintf("sy --api-key %s server status", cfg.APIKey)))
-		fmt.Printf("    %s\n\n", cyan(fmt.Sprintf(`sy --api-key %s chat --agent hello-world "Hi!"`, cfg.APIKey)))
+		fmt.Printf("    %s\n\n", cyan(fmt.Sprintf(`sy --api-key %s chat --agent system "Hi!"`, cfg.APIKey)))
 	} else {
 		fmt.Printf("    %s\n", cyan("sy server status"))
-		fmt.Printf("    %s\n\n", cyan(`sy chat --agent hello-world "Hi!"`))
+		fmt.Printf("    %s\n\n", cyan(`sy chat --agent system "Hi!"`))
 	}
 
 	if cfg.APIKey != "" {

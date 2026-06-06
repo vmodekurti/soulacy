@@ -24,6 +24,54 @@ type MemoryPolicy struct {
 	MaxTokens   int      `yaml:"max_tokens"   json:"max_tokens"`
 }
 
+// ReasoningConfig configures the multi-step reasoning loop for an agent (CFG-01).
+// When Strategy is empty, the agent uses the classic single-call behaviour.
+type ReasoningConfig struct {
+	// Strategy is "react" or "plan_execute". Empty = loop disabled.
+	Strategy string `yaml:"strategy,omitempty" json:"strategy,omitempty"`
+	// Backend is automatically derived from llm.provider — no need to set this.
+	// The reasoning loop uses the same provider as the agent's LLM config so there
+	// is exactly one place to configure the model. Supported providers:
+	//   ollama    — local Ollama, uses llm.model for Think, qwen2.5:72b for Plan/Reflect
+	//   anthropic — Claude API, uses llm.model (default claude-sonnet-4-6)
+	//   openai    — OpenAI or any OpenAI-compatible endpoint (Groq, Together, vLLM)
+	// Any unsupported provider falls back to Ollama.
+	Backend string `yaml:"backend,omitempty" json:"backend,omitempty"`
+	// MaxSteps is the hard ceiling for ReAct iterations (default 8).
+	MaxSteps int `yaml:"max_steps,omitempty" json:"max_steps,omitempty"`
+	// MaxPlanSteps caps plan decomposition depth for plan_execute (default 6).
+	MaxPlanSteps int `yaml:"max_plan_steps,omitempty" json:"max_plan_steps,omitempty"`
+	// StepTimeout is the per-step context deadline (e.g. "30s").
+	StepTimeout string `yaml:"step_timeout,omitempty" json:"step_timeout,omitempty"`
+	// TotalTimeout is the whole-task deadline (e.g. "180s").
+	TotalTimeout string `yaml:"total_timeout,omitempty" json:"total_timeout,omitempty"`
+}
+
+// BrainMemoryConfig controls long-term agent memory behaviour (CFG-02).
+type BrainMemoryConfig struct {
+	Episodic   EpisodicMemoryConfig   `yaml:"episodic,omitempty"   json:"episodic,omitempty"`
+	Semantic   SemanticMemoryConfig   `yaml:"semantic,omitempty"   json:"semantic,omitempty"`
+	Procedural ProceduralMemoryConfig `yaml:"procedural,omitempty" json:"procedural,omitempty"`
+}
+
+// EpisodicMemoryConfig controls episodic task history injection.
+type EpisodicMemoryConfig struct {
+	Enabled   bool `yaml:"enabled,omitempty"    json:"enabled,omitempty"`
+	MaxInject int  `yaml:"max_inject,omitempty" json:"max_inject,omitempty"`
+}
+
+// SemanticMemoryConfig controls semantic knowledge chunk injection.
+type SemanticMemoryConfig struct {
+	Enabled   bool `yaml:"enabled,omitempty"    json:"enabled,omitempty"`
+	MaxInject int  `yaml:"max_inject,omitempty" json:"max_inject,omitempty"`
+}
+
+// ProceduralMemoryConfig controls procedural rule injection and auto-update.
+type ProceduralMemoryConfig struct {
+	Enabled    bool `yaml:"enabled,omitempty"     json:"enabled,omitempty"`
+	AutoUpdate bool `yaml:"auto_update,omitempty" json:"auto_update,omitempty"`
+}
+
 // LLMConfig specifies which model and parameters to use.
 type LLMConfig struct {
 	Provider    string  `yaml:"provider"           json:"provider"`
@@ -118,9 +166,20 @@ type ContextHook struct {
 
 // Schedule configures cron/one-shot triggers.
 type Schedule struct {
-	Cron    string    `yaml:"cron,omitempty"    json:"cron,omitempty"`
-	At      time.Time `yaml:"at,omitempty"      json:"at,omitempty"`
-	Timeout string    `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	Cron                string          `yaml:"cron,omitempty"                  json:"cron,omitempty"`
+	At                  time.Time       `yaml:"at,omitempty"                    json:"at,omitempty"`
+	Timeout             string          `yaml:"timeout,omitempty"               json:"timeout,omitempty"`
+	RunMissedOnStartup  bool            `yaml:"run_missed_on_startup,omitempty" json:"run_missed_on_startup,omitempty"`
+	MissedStartupWindow string          `yaml:"missed_startup_window,omitempty" json:"missed_startup_window,omitempty"`
+	Output              *ScheduleOutput `yaml:"output,omitempty"                json:"output,omitempty"`
+}
+
+// ScheduleOutput configures where successful scheduled runs should be sent.
+type ScheduleOutput struct {
+	Channel  string `yaml:"channel,omitempty"  json:"channel,omitempty"`  // channel adapter ID, e.g. telegram or telegram-financial-agent
+	To       string `yaml:"to,omitempty"       json:"to,omitempty"`       // destination thread/chat/channel/user ID for the adapter
+	BotName  string `yaml:"bot_name,omitempty" json:"bot_name,omitempty"` // display snapshot from channel bot mapping
+	Template string `yaml:"template,omitempty" json:"template,omitempty"` // optional text template; {reply} inserts the agent reply
 }
 
 // Definition is the parsed representation of a SOUL.yaml file.
@@ -224,6 +283,18 @@ type Definition struct {
 
 	// --- Memory ---
 	Memory MemoryPolicy `yaml:"memory" json:"memory"`
+
+	// --- Reasoning loop (CFG-01) ---
+	// Controls the multi-step reasoning strategy. When absent the agent uses
+	// the classic single-LLM-call behaviour (no loop). Set strategy to "react"
+	// or "plan_execute" to enable the reasoning loop for this agent.
+	Reasoning ReasoningConfig `yaml:"reasoning,omitempty" json:"reasoning,omitempty"`
+
+	// --- Long-term agent memory (CFG-02) ---
+	// Controls episodic, semantic, and procedural memory injection and
+	// persistence for this agent. Requires a CompositeStore to be wired into
+	// the engine at startup (MEM-02).
+	BrainMemory BrainMemoryConfig `yaml:"brain_memory,omitempty" json:"brain_memory,omitempty"`
 
 	// --- Hooks ---
 	Hooks []ContextHook `yaml:"hooks,omitempty" json:"hooks,omitempty"`
@@ -392,9 +463,13 @@ func (d *Definition) Clone() *Definition {
 		cp.Workflow = &wf
 	}
 
-	// Schedule — shallow pointer copy; struct has no sub-slices/maps.
+	// Schedule.
 	if d.Schedule != nil {
 		sched := *d.Schedule
+		if d.Schedule.Output != nil {
+			out := *d.Schedule.Output
+			sched.Output = &out
+		}
 		cp.Schedule = &sched
 	}
 

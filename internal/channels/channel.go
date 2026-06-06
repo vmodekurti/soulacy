@@ -1,8 +1,8 @@
 // Package channels defines the channel adapter interface and registry.
 // A channel adapter is responsible for:
-//   1. Connecting to a messaging platform.
-//   2. Translating inbound platform events into canonical message.Message values.
-//   3. Translating outbound message.Message values back into platform-specific sends.
+//  1. Connecting to a messaging platform.
+//  2. Translating inbound platform events into canonical message.Message values.
+//  3. Translating outbound message.Message values back into platform-specific sends.
 //
 // All adapters run concurrently. The gateway calls Start() on each enabled adapter
 // at boot and Stop() on each during shutdown.
@@ -43,8 +43,9 @@ type Adapter interface {
 
 // AdapterStatus describes the current connection state of a channel adapter.
 type AdapterStatus struct {
-	Connected  bool   `json:"connected"`
-	Detail     string `json:"detail,omitempty"` // e.g. "polling" or error message
+	Connected bool   `json:"connected"`
+	Detail    string `json:"detail,omitempty"` // e.g. "polling" or error message
+	QRCode    string `json:"qr_code,omitempty"`
 }
 
 // Registry holds all registered channel adapters and routes outbound messages.
@@ -138,6 +139,29 @@ func (r *Registry) StartAll(ctx context.Context) []error {
 		}
 	}
 	return errs
+}
+
+// StartAdapter registers and starts one adapter immediately. It is used by
+// channel setup flows that can connect without a full gateway restart.
+func (r *Registry) StartAdapter(ctx context.Context, a Adapter) error {
+	r.mu.Lock()
+	old := r.adapters[a.ID()]
+	r.adapters[a.ID()] = a
+	r.mu.Unlock()
+
+	if old != nil {
+		_ = old.Stop()
+	}
+
+	if err := a.Start(ctx, r.inbox); err != nil {
+		r.mu.Lock()
+		if r.adapters[a.ID()] == a {
+			delete(r.adapters, a.ID())
+		}
+		r.mu.Unlock()
+		return err
+	}
+	return nil
 }
 
 // StopAll gracefully stops all adapters.

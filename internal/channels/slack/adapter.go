@@ -2,12 +2,13 @@
 // Socket Mode lets Slack send events over a WebSocket so no public URL is needed.
 //
 // Configuration:
-//   channels:
-//     slack:
-//       enabled: true
-//       bot_token: "xoxb-..."
-//       app_token: "xapp-..."   # Socket Mode app-level token
-//       agent_id: "my-agent"
+//
+//	channels:
+//	  slack:
+//	    enabled: true
+//	    bot_token: "xoxb-..."
+//	    app_token: "xapp-..."   # Socket Mode app-level token
+//	    agent_id: "my-agent"
 package slack
 
 import (
@@ -31,15 +32,16 @@ const slackAPI = "https://slack.com/api"
 
 // Adapter implements the Slack Socket Mode protocol.
 type Adapter struct {
-	id        string // "slack" for the primary bot; "slack-<agentID>" for extras
-	botToken  string
-	appToken  string
-	agentID   string
-	client    *http.Client
-	inbox     chan<- message.Message
-	connected bool
-	stopCh    chan struct{}
-	stopOnce  sync.Once // guards close(stopCh) so Stop() is idempotent
+	id         string // "slack" for the primary bot; "slack-<agentID>" for extras
+	botToken   string
+	appToken   string
+	agentID    string
+	activation channels.ActivationPolicy
+	client     *http.Client
+	inbox      chan<- message.Message
+	connected  bool
+	stopCh     chan struct{}
+	stopOnce   sync.Once // guards close(stopCh) so Stop() is idempotent
 }
 
 // New creates a Slack adapter with the default channel ID "slack".
@@ -51,13 +53,20 @@ func New(botToken, appToken, agentID string) *Adapter {
 // running multiple bots — each bot needs a unique ID (e.g. "slack-system")
 // so the registry can route replies back to the correct bot.
 func NewWithID(id, botToken, appToken, agentID string) *Adapter {
+	return NewWithIDAndActivation(id, botToken, appToken, agentID, channels.ActivationPolicy{})
+}
+
+// NewWithIDAndActivation creates a Slack adapter with shared channel
+// activation guardrails.
+func NewWithIDAndActivation(id, botToken, appToken, agentID string, activation channels.ActivationPolicy) *Adapter {
 	return &Adapter{
-		id:       id,
-		botToken: botToken,
-		appToken: appToken,
-		agentID:  agentID,
-		client:   &http.Client{Timeout: 10 * time.Second},
-		stopCh:   make(chan struct{}),
+		id:         id,
+		botToken:   botToken,
+		appToken:   appToken,
+		agentID:    agentID,
+		activation: activation,
+		client:     &http.Client{Timeout: 10 * time.Second},
+		stopCh:     make(chan struct{}),
 	}
 }
 
@@ -156,6 +165,10 @@ func (a *Adapter) run(ctx context.Context, wsURL string) error {
 			_ = json.Unmarshal(envelope.Payload, &ep)
 
 			if ep.Event.Type == "message" && ep.Event.BotID == "" {
+				text, ok := a.activation.Apply(ep.Event.Text, ep.Event.Channel, ep.Event.User, true)
+				if !ok {
+					continue
+				}
 				msg := message.Message{
 					ID:        uuid.New().String(),
 					SessionID: fmt.Sprintf("%s-%s", a.id, ep.Event.Channel),
@@ -165,7 +178,7 @@ func (a *Adapter) run(ctx context.Context, wsURL string) error {
 					UserID:    ep.Event.User,
 					Username:  ep.Event.User,
 					Role:      message.RoleUser,
-					Parts:     message.Text(ep.Event.Text),
+					Parts:     message.Text(text),
 					Metadata:  map[string]string{"ts": ep.Event.TS},
 					CreatedAt: time.Now().UTC(),
 				}

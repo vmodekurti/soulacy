@@ -57,7 +57,7 @@ Content-Type: application/json
 Use `/api/v1/chat/stream` to receive Server-Sent Events.
 
 ```bash
-curl -N -X POST http://localhost:8080/api/v1/chat/stream \
+curl -N -X POST http://localhost:18789/api/v1/chat/stream \
   -H "Authorization: Bearer sk_..." \
   -H "Content-Type: application/json" \
   -d '{"agent_id":"assistant","user_id":"u1","text":"Tell me a joke"}'
@@ -90,16 +90,22 @@ Authorization: Bearer <token>
     {
       "id": "assistant",
       "description": "A helpful general-purpose assistant",
-      "model": "gpt-4o-mini",
+      "llm": {
+        "provider": "openai",
+        "model": "gpt-4o-mini"
+      },
       "channels": ["http", "telegram"],
-      "tools": ["web_search"]
+      "builtins": ["web_search"]
     },
     {
       "id": "researcher",
       "description": "Deep research agent",
-      "model": "gpt-4o",
+      "llm": {
+        "provider": "openai",
+        "model": "gpt-4o"
+      },
       "channels": ["http"],
-      "tools": ["web_search", "url_fetch"]
+      "builtins": ["web_search"]
     }
   ]
 }
@@ -120,13 +126,13 @@ Authorization: Bearer <token>
 {
   "id": "assistant",
   "description": "A helpful general-purpose assistant",
-  "model": "gpt-4o-mini",
+  "llm": {
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "max_tokens": 1024
+  },
   "system_prompt": "You are a helpful assistant.",
   "channels": ["http", "telegram"],
-  "tools": ["web_search"],
-  "token_budget": {
-    "max_input_tokens": 32000,
-    "max_output_tokens": 1024
-  }
+  "builtins": ["web_search"]
 }
 ```

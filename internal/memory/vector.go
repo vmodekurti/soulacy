@@ -5,10 +5,11 @@
 // process or API to manage: one database file, two complementary tables.
 //
 // Schema:
-//   memory_vectors      — sqlite-vec virtual table (vec0), one row per entry.
-//   memory_vector_meta  — companion table keyed by the same rowid, holding
-//                         agent_id, session_id, content, etc. for join-back
-//                         after a KNN search.
+//
+//	memory_vectors      — sqlite-vec virtual table (vec0), one row per entry.
+//	memory_vector_meta  — companion table keyed by the same rowid, holding
+//	                      agent_id, session_id, content, etc. for join-back
+//	                      after a KNN search.
 //
 // The embedding dimension is fixed at construction time (must match what the
 // configured embedder produces). Mixing dimensions across process restarts
@@ -106,7 +107,7 @@ func (vs *VectorStore) Write(ctx context.Context, e Entry) error {
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO memory_vector_meta (agent_id, session_id, scope, content, key, provenance, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		e.AgentID, e.SessionID, string(e.Scope), e.Content, e.Key, string(e.Provenance), e.CreatedAt,
+		e.AgentID, e.SessionID, string(e.Scope), e.Content, e.Key, "", e.CreatedAt, // provenance col kept for schema compat
 	)
 	if err != nil {
 		return fmt.Errorf("vector memory: insert meta: %w", err)
@@ -162,17 +163,16 @@ func (vs *VectorStore) Search(ctx context.Context, query string, topK int) ([]Se
 		var rowID int64
 		var dist float64
 		var sr SearchResult
-		var scope, provenance string
+		var scope, ignoredProvenance string // provenance col retained in schema, discarded on read
 		if err := rows.Scan(
 			&rowID, &dist,
 			&sr.Entry.AgentID, &sr.Entry.SessionID,
 			&scope, &sr.Entry.Content,
-			&sr.Entry.Key, &provenance, &sr.Entry.CreatedAt,
+			&sr.Entry.Key, &ignoredProvenance, &sr.Entry.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("vector memory: scan: %w", err)
 		}
 		sr.Entry.Scope = Scope(scope)
-		sr.Entry.Provenance = ProvenanceLabel(provenance)
 		sr.Distance = dist
 		results = append(results, sr)
 	}
@@ -244,17 +244,16 @@ func (vs *VectorStore) SearchFiltered(ctx context.Context, query string, topK in
 		var rowID int64
 		var dist float64
 		var sr SearchResult
-		var scope, provenance string
+		var scope, ignoredProvenance string // provenance col retained in schema, discarded on read
 		if err := rows.Scan(
 			&rowID, &dist,
 			&sr.Entry.AgentID, &sr.Entry.SessionID,
 			&scope, &sr.Entry.Content,
-			&sr.Entry.Key, &provenance, &sr.Entry.CreatedAt,
+			&sr.Entry.Key, &ignoredProvenance, &sr.Entry.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("vector memory: scan: %w", err)
 		}
 		sr.Entry.Scope = Scope(scope)
-		sr.Entry.Provenance = ProvenanceLabel(provenance)
 		sr.Distance = dist
 		results = append(results, sr)
 	}
@@ -285,8 +284,8 @@ func (vs *VectorStore) Prune(ctx context.Context, agentID string, before time.Ti
 	}
 
 	for _, id := range ids {
-		vs.db.ExecContext(ctx, `DELETE FROM memory_vectors WHERE rowid = ?`, id)          //nolint:errcheck
-		vs.db.ExecContext(ctx, `DELETE FROM memory_vector_meta WHERE rowid = ?`, id)      //nolint:errcheck
+		vs.db.ExecContext(ctx, `DELETE FROM memory_vectors WHERE rowid = ?`, id)     //nolint:errcheck
+		vs.db.ExecContext(ctx, `DELETE FROM memory_vector_meta WHERE rowid = ?`, id) //nolint:errcheck
 	}
 	return nil
 }

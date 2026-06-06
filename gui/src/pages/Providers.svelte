@@ -23,6 +23,20 @@
   let addKey   = ''
   let addBase  = ''
   let addModel = ''
+  let addKeepAlive = ''
+  let addPromptCaching = false
+  // Google
+  let addThinkingBudget = 0
+  let addSafetyLevel = ''
+  // Anthropic
+  let addExtendedThinking = false
+  let addAnthropicThinkingBudget = 8192
+  // OpenAI / compatible
+  let addOrganization = ''
+  let addParallelToolCalls = null  // null=default, true, false
+  // Ollama
+  let ollamaOptions = {}
+  let ollamaOptionsJSON = ''
   let saving   = false
 
   const KNOWN_BASES = {
@@ -43,6 +57,18 @@
     mistral:     'mistral-small-latest',
     openrouter:  'meta-llama/llama-3.3-70b-instruct:free',
   }
+  const DEFAULT_OLLAMA_KEEP_ALIVE = '30m'
+  const DEFAULT_OLLAMA_OPTIONS = { num_ctx: 4096, num_batch: 128 }
+  const ADVANCED_OPTIONS_PLACEHOLDER = '{"top_k": 40, "repeat_penalty": 1.1}'
+  const OLLAMA_OPTION_FIELDS = [
+    { key: 'num_ctx', label: 'Context window', type: 'number', placeholder: '4096', help: 'More tokens of conversation/context. Higher values use more memory and slow prompt evaluation.' },
+    { key: 'num_batch', label: 'Prompt batch size', type: 'number', placeholder: '128', help: 'Can speed prompt ingestion when memory allows. Reduce if large prompts cause memory pressure.' },
+    { key: 'num_gpu', label: 'GPU layers', type: 'number', placeholder: '-1', help: 'How many layers to offload. Usually leave blank on Apple Silicon unless Ollama under-utilizes GPU.' },
+    { key: 'main_gpu', label: 'Main GPU', type: 'number', placeholder: '0', help: 'Only useful on multi-GPU machines.' },
+    { key: 'num_thread', label: 'CPU threads', type: 'number', placeholder: '', help: 'CPU inference thread count. Leave blank on Apple Silicon unless benchmarking.' },
+    { key: 'use_mmap', label: 'Memory-map model', type: 'boolean', help: 'Usually true/default. Can reduce load overhead.' },
+    { key: 'numa', label: 'NUMA mode', type: 'boolean', help: 'Linux multi-socket tuning. Usually off on desktops and Macs.' },
+  ]
 
   async function load() {
     loading = true
@@ -65,17 +91,53 @@
     addKey   = ''
     addBase  = providers[addId]?.base_url || KNOWN_BASES[addId] || ''
     addModel = providers[addId]?.model    || KNOWN_MODELS[addId] || ''
+    addKeepAlive = addId === 'ollama'
+      ? (providers[addId]?.keep_alive || DEFAULT_OLLAMA_KEEP_ALIVE)
+      : ''
+    addPromptCaching = providers[addId]?.prompt_caching ?? false
+    // Google
+    addThinkingBudget = providers[addId]?.thinking_budget ?? 0
+    addSafetyLevel = providers[addId]?.safety_level ?? ''
+    // Anthropic
+    addExtendedThinking = providers[addId]?.extended_thinking ?? false
+    addAnthropicThinkingBudget = providers[addId]?.thinking_budget ?? 8192
+    // OpenAI / compatible
+    addOrganization = providers[addId]?.organization ?? ''
+    addParallelToolCalls = providers[addId]?.parallel_tool_calls ?? null
+    // Ollama
+    ollamaOptions = addId === 'ollama'
+      ? { ...DEFAULT_OLLAMA_OPTIONS, ...(providers[addId]?.options || {}) }
+      : {}
+    ollamaOptionsJSON = ''
     showAdd  = true
   }
   async function saveCreds() {
     if (!addId) return
     saving = true; error = ''; notice = ''
     try {
-      const res = await api.providers.setCredentials(addId, {
+      const body = {
         base_url: addBase || undefined,
         api_key:  addKey  || undefined,
         model:    addModel || undefined,
-      })
+      }
+      if (addId === 'ollama') {
+        body.keep_alive = addKeepAlive
+        body.options = buildOllamaOptions()
+      }
+      body.prompt_caching = addPromptCaching
+      if (addId === 'google') {
+        body.thinking_budget = addThinkingBudget
+        body.safety_level = addSafetyLevel
+      }
+      if (addId === 'anthropic') {
+        body.extended_thinking = addExtendedThinking
+        if (addExtendedThinking) body.thinking_budget = addAnthropicThinkingBudget
+      }
+      if (addId !== 'ollama' && addId !== 'google' && addId !== 'anthropic') {
+        if (addOrganization) body.organization = addOrganization
+        if (addParallelToolCalls !== null) body.parallel_tool_calls = addParallelToolCalls
+      }
+      const res = await api.providers.setCredentials(addId, body)
       notice = res.message || 'Saved.'
       restartNeeded = true
       showAdd = false
@@ -84,6 +146,48 @@
       error = e.message
     } finally {
       saving = false
+    }
+  }
+  function updateOllamaOption(key, raw, type = 'number') {
+    const next = { ...ollamaOptions }
+    if (raw === '' || raw == null) {
+      delete next[key]
+    } else if (type === 'boolean') {
+      next[key] = raw === 'true'
+    } else {
+      const n = Number(raw)
+      if (!Number.isNaN(n)) next[key] = n
+    }
+    ollamaOptions = next
+  }
+  function buildOllamaOptions() {
+    let out = { ...ollamaOptions }
+    if (ollamaOptionsJSON.trim()) {
+      const extra = JSON.parse(ollamaOptionsJSON)
+      if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
+        throw new Error('Ollama advanced options must be a JSON object.')
+      }
+      out = { ...out, ...extra }
+    }
+    for (const [k, v] of Object.entries(out)) {
+      if (v === '' || v == null) delete out[k]
+    }
+    return out
+  }
+  function applyOllamaPreset(name) {
+    if (name === 'balanced') {
+      addKeepAlive = DEFAULT_OLLAMA_KEEP_ALIVE
+      ollamaOptions = { ...DEFAULT_OLLAMA_OPTIONS }
+    } else if (name === 'long') {
+      addKeepAlive = '30m'
+      ollamaOptions = { num_ctx: 8192, num_batch: 128 }
+    } else if (name === 'resident') {
+      addKeepAlive = '-1'
+      ollamaOptions = { num_ctx: 4096, num_batch: 128 }
+    } else if (name === 'clear') {
+      addKeepAlive = DEFAULT_OLLAMA_KEEP_ALIVE
+      ollamaOptions = { ...DEFAULT_OLLAMA_OPTIONS }
+      ollamaOptionsJSON = ''
     }
   }
   $: missingKnown = (known || []).filter(id => !(id in providers))
@@ -223,6 +327,25 @@
             {/if}
             <div class="pv-row"><span class="pv-label">Default model</span><span class="pv-val mono">{pc.model || '—'}</span></div>
             <div class="pv-row"><span class="pv-label">API key</span><span class="pv-val">{pc.api_key ? '● Set' : '○ Not set'}</span></div>
+            {#if id === 'ollama'}
+              <div class="pv-row"><span class="pv-label">Keep alive</span><span class="pv-val mono">{pc.keep_alive || DEFAULT_OLLAMA_KEEP_ALIVE}</span></div>
+              <div class="pv-row"><span class="pv-label">Runtime options</span><span class="pv-val mono">{Object.entries({ ...DEFAULT_OLLAMA_OPTIONS, ...(pc.options || {}) }).map(([k, v]) => `${k}=${v}`).join(', ')}</span></div>
+            {/if}
+            {#if id === 'google'}
+              <div class="pv-row"><span class="pv-label">Thinking budget</span><span class="pv-val mono">{pc.thinking_budget === -1 ? 'auto' : (pc.thinking_budget || 0) === 0 ? 'off' : pc.thinking_budget + ' tokens'}</span></div>
+              <div class="pv-row"><span class="pv-label">Safety level</span><span class="pv-val">{pc.safety_level || 'default'}</span></div>
+            {/if}
+            {#if id === 'anthropic'}
+              <div class="pv-row"><span class="pv-label">Extended thinking</span><span class="pv-val" class:cache-on={pc.extended_thinking}>{pc.extended_thinking ? `✓ Enabled (${pc.thinking_budget || 8192} tokens)` : '○ Disabled'}</span></div>
+            {/if}
+            {#if id !== 'ollama' && id !== 'google' && id !== 'anthropic'}
+              {#if pc.organization}<div class="pv-row"><span class="pv-label">Organization</span><span class="pv-val mono">{pc.organization}</span></div>{/if}
+              <div class="pv-row"><span class="pv-label">Parallel tool calls</span><span class="pv-val">{pc.parallel_tool_calls === false ? 'Serialized' : 'Default (parallel)'}</span></div>
+            {/if}
+            <div class="pv-row">
+              <span class="pv-label">Prompt caching</span>
+              <span class="pv-val" class:cache-on={pc.prompt_caching}>{pc.prompt_caching ? '✓ Enabled' : '○ Disabled'}</span>
+            </div>
 
             {#if testResults[id]}
               <div class="pv-row test-result" class:ok={testResults[id].ok} class:fail={!testResults[id].ok && !testResults[id].loading}>
@@ -275,6 +398,10 @@
     ollama:
       base_url: http://localhost:11434
       model: llama3
+      keep_alive: 30m
+      options:
+        num_ctx: 4096
+        num_batch: 128
     openai:
       api_key: sk-...
       model: gpt-4o-mini
@@ -301,7 +428,7 @@
       <h2>{providers[addId] ? 'Edit' : 'Add'} provider</h2>
       <div class="modal-field">
         <span class="field-label">Provider</span>
-        <select bind:value={addId} on:change={() => { addBase = providers[addId]?.base_url || KNOWN_BASES[addId] || ''; addModel = providers[addId]?.model || KNOWN_MODELS[addId] || '' }}>
+        <select bind:value={addId} on:change={() => openAdd(addId)}>
           {#each (known.length ? known : ['openai','anthropic','google','ollama']) as id}
             <option value={id}>{providerIcon(id)} {id}</option>
           {/each}
@@ -319,6 +446,131 @@
         <span class="field-label">Default model</span>
         <input type="text" bind:value={addModel} placeholder={KNOWN_MODELS[addId] || ''} />
       </div>
+      <!-- Prompt caching — all providers -->
+      <div class="anthropic-tuning">
+        <div class="tuning-head"><span>Cost optimisation</span></div>
+        <label class="cache-toggle">
+          <input type="checkbox" bind:checked={addPromptCaching} />
+          <span class="cache-toggle-label">
+            Enable prompt caching
+            <span class="cache-badge">{addPromptCaching ? 'on' : 'off'}</span>
+          </span>
+        </label>
+        <p class="help">Caches the system prompt and tool definitions between turns so they aren't re-billed on every request. On Anthropic, cache hits cost 10% of normal input price (≥ 1024 tokens required).</p>
+      </div>
+
+      <!-- Google-specific tuning -->
+      {#if addId === 'google'}
+        <div class="provider-tuning">
+          <div class="tuning-head"><span>Google Gemini settings</span></div>
+          <label class="modal-field">
+            <span class="field-label">Thinking budget</span>
+            <select bind:value={addThinkingBudget}>
+              <option value={0}>Off — fast, no reasoning trace (default)</option>
+              <option value={-1}>Auto — model decides</option>
+              <option value={1024}>1 K tokens</option>
+              <option value={4096}>4 K tokens</option>
+              <option value={8192}>8 K tokens</option>
+              <option value={16000}>16 K tokens</option>
+            </select>
+            <span class="help">Controls Gemini 2.5 extended thinking. Higher budgets improve complex reasoning but increase latency and cost.</span>
+          </label>
+          <label class="modal-field">
+            <span class="field-label">Safety level</span>
+            <select bind:value={addSafetyLevel}>
+              <option value="">Default — Gemini built-in filters</option>
+              <option value="off">Off — BLOCK_NONE (recommended for agents)</option>
+              <option value="strict">Strict — BLOCK_LOW_AND_ABOVE</option>
+            </select>
+            <span class="help">"Off" disables content filters on all harm categories. Recommended for agent/developer use to prevent false blocks on technical content.</span>
+          </label>
+        </div>
+      {/if}
+
+      <!-- Anthropic-specific tuning -->
+      {#if addId === 'anthropic'}
+        <div class="provider-tuning">
+          <div class="tuning-head"><span>Anthropic settings</span></div>
+          <label class="cache-toggle">
+            <input type="checkbox" bind:checked={addExtendedThinking} />
+            <span class="cache-toggle-label">
+              Extended thinking (Claude 3.7+)
+              <span class="cache-badge">{addExtendedThinking ? 'on' : 'off'}</span>
+            </span>
+          </label>
+          {#if addExtendedThinking}
+            <label class="modal-field" style="margin-top:.5rem">
+              <span class="field-label">Thinking budget (tokens)</span>
+              <input type="number" bind:value={addAnthropicThinkingBudget} min="1024" max="100000" placeholder="8192" />
+              <span class="help">Token budget for internal reasoning. Higher values improve complex tasks but increase latency. Requires claude-3-7-sonnet or newer.</span>
+            </label>
+          {/if}
+        </div>
+      {/if}
+
+      <!-- OpenAI / compatible provider tuning -->
+      {#if addId !== 'ollama' && addId !== 'google' && addId !== 'anthropic'}
+        <div class="provider-tuning">
+          <div class="tuning-head"><span>OpenAI / compatible settings</span></div>
+          <label class="modal-field">
+            <span class="field-label">Organization ID <span class="opt">(optional)</span></span>
+            <input type="text" bind:value={addOrganization} placeholder="org-..." />
+            <span class="help">Sent as the OpenAI-Organization header. Required for some enterprise/team accounts.</span>
+          </label>
+          <label class="modal-field">
+            <span class="field-label">Parallel tool calls</span>
+            <select on:change={(e) => addParallelToolCalls = e.currentTarget.value === '' ? null : e.currentTarget.value === 'true'}>
+              <option value="" selected={addParallelToolCalls === null}>Default (parallel)</option>
+              <option value="false" selected={addParallelToolCalls === false}>Serialized — one tool at a time</option>
+            </select>
+            <span class="help">Serialized mode prevents the model from calling multiple tools simultaneously. Reduces agent loop failures on some models.</span>
+          </label>
+        </div>
+      {/if}
+
+      {#if addId === 'ollama'}
+        <div class="ollama-tuning">
+          <div class="tuning-head">
+            <span>Ollama performance tuning</span>
+            <div class="preset-row">
+              <button class="tiny-chip" type="button" on:click={() => applyOllamaPreset('balanced')}>Balanced</button>
+              <button class="tiny-chip" type="button" on:click={() => applyOllamaPreset('long')}>Long context</button>
+              <button class="tiny-chip" type="button" on:click={() => applyOllamaPreset('resident')}>Keep loaded</button>
+              <button class="tiny-chip" type="button" on:click={() => applyOllamaPreset('clear')}>Reset defaults</button>
+            </div>
+          </div>
+          <label class="modal-field">
+            <span class="field-label">Keep alive</span>
+            <input type="text" bind:value={addKeepAlive} placeholder="30m, 24h, -1, or 0" />
+            <span class="help">How long Ollama keeps the model in memory after a request. Use <code>-1</code> for resident models; use <code>0</code> to unload immediately.</span>
+          </label>
+          <div class="option-grid">
+            {#each OLLAMA_OPTION_FIELDS as f}
+              <label class="modal-field">
+                <span class="field-label">{f.label}</span>
+                {#if f.type === 'boolean'}
+                  <select value={ollamaOptions[f.key] === undefined ? '' : String(ollamaOptions[f.key])} on:change={(e) => updateOllamaOption(f.key, e.currentTarget.value, f.type)}>
+                    <option value="">Default</option>
+                    <option value="true">True</option>
+                    <option value="false">False</option>
+                  </select>
+                {:else}
+                  <input type="number" value={ollamaOptions[f.key] ?? ''} placeholder={f.placeholder || ''} on:input={(e) => updateOllamaOption(f.key, e.currentTarget.value, f.type)} />
+                {/if}
+                <span class="help">{f.help}</span>
+              </label>
+            {/each}
+          </div>
+          <label class="modal-field">
+            <span class="field-label">Advanced options JSON</span>
+            <textarea rows="3" bind:value={ollamaOptionsJSON} placeholder={ADVANCED_OPTIONS_PLACEHOLDER}></textarea>
+            <span class="help">Merged into Ollama <code>options</code>. Use this for newer Ollama options not yet in the form.</span>
+          </label>
+          <div class="server-hints">
+            Server-level Ollama settings are outside this API request. For throughput/memory tuning, start Ollama with <code>OLLAMA_NUM_PARALLEL</code>, <code>OLLAMA_MAX_LOADED_MODELS</code>, <code>OLLAMA_MAX_QUEUE</code>, <code>OLLAMA_FLASH_ATTENTION=1</code>, or <code>OLLAMA_KV_CACHE_TYPE</code>.
+          </div>
+        </div>
+      {/if}
       <div class="modal-row">
         <button class="btn-secondary" on:click={() => showAdd = false}>Cancel</button>
         <button class="btn-primary" on:click={saveCreds} disabled={saving}>{saving ? 'Saving…' : 'Save'}</button>
@@ -363,15 +615,66 @@
   }
   .modal {
     background: #141626; border: 1px solid #2a2f4a; border-radius: 12px;
-    padding: 1.5rem; width: 460px; display: flex; flex-direction: column; gap: .9rem;
+    padding: 1.5rem; width: 760px; max-width: 92vw; max-height: 88vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: .9rem;
   }
   .modal h2 { font-size: 1rem; font-weight: 600; }
   .modal-field { display: flex; flex-direction: column; gap: .35rem; }
   .field-label { font-size: .78rem; color: #7b82a8; }
   .modal-field .opt { color: #555a7a; font-weight: normal; }
-  .modal-row { display: flex; gap: .75rem; justify-content: flex-end; margin-top: .25rem; }
+  .modal-field textarea {
+    background: #1c1f35; color: #e8eaf6; border: 1px solid #2a2f4a;
+    border-radius: 6px; padding: .5rem .65rem; font-size: .85rem;
+    resize: vertical; min-height: 4.5rem; font-family: monospace;
+  }
+  .help { font-size: .7rem; color: #6b7294; line-height: 1.45; }
+  .help code { background: #1c1f35; padding: .05rem .25rem; border-radius: 4px; color: #8b85ff; }
+  .modal-row {
+    display: flex; gap: .75rem; justify-content: flex-end; margin-top: .25rem;
+    position: sticky; bottom: 0; z-index: 5;
+    background: #141626; padding-top: .6rem;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.6);
+  }
   .modal-hint { font-size: .72rem; color: #555a7a; }
   .modal-hint code { background: #1c1f35; padding: .05rem .3rem; border-radius: 4px; color: #8b85ff; }
+  .cache-on { color: #4caf82 !important; }
+
+  .anthropic-tuning, .provider-tuning {
+    margin-top: .25rem; padding: .9rem; border: 1px solid #1a1e36; border-radius: 8px;
+    background: #101323; display: flex; flex-direction: column; gap: .75rem;
+  }
+  .cache-toggle {
+    display: flex; align-items: center; gap: .65rem; cursor: pointer;
+  }
+  .cache-toggle input[type="checkbox"] { width: 1rem; height: 1rem; accent-color: #6c63ff; cursor: pointer; }
+  .cache-toggle-label { font-size: .85rem; color: #c8cadf; display: flex; align-items: center; gap: .5rem; }
+  .cache-badge {
+    font-size: .68rem; padding: .1rem .4rem; border-radius: 999px;
+    background: rgba(76,175,130,.15); color: #4caf82; font-weight: 600;
+  }
+
+  .ollama-tuning {
+    margin-top: .25rem; padding: .9rem; border: 1px solid #1a1e36; border-radius: 8px;
+    background: #101323; display: flex; flex-direction: column; gap: .85rem;
+  }
+  .tuning-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
+  .tuning-head > span { font-size: .85rem; color: #e0e1f0; font-weight: 600; }
+  .preset-row { display: flex; gap: .35rem; flex-wrap: wrap; }
+  .tiny-chip {
+    background: #1c1f35; color: #c8cadf; border: 1px solid #2a2f4a;
+    padding: .22rem .5rem; border-radius: 999px; font-size: .7rem; cursor: pointer;
+  }
+  .tiny-chip:hover { border-color: #6c63ff; color: #e8eaf6; }
+  .option-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+
+  @media (max-width: 640px) {
+    .option-grid { grid-template-columns: 1fr; }
+  }
+  .server-hints {
+    background: rgba(240,196,96,.06); border: 1px solid rgba(240,196,96,.18);
+    color: #b9a36d; border-radius: 7px; padding: .7rem .8rem; font-size: .74rem; line-height: 1.55;
+  }
+  .server-hints code { background: #1c1f35; padding: .05rem .25rem; border-radius: 4px; color: #f0c460; }
   .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; }
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
   .ok     { background: rgba(76,175,130,.1); border: 1px solid rgba(76,175,130,.3); color: #4caf82; }

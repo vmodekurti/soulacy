@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/soulacy/soulacy/pkg/message"
@@ -28,26 +29,48 @@ import (
 
 // AnthropicProvider talks to api.anthropic.com (or a compatible base URL).
 type AnthropicProvider struct {
-	baseURL string // default https://api.anthropic.com
-	apiKey  string
-	model   string
-	version string // anthropic-version header (default "2023-06-01")
-	client  *http.Client
+	baseURL          string // default https://api.anthropic.com
+	apiKey           string
+	model            string
+	version          string // anthropic-version header (default "2023-06-01")
+	promptCaching    bool   // marks system prompt and tools for caching (90% off cache hits)
+	extendedThinking bool   // Claude 3.7+ extended thinking (beta)
+	thinkingBudget   int    // token budget for extended thinking (default 8192)
+	client           *http.Client
 }
 
 func NewAnthropicProvider(baseURL, apiKey, model string) *AnthropicProvider {
+	return newAnthropicProvider(baseURL, apiKey, model, false, false, 0)
+}
+
+func NewAnthropicProviderWithCaching(baseURL, apiKey, model string) *AnthropicProvider {
+	return newAnthropicProvider(baseURL, apiKey, model, true, false, 0)
+}
+
+// NewAnthropicProviderWithOptions creates an AnthropicProvider with all settings.
+func NewAnthropicProviderWithOptions(baseURL, apiKey, model string, promptCaching, extendedThinking bool, thinkingBudget int) *AnthropicProvider {
+	return newAnthropicProvider(baseURL, apiKey, model, promptCaching, extendedThinking, thinkingBudget)
+}
+
+func newAnthropicProvider(baseURL, apiKey, model string, promptCaching, extendedThinking bool, thinkingBudget int) *AnthropicProvider {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com"
 	}
 	if model == "" {
 		model = "claude-3-5-sonnet-latest"
 	}
+	if extendedThinking && thinkingBudget <= 0 {
+		thinkingBudget = 8192 // sensible default
+	}
 	return &AnthropicProvider{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		model:   model,
-		version: "2023-06-01",
-		client:  SharedHTTPClient(180 * time.Second),
+		baseURL:          baseURL,
+		apiKey:           apiKey,
+		model:            model,
+		version:          "2023-06-01",
+		promptCaching:    promptCaching,
+		extendedThinking: extendedThinking,
+		thinkingBudget:   thinkingBudget,
+		client:           SharedHTTPClient(180 * time.Second),
 	}
 }
 
@@ -125,16 +148,41 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	flushPending(&currentUser)
 
 	body := map[string]any{
-		"model":       model,
-		"messages":    msgs,
-		"temperature": req.Temperature,
-		"max_tokens":  defaultIfZero(req.MaxTokens, 4096),
+		"model":      model,
+		"messages":   msgs,
+		"max_tokens": defaultIfZero(req.MaxTokens, 4096),
 	}
-	if systemPrompt != "" {
-		body["system"] = systemPrompt
+	// Extended thinking requires temperature=1 (Anthropic API requirement).
+	if p.extendedThinking {
+		body["temperature"] = 1
+		body["thinking"] = map[string]any{
+			"type":          "enabled",
+			"budget_tokens": p.thinkingBudget,
+		}
+	} else {
+		body["temperature"] = req.Temperature
 	}
 
-	// Tools
+	// System prompt — when caching is enabled, send as a content-block array
+	// with cache_control on the last block so Anthropic caches it between turns
+	// (90% discount on cache hits, 1.25× cost on the first write).
+	if systemPrompt != "" {
+		if p.promptCaching {
+			body["system"] = []map[string]any{
+				{
+					"type":          "text",
+					"text":          systemPrompt,
+					"cache_control": map[string]any{"type": "ephemeral"},
+				},
+			}
+		} else {
+			body["system"] = systemPrompt
+		}
+	}
+
+	// Tools — when caching is enabled, mark the last tool definition so the
+	// entire tool block is cached. Tool schemas rarely change between turns and
+	// are often large (MCP tools, JSON schemas), making this a significant win.
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, len(req.Tools))
 		for i, t := range req.Tools {
@@ -143,6 +191,9 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 				"description":  t.Description,
 				"input_schema": t.Parameters,
 			}
+		}
+		if p.promptCaching {
+			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
 	}
@@ -173,6 +224,17 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", p.apiKey)
 	httpReq.Header.Set("anthropic-version", p.version)
+	// Beta headers: combine as comma-separated list when multiple are needed.
+	var betas []string
+	if p.promptCaching {
+		betas = append(betas, "prompt-caching-2024-07-31")
+	}
+	if p.extendedThinking {
+		betas = append(betas, "interleaved-thinking-2025-05-14")
+	}
+	if len(betas) > 0 {
+		httpReq.Header.Set("anthropic-beta", strings.Join(betas, ","))
+	}
 
 	// Retry on transient errors (429 / 5xx / network). The request body is a
 	// bytes.Reader so net/http auto-rewinds on retry.
@@ -196,8 +258,10 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 			Input map[string]any `json:"input"`
 		} `json:"content"`
 		Usage struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens              int `json:"input_tokens"`
+			OutputTokens             int `json:"output_tokens"`
+			CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int `json:"cache_read_input_tokens"`
 		} `json:"usage"`
 		StopReason string `json:"stop_reason"`
 	}
@@ -206,8 +270,10 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	}
 
 	r := &CompletionResponse{
-		InputTokens:  result.Usage.InputTokens,
-		OutputTokens: result.Usage.OutputTokens,
+		InputTokens:         result.Usage.InputTokens,
+		OutputTokens:        result.Usage.OutputTokens,
+		CacheCreationTokens: result.Usage.CacheCreationInputTokens,
+		CacheReadTokens:     result.Usage.CacheReadInputTokens,
 	}
 	for _, block := range result.Content {
 		switch block.Type {

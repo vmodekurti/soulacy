@@ -425,7 +425,7 @@ func (m *MemoryStore) Archive(entry memory.Entry) error {
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		ON CONFLICT (id) DO NOTHING`,
 		entry.ID, entry.AgentID, entry.SessionID, string(entry.Scope),
-		string(entry.Provenance), entry.Key, entry.Content,
+		"", entry.Key, entry.Content, // provenance col retained for schema compat, always empty
 		string(meta), entry.CreatedAt, entry.ExpiresAt,
 	)
 	return err
@@ -523,16 +523,15 @@ func scanPgEntries(rows pgRows) ([]memory.Entry, error) {
 	var entries []memory.Entry
 	for rows.Next() {
 		var e memory.Entry
-		var scope, provenance, meta string
+		var scope, ignoredProvenance, meta string // provenance col retained in schema, discarded on read
 		var expiresAt sql.NullTime
 		if err := rows.Scan(
-			&e.ID, &e.AgentID, &e.SessionID, &scope, &provenance,
+			&e.ID, &e.AgentID, &e.SessionID, &scope, &ignoredProvenance,
 			&e.Key, &e.Content, &meta, &e.CreatedAt, &expiresAt,
 		); err != nil {
 			return nil, err
 		}
 		e.Scope = memory.Scope(scope)
-		e.Provenance = memory.ProvenanceLabel(provenance)
 		if expiresAt.Valid {
 			t := expiresAt.Time
 			e.ExpiresAt = &t

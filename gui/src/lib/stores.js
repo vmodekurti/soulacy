@@ -14,6 +14,10 @@ function persistedWritable(key, initial) {
 export const apiKey   = persistedWritable('soulacy_api_key', '')
 export const connected = writable(false)  // WebSocket event stream status
 
+// True when the gateway rejected our credentials (401/403). Distinct from
+// "offline": the gateway is reachable but authentication is required.
+export const authRequired = writable(false)
+
 // Agent to pre-select when navigating to the Activity page (set by "Watch" buttons).
 export const activityAgent = writable('')
 
@@ -21,3 +25,4 @@ export const activityAgent = writable('')
 export const chatAgentId  = writable('')
 export const chatMessages = writable([])
 export const chatSending  = writable(false)
+export const chatSessionId = writable(`gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)

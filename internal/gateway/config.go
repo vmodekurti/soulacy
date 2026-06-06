@@ -37,9 +37,11 @@ func (s *Server) safeConfigView() fiber.Map {
 			apiKey = "***"
 		}
 		providers[name] = fiber.Map{
-			"base_url": pc.BaseURL,
-			"api_key":  apiKey,
-			"model":    pc.Model,
+			"base_url":   pc.BaseURL,
+			"api_key":    apiKey,
+			"model":      pc.Model,
+			"keep_alive": pc.KeepAlive,
+			"options":    pc.Options,
 		}
 	}
 
@@ -81,13 +83,75 @@ func (s *Server) safeConfigView() fiber.Map {
 		},
 		"agent_dirs": cfg.AgentDirs,
 		"skill_dirs": cfg.SkillDirs,
-		"channels":   cfg.Channels,
+		"channels":   safeChannelsView(cfg.Channels),
 		"_meta": fiber.Map{
-			"config_path":  s.cfgPath,
-			"writable":     s.cfgPath != "",
-			"note":         "Most changes require a gateway restart to take effect.",
+			"config_path": s.cfgPath,
+			"writable":    s.cfgPath != "",
+			"note":        "Most changes require a gateway restart to take effect.",
 		},
 	}
+}
+
+// safeChannelsView returns a deep-copied channels map with secret values
+// redacted to "***". Known channel types use their channelSpec Secret flags;
+// keys not covered by a spec fall back to a generic secret-name heuristic so
+// new/unknown channel types never leak credentials by default.
+func safeChannelsView(chans map[string]map[string]any) map[string]map[string]any {
+	out := make(map[string]map[string]any, len(chans))
+	for chID, settings := range chans {
+		spec := channelSpecByID(chID)
+		safe := make(map[string]any, len(settings))
+		for k, v := range settings {
+			switch {
+			case k == "bots":
+				safe[k] = redactBotList(spec, v)
+			case isSecretChannelKey(spec, k) && valuePresent(v):
+				safe[k] = "***"
+			default:
+				safe[k] = v
+			}
+		}
+		out[chID] = safe
+	}
+	return out
+}
+
+// isSecretChannelKey reports whether a channel settings key holds a secret.
+// Spec-declared fields are authoritative; unknown keys are matched against
+// common secret-name markers.
+func isSecretChannelKey(spec *channelSpec, key string) bool {
+	if spec != nil {
+		for _, f := range spec.Fields {
+			if f.Key == key {
+				return f.Secret
+			}
+		}
+	}
+	lk := strings.ToLower(key)
+	for _, marker := range []string{"token", "secret", "password", "api_key", "apikey", "credential"} {
+		if strings.Contains(lk, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// redactBotList redacts secret fields in a channel's bots list.
+func redactBotList(spec *channelSpec, raw any) []map[string]any {
+	bots := rawBotList(raw)
+	out := make([]map[string]any, 0, len(bots))
+	for _, bot := range bots {
+		row := make(map[string]any, len(bot))
+		for k, v := range bot {
+			if isSecretChannelKey(spec, k) && valuePresent(v) {
+				row[k] = "***"
+			} else {
+				row[k] = v
+			}
+		}
+		out = append(out, row)
+	}
+	return out
 }
 
 // ── PATCH /api/v1/config ─────────────────────────────────────────────────────

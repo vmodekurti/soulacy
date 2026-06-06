@@ -164,6 +164,22 @@ type RuntimeConfig struct {
 	// Each session gets <AuditDir>/<date>/<sessionID>.jsonl.
 	// Defaults to ~/.soulacy/audit. Set to "" to disable.
 	AuditDir string `mapstructure:"audit_dir"`
+
+	// AllowedToolDirs is an allowlist of directory prefixes that python_file
+	// tool paths must resolve under. If the list is non-empty, any python_file
+	// path that does not start with one of these prefixes is rejected before the
+	// subprocess is forked — preventing a SOUL.yaml with a crafted python_file
+	// from reading or executing arbitrary files on the host.
+	//
+	// Example config.yaml:
+	//   runtime:
+	//     allowed_tool_dirs:
+	//       - /Users/you/.soulacy/agents
+	//       - /Users/you/.soulacy/tools
+	//
+	// Default (empty list): all paths are permitted (single-user / trusted
+	// operator deployments where every SOUL.yaml author is already trusted).
+	AllowedToolDirs []string `mapstructure:"allowed_tool_dirs"`
 }
 
 // SandboxConfig is the YAML face of internal/sandbox.Limits.
@@ -276,9 +292,37 @@ type LLMConfig struct {
 }
 
 type ProviderConfig struct {
-	BaseURL string `mapstructure:"base_url"`
-	APIKey  string `mapstructure:"api_key"`
-	Model   string `mapstructure:"model"`
+	BaseURL       string         `mapstructure:"base_url"`
+	APIKey        string         `mapstructure:"api_key"`
+	Model         string         `mapstructure:"model"`
+	KeepAlive     string         `mapstructure:"keep_alive"`
+	Options       map[string]any `mapstructure:"options"`
+	PromptCaching bool           `mapstructure:"prompt_caching"` // cache system prompt + tools between turns (provider support varies; Anthropic: 90% discount on cache hits)
+
+	// ── Google-specific ──────────────────────────────────────────────────────
+	// ThinkingBudget controls Gemini 2.5 extended thinking.
+	//   0  = disabled (default — fast, no reasoning trace)
+	//  -1  = auto (model decides)
+	//   N  = up to N tokens of reasoning
+	ThinkingBudget int    `mapstructure:"thinking_budget"`
+	// SafetyLevel sets Gemini content-filter thresholds.
+	//   ""/"default" = Gemini defaults
+	//   "off"        = BLOCK_NONE on all categories (needed for most agent work)
+	//   "strict"     = BLOCK_LOW_AND_ABOVE
+	SafetyLevel string `mapstructure:"safety_level"`
+
+	// ── Anthropic-specific ───────────────────────────────────────────────────
+	// ExtendedThinking enables Claude 3.7+ extended thinking (beta).
+	// ThinkingBudget (shared field above) sets the token budget when this is on.
+	ExtendedThinking bool `mapstructure:"extended_thinking"`
+
+	// ── OpenAI / compatible ──────────────────────────────────────────────────
+	// Organization is the OpenAI-Organization header value (enterprise/team accounts).
+	Organization string `mapstructure:"organization"`
+	// ParallelToolCalls controls whether the model may call multiple tools in one
+	// turn. nil = provider default (usually true). false = serialize tool calls,
+	// which reduces agent loop failures on weaker models.
+	ParallelToolCalls *bool `mapstructure:"parallel_tool_calls"`
 }
 
 // KnowledgeConfig holds RAG defaults.

@@ -145,6 +145,216 @@ func TestExtractDOCX_RoundTrip(t *testing.T) {
 	}
 }
 
+// ─── normalizeMime ────────────────────────────────────────────────────────────
+
+func TestNormalizeMime(t *testing.T) {
+	cases := []struct{ input, want string }{
+		{"text/plain", "text/plain"},
+		{"TEXT/PLAIN", "text/plain"},
+		{"text/plain; charset=utf-8", "text/plain"},
+		{"  application/pdf  ", "application/pdf"},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := normalizeMime(c.input); got != c.want {
+			t.Errorf("normalizeMime(%q) = %q, want %q", c.input, got, c.want)
+		}
+	}
+}
+
+// ─── splitSentences ──────────────────────────────────────────────────────────
+
+func TestSplitSentences_Basic(t *testing.T) {
+	text := "Hello world. This is a test! Another sentence? Yes it is."
+	got := splitSentences(text)
+	if len(got) < 3 {
+		t.Errorf("expected >= 3 sentences, got %d: %v", len(got), got)
+	}
+	if got[0] != "Hello world." {
+		t.Errorf("first sentence: got %q", got[0])
+	}
+}
+
+func TestSplitSentences_Empty(t *testing.T) {
+	if got := splitSentences(""); len(got) != 0 {
+		t.Errorf("empty input: expected nil, got %v", got)
+	}
+}
+
+func TestSplitSentences_ParagraphBoundary(t *testing.T) {
+	text := "First paragraph sentence.\n\nSecond paragraph sentence."
+	got := splitSentences(text)
+	if len(got) < 2 {
+		t.Errorf("expected 2 sentences from 2 paragraphs, got %d: %v", len(got), got)
+	}
+}
+
+func TestSplitSentences_NoTerminalPunctuation(t *testing.T) {
+	text := "This has no ending punctuation"
+	got := splitSentences(text)
+	if len(got) != 1 || got[0] != text {
+		t.Errorf("no punctuation: got %v", got)
+	}
+}
+
+func TestSplitSentences_ClosingQuoteAfterPunctuation(t *testing.T) {
+	text := `He said "goodbye." She left.`
+	got := splitSentences(text)
+	// Should produce at least one sentence without crashing.
+	if len(got) == 0 {
+		t.Error("expected at least one sentence")
+	}
+}
+
+func TestSplitSentences_WindowsLineEndings(t *testing.T) {
+	text := "Sentence one.\r\n\r\nSentence two."
+	got := splitSentences(text)
+	if len(got) < 2 {
+		t.Errorf("expected 2 sentences with CRLF line endings, got %d: %v", len(got), got)
+	}
+}
+
+// ─── roughTokens ─────────────────────────────────────────────────────────────
+
+func TestRoughTokens(t *testing.T) {
+	// Empty string → 1 (minimum).
+	if got := roughTokens(""); got != 1 {
+		t.Errorf("roughTokens('') = %d, want 1", got)
+	}
+	// 40 chars → 10 tokens.
+	s := strings.Repeat("a", 40)
+	if got := roughTokens(s); got != 10 {
+		t.Errorf("roughTokens(40 chars) = %d, want 10", got)
+	}
+	// Single rune (< 4 chars) → 1.
+	if got := roughTokens("x"); got != 1 {
+		t.Errorf("roughTokens('x') = %d, want 1", got)
+	}
+	// Unicode multibyte runes counted as runes, not bytes.
+	emoji := strings.Repeat("🦀", 8) // 8 runes, ~32 bytes
+	if got := roughTokens(emoji); got != 2 {
+		t.Errorf("roughTokens(8 emojis) = %d, want 2", got)
+	}
+}
+
+// ─── hardSplit ───────────────────────────────────────────────────────────────
+
+func TestHardSplit_Basic(t *testing.T) {
+	text := strings.Repeat("abcde", 100) // 500 chars
+	parts := hardSplit(text, 100, 20)
+	if len(parts) == 0 {
+		t.Fatal("hardSplit produced no parts")
+	}
+	// Each part must be at most size chars (some may be trimmed).
+	for i, p := range parts {
+		if len([]rune(p)) > 100 {
+			t.Errorf("part %d too long: %d runes", i, len([]rune(p)))
+		}
+	}
+}
+
+func TestHardSplit_Empty(t *testing.T) {
+	if got := hardSplit("", 100, 20); len(got) != 0 {
+		t.Errorf("hardSplit empty: got %v", got)
+	}
+}
+
+func TestHardSplit_SingleChunk(t *testing.T) {
+	text := "short"
+	parts := hardSplit(text, 100, 10)
+	if len(parts) != 1 || parts[0] != "short" {
+		t.Errorf("hardSplit short text: got %v", parts)
+	}
+}
+
+func TestHardSplit_ZeroStepFallback(t *testing.T) {
+	// When overlap >= size, step <= 0 should fall back to step=size (no infinite loop).
+	text := strings.Repeat("a", 200)
+	parts := hardSplit(text, 100, 100) // step = size - overlap = 0
+	if len(parts) == 0 {
+		t.Fatal("hardSplit zero step: produced no parts")
+	}
+}
+
+// ─── ChunkText advanced cases ─────────────────────────────────────────────────
+
+func TestChunkText_OverlapCarryover(t *testing.T) {
+	// Build text with clear sentence boundaries so overlap rollback fires.
+	text := "Sentence one. Sentence two. Sentence three. Sentence four. Sentence five."
+	chunks := ChunkText(text, 60, 20) // small enough that multiple sentences per chunk
+	if len(chunks) == 0 {
+		t.Fatal("expected chunks, got none")
+	}
+	// Chunks are non-empty strings.
+	for i, c := range chunks {
+		if c == "" {
+			t.Errorf("chunk %d is empty", i)
+		}
+	}
+}
+
+func TestChunkText_NegativeOverlapClamped(t *testing.T) {
+	// Negative overlap must be clamped to size/5.
+	chunks := ChunkText("hello world foo bar baz", 100, -10)
+	if len(chunks) == 0 {
+		t.Fatal("expected at least one chunk")
+	}
+}
+
+func TestChunkText_HardSplitTriggered(t *testing.T) {
+	// A single long "sentence" (no terminal punctuation) that far exceeds the
+	// token budget will trigger hardSplit inside ChunkText.
+	// tokenBudget = size/4 = 25; 2× = 50 tokens ≈ 200 chars.
+	// Build a run-on of > 200 chars with no sentence boundary.
+	text := strings.Repeat("word ", 100) // 500 chars, no punctuation
+	chunks := ChunkText(text, 100, 20)
+	if len(chunks) < 2 {
+		t.Errorf("expected hardSplit to produce multiple chunks for run-on text, got %d", len(chunks))
+	}
+}
+
+// ─── extractDOCX error paths ──────────────────────────────────────────────────
+
+func TestExtractDOCX_NotAZip(t *testing.T) {
+	_, err := ExtractText(
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		[]byte("not a zip file"),
+	)
+	if err == nil {
+		t.Error("expected error for non-zip DOCX input, got nil")
+	}
+}
+
+func TestExtractDOCX_MissingDocumentXML(t *testing.T) {
+	// Build a valid zip but with no word/document.xml entry.
+	var buf bytes.Buffer
+	w := zip.NewWriter(&buf)
+	f, _ := w.Create("other/file.txt")
+	_, _ = f.Write([]byte("hello"))
+	_ = w.Close()
+
+	_, err := ExtractText(
+		"application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+		buf.Bytes(),
+	)
+	if err == nil {
+		t.Error("expected error when word/document.xml is absent, got nil")
+	}
+}
+
+// ─── ExtractText unknown mime passthrough ─────────────────────────────────────
+
+func TestExtractText_UnknownMime(t *testing.T) {
+	data := []byte("custom format data")
+	got, err := ExtractText("application/x-custom", data)
+	if err != nil {
+		t.Fatalf("ExtractText unknown mime: %v", err)
+	}
+	if string(got) != string(data) {
+		t.Errorf("unknown mime: got %q, want %q", got, string(data))
+	}
+}
+
 // buildMinimalDOCX writes a zip containing a one-file word/document.xml whose
 // body has the given paragraphs. Mirrors the minimum structure Office produces.
 func buildMinimalDOCX(t *testing.T, paragraphs []string) []byte {

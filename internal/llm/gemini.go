@@ -22,19 +22,29 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/soulacy/soulacy/pkg/message"
 )
 
 type GeminiProvider struct {
-	baseURL string // default https://generativelanguage.googleapis.com
-	apiKey  string
-	model   string
-	client  *http.Client
+	baseURL        string // default https://generativelanguage.googleapis.com
+	apiKey         string
+	model          string
+	thinkingBudget int    // 0=off, -1=auto, N=tokens
+	safetyLevel    string // ""|"default"|"off"|"strict"
+	client         *http.Client
 }
 
 func NewGeminiProvider(baseURL, apiKey, model string) *GeminiProvider {
+	return NewGeminiProviderWithOptions(baseURL, apiKey, model, 0, "")
+}
+
+// NewGeminiProviderWithOptions creates a GeminiProvider with extended settings.
+//   thinkingBudget: 0=off (default), -1=auto, N=token budget for reasoning
+//   safetyLevel:    ""|"default"=Gemini defaults, "off"=BLOCK_NONE, "strict"=BLOCK_LOW_AND_ABOVE
+func NewGeminiProviderWithOptions(baseURL, apiKey, model string, thinkingBudget int, safetyLevel string) *GeminiProvider {
 	if baseURL == "" {
 		baseURL = "https://generativelanguage.googleapis.com"
 	}
@@ -42,10 +52,12 @@ func NewGeminiProvider(baseURL, apiKey, model string) *GeminiProvider {
 		model = "gemini-2.5-pro"
 	}
 	return &GeminiProvider{
-		baseURL: baseURL,
-		apiKey:  apiKey,
-		model:   model,
-		client:  SharedHTTPClient(180 * time.Second),
+		baseURL:        baseURL,
+		apiKey:         apiKey,
+		model:          model,
+		thinkingBudget: thinkingBudget,
+		safetyLevel:    safetyLevel,
+		client:         SharedHTTPClient(180 * time.Second),
 	}
 }
 
@@ -176,18 +188,29 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 
 	genCfg := map[string]any{
 		"temperature": req.Temperature,
-		// Disable thinking for Gemini 2.5 models. When thinking is enabled the
-		// model attaches a thoughtSignature to each functionCall part; that
-		// signature must be echoed back verbatim in subsequent turns or the API
-		// returns 400. Disabling thinking sidesteps this entirely for tool-use
-		// agents. Re-enable (remove this block) once round-trip signature
-		// handling is production-hardened.
-		"thinkingConfig": map[string]any{
-			"thinkingBudget": 0,
-		},
 	}
 	if req.MaxTokens > 0 {
 		genCfg["maxOutputTokens"] = req.MaxTokens
+	}
+	// Thinking config: use the provider's configured budget.
+	// 0 = disabled (safe default for tool-use agents — avoids thoughtSignature
+	// round-trip issues), -1 = auto, N = explicit token budget.
+	// NOTE: when thinking is enabled the model attaches a thoughtSignature to
+	// each functionCall part which must be echoed back verbatim; the engine
+	// already handles this via message.ToolCall.ThoughtSignature.
+	if p.thinkingBudget == 0 {
+		// Some models (like gemini-2.5-pro) require thinking and reject budget=0 with a 400 error.
+		// For those models, we omit thinkingConfig entirely so it uses the model's default thinking.
+		// For other models, we can explicitly set budget=0 to disable thinking.
+		if strings.Contains(strings.ToLower(model), "pro") || strings.Contains(strings.ToLower(model), "thinking") {
+			// omit thinkingConfig
+		} else {
+			genCfg["thinkingConfig"] = map[string]any{"thinkingBudget": 0}
+		}
+	} else if p.thinkingBudget == -1 {
+		genCfg["thinkingConfig"] = map[string]any{"thinkingMode": "AUTO"}
+	} else {
+		genCfg["thinkingConfig"] = map[string]any{"thinkingBudget": p.thinkingBudget}
 	}
 
 	// Structured outputs
@@ -209,6 +232,36 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		body["systemInstruction"] = map[string]any{
 			"parts": []map[string]any{{"text": systemPrompt}},
 		}
+	}
+	// Safety settings — only injected when explicitly configured.
+	// "off" sets all harm categories to BLOCK_NONE (needed for most agent/dev work).
+	// "strict" sets BLOCK_LOW_AND_ABOVE.
+	// "" / "default" leaves Gemini defaults untouched.
+	if p.safetyLevel == "off" {
+		categories := []string{
+			"HARM_CATEGORY_HARASSMENT",
+			"HARM_CATEGORY_HATE_SPEECH",
+			"HARM_CATEGORY_SEXUALLY_EXPLICIT",
+			"HARM_CATEGORY_DANGEROUS_CONTENT",
+			"HARM_CATEGORY_CIVIC_INTEGRITY",
+		}
+		ss := make([]map[string]any, len(categories))
+		for i, cat := range categories {
+			ss[i] = map[string]any{"category": cat, "threshold": "BLOCK_NONE"}
+		}
+		body["safetySettings"] = ss
+	} else if p.safetyLevel == "strict" {
+		categories := []string{
+			"HARM_CATEGORY_HARASSMENT",
+			"HARM_CATEGORY_HATE_SPEECH",
+			"HARM_CATEGORY_SEXUALLY_EXPLICIT",
+			"HARM_CATEGORY_DANGEROUS_CONTENT",
+		}
+		ss := make([]map[string]any, len(categories))
+		for i, cat := range categories {
+			ss[i] = map[string]any{"category": cat, "threshold": "BLOCK_LOW_AND_ABOVE"}
+		}
+		body["safetySettings"] = ss
 	}
 	if len(req.Tools) > 0 {
 		funcs := make([]map[string]any, len(req.Tools))
@@ -245,8 +298,9 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
 		if len(bodyBytes) == 0 {
 			return nil, fmt.Errorf("google: http %d (empty response body — request may be malformed or too large)", resp.StatusCode)
 		}
@@ -275,7 +329,7 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 			CandidatesTokenCount int `json:"candidatesTokenCount"`
 		} `json:"usageMetadata"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return nil, fmt.Errorf("google: decode: %w", err)
 	}
 

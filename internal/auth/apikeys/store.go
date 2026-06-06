@@ -137,16 +137,15 @@ func (s *SQLiteStore) Validate(ctx context.Context, plaintext string) (APIKey, e
 	var (
 		key          APIKey
 		scopesStr    string
-		createdAtStr string
-		lastUsedStr  sql.NullString
-		revokedStr   sql.NullString
+		lastUsedTime sql.NullTime
+		revokedTime  sql.NullTime
 	)
 
 	err := s.db.QueryRowContext(ctx,
 		`SELECT id, name, prefix, scopes, created_at, last_used_at, revoked_at
 		 FROM api_keys WHERE key_hash = ?`,
 		keyHash,
-	).Scan(&key.ID, &key.Name, &key.Prefix, &scopesStr, &createdAtStr, &lastUsedStr, &revokedStr)
+	).Scan(&key.ID, &key.Name, &key.Prefix, &scopesStr, &key.CreatedAt, &lastUsedTime, &revokedTime)
 	if err == sql.ErrNoRows {
 		return APIKey{}, ErrInvalidKey
 	}
@@ -154,21 +153,12 @@ func (s *SQLiteStore) Validate(ctx context.Context, plaintext string) (APIKey, e
 		return APIKey{}, fmt.Errorf("apikeys: query error: %w", err)
 	}
 
-	if revokedStr.Valid && revokedStr.String != "" {
+	if revokedTime.Valid {
 		return APIKey{}, ErrInvalidKey
 	}
 
-	createdAt, err := time.Parse("2006-01-02 15:04:05", createdAtStr)
-	if err != nil {
-		return APIKey{}, fmt.Errorf("apikeys: parse created_at: %w", err)
-	}
-	key.CreatedAt = createdAt
-
-	if lastUsedStr.Valid && lastUsedStr.String != "" {
-		t, err := time.Parse("2006-01-02 15:04:05", lastUsedStr.String)
-		if err != nil {
-			return APIKey{}, fmt.Errorf("apikeys: parse last_used_at: %w", err)
-		}
+	if lastUsedTime.Valid {
+		t := lastUsedTime.Time
 		key.LastUsedAt = &t
 	}
 
@@ -237,33 +227,20 @@ func (s *SQLiteStore) List(ctx context.Context, includeRevoked bool) ([]APIKey, 
 		var (
 			key          APIKey
 			scopesStr    string
-			createdAtStr string
-			lastUsedStr  sql.NullString
-			revokedStr   sql.NullString
+			lastUsedTime sql.NullTime
+			revokedTime  sql.NullTime
 		)
-		if err := rows.Scan(&key.ID, &key.Name, &key.Prefix, &scopesStr, &createdAtStr, &lastUsedStr, &revokedStr); err != nil {
+		if err := rows.Scan(&key.ID, &key.Name, &key.Prefix, &scopesStr, &key.CreatedAt, &lastUsedTime, &revokedTime); err != nil {
 			return nil, fmt.Errorf("apikeys: scan error: %w", err)
 		}
 
-		createdAt, err := time.Parse("2006-01-02 15:04:05", createdAtStr)
-		if err != nil {
-			return nil, fmt.Errorf("apikeys: parse created_at: %w", err)
-		}
-		key.CreatedAt = createdAt
-
-		if lastUsedStr.Valid && lastUsedStr.String != "" {
-			t, err := time.Parse("2006-01-02 15:04:05", lastUsedStr.String)
-			if err != nil {
-				return nil, fmt.Errorf("apikeys: parse last_used_at: %w", err)
-			}
+		if lastUsedTime.Valid {
+			t := lastUsedTime.Time
 			key.LastUsedAt = &t
 		}
 
-		if revokedStr.Valid && revokedStr.String != "" {
-			t, err := time.Parse("2006-01-02 15:04:05", revokedStr.String)
-			if err != nil {
-				return nil, fmt.Errorf("apikeys: parse revoked_at: %w", err)
-			}
+		if revokedTime.Valid {
+			t := revokedTime.Time
 			key.RevokedAt = &t
 		}
 

@@ -48,7 +48,7 @@ channels:
     enabled: true
     bots:
       - token: "BOT_TOKEN_1"
-        agent_id: system
+        agent_id: assistant
         allowed_user_ids: [123456789]
       - token: "BOT_TOKEN_2"
         agent_id: financial-agent
@@ -59,7 +59,7 @@ This registers two adapter IDs:
 
 | Adapter ID | Agent |
 |------------|-------|
-| `telegram` | `system` |
+| `telegram` | `assistant` |
 | `telegram-financial-agent` | `financial-agent` |
 
 You can configure this from the GUI: **Channels → Telegram → Edit → Bot mappings**.
@@ -102,7 +102,7 @@ agent_dirs:
   - ./agents
 ```
 
-```yaml title="agents/assistant.soul.yaml"
+```yaml title="agents/assistant/SOUL.yaml"
 id: assistant
 name: Assistant
 trigger: channel

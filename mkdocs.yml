@@ -86,12 +86,13 @@ nav:
     - LLM Providers: configuration/llm.md
     - Storage: configuration/storage.md
     - Auth: configuration/auth.md
+    - Security Posture: configuration/security.md
     - Rate Limiting: configuration/rate-limiting.md
     - Telemetry: configuration/telemetry.md
   - Agents:
     - SOUL.yaml Reference: agents/soul-yaml.md
-    - Workflow DAGs: agents/workflow.md
-    - Built-in Tools: agents/tools.md
+    - Workflow Steps: agents/workflow.md
+    - Agent Tools: agents/tools.md
     - Skills: agents/skills.md
   - Channels:
     - Overview: channels/index.md
