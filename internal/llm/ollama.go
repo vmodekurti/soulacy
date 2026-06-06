@@ -20,16 +20,30 @@ import (
 
 // OllamaProvider talks to a running Ollama instance.
 type OllamaProvider struct {
-	baseURL string
-	model   string
-	client  *http.Client
+	baseURL   string
+	model     string
+	keepAlive string
+	options   map[string]any
+	client    *http.Client
+}
+
+const DefaultOllamaKeepAlive = "30m"
+
+var DefaultOllamaOptions = map[string]any{
+	"num_ctx":   4096,
+	"num_batch": 128,
 }
 
 // NewOllamaProvider creates a provider targeting the given Ollama base URL.
-func NewOllamaProvider(baseURL, defaultModel string) *OllamaProvider {
+func NewOllamaProvider(baseURL, defaultModel string, keepAlive string, options map[string]any) *OllamaProvider {
+	if keepAlive == "" {
+		keepAlive = DefaultOllamaKeepAlive
+	}
 	return &OllamaProvider{
-		baseURL: baseURL,
-		model:   defaultModel,
+		baseURL:   baseURL,
+		model:     defaultModel,
+		keepAlive: keepAlive,
+		options:   ollamaOptionsWithDefaults(options),
 		// No hard HTTP timeout — the engine's context already governs the
 		// upper bound (per-agent run_timeout). A 120s client cap killed
 		// requests when big local models (e.g. qwen2.5:72b) were loading
@@ -73,10 +87,17 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		"model":    model,
 		"messages": msgs,
 		"stream":   false,
-		"options": map[string]any{
-			"temperature": req.Temperature,
-			"num_predict": req.MaxTokens,
-		},
+	}
+	if o.keepAlive != "" {
+		body["keep_alive"] = o.keepAlive
+	}
+	options := cloneOptions(o.options)
+	options["temperature"] = req.Temperature
+	if req.MaxTokens > 0 {
+		options["num_predict"] = req.MaxTokens
+	}
+	if len(options) > 0 {
+		body["options"] = options
 	}
 
 	// Structured output: Ollama accepts either format:"json" (free-form JSON)
@@ -119,7 +140,7 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 				body["tool_choice"] = tc
 			default:
 				body["tool_choice"] = map[string]any{
-					"type": "function",
+					"type":     "function",
 					"function": map[string]any{"name": tc},
 				}
 			}
@@ -232,6 +253,22 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	return r, nil
 }
 
+func cloneOptions(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func ollamaOptionsWithDefaults(in map[string]any) map[string]any {
+	out := cloneOptions(DefaultOllamaOptions)
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
 func (o *OllamaProvider) Models(ctx context.Context) ([]string, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, o.baseURL+"/api/tags", nil)
 	resp, err := o.client.Do(req)
@@ -259,16 +296,24 @@ func (o *OllamaProvider) Models(ctx context.Context) ([]string, error) {
 // OpenAIProvider is a thin wrapper for any OpenAI-compatible endpoint
 // (OpenAI, Anthropic via compatibility layer, Together, Groq, etc.)
 type OpenAIProvider struct {
-	id      string
-	baseURL string
-	apiKey  string
-	model   string
-	client  *http.Client
+	id                string
+	baseURL           string
+	apiKey            string
+	model             string
+	organization      string // OpenAI-Organization header (enterprise/team accounts)
+	parallelToolCalls *bool  // nil=default(true), false=serialize tool calls
+	client            *http.Client
 }
 
 func NewOpenAIProvider(id, baseURL, apiKey, model string) *OpenAIProvider {
+	return NewOpenAIProviderWithOptions(id, baseURL, apiKey, model, "", nil)
+}
+
+// NewOpenAIProviderWithOptions creates an OpenAI-compatible provider with extra settings.
+func NewOpenAIProviderWithOptions(id, baseURL, apiKey, model, organization string, parallelToolCalls *bool) *OpenAIProvider {
 	return &OpenAIProvider{
 		id: id, baseURL: baseURL, apiKey: apiKey, model: model,
+		organization: organization, parallelToolCalls: parallelToolCalls,
 		client: SharedHTTPClient(120 * time.Second),
 	}
 }
@@ -340,6 +385,11 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 			}
 		}
 		body["tools"] = tools
+		// parallel_tool_calls: default is true (provider default); false serializes
+		// tool calls which reduces agent loops on weaker models.
+		if p.parallelToolCalls != nil {
+			body["parallel_tool_calls"] = *p.parallelToolCalls
+		}
 
 		// Tool-choice constraint (OpenAI / OpenRouter / Together / Groq /
 		// vLLM all accept this). Same semantics as Ollama: bare strings for
@@ -350,7 +400,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 				body["tool_choice"] = tc
 			default:
 				body["tool_choice"] = map[string]any{
-					"type": "function",
+					"type":     "function",
 					"function": map[string]any{"name": tc},
 				}
 			}
@@ -435,6 +485,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 
 	payload, _ := json.Marshal(body)
+
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
 		p.baseURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
@@ -443,6 +494,9 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	httpReq.Header.Set("Content-Type", "application/json")
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+	if p.organization != "" {
+		httpReq.Header.Set("OpenAI-Organization", p.organization)
 	}
 
 	// Retry on transient errors (429 / 5xx / network) — OpenAI's the most
@@ -454,8 +508,9 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, _ := io.ReadAll(resp.Body)
+
 	if resp.StatusCode >= 300 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("%s: http %d: %s", p.id, resp.StatusCode, string(bodyBytes))
 	}
 
@@ -478,7 +533,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		} `json:"usage"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(bodyBytes, &result); err != nil {
 		return nil, fmt.Errorf("%s: decode: %w", p.id, err)
 	}
 	if len(result.Choices) == 0 {

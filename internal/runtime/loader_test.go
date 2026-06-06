@@ -69,6 +69,67 @@ func TestLoader_DeleteIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestLoader_ProtectedSystemCannotBeModifiedOrDeleted(t *testing.T) {
+	dir := t.TempDir()
+	l := NewLoader([]string{dir})
+
+	if err := l.Upsert(dir, &agent.Definition{ID: SystemAgentID, Channels: []string{"telegram"}}); err == nil {
+		t.Fatal("Upsert should reject the protected system agent")
+	}
+	if err := l.Delete(SystemAgentID); err == nil {
+		t.Fatal("Delete should reject the protected system agent")
+	}
+
+	sys := l.Get(SystemAgentID)
+	if sys == nil {
+		t.Fatal("system agent should still be present")
+	}
+	if sys.SourcePath != builtinSourcePath {
+		t.Fatalf("system SourcePath = %q, want builtin sentinel", sys.SourcePath)
+	}
+	if len(sys.Channels) != 1 || sys.Channels[0] != "http" {
+		t.Fatalf("system channels = %v, want [http]", sys.Channels)
+	}
+}
+
+func TestLoader_LoadAllIgnoresOnDiskSystemOverride(t *testing.T) {
+	dir := t.TempDir()
+	sysDir := filepath.Join(dir, SystemAgentID)
+	if err := os.MkdirAll(sysDir, 0755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sysDir, "SOUL.yaml"), []byte(`id: system
+name: Hijacked System
+channels: [telegram]
+enabled: false
+system_prompt: do not load this
+`), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	l := NewLoader([]string{dir})
+	if errs := l.LoadAll(); len(errs) > 0 {
+		t.Fatalf("LoadAll errors: %v", errs)
+	}
+
+	sys := l.Get(SystemAgentID)
+	if sys == nil {
+		t.Fatal("system agent should still be present")
+	}
+	if sys.Name != "System" {
+		t.Fatalf("system name = %q, want built-in System", sys.Name)
+	}
+	if !sys.Enabled {
+		t.Fatal("system agent should remain enabled")
+	}
+	if sys.SourcePath != builtinSourcePath {
+		t.Fatalf("system SourcePath = %q, want builtin sentinel", sys.SourcePath)
+	}
+	if len(sys.Channels) != 1 || sys.Channels[0] != "http" {
+		t.Fatalf("system channels = %v, want [http]", sys.Channels)
+	}
+}
+
 func TestLoader_LoadAllParsesValidSOUL(t *testing.T) {
 	dir := t.TempDir()
 	soul := []byte(`id: parse-test
@@ -183,5 +244,257 @@ func TestDefinitionCloneCopiesMCPAllowlists(t *testing.T) {
 	}
 	if (*def.MCPTools)[0] != "mcp__rocketmoney__get_transactions" {
 		t.Fatalf("Clone aliased MCPTools: got %q", (*def.MCPTools)[0])
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Phase 7: YAML round-trip tests for advanced schema fields.
+//
+// These tests exercise the full Upsert→disk→LoadAll→Get pipeline so that
+// YAML serialisation regressions (omitempty on nil *[]string, nested structs
+// being dropped, etc.) are caught automatically rather than at runtime.
+// ---------------------------------------------------------------------------
+
+// upsertThenReload writes def to disk via Upsert, re-scans via LoadAll, and
+// returns the freshly-parsed definition. Failures are fatal so callers don't
+// have to check errors on every assertion.
+func upsertThenReload(t *testing.T, def *agent.Definition) *agent.Definition {
+	t.Helper()
+	dir := t.TempDir()
+	l := NewLoader([]string{dir})
+	if err := l.Upsert(dir, def); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	if errs := l.LoadAll(); len(errs) > 0 {
+		t.Fatalf("LoadAll: %v", errs)
+	}
+	got := l.Get(def.ID)
+	if got == nil {
+		t.Fatalf("Get(%q) returned nil after reload", def.ID)
+	}
+	return got
+}
+
+// TestLoaderRoundTripBuiltinsNil verifies that a nil Builtins pointer (legacy
+// default — all gated builtins offered) survives the YAML round-trip as nil.
+func TestLoaderRoundTripBuiltinsNil(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-builtins-nil", Enabled: true,
+		Builtins: nil, // absent from YAML → must stay nil after reload
+	}
+	got := upsertThenReload(t, def)
+	if got.Builtins != nil {
+		t.Errorf("Builtins: got %v, want nil", got.Builtins)
+	}
+}
+
+// TestLoaderRoundTripBuiltinsEmpty verifies that an explicit empty Builtins
+// list (opt-out of all builtins) round-trips as a non-nil pointer to an
+// empty slice — distinct from nil.
+func TestLoaderRoundTripBuiltinsEmpty(t *testing.T) {
+	empty := []string{}
+	def := &agent.Definition{
+		ID: "rt-builtins-empty", Enabled: true,
+		Builtins: &empty,
+	}
+	got := upsertThenReload(t, def)
+	if got.Builtins == nil {
+		t.Fatal("Builtins: got nil, want non-nil empty list")
+	}
+	if len(*got.Builtins) != 0 {
+		t.Errorf("Builtins: got %v, want []", *got.Builtins)
+	}
+}
+
+// TestLoaderRoundTripBuiltinsExplicit verifies that a specific builtins list
+// survives the round-trip with every entry preserved.
+func TestLoaderRoundTripBuiltinsExplicit(t *testing.T) {
+	list := []string{"web_search", "kb_search"}
+	def := &agent.Definition{
+		ID: "rt-builtins-list", Enabled: true,
+		Builtins: &list,
+	}
+	got := upsertThenReload(t, def)
+	if got.Builtins == nil || len(*got.Builtins) != 2 {
+		t.Fatalf("Builtins: got %v, want [web_search kb_search]", got.Builtins)
+	}
+	if (*got.Builtins)[0] != "web_search" || (*got.Builtins)[1] != "kb_search" {
+		t.Errorf("Builtins entries: got %v", *got.Builtins)
+	}
+}
+
+// TestLoaderRoundTripBuiltinsWildcard verifies the ["*"] wildcard value.
+func TestLoaderRoundTripBuiltinsWildcard(t *testing.T) {
+	wc := []string{"*"}
+	def := &agent.Definition{
+		ID: "rt-builtins-wc", Enabled: true,
+		Builtins: &wc,
+	}
+	got := upsertThenReload(t, def)
+	if got.Builtins == nil || len(*got.Builtins) != 1 || (*got.Builtins)[0] != "*" {
+		t.Errorf("Builtins wildcard: got %v, want [*]", got.Builtins)
+	}
+}
+
+// TestLoaderRoundTripConfirmTools verifies that confirm_tools list is preserved.
+func TestLoaderRoundTripConfirmTools(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-confirm", Enabled: true,
+		ConfirmTools: []string{"shell_exec", "write_file", "http_request"},
+	}
+	got := upsertThenReload(t, def)
+	if len(got.ConfirmTools) != 3 {
+		t.Fatalf("ConfirmTools count = %d, want 3", len(got.ConfirmTools))
+	}
+	if got.ConfirmTools[0] != "shell_exec" {
+		t.Errorf("ConfirmTools[0] = %q, want shell_exec", got.ConfirmTools[0])
+	}
+}
+
+// TestLoaderRoundTripSystemTools verifies that system_tools:true survives.
+func TestLoaderRoundTripSystemTools(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-systemtools", Enabled: true,
+		SystemTools: true,
+	}
+	got := upsertThenReload(t, def)
+	if !got.SystemTools {
+		t.Error("SystemTools: got false, want true")
+	}
+}
+
+// TestLoaderRoundTripSecurity verifies that the security block (passphrase
+// and prompt) round-trips without losing any fields.
+func TestLoaderRoundTripSecurity(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-security", Enabled: true,
+		Security: &agent.SecurityConfig{
+			Passphrase:       "hunter2",
+			PassphrasePrompt: "Enter the magic word:",
+		},
+	}
+	got := upsertThenReload(t, def)
+	if got.Security == nil {
+		t.Fatal("Security: got nil, want non-nil")
+	}
+	if got.Security.Passphrase != "hunter2" {
+		t.Errorf("Passphrase = %q, want hunter2", got.Security.Passphrase)
+	}
+	if got.Security.PassphrasePrompt != "Enter the magic word:" {
+		t.Errorf("PassphrasePrompt = %q", got.Security.PassphrasePrompt)
+	}
+}
+
+// TestLoaderRoundTripSecurityNil verifies that omitting the security block
+// leaves Security as nil after reload (no ghost empty struct injected).
+func TestLoaderRoundTripSecurityNil(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-security-nil", Enabled: true,
+		Security: nil,
+	}
+	got := upsertThenReload(t, def)
+	if got.Security != nil {
+		t.Errorf("Security: got %+v, want nil", got.Security)
+	}
+}
+
+// TestLoaderRoundTripWorkflow verifies that a multi-step WorkflowSpec survives
+// the YAML round-trip with all step fields intact.
+func TestLoaderRoundTripWorkflow(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-workflow", Enabled: true,
+		Workflow: &agent.WorkflowSpec{
+			Steps: []agent.StepSpec{
+				{ID: "gather", Tool: "web_search", Input: "{{user_message}}", Output: "search_result"},
+				{ID: "summarise", Prompt: "Summarise: {{search_result}}", OnError: "skip"},
+			},
+		},
+	}
+	got := upsertThenReload(t, def)
+	if got.Workflow == nil {
+		t.Fatal("Workflow: got nil, want non-nil")
+	}
+	if len(got.Workflow.Steps) != 2 {
+		t.Fatalf("Workflow steps = %d, want 2", len(got.Workflow.Steps))
+	}
+	s0 := got.Workflow.Steps[0]
+	if s0.ID != "gather" || s0.Tool != "web_search" || s0.Output != "search_result" {
+		t.Errorf("step 0: %+v", s0)
+	}
+	s1 := got.Workflow.Steps[1]
+	if s1.ID != "summarise" || s1.OnError != "skip" {
+		t.Errorf("step 1: %+v", s1)
+	}
+}
+
+// TestLoaderRoundTripWorkflowNil verifies that omitting workflow leaves
+// Workflow as nil (no empty WorkflowSpec injected).
+func TestLoaderRoundTripWorkflowNil(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-workflow-nil", Enabled: true,
+		Workflow: nil,
+	}
+	got := upsertThenReload(t, def)
+	if got.Workflow != nil {
+		t.Errorf("Workflow: got %+v, want nil", got.Workflow)
+	}
+}
+
+// TestLoaderRoundTripScheduleOutput verifies that the schedule.output block
+// (channel routing for cron agents) round-trips completely.
+func TestLoaderRoundTripScheduleOutput(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-sched-output", Enabled: true,
+		Schedule: &agent.Schedule{
+			Cron: "0 9 * * 1-5",
+			Output: &agent.ScheduleOutput{
+				Channel:  "telegram-newsbot",
+				To:       "123456789",
+				BotName:  "News Bot",
+				Template: "📰 Morning briefing:\n{{reply}}",
+			},
+		},
+	}
+	got := upsertThenReload(t, def)
+	if got.Schedule == nil {
+		t.Fatal("Schedule: got nil")
+	}
+	if got.Schedule.Cron != "0 9 * * 1-5" {
+		t.Errorf("Schedule.Cron = %q", got.Schedule.Cron)
+	}
+	if got.Schedule.Output == nil {
+		t.Fatal("Schedule.Output: got nil")
+	}
+	o := got.Schedule.Output
+	if o.Channel != "telegram-newsbot" {
+		t.Errorf("Output.Channel = %q, want telegram-newsbot", o.Channel)
+	}
+	if o.To != "123456789" {
+		t.Errorf("Output.To = %q, want 123456789", o.To)
+	}
+	if o.BotName != "News Bot" {
+		t.Errorf("Output.BotName = %q, want 'News Bot'", o.BotName)
+	}
+	if o.Template != "📰 Morning briefing:\n{{reply}}" {
+		t.Errorf("Output.Template = %q", o.Template)
+	}
+}
+
+// TestLoaderRoundTripAllowedProviders verifies the provider guard list.
+func TestLoaderRoundTripAllowedProviders(t *testing.T) {
+	def := &agent.Definition{
+		ID: "rt-providers", Enabled: true,
+		LLM: agent.LLMConfig{
+			Provider:         "ollama",
+			Model:            "llama3",
+			AllowedProviders: []string{"ollama"},
+		},
+	}
+	got := upsertThenReload(t, def)
+	if len(got.LLM.AllowedProviders) != 1 || got.LLM.AllowedProviders[0] != "ollama" {
+		t.Errorf("AllowedProviders: got %v, want [ollama]", got.LLM.AllowedProviders)
+	}
+	if got.LLM.Provider != "ollama" || got.LLM.Model != "llama3" {
+		t.Errorf("LLM config: provider=%q model=%q", got.LLM.Provider, got.LLM.Model)
 	}
 }

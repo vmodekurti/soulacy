@@ -1,0 +1,292 @@
+package llm
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+
+	"github.com/soulacy/soulacy/pkg/message"
+)
+
+func TestOllamaCompleteSerializesOptionsToolsAndParsesToolCalls(t *testing.T) {
+	var got map[string]any
+	provider := NewOllamaProvider("http://ollama.test", "llama3", "10m", map[string]any{"num_ctx": 8192})
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/api/chat" {
+			t.Fatalf("path = %q, want /api/chat", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(200, `{
+			"message": {
+				"role": "assistant",
+				"content": "",
+				"tool_calls": [
+					{"function": {"name": "lookup", "arguments": {"city": "Chicago"}}}
+				]
+			},
+			"prompt_eval_count": 11,
+			"eval_count": 3
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Model:          "qwen",
+		Temperature:    0.4,
+		MaxTokens:      123,
+		ResponseFormat: "json_schema",
+		JSONSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"ok": map[string]any{"type": "boolean"},
+			},
+		},
+		ToolChoice: "lookup",
+		Messages: []ChatMessage{
+			{Role: "system", Content: "be useful"},
+			{Role: "user", Content: "weather"},
+			{
+				Role: "assistant",
+				ToolCalls: []message.ToolCall{{
+					ID:        "call_1",
+					Name:      "lookup",
+					Arguments: map[string]any{"city": "Chicago"},
+				}},
+			},
+			{Role: "tool", Name: "lookup", Content: "rain", ToolCallID: "call_1"},
+		},
+		Tools: []ToolSchema{{
+			Name:        "lookup",
+			Description: "Lookup weather",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if got["model"] != "qwen" {
+		t.Fatalf("model = %v, want qwen", got["model"])
+	}
+	if got["keep_alive"] != "10m" {
+		t.Fatalf("keep_alive = %v, want 10m", got["keep_alive"])
+	}
+	options := got["options"].(map[string]any)
+	if options["num_ctx"].(float64) != 8192 || options["num_batch"].(float64) != 128 {
+		t.Fatalf("options = %#v", options)
+	}
+	if options["temperature"].(float64) != 0.4 || options["num_predict"].(float64) != 123 {
+		t.Fatalf("runtime options = %#v", options)
+	}
+	if _, ok := got["format"].(map[string]any); !ok {
+		t.Fatalf("format should be schema map, got %#v", got["format"])
+	}
+	toolChoice := got["tool_choice"].(map[string]any)
+	if toolChoice["function"].(map[string]any)["name"] != "lookup" {
+		t.Fatalf("tool_choice = %#v", toolChoice)
+	}
+	messages := got["messages"].([]any)
+	if messages[2].(map[string]any)["tool_calls"] == nil {
+		t.Fatalf("assistant tool_calls not serialized: %#v", messages[2])
+	}
+	if messages[3].(map[string]any)["tool_name"] != "lookup" {
+		t.Fatalf("tool message missing tool_name: %#v", messages[3])
+	}
+
+	if resp.InputTokens != 11 || resp.OutputTokens != 3 {
+		t.Fatalf("usage = %d/%d, want 11/3", resp.InputTokens, resp.OutputTokens)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Name != "lookup" {
+		t.Fatalf("tool calls = %+v", resp.ToolCalls)
+	}
+	if resp.ToolCalls[0].Arguments["city"] != "Chicago" {
+		t.Fatalf("tool args = %+v", resp.ToolCalls[0].Arguments)
+	}
+}
+
+func TestOllamaCompleteStreamsTextWhenNoTools(t *testing.T) {
+	var stream bool
+	provider := NewOllamaProvider("http://ollama.test", "llama3", "", nil)
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		stream = body["stream"].(bool)
+		return textResponse(200,
+			`{"message":{"content":"hello"},"done":false}`+"\n"+
+				`{"message":{"content":" world"},"done":false}`+"\n"+
+				`{"done":true}`+"\n",
+		), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Stream:   true,
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var out string
+	for token := range resp.Stream {
+		out += token
+	}
+	if !stream {
+		t.Fatal("request stream flag was not true")
+	}
+	if out != "hello world" {
+		t.Fatalf("stream output = %q, want hello world", out)
+	}
+}
+
+func TestOpenAICompleteSerializesToolStateAndParsesToolCalls(t *testing.T) {
+	parallel := false
+	var got map[string]any
+	var auth, org string
+	provider := NewOpenAIProviderWithOptions("openai", "http://openai.test", "sk-test", "gpt-default", "org-1", &parallel)
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("path = %q, want /chat/completions", r.URL.Path)
+		}
+		auth = r.Header.Get("Authorization")
+		org = r.Header.Get("OpenAI-Organization")
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(200, `{
+			"choices": [{
+				"message": {
+					"content": "",
+					"tool_calls": [{
+						"id": "call_openai_1",
+						"function": {
+							"name": "lookup",
+							"arguments": "{\"city\":\"Chicago\"}"
+						}
+					}]
+				}
+			}],
+			"usage": {"prompt_tokens": 9, "completion_tokens": 4}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Model:          "gpt-test",
+		Temperature:    0.1,
+		MaxTokens:      200,
+		ToolChoice:     "required",
+		ResponseFormat: "json_schema",
+		JSONSchema:     map[string]any{"type": "object"},
+		Messages: []ChatMessage{
+			{Role: "user", Content: "hi"},
+			{
+				Role: "assistant",
+				ToolCalls: []message.ToolCall{{
+					ID:        "call_1",
+					Name:      "lookup",
+					Arguments: map[string]any{"city": "Chicago"},
+				}},
+			},
+			{Role: "tool", ToolCallID: "call_1", Name: "lookup", Content: "rain"},
+		},
+		Tools: []ToolSchema{{
+			Name:        "lookup",
+			Description: "Lookup weather",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if auth != "Bearer sk-test" || org != "org-1" {
+		t.Fatalf("headers auth=%q org=%q", auth, org)
+	}
+	if got["model"] != "gpt-test" || got["parallel_tool_calls"] != false {
+		t.Fatalf("model/parallel = %#v", got)
+	}
+	if got["tool_choice"] != "required" {
+		t.Fatalf("tool_choice = %#v", got["tool_choice"])
+	}
+	if got["response_format"].(map[string]any)["type"] != "json_schema" {
+		t.Fatalf("response_format = %#v", got["response_format"])
+	}
+	messages := got["messages"].([]any)
+	if messages[1].(map[string]any)["tool_calls"] == nil {
+		t.Fatalf("assistant tool_calls not serialized: %#v", messages[1])
+	}
+	if messages[2].(map[string]any)["tool_call_id"] != "call_1" {
+		t.Fatalf("tool message missing tool_call_id: %#v", messages[2])
+	}
+
+	if resp.InputTokens != 9 || resp.OutputTokens != 4 {
+		t.Fatalf("usage = %d/%d, want 9/4", resp.InputTokens, resp.OutputTokens)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ID != "call_openai_1" || resp.ToolCalls[0].Name != "lookup" {
+		t.Fatalf("tool calls = %+v", resp.ToolCalls)
+	}
+	if resp.ToolCalls[0].Arguments["city"] != "Chicago" {
+		t.Fatalf("tool args = %+v", resp.ToolCalls[0].Arguments)
+	}
+}
+
+func TestOpenAICompleteStreamsSSEWhenNoTools(t *testing.T) {
+	var accept string
+	provider := NewOpenAIProvider("openai", "http://openai.test", "", "gpt")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		accept = r.Header.Get("Accept")
+		return textResponse(200,
+			`data: {"choices":[{"delta":{"content":"one"}}]}`+"\n\n"+
+				`data: {"choices":[{"delta":{"content":" two"}}]}`+"\n\n"+
+				`data: [DONE]`+"\n",
+		), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Stream:   true,
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	var out string
+	for token := range resp.Stream {
+		out += token
+	}
+	if accept != "text/event-stream" {
+		t.Fatalf("Accept = %q, want text/event-stream", accept)
+	}
+	if out != "one two" {
+		t.Fatalf("stream output = %q, want one two", out)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
+}
+
+func clientWithRoundTripper(fn roundTripFunc) *http.Client {
+	return &http.Client{Transport: fn}
+}
+
+func jsonResponse(status int, body string) *http.Response {
+	resp := textResponse(status, body)
+	resp.Header.Set("Content-Type", "application/json")
+	return resp
+}
+
+func textResponse(status int, body string) *http.Response {
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+}

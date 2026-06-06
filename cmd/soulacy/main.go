@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -18,47 +19,50 @@ import (
 	"go.uber.org/zap/zapcore"
 
 	"github.com/soulacy/soulacy/internal/actionlog"
+	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/audit"
+	"github.com/soulacy/soulacy/internal/auth"
+	"github.com/soulacy/soulacy/internal/auth/apikeys"
+	"github.com/soulacy/soulacy/internal/builder"
 	"github.com/soulacy/soulacy/internal/channels"
-	"github.com/soulacy/soulacy/internal/costs"
-	"github.com/soulacy/soulacy/internal/executor/pool"
-	"github.com/soulacy/soulacy/internal/executor/process"
-	"github.com/soulacy/soulacy/internal/mcp"
-	"github.com/soulacy/soulacy/internal/plugins"
-	"github.com/soulacy/soulacy/internal/telemetry"
 	discordchan "github.com/soulacy/soulacy/internal/channels/discord"
 	httpchan "github.com/soulacy/soulacy/internal/channels/http"
 	slackchan "github.com/soulacy/soulacy/internal/channels/slack"
 	telegramchan "github.com/soulacy/soulacy/internal/channels/telegram"
 	wachan "github.com/soulacy/soulacy/internal/channels/whatsapp"
-	"github.com/soulacy/soulacy/internal/auth"
-	"github.com/soulacy/soulacy/internal/builder"
-	"github.com/soulacy/soulacy/internal/auth/apikeys"
+	wawebchan "github.com/soulacy/soulacy/internal/channels/whatsappweb"
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/costs"
 	"github.com/soulacy/soulacy/internal/credentials"
 	"github.com/soulacy/soulacy/internal/executor"
-	"github.com/soulacy/soulacy/internal/queue/dlq"
-	"github.com/soulacy/soulacy/internal/ratelimit"
-	"github.com/soulacy/soulacy/internal/rbac"
-	"github.com/soulacy/soulacy/internal/session"
+	"github.com/soulacy/soulacy/internal/executor/pool"
+	"github.com/soulacy/soulacy/internal/executor/process"
 	"github.com/soulacy/soulacy/internal/gateway"
 	"github.com/soulacy/soulacy/internal/knowledge"
 	"github.com/soulacy/soulacy/internal/llm"
+	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/plugins"
+	"github.com/soulacy/soulacy/internal/queue"
+	"github.com/soulacy/soulacy/internal/queue/dlq"
+	queuememory "github.com/soulacy/soulacy/internal/queue/memory"
+	queuenats "github.com/soulacy/soulacy/internal/queue/nats"
+	"github.com/soulacy/soulacy/internal/ratelimit"
+	"github.com/soulacy/soulacy/internal/rbac"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/internal/scheduler"
+	"github.com/soulacy/soulacy/internal/session"
 	"github.com/soulacy/soulacy/internal/skills"
 	"github.com/soulacy/soulacy/internal/storage"
 	storagepg "github.com/soulacy/soulacy/internal/storage/postgres"
 	storagesqlite "github.com/soulacy/soulacy/internal/storage/sqlite"
+	"github.com/soulacy/soulacy/internal/telemetry"
+	"github.com/soulacy/soulacy/internal/vector"
 	vectorqdrant "github.com/soulacy/soulacy/internal/vector/qdrant"
 	vectorsqlitevec "github.com/soulacy/soulacy/internal/vector/sqlitevec"
-	"github.com/soulacy/soulacy/internal/vector"
-	"github.com/soulacy/soulacy/internal/queue"
-	queuememory "github.com/soulacy/soulacy/internal/queue/memory"
-	queuenats "github.com/soulacy/soulacy/internal/queue/nats"
+	"github.com/soulacy/soulacy/internal/workboard"
 )
 
 // llmEmbedAdapter wraps an llm.Embedder so it satisfies memory.Embedder.
@@ -211,6 +215,25 @@ func run() error {
 
 	log.Info("Soulacy starting", zap.String("version", config.Version))
 
+	// ── Agent brain memory (episodic / semantic / procedural) ────────────────
+	// MEM-02: instantiate the CompositeStore. Base dir reads from the
+	// SOULACY_MEMORY_DIR env var (MEM-07), falling back to ~/.soulacy/memory/.
+	brainMemDir := os.Getenv("SOULACY_MEMORY_DIR")
+	if brainMemDir == "" {
+		home, _ := os.UserHomeDir()
+		brainMemDir = filepath.Join(home, ".soulacy", "memory")
+	}
+	if err := os.MkdirAll(brainMemDir, 0755); err != nil {
+		log.Warn("brain memory dir create failed — long-term memory disabled",
+			zap.String("dir", brainMemDir), zap.Error(err))
+		brainMemDir = ""
+	}
+	var brainStore *agentmemory.CompositeStore
+	if brainMemDir != "" {
+		brainStore = agentmemory.NewCompositeStore(brainMemDir, nil)
+		log.Info("agent brain memory enabled", zap.String("dir", brainMemDir))
+	}
+
 	// ── Memory ───────────────────────────────────────────────────────────────
 	fileStore, err := memory.NewFileStore(cfg.Memory.Dir)
 	if err != nil {
@@ -268,7 +291,7 @@ func run() error {
 	if model == "" {
 		model = "llama3"
 	}
-	llmRouter.Register(llm.NewOllamaProvider(ollamaCfg.BaseURL, model))
+	llmRouter.Register(llm.NewOllamaProvider(ollamaCfg.BaseURL, model, ollamaCfg.KeepAlive, ollamaCfg.Options))
 
 	// Register OpenAI (also serves OpenRouter / Together / Groq / vLLM / any
 	// OpenAI-compatible endpoint — set base_url accordingly).
@@ -277,15 +300,18 @@ func run() error {
 		if baseURL == "" {
 			baseURL = "https://api.openai.com/v1"
 		}
-		llmRouter.Register(llm.NewOpenAIProvider("openai", baseURL, openaiCfg.APIKey, openaiCfg.Model))
+		llmRouter.Register(llm.NewOpenAIProviderWithOptions("openai", baseURL, openaiCfg.APIKey, openaiCfg.Model, openaiCfg.Organization, openaiCfg.ParallelToolCalls))
 	}
 	// Register Anthropic (native Messages API).
 	if anthropicCfg, ok := cfg.LLM.Providers["anthropic"]; ok && anthropicCfg.APIKey != "" {
-		llmRouter.Register(llm.NewAnthropicProvider(anthropicCfg.BaseURL, anthropicCfg.APIKey, anthropicCfg.Model))
+		llmRouter.Register(llm.NewAnthropicProviderWithOptions(
+			anthropicCfg.BaseURL, anthropicCfg.APIKey, anthropicCfg.Model,
+			anthropicCfg.PromptCaching, anthropicCfg.ExtendedThinking, anthropicCfg.ThinkingBudget,
+		))
 	}
 	// Register Google Gemini.
 	if googleCfg, ok := cfg.LLM.Providers["google"]; ok && googleCfg.APIKey != "" {
-		llmRouter.Register(llm.NewGeminiProvider(googleCfg.BaseURL, googleCfg.APIKey, googleCfg.Model))
+		llmRouter.Register(llm.NewGeminiProviderWithOptions(googleCfg.BaseURL, googleCfg.APIKey, googleCfg.Model, googleCfg.ThinkingBudget, googleCfg.SafetyLevel))
 	}
 	// Additional OpenAI-compatible providers configured by URL — anything else
 	// in cfg.LLM.Providers with a base_url and api_key gets a generic OpenAI
@@ -297,7 +323,7 @@ func run() error {
 			continue
 		}
 		if pcfg.APIKey != "" && pcfg.BaseURL != "" {
-			llmRouter.Register(llm.NewOpenAIProvider(id, pcfg.BaseURL, pcfg.APIKey, pcfg.Model))
+			llmRouter.Register(llm.NewOpenAIProviderWithOptions(id, pcfg.BaseURL, pcfg.APIKey, pcfg.Model, pcfg.Organization, pcfg.ParallelToolCalls))
 		}
 	}
 	log.Info("llm providers registered",
@@ -335,7 +361,7 @@ func run() error {
 			if resolved != cfg.Runtime.PythonBin {
 				log.Info("python_bin resolved to absolute path",
 					zap.String("configured", cfg.Runtime.PythonBin),
-					zap.String("resolved",   resolved))
+					zap.String("resolved", resolved))
 			}
 			cfg.Runtime.PythonBin = resolved
 		} else {
@@ -625,9 +651,22 @@ func run() error {
 	}
 
 	// Audit log — append-only JSONL per session under cfg.Runtime.AuditDir.
+	// MEM-03: pass the brain memory store into the engine.
+	if brainStore != nil {
+		engine.SetBrainMemory(brainStore)
+	}
+
 	engine.SetAuditLog(audit.New(cfg.Runtime.AuditDir))
 	if cfg.Runtime.AuditDir != "" {
 		log.Info("audit logging enabled", zap.String("dir", cfg.Runtime.AuditDir))
+	}
+
+	// python_file path allowlist — prevents crafted SOUL.yaml from executing
+	// arbitrary host files. Skipped (all paths allowed) when list is empty.
+	engine.SetAllowedToolDirs(cfg.Runtime.AllowedToolDirs)
+	if len(cfg.Runtime.AllowedToolDirs) > 0 {
+		log.Info("python_file allowlist active",
+			zap.Strings("allowed_tool_dirs", cfg.Runtime.AllowedToolDirs))
 	}
 
 	// SSRF protection for HTTP-fetching built-in tools.
@@ -645,17 +684,17 @@ func run() error {
 
 	// ── Scheduler ────────────────────────────────────────────────────────────
 	sched := scheduler.New(engine, loader, log, ctx)
+	sched.SetStatePath(filepath.Join(cfg.Memory.Dir, "scheduler-state.json"))
 	for _, def := range loader.All() {
 		if err := sched.RegisterAgent(def); err != nil {
 			log.Warn("scheduler register failed", zap.String("agent", def.ID), zap.Error(err))
 		}
 	}
-	sched.Start()
-	defer sched.Stop()
 
 	// ── Channel Registry ─────────────────────────────────────────────────────
 	chanReg := channels.NewRegistry(512)
 	chanReg.SetLogger(log)
+	sched.SetChannelRegistry(chanReg)
 	httpAdapter := httpchan.New()
 	chanReg.Register(httpAdapter)
 
@@ -667,12 +706,12 @@ func run() error {
 	//
 	// Single-bot (legacy, backwards-compatible):
 	//   channels.telegram.token:   "..."
-	//   channels.telegram.agent_id: "system"
+	//   channels.telegram.agent_id: "assistant"
 	//
 	// Multi-bot (one adapter per agent, separate bot tokens):
 	//   channels.telegram.bots:
 	//     - token: "..."
-	//       agent_id: "system"
+	//       agent_id: "assistant"
 	//       allowed_user_ids: [123]
 	//     - token: "..."
 	//       agent_id: "financial-agent"
@@ -693,7 +732,11 @@ func run() error {
 						}
 						token, _ := botMap["token"].(string)
 						agentID, _ := botMap["agent_id"].(string)
+						botName, _ := botMap["bot_name"].(string)
 						if token == "" {
+							continue
+						}
+						if !externalChannelAgentAllowed(adapterIDForLog("telegram", i, agentID), agentID, log) {
 							continue
 						}
 						allowedIDs := parseTelegramAllowedIDs(botMap)
@@ -703,11 +746,12 @@ func run() error {
 						if i > 0 {
 							adapterID = "telegram-" + sanitizeID(agentID)
 						}
-						tg := telegramchan.NewWithID(adapterID, token, agentID, allowedIDs)
+						tg := telegramchan.NewWithIDAndActivation(adapterID, token, agentID, allowedIDs, activationPolicyFromConfig(botMap, true))
 						chanReg.Register(tg)
 						log.Info("telegram bot registered",
 							zap.String("adapter_id", adapterID),
-							zap.String("agent_id", agentID))
+							zap.String("agent_id", agentID),
+							zap.String("bot_name", botName))
 					}
 				}
 			} else {
@@ -715,9 +759,11 @@ func run() error {
 				token, _ := tgCfg["token"].(string)
 				agentID, _ := tgCfg["agent_id"].(string)
 				if token != "" {
-					allowedIDs := parseTelegramAllowedIDs(tgCfg)
-					tg := telegramchan.New(token, agentID, allowedIDs)
-					chanReg.Register(tg)
+					if externalChannelAgentAllowed("telegram", agentID, log) {
+						allowedIDs := parseTelegramAllowedIDs(tgCfg)
+						tg := telegramchan.NewWithIDAndActivation("telegram", token, agentID, allowedIDs, activationPolicyFromConfig(tgCfg, true))
+						chanReg.Register(tg)
+					}
 				}
 			}
 		}
@@ -727,7 +773,7 @@ func run() error {
 	// Same dual-mode as Telegram: single-bot (legacy) or multi-bot via `bots:`.
 	//   channels.discord.bots:
 	//     - token: "Bot ..."
-	//       agent_id: "system"
+	//       agent_id: "assistant"
 	//       guild_id: ""
 	if dsCfg, ok := chanCfg["discord"]; ok {
 		if enabled, _ := dsCfg["enabled"].(bool); enabled {
@@ -741,18 +787,23 @@ func run() error {
 						token, _ := botMap["token"].(string)
 						agentID, _ := botMap["agent_id"].(string)
 						guildID, _ := botMap["guild_id"].(string)
+						botName, _ := botMap["bot_name"].(string)
 						if token == "" {
+							continue
+						}
+						if !externalChannelAgentAllowed(adapterIDForLog("discord", i, agentID), agentID, log) {
 							continue
 						}
 						adapterID := "discord"
 						if i > 0 {
 							adapterID = "discord-" + sanitizeID(agentID)
 						}
-						ds := discordchan.NewWithID(adapterID, token, agentID, guildID)
+						ds := discordchan.NewWithIDAndActivation(adapterID, token, agentID, guildID, activationPolicyFromConfig(botMap, true))
 						chanReg.Register(ds)
 						log.Info("discord bot registered",
 							zap.String("adapter_id", adapterID),
-							zap.String("agent_id", agentID))
+							zap.String("agent_id", agentID),
+							zap.String("bot_name", botName))
 					}
 				}
 			} else {
@@ -760,8 +811,10 @@ func run() error {
 				agentID, _ := dsCfg["agent_id"].(string)
 				guildID, _ := dsCfg["guild_id"].(string)
 				if token != "" {
-					ds := discordchan.New(token, agentID, guildID)
-					chanReg.Register(ds)
+					if externalChannelAgentAllowed("discord", agentID, log) {
+						ds := discordchan.NewWithIDAndActivation("discord", token, agentID, guildID, activationPolicyFromConfig(dsCfg, true))
+						chanReg.Register(ds)
+					}
 				}
 			}
 		}
@@ -772,7 +825,7 @@ func run() error {
 	//   channels.slack.bots:
 	//     - bot_token: "xoxb-..."
 	//       app_token: "xapp-..."
-	//       agent_id: "system"
+	//       agent_id: "assistant"
 	if slCfg, ok := chanCfg["slack"]; ok {
 		if enabled, _ := slCfg["enabled"].(bool); enabled {
 			if rawBots, hasBots := slCfg["bots"]; hasBots {
@@ -785,18 +838,23 @@ func run() error {
 						botToken, _ := botMap["bot_token"].(string)
 						appToken, _ := botMap["app_token"].(string)
 						agentID, _ := botMap["agent_id"].(string)
+						botName, _ := botMap["bot_name"].(string)
 						if botToken == "" || appToken == "" {
+							continue
+						}
+						if !externalChannelAgentAllowed(adapterIDForLog("slack", i, agentID), agentID, log) {
 							continue
 						}
 						adapterID := "slack"
 						if i > 0 {
 							adapterID = "slack-" + sanitizeID(agentID)
 						}
-						sl := slackchan.NewWithID(adapterID, botToken, appToken, agentID)
+						sl := slackchan.NewWithIDAndActivation(adapterID, botToken, appToken, agentID, activationPolicyFromConfig(botMap, true))
 						chanReg.Register(sl)
 						log.Info("slack bot registered",
 							zap.String("adapter_id", adapterID),
-							zap.String("agent_id", agentID))
+							zap.String("agent_id", agentID),
+							zap.String("bot_name", botName))
 					}
 				}
 			} else {
@@ -804,8 +862,10 @@ func run() error {
 				appToken, _ := slCfg["app_token"].(string)
 				agentID, _ := slCfg["agent_id"].(string)
 				if botToken != "" && appToken != "" {
-					sl := slackchan.New(botToken, appToken, agentID)
-					chanReg.Register(sl)
+					if externalChannelAgentAllowed("slack", agentID, log) {
+						sl := slackchan.NewWithIDAndActivation("slack", botToken, appToken, agentID, activationPolicyFromConfig(slCfg, true))
+						chanReg.Register(sl)
+					}
 				}
 			}
 		}
@@ -818,15 +878,45 @@ func run() error {
 	if waCfg, ok := chanCfg["whatsapp"]; ok {
 		if enabled, _ := waCfg["enabled"].(bool); enabled {
 			phoneNumberID, _ := waCfg["phone_number_id"].(string)
-			accessToken, _   := waCfg["access_token"].(string)
-			verifyToken, _   := waCfg["verify_token"].(string)
+			accessToken, _ := waCfg["access_token"].(string)
+			verifyToken, _ := waCfg["verify_token"].(string)
 			// app_secret is used to verify the HMAC on inbound webhook
 			// POSTs. PRODUCTION_AUDIT → CRIT/Security.
-			appSecret, _     := waCfg["app_secret"].(string)
-			agentID, _       := waCfg["agent_id"].(string)
+			appSecret, _ := waCfg["app_secret"].(string)
+			agentID, _ := waCfg["agent_id"].(string)
 			if phoneNumberID != "" && accessToken != "" && verifyToken != "" {
-				waAdapter = wachan.New(phoneNumberID, accessToken, verifyToken, appSecret, agentID, log)
-				chanReg.Register(waAdapter) // StartAll will call waAdapter.Start()
+				if externalChannelAgentAllowed("whatsapp", agentID, log) {
+					waAdapter = wachan.NewWithActivation(phoneNumberID, accessToken, verifyToken, appSecret, agentID, activationPolicyFromConfig(waCfg, false), log)
+					chanReg.Register(waAdapter) // StartAll will call waAdapter.Start()
+				}
+			}
+		}
+	}
+
+	// WhatsApp Web is an experimental QR-linked channel backed by a Node
+	// sidecar (Baileys). Keep it separate from the official Meta Cloud API
+	// adapter above so deployments can make an explicit tradeoff.
+	if waWebCfg, ok := chanCfg["whatsapp_web"]; ok {
+		if enabled, _ := waWebCfg["enabled"].(bool); enabled {
+			command, _ := waWebCfg["command"].(string)
+			args := parseStringList(waWebCfg["args"])
+			sessionDir, _ := waWebCfg["session_dir"].(string)
+			accountID, _ := waWebCfg["account_id"].(string)
+			agentID, _ := waWebCfg["agent_id"].(string)
+			activation := activationPolicyFromConfig(waWebCfg, true)
+			if command == "" {
+				command = "node"
+			}
+			if len(args) > 0 && agentID != "" {
+				if externalChannelAgentAllowed("whatsapp_web", agentID, log) {
+					waWeb := wawebchan.New("whatsapp_web", command, args, sessionDir, agentID, accountID, activation, log)
+					chanReg.Register(waWeb)
+					log.Warn("experimental WhatsApp Web channel enabled",
+						zap.String("agent_id", agentID),
+						zap.String("account_id", accountID),
+						zap.String("trigger_phrase", activation.TriggerPhrase),
+						zap.Bool("ignore_groups", activation.IgnoreGroups))
+				}
 			}
 		}
 	}
@@ -844,6 +934,9 @@ func run() error {
 	// Wired AFTER chanReg.StartAll so adapters are connected before the
 	// first cron tick or HTTP request can trigger a failure path.
 	engine.SetFailureNotifier(&failureNotifier{chanReg: chanReg, log: log})
+
+	sched.Start()
+	defer sched.Stop()
 
 	// PRODUCTION_AUDIT → F2 (2026-05-27): replay any in-flight runs that
 	// the previous gateway process didn't finish (host crash, kill -9,
@@ -1015,6 +1108,16 @@ func run() error {
 		srv.SetCostStore(openedCostStore)
 	}
 
+	// ── Workboard Store (Story 5) ─────────────────────────────────────────────
+	workboardPath := filepath.Join(home, ".soulacy", "workboard.db")
+	if wbStore, wberr := workboard.NewStore(workboardPath); wberr != nil {
+		log.Warn("workboard store unavailable", zap.Error(wberr))
+	} else {
+		defer wbStore.Close()
+		srv.SetWorkboardStore(wbStore)
+		log.Info("workboard ready", zap.String("path", workboardPath))
+	}
+
 	// ── Rate Limiter (Task #33) ───────────────────────────────────────────────
 	rlCfg := ratelimit.Config{
 		Enabled:           cfg.RateLimit.Enabled,
@@ -1130,6 +1233,98 @@ func parseTelegramAllowedIDs(m map[string]any) []int64 {
 		}
 	}
 	return out
+}
+
+// parseStringList extracts a string argv list from config values that may have
+// been loaded from YAML as []any, []string, or a whitespace-separated string.
+func parseStringList(raw any) []string {
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		return strings.Fields(v)
+	default:
+		return nil
+	}
+}
+
+func parseDelimitedConfigList(raw any) []string {
+	switch v := raw.(type) {
+	case []string, []any:
+		return parseStringList(raw)
+	case string:
+		parts := strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\t'
+		})
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func parseBoolConfig(raw any, fallback bool) bool {
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "yes", "1", "on":
+			return true
+		case "false", "no", "0", "off":
+			return false
+		}
+	}
+	return fallback
+}
+
+func activationPolicyFromConfig(m map[string]any, defaultIgnoreGroups bool) channels.ActivationPolicy {
+	trigger := strings.TrimSpace(fmt.Sprint(m["trigger_phrase"]))
+	if trigger == "" {
+		trigger = "!soulacy"
+	}
+	userIDs := parseDelimitedConfigList(m["allowed_user_ids"])
+	for _, uid := range parseTelegramAllowedIDs(m) {
+		userIDs = append(userIDs, strconv.FormatInt(uid, 10))
+	}
+	return channels.ActivationPolicy{
+		TriggerPhrase:    trigger,
+		IgnoreGroups:     parseBoolConfig(m["ignore_groups"], defaultIgnoreGroups),
+		AllowedThreadIDs: parseDelimitedConfigList(m["allowed_chat_ids"]),
+		AllowedUserIDs:   userIDs,
+	}
+}
+
+func adapterIDForLog(channel string, index int, agentID string) string {
+	if index == 0 {
+		return channel
+	}
+	return channel + "-" + sanitizeID(agentID)
+}
+
+func externalChannelAgentAllowed(adapterID, agentID string, log *zap.Logger) bool {
+	if strings.TrimSpace(agentID) != runtime.SystemAgentID {
+		return true
+	}
+	log.Warn("external channel mapping skipped: system agent is web-only",
+		zap.String("adapter_id", adapterID),
+		zap.String("agent_id", agentID),
+	)
+	return false
 }
 
 // sanitizeID replaces characters that are not safe for adapter IDs or log

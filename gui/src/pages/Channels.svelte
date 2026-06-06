@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte'
+  import QRCode from 'qrcode'
   import { api } from '../lib/api.js'
 
   let channels = []
@@ -16,6 +17,25 @@
   let form      = {}     // key → value
   let botsForm  = []
   let saving    = false
+  let pairing   = false
+  let advancedWhatsAppWeb = false
+  let qrDataUrl = ''
+  let lastQR    = ''
+  const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+  $: activePairingQR = editing?.id === 'whatsapp_web' ? (editing.status?.qr_code || '') : ''
+  $: if (activePairingQR !== lastQR) {
+    lastQR = activePairingQR
+    renderPairingQR(activePairingQR)
+  }
+
+  async function renderPairingQR(value) {
+    if (!value) {
+      qrDataUrl = ''
+      return
+    }
+    qrDataUrl = await QRCode.toDataURL(value, { width: 256, margin: 2, errorCorrectionLevel: 'M' })
+  }
 
   async function load() {
     loading = true
@@ -52,9 +72,18 @@
   function openEdit(ch) {
     editing = ch
     form = {}
+    advancedWhatsAppWeb = false
     for (const f of ch.schema || []) {
       // For secrets that are already set, leave the box blank — blank means "keep".
       form[f.key] = f.secret && ch.settings?.[f.key] === '***' ? '' : (ch.settings?.[f.key] || '')
+    }
+    if (isMessageChannel(ch.id)) {
+      if (!form.trigger_phrase) form.trigger_phrase = '!soulacy'
+      if (form.ignore_groups === '' || form.ignore_groups === undefined) form.ignore_groups = true
+      form.ignore_groups = form.ignore_groups === true || String(form.ignore_groups).toLowerCase() === 'true'
+    }
+    if (ch.id === 'whatsapp_web' && !form.agent_id && agents.length) {
+      form.agent_id = agents[0].id
     }
     botsForm = (ch.bots || []).map(bot => {
       const copy = {}
@@ -70,6 +99,9 @@
     editing = null
     form = {}
     botsForm = []
+    advancedWhatsAppWeb = false
+    qrDataUrl = ''
+    lastQR = ''
   }
 
   async function saveEdit() {
@@ -91,6 +123,38 @@
     }
   }
 
+  async function startWhatsAppWebPairing() {
+    if (!form.agent_id) {
+      error = 'Select an agent before pairing WhatsApp Web.'
+      return
+    }
+    pairing = true
+    error = ''
+    notice = ''
+    try {
+      const res = await api.channels.pairWhatsAppWeb({
+        agent_id: form.agent_id,
+        trigger_phrase: form.trigger_phrase || '!soulacy',
+        ignore_groups: !!form.ignore_groups,
+        allowed_chat_ids: form.allowed_chat_ids || '',
+        allowed_sender_ids: form.allowed_sender_ids || '',
+      })
+      notice = res.message || 'WhatsApp Web pairing started.'
+      restartNeeded = false
+      for (let i = 0; i < 20; i += 1) {
+        await wait(i === 0 ? 300 : 1000)
+        await load()
+        const fresh = channels.find(ch => ch.id === 'whatsapp_web')
+        if (fresh) editing = fresh
+        if (fresh?.status?.qr_code || fresh?.status?.connected) break
+      }
+    } catch (e) {
+      error = e.message
+    } finally {
+      pairing = false
+    }
+  }
+
   onMount(load)
 
   function statusColor(ch) {
@@ -108,9 +172,12 @@
   }
 
   const CHANNEL_ICONS = {
-    whatsapp: '📱', telegram: '✈️', slack: '💬', discord: '🎮', http: '🌐', email: '📧',
+    whatsapp: '📱', whatsapp_web: '🔗', telegram: '✈️', slack: '💬', discord: '🎮', http: '🌐', email: '📧',
   }
   function chanIcon(id = '') { return CHANNEL_ICONS[id.toLowerCase()] || '⚡' }
+  function isMessageChannel(id = '') {
+    return ['telegram', 'discord', 'slack', 'whatsapp', 'whatsapp_web'].includes(id)
+  }
 
   function displayValue(ch, f) {
     const v = ch.settings?.[f.key]
@@ -123,13 +190,20 @@
     if (ch.bots?.length) {
       return ch.bots.map((bot, i) => ({
         adapter_id: bot._adapter_id || (i === 0 ? ch.id : `${ch.id}-${bot.agent_id || i + 1}`),
+        bot_name: bot.bot_name || bot.name || '',
         agent_id: bot.agent_id || '—',
         connected: bot._connected,
         detail: bot._detail,
       }))
     }
     const agent = ch.settings?.agent_id
-    return agent ? [{ adapter_id: ch.id, agent_id: agent, connected: ch.status?.connected, detail: ch.status?.detail }] : []
+    return agent ? [{
+      adapter_id: ch.id,
+      bot_name: ch.settings?.bot_name || '',
+      agent_id: agent,
+      connected: ch.status?.connected,
+      detail: ch.status?.detail,
+    }] : []
   }
 
   function addBotMapping() {
@@ -214,7 +288,27 @@
               <span class="ch-val">{ch.always ? 'Always' : (ch.enabled ? 'Yes' : 'No')}</span>
             </div>
 
-            {#if ch.schema?.length}
+            {#if ch.id === 'whatsapp_web'}
+              <div class="settings">
+                <span class="settings-title">Pairing</span>
+                <div class="ch-row">
+                  <span class="ch-label">Agent</span>
+                  <span class="ch-val mono">{ch.settings?.agent_id || 'Select during setup'}</span>
+                </div>
+                <div class="ch-row">
+                  <span class="ch-label">Device</span>
+                  <span class="ch-val">{ch.status?.connected ? 'Paired' : (ch.status?.qr_code ? 'QR ready' : 'Not paired')}</span>
+                </div>
+                <div class="ch-row">
+                  <span class="ch-label">Trigger</span>
+                  <span class="ch-val mono">{ch.settings?.trigger_phrase || '!soulacy'}</span>
+                </div>
+                <div class="ch-row">
+                  <span class="ch-label">Groups</span>
+                  <span class="ch-val">{ch.settings?.ignore_groups === false || ch.settings?.ignore_groups === 'false' ? 'Allowed' : 'Ignored'}</span>
+                </div>
+              </div>
+            {:else if ch.schema?.length}
               <div class="settings">
                 <span class="settings-title">Settings</span>
                 {#each ch.schema as f}
@@ -234,7 +328,8 @@
                 {#each mappingRows(ch) as row}
                   <div class="mapping-row">
                     <div>
-                      <code>{row.adapter_id}</code>
+                      <code>{row.bot_name || row.adapter_id}</code>
+                      {#if row.bot_name}<em>{row.adapter_id}</em>{/if}
                       <span>{row.connected ? 'connected' : (row.detail || 'pending restart')}</span>
                     </div>
                     <strong>{row.agent_id}</strong>
@@ -242,11 +337,14 @@
                 {/each}
               </div>
             {/if}
+
           </div>
 
           <div class="ch-footer">
             {#if ch.schema?.length}
-              <button class="btn-secondary small-btn" on:click={() => openEdit(ch)}>Edit</button>
+              <button class="btn-secondary small-btn" on:click={() => openEdit(ch)}>
+                {ch.id === 'whatsapp_web' ? 'Connect' : 'Edit'}
+              </button>
             {/if}
             {#if !ch.always}
               <button
@@ -281,15 +379,77 @@
   >
     <div class="modal">
       <h2>{chanIcon(editing.id)} Configure {editing.name}</h2>
-      <div class="fields">
-        {#each editing.schema as f}
+
+      {#if editing.id === 'whatsapp_web'}
+        <div class="pair-panel">
           <label class="field">
-            <span class="field-label">
-              {f.label}{#if f.required}<span class="req">*</span>{/if}
-            </span>
-            {#if f.type === 'password'}
-              <input type="password" bind:value={form[f.key]}
-                placeholder={editing.settings?.[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
+            <span class="field-label">Agent<span class="req">*</span></span>
+            <select bind:value={form.agent_id}>
+              <option value="">Select an agent…</option>
+              {#each agents as agent}
+                <option value={agent.id}>{agentLabel(agent)}</option>
+              {/each}
+            </select>
+          </label>
+
+          <div class="safety-panel">
+            <strong>Message safety</strong>
+            <label class="field">
+              <span class="field-label">Trigger phrase</span>
+              <input type="text" bind:value={form.trigger_phrase} placeholder="!soulacy" />
+              <span class="field-help">Only messages that start with this phrase will run the agent.</span>
+            </label>
+            <label class="check-row">
+              <input type="checkbox" bind:checked={form.ignore_groups} />
+              <span>Ignore group chats</span>
+            </label>
+          </div>
+
+          <div class="pair-status" class:live={editing.status?.connected} class:waiting={editing.status?.qr_code && !editing.status?.connected}>
+            <strong>{editing.status?.connected ? 'Device paired' : editing.status?.qr_code ? 'QR code ready' : 'Ready to pair'}</strong>
+            <span>{editing.status?.detail || (editing.status?.connected ? 'WhatsApp Web is connected.' : 'Click the button below to generate a QR code.')}</span>
+          </div>
+
+          {#if qrDataUrl}
+            <div class="qr-preview">
+              <img src={qrDataUrl} alt="WhatsApp Web pairing QR code" />
+              <p>Open WhatsApp, go to Linked devices, choose Link a device, then scan this code.</p>
+            </div>
+          {/if}
+
+          <div class="pair-actions">
+            <button class="btn-primary" on:click={startWhatsAppWebPairing} disabled={pairing || !form.agent_id}>
+              {pairing ? 'Generating…' : editing.status?.connected ? 'Refresh pairing' : 'Generate QR code'}
+            </button>
+            <button class="btn-secondary" type="button" on:click={() => advancedWhatsAppWeb = !advancedWhatsAppWeb}>
+              {advancedWhatsAppWeb ? 'Hide advanced' : 'Advanced'}
+            </button>
+          </div>
+
+          {#if advancedWhatsAppWeb}
+            <div class="advanced-panel">
+              {#each editing.schema.filter(f => !['agent_id', 'trigger_phrase', 'ignore_groups'].includes(f.key)) as f}
+                <label class="field">
+                  <span class="field-label">
+                    {f.label}{#if f.required}<span class="req">*</span>{/if}
+                  </span>
+                  <input type="text" bind:value={form[f.key]} placeholder={f.help || ''} />
+                  {#if f.help}<span class="field-help">{f.help}</span>{/if}
+                </label>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <div class="fields">
+          {#each editing.schema as f}
+            <label class="field">
+              <span class="field-label">
+                {f.label}{#if f.required}<span class="req">*</span>{/if}
+              </span>
+              {#if f.type === 'password'}
+                <input type="password" bind:value={form[f.key]}
+                  placeholder={editing.settings?.[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
             {:else if f.key === 'agent_id' && agents.length}
               <select bind:value={form[f.key]}>
                 <option value="">Select an agent…</option>
@@ -297,13 +457,19 @@
                   <option value={agent.id}>{agentLabel(agent)}</option>
                 {/each}
               </select>
+            {:else if f.key === 'ignore_groups'}
+              <label class="check-row compact">
+                <input type="checkbox" bind:checked={form[f.key]} />
+                <span>Enabled</span>
+              </label>
             {:else}
               <input type="text" bind:value={form[f.key]} placeholder={f.help || ''} />
             {/if}
-            {#if f.help}<span class="field-help">{f.help}</span>{/if}
-          </label>
-        {/each}
-      </div>
+              {#if f.help}<span class="field-help">{f.help}</span>{/if}
+            </label>
+          {/each}
+        </div>
+      {/if}
 
       {#if editing.multi_bot}
         <div class="bot-editor">
@@ -324,7 +490,7 @@
                   <div class="bot-card-head">
                     <div>
                       <strong>{i === 0 ? editing.id : `${editing.id}-${bot.agent_id || i + 1}`}</strong>
-                      <span>adapter ID</span>
+                      <span>{bot.bot_name || 'adapter ID'}</span>
                     </div>
                     <button class="btn-danger tiny" type="button" on:click={() => removeBotMapping(i)}>Remove</button>
                   </div>
@@ -367,9 +533,11 @@
 
       <div class="modal-row">
         <button class="btn-secondary" on:click={closeEdit} disabled={saving}>Cancel</button>
-        <button class="btn-primary" on:click={saveEdit} disabled={saving}>
-          {saving ? 'Saving…' : 'Save'}
-        </button>
+        {#if editing.id !== 'whatsapp_web' || advancedWhatsAppWeb}
+          <button class="btn-primary" on:click={saveEdit} disabled={saving}>
+            {saving ? 'Saving…' : editing.id === 'whatsapp_web' ? 'Save advanced' : 'Save'}
+          </button>
+        {/if}
       </div>
     </div>
   </div>
@@ -419,9 +587,9 @@
   }
   .mapping-row div { min-width: 0; display: flex; flex-direction: column; gap: .15rem; }
   .mapping-row code { color: #8b85ff; font-size: .72rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mapping-row em { color: #6b7294; font-size: .66rem; font-family: monospace; font-style: normal; }
   .mapping-row span { color: #555a7a; font-size: .68rem; }
   .mapping-row strong { color: #c8cadf; font-size: .78rem; text-align: right; word-break: break-word; }
-
   .ch-footer { padding: .75rem 1rem; border-top: 1px solid #1a1e36; display: flex; gap: .5rem; justify-content: flex-end; }
   .small-btn { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }
   .ch-footer button { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }
@@ -452,9 +620,44 @@
     background: #1c1f35; color: #e8eaf6; border: 1px solid #2a2f4a;
     border-radius: 6px; padding: .5rem .65rem; font-size: .85rem;
   }
+  .pair-panel { display: flex; flex-direction: column; gap: 1rem; }
+  .safety-panel {
+    display: flex; flex-direction: column; gap: .75rem;
+    background: rgba(240,196,96,.07); border: 1px solid rgba(240,196,96,.28);
+    border-radius: 8px; padding: .85rem;
+  }
+  .safety-panel strong { color: #f0c460; font-size: .86rem; }
+  .check-row { display: flex; align-items: center; gap: .55rem; color: #c8cadf; font-size: .84rem; }
+  .check-row.compact { background: #1c1f35; border: 1px solid #2a2f4a; border-radius: 6px; padding: .5rem .65rem; }
+  .check-row input { width: 1rem; height: 1rem; accent-color: #6c63ff; }
+  .pair-status {
+    display: flex; flex-direction: column; gap: .25rem;
+    background: #101323; border: 1px solid #2a2f4a; border-radius: 8px;
+    padding: .85rem;
+  }
+  .pair-status strong { color: #e8eaf6; font-size: .9rem; }
+  .pair-status span { color: #7b82a8; font-size: .8rem; line-height: 1.45; }
+  .pair-status.live { border-color: rgba(76,175,130,.45); background: rgba(76,175,130,.08); }
+  .pair-status.waiting { border-color: rgba(240,196,96,.45); background: rgba(240,196,96,.08); }
+  .qr-preview {
+    display: grid; grid-template-columns: 256px minmax(0, 1fr); align-items: center; gap: 1rem;
+    background: #101323; border: 1px solid #1a1e36; border-radius: 8px; padding: 1rem;
+  }
+  .qr-preview img { width: 256px; height: 256px; border-radius: 8px; background: #fff; }
+  .qr-preview p { margin: 0; color: #c8cadf; font-size: .88rem; line-height: 1.55; }
+  .pair-actions { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+  .advanced-panel {
+    border-top: 1px solid #2a2f4a; padding-top: 1rem;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem;
+  }
   .req { color: #f06060; margin-left: .15rem; }
   .field-help { font-size: .72rem; color: #555a7a; }
-  .modal-row { display: flex; gap: .75rem; justify-content: flex-end; }
+  .modal-row {
+    display: flex; gap: .75rem; justify-content: flex-end;
+    position: sticky; bottom: 0; z-index: 5;
+    background: #141626; padding-top: .6rem;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.6);
+  }
   .tiny { padding: .22rem .5rem; font-size: .72rem; border-radius: 5px; }
   .bot-editor { border-top: 1px solid #2a2f4a; padding-top: 1rem; display: flex; flex-direction: column; gap: .85rem; }
   .bot-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
@@ -468,4 +671,9 @@
   .bot-card-head strong { font-family: monospace; color: #8b85ff; font-size: .8rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .bot-card-head span { color: #555a7a; font-size: .68rem; }
   .bot-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; }
+
+  @media (max-width: 720px) {
+    .qr-preview { grid-template-columns: 1fr; justify-items: center; text-align: center; }
+    .advanced-panel { grid-template-columns: 1fr; }
+  }
 </style>

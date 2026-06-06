@@ -103,15 +103,17 @@ Content-Type: application/json
 
 ---
 
-## Using credentials in SOUL.yaml
+## Using credentials
 
-Reference a stored credential by name in agent configuration:
+Use stored credentials from gateway/provider/channel configuration rather than
+embedding secrets in `SOUL.yaml`. Agents should select providers by name:
 
 ```yaml
-name: my-agent
-model: gpt-4o
-credentials:
-  openai_key: openai-prod   # credential name from the vault
+id: my-agent
+llm:
+  provider: openai
+  model: gpt-4o
 ```
 
-At runtime, Soulacy substitutes the decrypted value before passing it to the LLM provider.
+At runtime, the configured provider supplies the decrypted credential to the LLM
+adapter.

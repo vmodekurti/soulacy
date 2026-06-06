@@ -28,6 +28,7 @@ import (
 	"github.com/soulacy/soulacy/internal/agentvalidate"
 	"github.com/soulacy/soulacy/internal/builder"
 	"github.com/soulacy/soulacy/internal/channels"
+	wawebchan "github.com/soulacy/soulacy/internal/channels/whatsappweb"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
@@ -128,6 +129,55 @@ func startRestartChild() error {
 
 // --- Agents ---
 
+func isProtectedSystemAgent(id string) bool {
+	return strings.TrimSpace(id) == runtime.SystemAgentID
+}
+
+func protectedSystemAgentResponse(c *fiber.Ctx) error {
+	return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+		"error": "system agent is protected and cannot be modified, deleted, cloned, disabled, or routed to external channels",
+	})
+}
+
+func channelReferencesProtectedSystem(id string, settings map[string]string, bots []map[string]any) bool {
+	if id == "http" {
+		return false
+	}
+	if isProtectedSystemAgent(settings["agent_id"]) {
+		return true
+	}
+	for _, bot := range bots {
+		if isProtectedSystemAgent(fmt.Sprint(bot["agent_id"])) {
+			return true
+		}
+	}
+	return false
+}
+
+func channelMapReferencesProtectedSystem(id string, chMap map[string]any) bool {
+	if id == "http" || chMap == nil {
+		return false
+	}
+	if isProtectedSystemAgent(fmt.Sprint(chMap["agent_id"])) {
+		return true
+	}
+	switch raw := chMap["bots"].(type) {
+	case []any:
+		for _, item := range raw {
+			if bot, ok := item.(map[string]any); ok && isProtectedSystemAgent(fmt.Sprint(bot["agent_id"])) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for _, bot := range raw {
+			if isProtectedSystemAgent(fmt.Sprint(bot["agent_id"])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (s *Server) handleListAgents(c *fiber.Ctx) error {
 	defs := s.loader.All()
 	return c.JSON(fiber.Map{"agents": defs, "count": len(defs)})
@@ -158,6 +208,9 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 	if def.ID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id is required"})
 	}
+	if isProtectedSystemAgent(def.ID) {
+		return protectedSystemAgentResponse(c)
+	}
 
 	// Default LLM to configured provider
 	if def.LLM.Provider == "" {
@@ -182,6 +235,9 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 
 func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
 	existing := s.loader.Get(id)
 	if existing == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
@@ -195,9 +251,31 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	updates.SourcePath = existing.SourcePath
 	updates.LoadedAt = existing.LoadedAt
 
-	// Preserve fields the GUI doesn't render — prevents a Save from wiping them.
-	// Any field not exposed in the agent editor form must be copied here so that
-	// round-tripping through the GUI is safe and non-destructive.
+	preserveHiddenAgentUpdateFields(&updates, existing)
+
+	dir := ""
+	if len(s.cfg.AgentDirs) > 0 {
+		dir = s.cfg.AgentDirs[0]
+	}
+	if err := s.loader.Upsert(dir, &updates); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	// Re-register schedule
+	s.scheduler.DeregisterAgent(id)
+	_ = s.scheduler.RegisterAgent(&updates)
+
+	return c.JSON(updates)
+}
+
+// preserveHiddenAgentUpdateFields protects advanced SOUL.yaml fields that are
+// not rendered by every GUI edit surface. Without this, a normal Save from a
+// partial editor payload can silently wipe security, tool policy, workflow, and
+// routing fields that the user configured by hand.
+func preserveHiddenAgentUpdateFields(updates, existing *agent.Definition) {
+	if updates == nil || existing == nil {
+		return
+	}
 	if updates.Security == nil {
 		updates.Security = existing.Security
 	}
@@ -237,24 +315,13 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	if len(updates.Tags) == 0 {
 		updates.Tags = existing.Tags
 	}
-
-	dir := ""
-	if len(s.cfg.AgentDirs) > 0 {
-		dir = s.cfg.AgentDirs[0]
-	}
-	if err := s.loader.Upsert(dir, &updates); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-
-	// Re-register schedule
-	s.scheduler.DeregisterAgent(id)
-	_ = s.scheduler.RegisterAgent(&updates)
-
-	return c.JSON(updates)
 }
 
 func (s *Server) handleDeleteAgent(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
 	s.scheduler.DeregisterAgent(id)
 	if err := s.loader.Delete(id); err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
@@ -272,6 +339,9 @@ func (s *Server) handleDisableAgent(c *fiber.Ctx) error {
 
 func (s *Server) setAgentEnabled(c *fiber.Ctx, enabled bool) error {
 	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
 	def := s.loader.Get(id)
 	if def == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
@@ -294,6 +364,9 @@ func (s *Server) setAgentEnabled(c *fiber.Ctx, enabled bool) error {
 // The clone is created disabled so duplicate schedules don't fire unexpectedly.
 func (s *Server) handleCloneAgent(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
 	src := s.loader.Get(id)
 	if src == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
@@ -344,6 +417,7 @@ func (s *Server) uniqueAgentID(base string) string {
 func (s *Server) handleChat(c *fiber.Ctx) error {
 	var req struct {
 		AgentID   string `json:"agent_id"`
+		SessionID string `json:"session_id"`
 		UserID    string `json:"user_id"`
 		Username  string `json:"username"`
 		Text      string `json:"text"`
@@ -368,11 +442,15 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	if req.Username == "" {
 		req.Username = req.UserID
 	}
+	sessionID := strings.TrimSpace(req.SessionID)
+	if sessionID == "" {
+		sessionID = fmt.Sprintf("http-%s", req.UserID)
+	}
 	def := s.loader.Get(req.AgentID)
 
 	msg := message.Message{
 		ID:        uuid.New().String(),
-		SessionID: fmt.Sprintf("http-%s", req.UserID),
+		SessionID: sessionID,
 		AgentID:   req.AgentID,
 		Channel:   "http",
 		ThreadID:  req.UserID,
@@ -606,24 +684,54 @@ type channelSpec struct {
 var channelSpecs = []channelSpec{
 	{ID: "http", Name: "HTTP", Always: true, Fields: nil},
 	{ID: "telegram", Name: "Telegram", Fields: []channelField{
+		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "Get one from @BotFather"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
+		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
+		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated Telegram chat IDs to allow"},
 		{Key: "allowed_user_ids", Label: "Allowed user IDs", Type: "text", Required: false, Help: "Comma-separated Telegram user IDs"},
 	}},
 	{ID: "discord", Name: "Discord", Fields: []channelField{
+		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
+		{Key: "ignore_groups", Label: "Ignore servers", Type: "text", Required: false, Help: "true by default; set false only for deliberate server usage"},
+		{Key: "allowed_chat_ids", Label: "Allowed channel IDs", Type: "text", Required: false, Help: "Optional comma-separated Discord channel IDs to allow"},
+		{Key: "allowed_user_ids", Label: "Allowed user IDs", Type: "text", Required: false, Help: "Optional comma-separated Discord user IDs to allow"},
 		{Key: "guild_id", Label: "Guild ID", Type: "text", Required: false},
 	}},
 	{ID: "slack", Name: "Slack", Fields: []channelField{
+		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "bot_token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "xoxb-..."},
 		{Key: "app_token", Label: "App token", Type: "password", Required: true, Secret: true, Help: "xapp-..."},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
+		{Key: "ignore_groups", Label: "Ignore channels", Type: "text", Required: false, Help: "true by default; set false only for deliberate channel usage"},
+		{Key: "allowed_chat_ids", Label: "Allowed channel IDs", Type: "text", Required: false, Help: "Optional comma-separated Slack channel IDs to allow"},
+		{Key: "allowed_user_ids", Label: "Allowed user IDs", Type: "text", Required: false, Help: "Optional comma-separated Slack user IDs to allow"},
 	}},
 	{ID: "whatsapp", Name: "WhatsApp", Fields: []channelField{
+		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "phone_number_id", Label: "Phone number ID", Type: "text", Required: true},
 		{Key: "access_token", Label: "Access token", Type: "password", Required: true, Secret: true},
 		{Key: "verify_token", Label: "Verify token", Type: "password", Required: true, Secret: true},
+		{Key: "app_secret", Label: "App secret", Type: "password", Required: true, Secret: true, Help: "Meta app secret used to verify webhook signatures"},
+		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
+		{Key: "allowed_user_ids", Label: "Allowed phone numbers", Type: "text", Required: false, Help: "Optional comma-separated WhatsApp sender IDs to allow"},
+	}},
+	{ID: "whatsapp_web", Name: "WhatsApp Web (experimental)", Fields: []channelField{
+		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
+		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
+		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
+		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated WhatsApp chat JIDs to allow"},
+		{Key: "allowed_sender_ids", Label: "Allowed sender IDs", Type: "text", Required: false, Help: "Optional comma-separated WhatsApp sender JIDs to allow"},
+		{Key: "command", Label: "Command", Type: "text", Required: false, Help: "Runtime executable; defaults to node"},
+		{Key: "args", Label: "Arguments", Type: "text", Required: true, Help: "Command args, e.g. scripts/whatsapp-web-sidecar.mjs"},
+		{Key: "session_dir", Label: "Session directory", Type: "text", Required: false, Help: "Where QR-linked auth state is stored"},
+		{Key: "account_id", Label: "Account ID", Type: "text", Required: false, Help: "Session subdirectory for this linked account"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 	}},
 }
@@ -683,12 +791,17 @@ func displayChannelValue(v any) any {
 			parts = append(parts, strconv.Itoa(item))
 		}
 		return strings.Join(parts, ", ")
+	case []string:
+		return strings.Join(t, " ")
 	default:
 		return t
 	}
 }
 
 func normalizeChannelValue(key, val string) any {
+	if key == "args" {
+		return strings.Fields(val)
+	}
 	if key != "allowed_user_ids" {
 		return val
 	}
@@ -850,6 +963,7 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 			"status": fiber.Map{
 				"connected": st.Connected,
 				"detail":    st.Detail,
+				"qr_code":   st.QRCode,
 			},
 		})
 	}
@@ -875,6 +989,11 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if channelReferencesProtectedSystem(id, req.Settings, req.Bots) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "system agent is web-only and cannot be assigned to external channels",
+		})
 	}
 
 	// Existing in-memory settings for this channel (source of truth for secrets we keep).
@@ -914,6 +1033,11 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 			chMap["bots"] = normalizeChannelBots(*spec, req.Bots, existing["bots"])
 		}
 	}
+	if channelMapReferencesProtectedSystem(id, chMap) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "system agent is web-only and cannot be assigned to external channels",
+		})
+	}
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "write config: " + err.Error()})
@@ -927,6 +1051,159 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 		"ok":      true,
 		"message": "Channel saved. Restart the gateway to connect/disconnect adapters.",
 	})
+}
+
+func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
+	if s.cfgPath == "" {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist WhatsApp Web settings"})
+	}
+	var req struct {
+		AgentID          string `json:"agent_id"`
+		TriggerPhrase    string `json:"trigger_phrase"`
+		IgnoreGroups     *bool  `json:"ignore_groups"`
+		AllowedChatIDs   string `json:"allowed_chat_ids"`
+		AllowedSenderIDs string `json:"allowed_sender_ids"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	agentID := strings.TrimSpace(req.AgentID)
+	if agentID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "agent_id is required"})
+	}
+	if isProtectedSystemAgent(agentID) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "system agent is web-only and cannot be assigned to WhatsApp Web",
+		})
+	}
+	if s.loader.Get(agentID) == nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unknown agent: " + agentID})
+	}
+
+	raw, err := readRawConfig(s.cfgPath)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "read config: " + err.Error()})
+	}
+	chMap := getOrCreateMap(getOrCreateMap(raw, "channels"), "whatsapp_web")
+	chMap["enabled"] = true
+	chMap["agent_id"] = agentID
+	if strings.TrimSpace(fmt.Sprint(chMap["command"])) == "" {
+		chMap["command"] = "node"
+	}
+	if len(parseStringListValue(chMap["args"])) == 0 {
+		chMap["args"] = []string{"scripts/whatsapp-web-sidecar.mjs"}
+	}
+	if strings.TrimSpace(fmt.Sprint(chMap["session_dir"])) == "" {
+		base := filepath.Dir(s.cfg.Memory.Dir)
+		if base == "." || base == "" {
+			base = filepath.Dir(s.cfgPath)
+		}
+		chMap["session_dir"] = filepath.Join(base, "whatsapp-web")
+	}
+	if strings.TrimSpace(fmt.Sprint(chMap["account_id"])) == "" {
+		chMap["account_id"] = "default"
+	}
+	if strings.TrimSpace(fmt.Sprint(chMap["bot_name"])) == "" {
+		chMap["bot_name"] = "WhatsApp Web"
+	}
+	if strings.TrimSpace(req.TriggerPhrase) != "" {
+		chMap["trigger_phrase"] = strings.TrimSpace(req.TriggerPhrase)
+	} else if strings.TrimSpace(fmt.Sprint(chMap["trigger_phrase"])) == "" {
+		chMap["trigger_phrase"] = "!soulacy"
+	}
+	if req.IgnoreGroups != nil {
+		chMap["ignore_groups"] = *req.IgnoreGroups
+	} else if _, ok := chMap["ignore_groups"]; !ok {
+		chMap["ignore_groups"] = true
+	}
+	if strings.TrimSpace(req.AllowedChatIDs) != "" {
+		chMap["allowed_chat_ids"] = strings.TrimSpace(req.AllowedChatIDs)
+	}
+	if strings.TrimSpace(req.AllowedSenderIDs) != "" {
+		chMap["allowed_sender_ids"] = strings.TrimSpace(req.AllowedSenderIDs)
+	}
+
+	if err := writeRawConfig(s.cfgPath, raw); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "write config: " + err.Error()})
+	}
+	s.applyChannelToMemory("whatsapp_web", chMap)
+
+	command, _ := chMap["command"].(string)
+	args := parseStringListValue(chMap["args"])
+	sessionDir, _ := chMap["session_dir"].(string)
+	accountID, _ := chMap["account_id"].(string)
+	activation := channels.ActivationPolicy{
+		TriggerPhrase:    strings.TrimSpace(fmt.Sprint(chMap["trigger_phrase"])),
+		IgnoreGroups:     parseBoolValue(chMap["ignore_groups"], true),
+		AllowedThreadIDs: parseDelimitedStringList(chMap["allowed_chat_ids"]),
+		AllowedUserIDs:   parseDelimitedStringList(chMap["allowed_sender_ids"]),
+	}
+	adapter := wawebchan.New("whatsapp_web", command, args, sessionDir, agentID, accountID, activation, s.log)
+	if err := s.channels.StartAdapter(context.Background(), adapter); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "start WhatsApp Web sidecar: " + err.Error()})
+	}
+
+	return c.JSON(fiber.Map{
+		"ok":      true,
+		"message": "WhatsApp Web pairing started. Scan the QR when it appears.",
+	})
+}
+
+func parseStringListValue(raw any) []string {
+	switch v := raw.(type) {
+	case []string:
+		return v
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		return strings.Fields(v)
+	default:
+		return nil
+	}
+}
+
+func parseDelimitedStringList(raw any) []string {
+	switch v := raw.(type) {
+	case []string:
+		return parseStringListValue(v)
+	case []any:
+		return parseStringListValue(v)
+	case string:
+		parts := strings.FieldsFunc(v, func(r rune) bool {
+			return r == ',' || r == '\n' || r == '\t'
+		})
+		out := make([]string, 0, len(parts))
+		for _, p := range parts {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				out = append(out, p)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func parseBoolValue(raw any, fallback bool) bool {
+	switch v := raw.(type) {
+	case bool:
+		return v
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "yes", "1", "on":
+			return true
+		case "false", "no", "0", "off":
+			return false
+		}
+	}
+	return fallback
 }
 
 // applyChannelToMemory copies a freshly-written channel config block into the
@@ -983,6 +1260,9 @@ func (s *Server) handleListSchedule(c *fiber.Ctx) error {
 
 func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
 	def := s.loader.Get(id)
 	if def == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
@@ -2052,10 +2332,18 @@ func (s *Server) handleListProviders(c *fiber.Ctx) error {
 			apiKey = "***"
 		}
 		providers[name] = fiber.Map{
-			"base_url":   pc.BaseURL,
-			"api_key":    apiKey,
-			"model":      pc.Model,
-			"registered": registered[name],
+			"base_url":            pc.BaseURL,
+			"api_key":             apiKey,
+			"model":               pc.Model,
+			"keep_alive":          pc.KeepAlive,
+			"options":             pc.Options,
+			"prompt_caching":      pc.PromptCaching,
+			"thinking_budget":     pc.ThinkingBudget,
+			"safety_level":        pc.SafetyLevel,
+			"extended_thinking":   pc.ExtendedThinking,
+			"organization":        pc.Organization,
+			"parallel_tool_calls": pc.ParallelToolCalls,
+			"registered":          registered[name],
 		}
 	}
 	// Known provider IDs the GUI should always offer (even when not yet
@@ -2174,9 +2462,17 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
 	}
 	var req struct {
-		BaseURL string `json:"base_url"`
-		APIKey  string `json:"api_key"`
-		Model   string `json:"model"`
+		BaseURL           string         `json:"base_url"`
+		APIKey            string         `json:"api_key"`
+		Model             string         `json:"model"`
+		KeepAlive         string         `json:"keep_alive"`
+		Options           map[string]any `json:"options"`
+		PromptCaching     *bool          `json:"prompt_caching"`      // pointer: omitted ≠ false
+		ThinkingBudget    *int           `json:"thinking_budget"`     // Google/Anthropic: 0=off, -1=auto, N=tokens
+		SafetyLevel       *string        `json:"safety_level"`        // Google: ""|"default"|"off"|"strict"
+		ExtendedThinking  *bool          `json:"extended_thinking"`   // Anthropic: Claude 3.7+ thinking
+		Organization      *string        `json:"organization"`        // OpenAI: Org ID header
+		ParallelToolCalls *bool          `json:"parallel_tool_calls"` // OpenAI: false=serialize tool calls
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -2203,6 +2499,34 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	if req.Model != "" {
 		provMap["model"] = req.Model
 	}
+	if id == "ollama" {
+		provMap["keep_alive"] = req.KeepAlive
+	}
+	if req.PromptCaching != nil {
+		provMap["prompt_caching"] = *req.PromptCaching
+	}
+	if req.ThinkingBudget != nil {
+		provMap["thinking_budget"] = *req.ThinkingBudget
+	}
+	if req.SafetyLevel != nil {
+		provMap["safety_level"] = *req.SafetyLevel
+	}
+	if req.ExtendedThinking != nil {
+		provMap["extended_thinking"] = *req.ExtendedThinking
+	}
+	if req.Organization != nil {
+		provMap["organization"] = *req.Organization
+	}
+	if req.ParallelToolCalls != nil {
+		provMap["parallel_tool_calls"] = *req.ParallelToolCalls
+	}
+	if req.Options != nil {
+		if len(req.Options) == 0 {
+			delete(provMap, "options")
+		} else {
+			provMap["options"] = req.Options
+		}
+	}
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
@@ -2222,12 +2546,46 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	if req.Model != "" {
 		pc.Model = req.Model
 	}
+	if id == "ollama" {
+		pc.KeepAlive = req.KeepAlive
+	}
+	if req.PromptCaching != nil {
+		pc.PromptCaching = *req.PromptCaching
+	}
+	if req.ThinkingBudget != nil {
+		pc.ThinkingBudget = *req.ThinkingBudget
+	}
+	if req.SafetyLevel != nil {
+		pc.SafetyLevel = *req.SafetyLevel
+	}
+	if req.ExtendedThinking != nil {
+		pc.ExtendedThinking = *req.ExtendedThinking
+	}
+	if req.Organization != nil {
+		pc.Organization = *req.Organization
+	}
+	if req.ParallelToolCalls != nil {
+		pc.ParallelToolCalls = req.ParallelToolCalls
+	}
+	if req.Options != nil {
+		pc.Options = req.Options
+	}
 	s.cfg.LLM.Providers[id] = pc
 
+	if id == "ollama" && req.APIKey != "" && req.APIKey != "***" && s.engine != nil {
+		s.engine.SetOllamaAPIKey(req.APIKey)
+	}
+
 	s.log.Info("provider credentials updated", zap.String("provider", id))
+	message := "Saved. Restart the gateway for the new provider to be registered."
+	if id == "ollama" {
+		message = "Saved. Ollama web-search credentials are active for new requests; restart to apply local model, base URL, or tuning changes."
+	} else if id == "anthropic" {
+		message = "Saved. Restart the gateway for changes to take effect."
+	}
 	return c.JSON(fiber.Map{
 		"ok":      true,
-		"message": "Saved. Restart the gateway for the new provider to be registered.",
+		"message": message,
 	})
 }
 

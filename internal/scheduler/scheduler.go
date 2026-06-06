@@ -10,7 +10,11 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,6 +22,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
@@ -25,13 +30,14 @@ import (
 
 // Scheduler manages cron and one-shot agent triggers.
 type Scheduler struct {
-	cron    *cron.Cron
-	engine  *runtime.Engine
-	loader  *runtime.Loader // for per-agent run_timeout lookup
-	log     *zap.Logger
-	mu      sync.Mutex
-	entries map[string]cron.EntryID // agentID → cron entry
-	oneshot map[string]context.CancelFunc
+	cron     *cron.Cron
+	engine   *runtime.Engine
+	loader   *runtime.Loader // for per-agent run_timeout lookup
+	channels *channels.Registry
+	log      *zap.Logger
+	mu       sync.Mutex
+	entries  map[string]cron.EntryID // agentID → cron entry
+	oneshot  map[string]context.CancelFunc
 
 	// appCtx is the gateway's app-wide context. Every fired run derives its
 	// own context from this one so SIGTERM cancellation propagates through
@@ -41,6 +47,14 @@ type Scheduler struct {
 
 	runMu   sync.Mutex
 	running map[string]time.Time // agentID → run start time (currently executing)
+
+	stateMu   sync.Mutex
+	statePath string
+	state     scheduleState
+}
+
+type scheduleState struct {
+	LastCompleted map[string]time.Time `json:"last_completed,omitempty"`
 }
 
 // cronParser accepts standard 5-field cron expressions ("0 7 * * *") AND
@@ -69,7 +83,26 @@ func New(engine *runtime.Engine, loader *runtime.Loader, log *zap.Logger, appCtx
 		entries: make(map[string]cron.EntryID),
 		oneshot: make(map[string]context.CancelFunc),
 		running: make(map[string]time.Time),
+		state:   scheduleState{LastCompleted: make(map[string]time.Time)},
 	}
+}
+
+// SetStatePath enables durable scheduler bookkeeping. The scheduler uses this
+// to remember completed cron fires across host restarts so opt-in agents can
+// catch up when a shutdown overlapped their scheduled time.
+func (s *Scheduler) SetStatePath(path string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	s.statePath = strings.TrimSpace(path)
+}
+
+// SetChannelRegistry enables scheduled runs to send successful replies to a
+// configured channel output target. It is optional so scheduler tests and
+// embedded uses can run without channel adapters.
+func (s *Scheduler) SetChannelRegistry(reg *channels.Registry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.channels = reg
 }
 
 // maxRunDuration is the safety cap on the run-lock staleness check. It needs
@@ -125,6 +158,7 @@ func (s *Scheduler) RunningSnapshot() map[string]time.Time {
 func (s *Scheduler) Start() {
 	s.cron.Start()
 	s.log.Info("scheduler started")
+	s.runMissedOnStartup()
 }
 
 // Stop gracefully halts the cron daemon and cancels pending one-shots.
@@ -175,7 +209,7 @@ func (s *Scheduler) addCron(def *agent.Definition) error {
 
 	agentID := def.ID
 	entryID, err := s.cron.AddFunc(def.Schedule.Cron, func() {
-		s.fire(agentID, "cron")
+		s.fireAt(agentID, "cron", time.Now().UTC())
 	})
 	if err != nil {
 		return fmt.Errorf("scheduler: invalid cron expression %q: %w", def.Schedule.Cron, err)
@@ -239,6 +273,11 @@ func (s *Scheduler) addOneShot(def *agent.Definition) error {
 
 // fire synthesises a trigger message and dispatches it to the engine.
 func (s *Scheduler) fire(agentID, triggerType string) {
+	s.fireAt(agentID, triggerType, time.Now().UTC())
+}
+
+// fire synthesises a trigger message and dispatches it to the engine.
+func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
 	// Prevent overlapping runs: if a manual or previous scheduled run is still
 	// executing, skip this fire rather than running the agent twice concurrently.
 	if !s.TryStartRun(agentID) {
@@ -273,6 +312,10 @@ func (s *Scheduler) fire(agentID, triggerType string) {
 	// (PRODUCTION_AUDIT → HIGH/Concurrency: previously context.Background()
 	// here meant graceful shutdown could hang for the full run_timeout).
 	def := s.loader.Get(agentID)
+	if def == nil {
+		s.log.Error("scheduled agent definition missing", zap.String("agent", agentID))
+		return
+	}
 	timeout := def.ResolvedRunTimeout(15 * time.Minute)
 	ctx, cancel := context.WithTimeout(s.appCtx, timeout)
 	defer cancel()
@@ -289,6 +332,9 @@ func (s *Scheduler) fire(agentID, triggerType string) {
 		)
 		return
 	}
+	if triggerType == "cron" || triggerType == "cron_missed_startup" {
+		s.markScheduleCompleted(agentID, scheduledAt)
+	}
 	replyText := ""
 	for _, p := range reply.Parts {
 		if p.Type == message.ContentText && p.Text != "" {
@@ -296,6 +342,7 @@ func (s *Scheduler) fire(agentID, triggerType string) {
 			break
 		}
 	}
+	s.sendScheduledOutput(ctx, def, msg, replyText, triggerType)
 	s.log.Info("scheduled agent completed",
 		zap.String("agent", agentID),
 		zap.String("trigger", triggerType),
@@ -308,6 +355,223 @@ func (s *Scheduler) fire(agentID, triggerType string) {
 			return replyText
 		}()),
 	)
+}
+
+func (s *Scheduler) runMissedOnStartup() {
+	if s.loader == nil {
+		return
+	}
+	now := time.Now().UTC()
+	for _, def := range s.loader.All() {
+		missedAt, ok := s.missedCronFire(def, now)
+		if !ok {
+			continue
+		}
+		s.log.Warn("running missed cron from startup catch-up",
+			zap.String("agent", def.ID),
+			zap.Time("missed_at", missedAt))
+		go s.fireAt(def.ID, "cron_missed_startup", missedAt)
+	}
+}
+
+func (s *Scheduler) missedCronFire(def *agent.Definition, now time.Time) (time.Time, bool) {
+	if def == nil || !def.Enabled || def.Trigger != agent.TriggerCron || def.Schedule == nil {
+		return time.Time{}, false
+	}
+	if !def.Schedule.RunMissedOnStartup || strings.TrimSpace(def.Schedule.Cron) == "" {
+		return time.Time{}, false
+	}
+	sched, err := cronParser.Parse(def.Schedule.Cron)
+	if err != nil {
+		s.log.Warn("missed cron check skipped invalid expression",
+			zap.String("agent", def.ID),
+			zap.String("expr", def.Schedule.Cron),
+			zap.Error(err))
+		return time.Time{}, false
+	}
+	window := 24 * time.Hour
+	if raw := strings.TrimSpace(def.Schedule.MissedStartupWindow); raw != "" {
+		parsed, err := time.ParseDuration(raw)
+		if err != nil || parsed <= 0 {
+			s.log.Warn("missed cron check using default window after invalid duration",
+				zap.String("agent", def.ID),
+				zap.String("missed_startup_window", raw))
+		} else {
+			window = parsed
+		}
+	}
+
+	s.stateMu.Lock()
+	if err := s.loadStateLocked(); err != nil {
+		s.log.Warn("scheduler state load failed; missed cron check will use empty state", zap.Error(err))
+	}
+	lastCompleted := s.state.LastCompleted[def.ID]
+	s.stateMu.Unlock()
+
+	from := now.Add(-window)
+	if lastCompleted.After(from) {
+		from = lastCompleted
+	}
+	next := sched.Next(from)
+	var latest time.Time
+	for next.After(from) && !next.After(now) {
+		latest = next.UTC()
+		next = sched.Next(next)
+	}
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	if !lastCompleted.IsZero() && !latest.After(lastCompleted) {
+		return time.Time{}, false
+	}
+	return latest, true
+}
+
+func (s *Scheduler) markScheduleCompleted(agentID string, completedAt time.Time) {
+	completedAt = completedAt.UTC()
+	if completedAt.IsZero() {
+		completedAt = time.Now().UTC()
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if err := s.loadStateLocked(); err != nil {
+		s.log.Warn("scheduler state load failed before update", zap.Error(err))
+	}
+	if s.state.LastCompleted == nil {
+		s.state.LastCompleted = make(map[string]time.Time)
+	}
+	if prev := s.state.LastCompleted[agentID]; prev.After(completedAt) {
+		return
+	}
+	s.state.LastCompleted[agentID] = completedAt
+	if err := s.saveStateLocked(); err != nil {
+		s.log.Warn("scheduler state save failed", zap.String("agent", agentID), zap.Error(err))
+	}
+}
+
+func (s *Scheduler) loadStateLocked() error {
+	if s.state.LastCompleted == nil {
+		s.state.LastCompleted = make(map[string]time.Time)
+	}
+	if s.statePath == "" {
+		return nil
+	}
+	data, err := os.ReadFile(s.statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var loaded scheduleState
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		return err
+	}
+	if loaded.LastCompleted == nil {
+		loaded.LastCompleted = make(map[string]time.Time)
+	}
+	s.state = loaded
+	return nil
+}
+
+func (s *Scheduler) saveStateLocked() error {
+	if s.statePath == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(s.statePath), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(s.state, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := s.statePath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, s.statePath)
+}
+
+func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string) {
+	if def == nil || def.Schedule == nil || def.Schedule.Output == nil || strings.TrimSpace(replyText) == "" {
+		return
+	}
+	outCfg := def.Schedule.Output
+	channelID := strings.TrimSpace(outCfg.Channel)
+	to := strings.TrimSpace(outCfg.To)
+	if channelID == "" || to == "" {
+		return
+	}
+
+	s.mu.Lock()
+	reg := s.channels
+	s.mu.Unlock()
+	if reg == nil {
+		s.log.Warn("scheduled output configured but channel registry is unavailable",
+			zap.String("agent", def.ID),
+			zap.String("channel", channelID),
+			zap.String("to", to),
+			zap.String("bot_name", outCfg.BotName))
+		return
+	}
+	if _, ok := reg.Statuses()[channelID]; !ok {
+		s.log.Error("scheduled output adapter not registered",
+			zap.String("agent", def.ID),
+			zap.String("channel", channelID),
+			zap.String("to", to),
+			zap.String("bot_name", outCfg.BotName))
+		return
+	}
+
+	text := renderScheduledOutput(outCfg.Template, def, replyText, triggerType)
+	out := message.Message{
+		ID:        uuid.New().String(),
+		SessionID: source.SessionID,
+		AgentID:   def.ID,
+		Channel:   channelID,
+		ThreadID:  to,
+		UserID:    "scheduler",
+		Username:  "scheduler",
+		Role:      message.RoleAssistant,
+		Parts:     message.Text(text),
+		Metadata: map[string]string{
+			"trigger":  triggerType,
+			"bot_name": outCfg.BotName,
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := reg.Send(ctx, out); err != nil {
+		s.log.Error("scheduled output send failed",
+			zap.String("agent", def.ID),
+			zap.String("channel", channelID),
+			zap.String("to", to),
+			zap.String("bot_name", outCfg.BotName),
+			zap.Error(err))
+		return
+	}
+	s.log.Info("scheduled output sent",
+		zap.String("agent", def.ID),
+		zap.String("channel", channelID),
+		zap.String("to", to),
+		zap.String("bot_name", outCfg.BotName))
+}
+
+func renderScheduledOutput(tpl string, def *agent.Definition, replyText, triggerType string) string {
+	if strings.TrimSpace(tpl) == "" {
+		return replyText
+	}
+	replacements := map[string]string{
+		"{reply}":      replyText,
+		"{agent_id}":   def.ID,
+		"{agent_name}": def.Name,
+		"{trigger}":    triggerType,
+		"{timestamp}":  time.Now().UTC().Format(time.RFC3339),
+	}
+	out := tpl
+	for k, v := range replacements {
+		out = strings.ReplaceAll(out, k, v)
+	}
+	return out
 }
 
 // Entries returns a snapshot of all active cron schedules.

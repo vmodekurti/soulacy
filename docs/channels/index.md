@@ -39,6 +39,32 @@ channels:
 
 At runtime, Telegram inbound messages become messages with `channel: telegram` and `agent_id: assistant`. The engine handles the message and the channel registry sends the reply back through the same adapter ID.
 
+## Activation safety
+
+Message channels use explicit activation guardrails by default. Enabling a
+channel should not make every platform message an agent prompt.
+
+Common safety fields:
+
+```yaml title="config.yaml"
+channels:
+  telegram:
+    trigger_phrase: "!soulacy"
+    ignore_groups: true
+    allowed_chat_ids: ""
+    allowed_user_ids: ""
+```
+
+- `trigger_phrase` gates activation. A message must start with this phrase, and
+  the phrase is stripped before the agent sees the text.
+- `ignore_groups` drops group/server/channel messages unless you explicitly set
+  it to `false`.
+- `allowed_chat_ids` restricts activation to specific platform destinations.
+- `allowed_user_ids` restricts activation to specific senders.
+
+The same model applies to Telegram, Slack, Discord, WhatsApp Cloud API, and
+WhatsApp Web. HTTP is always active because callers explicitly invoke its API.
+
 ## Multi-bot mappings
 
 Telegram, Slack, and Discord support multiple bot credentials under the same channel type. This is useful when you want separate platform bots mapped to separate agents.
@@ -48,10 +74,12 @@ channels:
   telegram:
     enabled: true
     bots:
-      - token: "BOT_TOKEN_FOR_SYSTEM"
-        agent_id: system
+      - bot_name: "Assistant Bot"
+        token: "BOT_TOKEN_FOR_ASSISTANT"
+        agent_id: assistant
         allowed_user_ids: [123456789]
-      - token: "BOT_TOKEN_FOR_FINANCE"
+      - bot_name: "Finance Bot"
+        token: "BOT_TOKEN_FOR_FINANCE"
         agent_id: financial-agent
         allowed_user_ids: [123456789]
 ```
@@ -60,7 +88,7 @@ The first bot keeps the canonical adapter ID. Additional bots get deterministic 
 
 | Adapter ID | Agent |
 |------------|-------|
-| `telegram` | `system` |
+| `telegram` | `assistant` |
 | `telegram-financial-agent` | `financial-agent` |
 
 The same pattern applies to Slack and Discord:
@@ -74,16 +102,36 @@ Open **Channels** in the web UI:
 
 - Channel cards show **Agent mappings**, including adapter ID, agent ID, and connection state.
 - Click **Edit** on Telegram, Slack, or Discord to manage **Bot mappings**.
-- Bot mapping rows provide an agent ID dropdown populated from your installed agents.
+- Bot mapping rows record a friendly bot name and provide an agent ID dropdown populated from your installed agents.
 - After saving channel settings, click **Restart Gateway** from the banner to reconnect adapters.
+
+## Scheduled output through a bot
+
+Cron agents run internally by default. To publish a scheduled run result to a specific bot, set `schedule.output` in the agent:
+
+```yaml title="agents/daily-finance/SOUL.yaml"
+trigger: cron
+schedule:
+  cron: "0 8 * * *"
+  output:
+    channel: telegram-financial-agent
+    to: "123456789"
+    bot_name: "Finance Bot"
+```
+
+`channel` is the adapter ID shown in **Channels -> Agent mappings**. `to` is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, or WhatsApp recipient number.
 
 ## Multi-channel agents
 
 An agent can be available on multiple channels simultaneously:
 
-```yaml title="agents/assistant.soul.yaml"
-name: assistant
-model: gpt-4o-mini
+```yaml title="agents/assistant/SOUL.yaml"
+id: assistant
+name: Assistant
+trigger: channel
+llm:
+  provider: openai
+  model: gpt-4o-mini
 system_prompt: You are a helpful assistant.
 channels:
   - http

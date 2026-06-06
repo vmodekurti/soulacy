@@ -1,6 +1,7 @@
 # LLM Providers
 
-Soulacy supports multiple LLM providers simultaneously. Each agent picks its provider via the `model` field in SOUL.yaml.
+Soulacy supports multiple LLM providers simultaneously. Each agent picks its
+provider and model with `llm.provider` and `llm.model` in `SOUL.yaml`.
 
 ## Reference
 
@@ -31,17 +32,21 @@ llm:
 
 ## Selecting a model in SOUL.yaml
 
-Use bare model names for the default provider, or prefix with `provider/`:
+Set the provider and model explicitly:
 
 ```yaml
-# Uses default_provider (openai)
-model: gpt-4o-mini
+llm:
+  provider: openai
+  model: gpt-4o-mini
+```
 
-# Explicit provider prefix
-model: anthropic/claude-3-5-sonnet-20241022
-model: ollama/llama3.2
-model: together/meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo
-model: qwen/qwen-max
+For OpenAI-compatible routers such as OpenRouter, Together, Groq, vLLM, or LM
+Studio, use the configured provider plus that service's model ID:
+
+```yaml
+llm:
+  provider: openai
+  model: moonshotai/kimi-k2
 ```
 
 ## Supported providers
@@ -73,4 +78,6 @@ llm:
   timeout: 180s   # increase for slow models or long context
 ```
 
-Per-agent token budgets are configured in [SOUL.yaml](../agents/soul-yaml.md#token_budget).
+Per-agent output caps are configured with `llm.max_tokens`; memory/context
+injection is controlled by the agent's `memory` block. See the
+[SOUL.yaml reference](../agents/soul-yaml.md).

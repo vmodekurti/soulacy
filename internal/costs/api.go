@@ -29,6 +29,9 @@ func NewAPI(s *Store, log *zap.Logger) *API {
 //
 // Response: {"by_agent": [...AgentCost...], "period": "24h", "generated_at": "..."}
 func (a *API) HandleGetCosts(c *fiber.Ctx) error {
+	if a.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "cost tracking not enabled"})
+	}
 	since, periodLabel, err := parseSince(c.Query("since", ""))
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("invalid since param: %v", err)})
@@ -72,6 +75,9 @@ func (a *API) HandleGetCosts(c *fiber.Ctx) error {
 //
 // Response: {"agent_id": "...", "by_session": [...SessionCost...], "total": {...}}
 func (a *API) HandleGetAgentCosts(c *fiber.Ctx) error {
+	if a.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "cost tracking not enabled"})
+	}
 	agentID := c.Params("agent_id")
 	if agentID == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "agent_id is required"})

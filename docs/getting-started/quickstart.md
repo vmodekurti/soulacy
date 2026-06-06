@@ -37,9 +37,9 @@ agent_dirs:
 mkdir agents
 ```
 
-Create `agents/assistant.soul.yaml`:
+Create `agents/assistant/SOUL.yaml`:
 
-```yaml title="agents/assistant.soul.yaml"
+```yaml title="agents/assistant/SOUL.yaml"
 id: assistant
 name: Assistant
 description: A helpful general-purpose assistant

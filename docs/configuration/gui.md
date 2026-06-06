@@ -33,19 +33,21 @@ Each channel card includes:
 - connection state
 - enabled/configured state
 - masked credential fields
-- **Agent mappings**, which show adapter ID, agent ID, and connection state
+- **Agent mappings**, which show bot name, adapter ID, agent ID, and connection state
 
-Telegram, Slack, and Discord support **Bot mappings** in the edit modal. Each row creates one adapter and routes that bot to one agent.
+Telegram, Slack, and Discord support **Bot mappings** in the edit modal. Each row records a friendly bot name, creates one adapter, and routes that bot to one agent.
 
 ```yaml title="config.yaml"
 channels:
   telegram:
     enabled: true
     bots:
-      - token: "BOT_TOKEN_FOR_SYSTEM"
-        agent_id: system
+      - bot_name: "Assistant Bot"
+        token: "BOT_TOKEN_FOR_ASSISTANT"
+        agent_id: assistant
         allowed_user_ids: [123456789]
-      - token: "BOT_TOKEN_FOR_FINANCE"
+      - bot_name: "Finance Bot"
+        token: "BOT_TOKEN_FOR_FINANCE"
         agent_id: financial-agent
         allowed_user_ids: [123456789]
 ```
@@ -53,6 +55,28 @@ channels:
 The GUI lists installed agent IDs in the mapping dropdown, so you do not need to type them manually. Secret values are masked; leaving a secret input blank keeps the existing secret.
 
 After saving channel settings, click **Restart Gateway** from the banner to recreate channel adapters.
+
+## Schedule
+
+The Schedule page lists cron agents, their next run, and the configured output bot. Edit a cron agent to choose a bot mapping and destination ID for scheduled delivery.
+
+```yaml title="SOUL.yaml"
+trigger: cron
+schedule:
+  cron: "0 8 * * *"
+  run_missed_on_startup: true
+  missed_startup_window: 24h
+  output:
+    channel: telegram-financial-agent
+    to: "123456789"
+    bot_name: "Finance Bot"
+```
+
+When the cron fires, Soulacy runs the agent internally and sends the final reply through `schedule.output.channel` to `schedule.output.to`. The bot name is shown in the GUI for readability; the adapter ID is the routing key.
+
+If `run_missed_on_startup` is enabled, Soulacy replays the latest missed cron
+fire after a restart when the scheduled time occurred during downtime and is
+still inside `missed_startup_window`.
 
 ## Agents
 

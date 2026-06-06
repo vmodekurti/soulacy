@@ -59,11 +59,16 @@ func (t Tool) FullName() string {
 
 // ServerStatus is the API/GUI view of a server (what the MCP page renders).
 type ServerStatus struct {
-	ID        string        `json:"id"`
-	Transport string        `json:"transport"`
-	Connected bool          `json:"connected"`
-	Detail    string        `json:"detail,omitempty"`
-	Tools     []ToolSummary `json:"tools"`
+	ID        string            `json:"id"`
+	Transport string            `json:"transport"`
+	Connected bool              `json:"connected"`
+	Detail    string            `json:"detail,omitempty"`
+	Tools     []ToolSummary     `json:"tools"`
+	Command   string            `json:"command,omitempty"`
+	Args      []string          `json:"args,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	Headers   map[string]string `json:"headers,omitempty"`
 }
 
 // ToolSummary is a short tool descriptor returned by /mcp.
@@ -282,6 +287,11 @@ func (c *Client) ServersSnapshot() []ServerStatus {
 		ss := ServerStatus{
 			ID: s.id, Transport: transport, Connected: s.connected, Detail: s.detail,
 			Tools: make([]ToolSummary, 0, len(s.tools)),
+			Command: s.cfg.Command,
+			Args: s.cfg.Args,
+			Env: s.cfg.Env,
+			URL: s.cfg.URL,
+			Headers: s.cfg.Headers,
 		}
 		for _, t := range s.tools {
 			ss.Tools = append(ss.Tools, ToolSummary{

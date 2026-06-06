@@ -53,15 +53,16 @@
     error = ''; info = ''
   }
   function openEdit(s) {
-    // We only know transport/connection from the list endpoint — full config
-    // (command/args/env/url/headers) lives in config.yaml. The list endpoint
-    // doesn't surface those (and probably shouldn't, since env may contain
-    // secrets). So Edit is best-effort: we prefill transport + id and let the
-    // user fill the rest. Saving sends a full PATCH that overwrites.
+    // Prefill all connection parameters returned from the list endpoint
     editing = {
       ...BLANK_STDIO(),
       id: s.id,
       transport: s.transport || 'stdio',
+      command: s.command || '',
+      args: s.args ? [...s.args] : [],
+      env: s.env ? { ...s.env } : {},
+      url: s.url || '',
+      headers: s.headers ? { ...s.headers } : {},
     }
     testResult = null
     error = ''; info = ''
@@ -554,6 +555,11 @@
   .srv-empty  { font-size: .8rem; color: #6b7294; padding: .8rem 0; font-style: italic; }
 
   .tbl { width: 100%; border-collapse: collapse; font-size: .8rem; margin-top: .5rem; }
+
+  @media (max-width: 768px) {
+    /* Wide tables scroll horizontally instead of overflowing the viewport */
+    .tbl { display: block; overflow-x: auto; }
+  }
   .tbl th { padding: .5rem .8rem; text-align: left; color: #555a7a; font-weight: 500; font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #1a1e36; }
   .tbl td { padding: .55rem .8rem; border-bottom: 1px solid #0e1020; vertical-align: top; }
   .td-name { font-family: monospace; color: #c8cadf; font-weight: 500; white-space: nowrap; }
@@ -581,7 +587,12 @@
   }
   .modal.wide { width: 680px; }
   .modal h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: .25rem; }
-  .modal-row { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; }
+  .modal-row {
+    display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem;
+    position: sticky; bottom: 0; z-index: 5;
+    background: #141626; padding-top: .6rem;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.6);
+  }
 
   .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
   .field { display: flex; flex-direction: column; gap: .3rem; }

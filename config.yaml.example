@@ -12,26 +12,72 @@ agent_dirs:
 channels:
     discord:
         enabled: false
+        token: ""
+        agent_id: assistant              # Create this agent before enabling.
+        guild_id: ""
+        # Safety defaults: require an explicit wake phrase and ignore servers.
+        trigger_phrase: "!soulacy"
+        ignore_groups: true
+        allowed_chat_ids: ""
+        allowed_user_ids: ""
     http:
         enabled: true
     slack:
         enabled: false
+        bot_token: ""
+        app_token: ""
+        agent_id: assistant              # Create this agent before enabling.
+        # Safety defaults: require an explicit wake phrase and ignore channels.
+        trigger_phrase: "!soulacy"
+        ignore_groups: true
+        allowed_chat_ids: ""
+        allowed_user_ids: ""
     telegram:
         enabled: false
         # Single-bot (simple):
-        agent_id: hello-world
+        agent_id: assistant              # Create this agent before enabling.
         token: ""                          # Your Telegram bot token
+        # Safety defaults: require an explicit wake phrase and ignore groups.
+        trigger_phrase: "!soulacy"
+        ignore_groups: true
+        allowed_chat_ids: ""
         allowed_user_ids: []              # Allowlist of Telegram user IDs (int64)
 
         # Multi-bot — one bot per agent. Comment out the three lines above and
         # use this instead:
         # bots:
         #   - token: "BOT_TOKEN_1"
-        #     agent_id: system
+        #     agent_id: assistant
         #     allowed_user_ids: [123456789]
         #   - token: "BOT_TOKEN_2"
         #     agent_id: financial-agent
         #     allowed_user_ids: [123456789]
+    whatsapp:
+        enabled: false
+        # Official Meta WhatsApp Business Cloud API.
+        phone_number_id: ""
+        access_token: ""
+        verify_token: ""
+        app_secret: ""
+        agent_id: assistant              # Create this agent before enabling.
+        # Safety defaults: require an explicit wake phrase.
+        trigger_phrase: "!soulacy"
+        allowed_user_ids: ""
+    whatsapp_web:
+        enabled: false
+        # Experimental QR-linked WhatsApp Web sidecar. Not the official
+        # WhatsApp Business API; use only for personal/local automation.
+        command: node
+        args:
+            - scripts/whatsapp-web-sidecar.mjs
+        session_dir: /Users/yourname/.soulacy/whatsapp-web
+        account_id: default
+        agent_id: assistant              # Create this agent before enabling.
+        # Safety defaults: do not respond to every WhatsApp message.
+        trigger_phrase: "!soulacy"
+        ignore_groups: true
+        allowed_chat_ids: ""
+        allowed_sender_ids: ""
 
 # ── LLM providers ─────────────────────────────────────────────────────────────
 llm:
@@ -41,6 +87,7 @@ llm:
             api_key: "sk-ant-..."          # Your Anthropic API key
             base_url: https://api.anthropic.com
             model: claude-sonnet-4-6
+            prompt_caching: true           # Cache system prompt + tools — 90% off repeated input tokens (recommended)
         groq:
             api_key: "gsk_..."             # Your Groq API key
             base_url: https://api.groq.com/openai/v1

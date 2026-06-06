@@ -82,6 +82,7 @@ func Definition(def *agent.Definition, path string, opts Options, report Report)
 	report.AgentID = def.ID
 	validateDefinitionShape(&report, def, path)
 	validateLLMFit(&report, def, opts)
+	validateReasoningFit(&report, def, opts)
 	if report.Findings == nil {
 		report.Findings = []Finding{}
 	}
@@ -117,6 +118,16 @@ func validateDefinitionShape(report *Report, def *agent.Definition, path string)
 			report.add(Error, "schedule.at", "required for oneshot trigger", "", nil)
 		}
 		validateDuration(report, "schedule.timeout", def.Schedule.Timeout)
+		if def.Schedule.Output != nil {
+			channel := strings.TrimSpace(def.Schedule.Output.Channel)
+			to := strings.TrimSpace(def.Schedule.Output.To)
+			if channel == "" && to != "" {
+				report.add(Error, "schedule.output.channel", "required when schedule.output.to is set", "", nil)
+			}
+			if channel != "" && to == "" {
+				report.add(Error, "schedule.output.to", "required when schedule.output.channel is set", "", nil)
+			}
+		}
 	}
 	validateDuration(report, "run_timeout", def.RunTimeout)
 	if def.LLM.MaxTokens < 0 {
@@ -371,6 +382,207 @@ func weakToolModel(provider, model string) bool {
 
 func weakStructuredOutputModel(provider, model string) bool {
 	return weakToolModel(provider, model)
+}
+
+// validateReasoningFit checks that the agent's LLM configuration is suitable
+// for the reasoning loop strategy it declares. These checks complement the
+// general LLM fit checks above with reasoning-loop-specific concerns:
+//
+//   - JSON output reliability: Think/Plan/Reflect require structured JSON.
+//     Small, embedding, or weak models produce unparseable prose.
+//   - Context window: the step history grows each turn; models with small
+//     windows will lose history and produce incoherent output.
+//   - Rate limits: Groq's free tier (6000 TPM) is easily exhausted by an
+//     8-step ReAct loop (~800 tokens × 8 = 6400 tokens, plus Plan + Reflect).
+//   - Consistency: brain_memory enabled but no reasoning strategy is likely a
+//     misconfiguration — the agent will accumulate memory but never use the
+//     reasoning loop to benefit from it.
+func validateReasoningFit(report *Report, def *agent.Definition, opts Options) {
+	strategy := strings.TrimSpace(def.Reasoning.Strategy)
+	hasBrainMemory := def.BrainMemory.Episodic.Enabled ||
+		def.BrainMemory.Semantic.Enabled ||
+		def.BrainMemory.Procedural.Enabled
+
+	// No reasoning loop declared — only check for the brain_memory/no-strategy inconsistency.
+	if strategy == "" {
+		if hasBrainMemory {
+			report.add(Warn, "brain_memory",
+				"brain_memory layers are enabled but reasoning.strategy is not set",
+				"set reasoning.strategy to 'react' or 'plan_execute' so the loop injects and persists memory",
+				[]string{"react", "plan_execute"},
+			)
+		}
+		return
+	}
+
+	// strategy is set — validate all reasoning-loop-specific concerns.
+	provider := strings.ToLower(strings.TrimSpace(def.LLM.Provider))
+	model := strings.ToLower(strings.TrimSpace(def.LLM.Model))
+
+	// ── 1. Embedding / non-chat models cannot generate structured JSON ────────
+	if isEmbeddingModel(model) {
+		report.add(Error, "llm.model",
+			fmt.Sprintf("model %q is an embedding model and cannot generate structured JSON for the reasoning loop", def.LLM.Model),
+			"choose a chat/instruction model; reasoning requires Think(), Plan(), and Reflect() JSON output",
+			reasoningModelSuggestions(provider),
+		)
+		return // further checks are meaningless
+	}
+
+	// ── 2. Known weak JSON models ─────────────────────────────────────────────
+	if weakJSONModel(provider, model) {
+		report.add(Warn, "llm.model",
+			fmt.Sprintf("model %q has unreliable structured JSON output, which will cause Think()/Plan()/Reflect() parse failures", def.LLM.Model),
+			"use a model with strong instruction-following and JSON mode support",
+			reasoningModelSuggestions(provider),
+		)
+	}
+
+	// ── 3. Small context window ───────────────────────────────────────────────
+	// ReAct grows the step history each turn. With 8 steps × ~600 tokens each,
+	// the prompt can reach 5000+ tokens before the final Reflect call.
+	if smallContextModel(provider, model) {
+		maxSteps := def.Reasoning.MaxSteps
+		if maxSteps <= 0 {
+			maxSteps = 8
+		}
+		report.add(Warn, "reasoning.max_steps",
+			fmt.Sprintf("model %q has a small context window (~4096 tokens); %d steps may overflow it mid-run", def.LLM.Model, maxSteps),
+			"reduce max_steps to ≤ 4, or switch to a model with a larger context window",
+			nil,
+		)
+	}
+
+	// ── 4. Groq rate limit warning ────────────────────────────────────────────
+	// Groq free tier: 6000 TPM. Each ReAct step ≈ 600–900 tokens output + input.
+	// 8 steps + Plan + Reflect ≈ 8000–12000 tokens total — exceeds free tier.
+	if provider == "groq" {
+		maxSteps := def.Reasoning.MaxSteps
+		if maxSteps <= 0 {
+			maxSteps = 8
+		}
+		if maxSteps > 4 {
+			report.add(Warn, "reasoning.max_steps",
+				fmt.Sprintf("Groq free tier is 6000 TPM; %d ReAct steps (~%d tokens) will likely hit the rate limit mid-run", maxSteps, maxSteps*800),
+				"reduce reasoning.max_steps to ≤ 4, or use a paid Groq plan",
+				nil,
+			)
+		}
+	}
+
+	// ── 5. plan_execute with small max_plan_steps ─────────────────────────────
+	if strategy == "plan_execute" {
+		maxPlan := def.Reasoning.MaxPlanSteps
+		if maxPlan <= 0 {
+			maxPlan = 6
+		}
+		if maxPlan > 10 {
+			report.add(Warn, "reasoning.max_plan_steps",
+				fmt.Sprintf("max_plan_steps=%d is very high; large plans produce long prompts and often exceed context windows", maxPlan),
+				"keep max_plan_steps ≤ 8 for reliable execution",
+				nil,
+			)
+		}
+	}
+
+	// ── 6. Timeouts not set ───────────────────────────────────────────────────
+	if strings.TrimSpace(def.Reasoning.StepTimeout) == "" {
+		report.add(Warn, "reasoning.step_timeout",
+			"step_timeout not set; defaults to 30s per step which may be too short for slow providers",
+			"set reasoning.step_timeout explicitly, e.g. '45s' for Groq, '120s' for large local models",
+			nil,
+		)
+	}
+	if strings.TrimSpace(def.Reasoning.TotalTimeout) == "" {
+		report.add(Warn, "reasoning.total_timeout",
+			"total_timeout not set; defaults to 180s which may be insufficient for plan_execute with many steps",
+			"set reasoning.total_timeout, e.g. '300s' for plan_execute or complex research tasks",
+			nil,
+		)
+	}
+
+	// ── 7. No tools declared ──────────────────────────────────────────────────
+	// A ReAct loop without any tools will spin: Think always returns IsDone=false
+	// because there's nothing to act on, exhausting MaxSteps immediately.
+	if strategy == "react" && len(def.Tools) == 0 &&
+		def.MCPServers == nil && def.MCPTools == nil &&
+		(def.Builtins == nil || len(*def.Builtins) == 0) {
+		report.add(Warn, "reasoning.strategy",
+			"ReAct strategy declared but no tools are configured; the loop has nothing to act on and will exhaust MaxSteps immediately",
+			"add at least one tool (web_search, memory_read, a Python tool, or an MCP server) for the ReAct loop to be useful",
+			nil,
+		)
+	}
+}
+
+// ─── Reasoning-specific model checks ─────────────────────────────────────────
+
+// weakJSONModel returns true for models known to produce unreliable JSON even
+// when format:"json" / response_format is set.
+func weakJSONModel(provider, model string) bool {
+	m := strings.ToLower(model)
+	// Embedding models handled separately by isEmbeddingModel().
+	// These are small or poorly instruction-tuned chat models.
+	weak := []string{
+		"llama3.2:1b", "llama3.2:3b", // tiny llamas
+		"gemma:2b", "gemma2:2b",       // very small gemmas
+		"phi3:mini",                    // 3.8B, weak JSON
+		"mistral:7b",                   // 7B mistral, unreliable JSON
+		"neural-chat",                  // Intel neural chat
+		"stablelm",                     // StableLM
+		"tinyllama",                    // obvious
+	}
+	for _, w := range weak {
+		if strings.Contains(m, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// smallContextModel returns true for models with context windows too small
+// to reliably hold a full ReAct step history (< ~8k tokens).
+func smallContextModel(provider, model string) bool {
+	m := strings.ToLower(model)
+	small := []string{
+		"llama3.2:1b", "llama3.2:3b",
+		"gemma:2b", "gemma2:2b",
+		"phi3:mini",
+		"mistral:7b", // base mistral has 8k but older quantisations are 4k
+		"tinyllama",
+	}
+	for _, s := range small {
+		if strings.Contains(m, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// isEmbeddingModel returns true for models that generate vectors, not text.
+func isEmbeddingModel(model string) bool {
+	m := strings.ToLower(model)
+	for _, marker := range []string{"embed", "nomic", "bge", "e5-", "minilm", "sentence"} {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// reasoningModelSuggestions returns provider-appropriate model suggestions
+// for the reasoning loop.
+func reasoningModelSuggestions(provider string) []string {
+	switch provider {
+	case "anthropic":
+		return []string{"claude-sonnet-4-6", "claude-haiku-4-5-20251001"}
+	case "openai":
+		return []string{"gpt-4o", "gpt-4o-mini"}
+	case "groq":
+		return []string{"llama-3.3-70b-versatile", "mixtral-8x7b-32768"}
+	default: // ollama
+		return []string{"qwen2.5:72b", "qwen2.5:32b", "gemma4:latest", "llama3.3:70b"}
+	}
 }
 
 func contains(values []string, target string) bool {

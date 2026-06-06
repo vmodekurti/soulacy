@@ -8,6 +8,7 @@
   let events  = []
   let ws      = null
   let error   = null
+  let authError = false
   let eventsEl
   let eventFilter = 'all'
 
@@ -20,14 +21,21 @@
   ]
 
   async function load() {
+    // /health is unauthenticated — it tells us whether the gateway is up,
+    // independent of whether our credentials are valid.
     try {
-      [status] = await Promise.all([api.health()])
-      const res = await api.agents.list()
-      agents = res.agents || []
-      error  = null
-    } catch (e) {
-      error  = e.message
+      status = await api.health()
+    } catch {
       status = null
+    }
+    try {
+      const res = await api.agents.list()
+      agents    = res.agents || []
+      error     = null
+      authError = false
+    } catch (e) {
+      error     = e.message
+      authError = e.status === 401 || e.status === 403
     }
   }
 
@@ -95,9 +103,10 @@
 
   {#if error}
     <div class="banner err">
-      ⚠ {error}
-      {#if error.includes('401') || error.includes('invalid')}
-        — click 🔑 in the sidebar to set your API key
+      {#if authError}
+        🔒 Authentication required — click 🔑 in the sidebar to set your API key
+      {:else}
+        ⚠ {error}
       {/if}
     </div>
   {/if}
@@ -106,7 +115,7 @@
   <div class="cards">
     <div class="card" class:card-ok={!!status}>
       <div class="card-label">Gateway</div>
-      <div class="card-value">{status ? '● Online' : '○ Offline'}</div>
+      <div class="card-value">{status ? '● Online' : authError ? '🔒 Authentication required' : '○ Offline'}</div>
       {#if status}<div class="card-sub">v{status.version}</div>{/if}
     </div>
 
@@ -170,7 +179,7 @@
   .banner { padding: 0.7rem 1rem; border-radius: 8px; font-size: 0.85rem; }
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
 
-  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 1rem; }
   .card  {
     background: #141626; border: 1px solid #1a1e36; border-radius: 10px; padding: 1.1rem 1.25rem;
     transition: border-color 0.2s;
@@ -207,4 +216,12 @@
   .log-agent { color: #6c63ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .log-data  { color: #6b7294; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .empty     { padding: 2.5rem 1rem; text-align: center; color: #6b7294; }
+
+  @media (max-width: 640px) {
+    /* Event log: time+type on row 1, agent+data on row 2 */
+    .log-row { grid-template-columns: 72px minmax(0, 1fr); row-gap: 0.1rem; }
+    .log-data { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
+    .filter-tabs { margin-left: 0; flex-wrap: wrap; }
+    .section-hdr { flex-wrap: wrap; }
+  }
 </style>

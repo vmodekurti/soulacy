@@ -104,7 +104,7 @@ func (s *Store) Write(ctx context.Context, entry memory.Entry) error {
 		"agent_id":   entry.AgentID,
 		"session_id": entry.SessionID,
 		"scope":      string(entry.Scope),
-		"provenance": string(entry.Provenance),
+		"provenance": "", // retained for payload schema compat, no longer used
 		"key":        entry.Key,
 		"content":    entry.Content,
 		"created_at": entry.CreatedAt.UTC().Format(time.RFC3339),
@@ -279,12 +279,11 @@ func payloadToEntry(p map[string]any) memory.Entry {
 		return v
 	}
 	e := memory.Entry{
-		AgentID:    str("agent_id"),
-		SessionID:  str("session_id"),
-		Scope:      memory.Scope(str("scope")),
-		Provenance: memory.ProvenanceLabel(str("provenance")),
-		Key:        str("key"),
-		Content:    str("content"),
+		AgentID:   str("agent_id"),
+		SessionID: str("session_id"),
+		Scope:     memory.Scope(str("scope")),
+		Key:       str("key"),
+		Content:   str("content"),
 	}
 	if ts := str("created_at"); ts != "" {
 		t, _ := time.Parse(time.RFC3339, ts)

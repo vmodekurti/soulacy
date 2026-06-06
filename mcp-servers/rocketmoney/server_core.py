@@ -139,8 +139,14 @@ def _dispatch(name, a):
         for t in nodes: t["amount_dollars"] = t["amount"]/100.0
         return {"transactions": nodes, "page_info": txns.get("pageInfo",{}), "count": len(nodes)}
     if name == "get_accounts":
-        d = gql('{ viewer { accounts(first: 200) { edges { node { id name currentBalance displayedBalance institution { id name } } } } } }')
-        nodes = [e["node"] for e in d.get("viewer",{}).get("accounts",{}).get("edges",[]) if e.get("node")]
+        # includeInNetWorth filters out accounts the user has hidden, closed, or
+        # manually excluded from their net worth view — same filter Rocket Money's
+        # own website applies. Accounts with the field absent default to included.
+        d = gql('{ viewer { accounts(first: 200) { edges { node { id name currentBalance displayedBalance includeInNetWorth institution { id name } } } } } }')
+        nodes = [
+            e["node"] for e in d.get("viewer",{}).get("accounts",{}).get("edges",[])
+            if e.get("node") and e.get("node",{}).get("includeInNetWorth", True)
+        ]
         for n in nodes:
             n["currentBalance_dollars"] = n.get("currentBalance",0)/100.0
             n["displayedBalance_dollars"] = n.get("displayedBalance",0)/100.0

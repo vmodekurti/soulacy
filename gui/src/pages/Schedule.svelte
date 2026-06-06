@@ -12,6 +12,7 @@
 
   let schedule    = []
   let agents      = []
+  let channels    = []
   let loading     = true
   let error       = ''
   let notice      = ''
@@ -27,6 +28,12 @@
   let editing  = null
   let editCron = ''
   let editEnabled = false
+  let editOutputChannel = ''
+  let editOutputTo = ''
+  let editOutputBotName = ''
+  let editOutputTemplate = ''
+  let editRunMissedOnStartup = false
+  let editMissedStartupWindow = ''
   let saving   = false
   let runPrompt = null      // { agent, next, auto }
 
@@ -110,12 +117,14 @@
     loading = true
     error   = ''
     try {
-      const [schedRes, agentRes] = await Promise.all([
+      const [schedRes, agentRes, channelRes] = await Promise.all([
         api.schedule.list(),
         api.agents.list(),
+        api.channels.list().catch(() => ({ channels })),
       ])
       schedule = schedRes.schedule || []
       agents   = agentRes.agents   || []
+      channels = channelRes.channels || []
     } catch (e) {
       error = e.message
     } finally {
@@ -142,6 +151,7 @@
   onDestroy(() => { clearInterval(statusTimer); clearInterval(tick) })
 
   $: cronAgents = agents.filter(a => a.trigger === 'cron')
+  $: outputBotOptions = buildOutputBotOptions(channels)
 
   // Reactive per-agent status. This $: block references running/nextRuns/now
   // DIRECTLY, so Svelte re-renders the table whenever any of them change.
@@ -267,6 +277,12 @@
     editing     = JSON.parse(JSON.stringify(a))
     editCron    = a.schedule?.cron || ''
     editEnabled = !!a.enabled
+    editOutputChannel = a.schedule?.output?.channel || ''
+    editOutputTo = a.schedule?.output?.to || ''
+    editOutputBotName = a.schedule?.output?.bot_name || botNameForChannel(editOutputChannel)
+    editOutputTemplate = a.schedule?.output?.template || ''
+    editRunMissedOnStartup = !!a.schedule?.run_missed_on_startup
+    editMissedStartupWindow = a.schedule?.missed_startup_window || '24h'
   }
   function closeEdit() { editing = null }
 
@@ -276,6 +292,25 @@
     try {
       if (!editing.schedule) editing.schedule = {}
       editing.schedule.cron = editCron.trim()
+      editing.schedule.run_missed_on_startup = editRunMissedOnStartup
+      if (editRunMissedOnStartup) {
+        editing.schedule.missed_startup_window = editMissedStartupWindow.trim() || '24h'
+      } else {
+        delete editing.schedule.missed_startup_window
+      }
+      if (editOutputChannel.trim()) {
+        if (!editOutputTo.trim()) {
+          throw new Error('Destination ID is required when scheduled output is enabled.')
+        }
+        editing.schedule.output = {
+          channel: editOutputChannel.trim(),
+          to: editOutputTo.trim(),
+          bot_name: editOutputBotName.trim(),
+          template: editOutputTemplate.trim(),
+        }
+      } else if (editing.schedule.output) {
+        delete editing.schedule.output
+      }
       editing.enabled = editEnabled
       await api.agents.update(editing.id, editing)
       notice = `Saved "${editing.id}".`
@@ -287,6 +322,49 @@
   function agentName(id) {
     const a = agents.find(a => a.id === id)
     return a?.name || id
+  }
+  function buildOutputBotOptions(list) {
+    const rows = []
+    for (const ch of list || []) {
+      if (!ch || ch.id === 'http') continue
+      const bots = ch.bots || []
+      if (bots.length) {
+        for (const bot of bots) {
+          const adapterID = bot._adapter_id || ch.id
+          rows.push({
+            channel: adapterID,
+            bot_name: bot.bot_name || adapterID,
+            agent_id: bot.agent_id || '',
+            connected: !!bot._connected,
+            label: `${bot.bot_name || adapterID} (${adapterID}${bot.agent_id ? ' → ' + bot.agent_id : ''})`,
+          })
+        }
+        continue
+      }
+      if (ch.settings?.agent_id || ch.id === 'whatsapp') {
+        rows.push({
+          channel: ch.id,
+          bot_name: ch.settings?.bot_name || ch.name || ch.id,
+          agent_id: ch.settings?.agent_id || '',
+          connected: !!ch.status?.connected,
+          label: `${ch.settings?.bot_name || ch.name || ch.id} (${ch.id}${ch.settings?.agent_id ? ' → ' + ch.settings.agent_id : ''})`,
+        })
+      }
+    }
+    return rows
+  }
+  function botNameForChannel(channelID) {
+    return outputBotOptions.find(o => o.channel === channelID)?.bot_name || ''
+  }
+  function selectOutputChannel(channelID) {
+    editOutputChannel = channelID
+    editOutputBotName = botNameForChannel(channelID)
+  }
+  function outputSummary(a) {
+    const out = a.schedule?.output
+    if (!out?.channel) return null
+    const name = out.bot_name || botNameForChannel(out.channel) || out.channel
+    return { name, channel: out.channel, to: out.to || '' }
   }
   function truncate(s, n) { return s.length > n ? s.slice(0, n) + '…' : s }
 </script>
@@ -340,15 +418,26 @@
     {:else}
       <table class="tbl">
         <thead>
-          <tr><th>ID</th><th>Name</th><th>Schedule</th><th>Enabled</th><th>Status</th><th class="td-action">Actions</th></tr>
+          <tr><th>ID</th><th>Name</th><th>Schedule</th><th>Output bot</th><th>Enabled</th><th>Status</th><th class="td-action">Actions</th></tr>
         </thead>
         <tbody>
           {#each cronAgents as a}
             {@const st = statusById[a.id] || {}}
+            {@const out = outputSummary(a)}
             <tr class:row-running={st.running}>
               <td class="td-mono">{a.id}</td>
               <td>{a.name}</td>
               <td class="td-mono">{a.schedule?.cron || '—'}</td>
+              <td>
+                {#if out}
+                  <div class="output-cell">
+                    <strong>{out.name}</strong>
+                    <span>{out.channel}{out.to ? ` → ${out.to}` : ''}</span>
+                  </div>
+                {:else}
+                  <span class="td-hint">—</span>
+                {/if}
+              </td>
               <td><span class="pill" class:pill-ok={a.enabled}>{a.enabled ? 'Yes' : 'No'}</span></td>
               <td>
                 {#if st.running}
@@ -389,8 +478,12 @@
     <p>Set <code>trigger: cron</code> and a schedule block in the agent's SOUL.yaml:</p>
     <pre class="code-block">trigger: cron
 schedule:
-  cron: "0 8 * * *"   # every day at 8 AM</pre>
-    <p><strong>▶ Run</strong> triggers a manual run immediately. While a job runs it shows <strong>Running</strong> and can't be started again (a scheduled fire is also skipped). If a scheduled run is within 15 minutes, Soulacy asks whether to <strong>Run now</strong> or <strong>wait</strong> for the scheduled time.</p>
+  cron: "0 8 * * *"   # every day at 8 AM
+  output:
+    channel: "telegram-financial-agent"
+    to: "123456789"
+    bot_name: "Finance Bot"</pre>
+    <p><strong>▶ Run</strong> triggers a manual run immediately and returns the result here. Cron-fired runs use <code>schedule.output</code> to publish through the selected bot. While a job runs it shows <strong>Running</strong> and can't be started again (a scheduled fire is also skipped).</p>
   </div>
 </div>
 
@@ -411,6 +504,54 @@ schedule:
         <input type="text" bind:value={editCron} placeholder="0 8 * * *" />
         <span class="field-help">5-field cron (min hour day month weekday). Example: <code>0 7 * * *</code> = 7 AM daily.</span>
       </label>
+      <div class="output-editor">
+        <div class="output-editor-head">
+          <span>Missed runs</span>
+        </div>
+        <label class="check">
+          <input type="checkbox" bind:checked={editRunMissedOnStartup} />
+          <span>Run the latest missed cron after startup</span>
+        </label>
+        {#if editRunMissedOnStartup}
+          <label class="field">
+            <span class="field-label">Catch-up window</span>
+            <input type="text" bind:value={editMissedStartupWindow} placeholder="24h" />
+            <span class="field-help">Examples: <code>6h</code>, <code>24h</code>, <code>72h</code>.</span>
+          </label>
+        {/if}
+      </div>
+      <div class="output-editor">
+        <div class="output-editor-head">
+          <span>Scheduled output</span>
+          {#if outputBotOptions.length === 0}<em>No channel bots configured</em>{/if}
+        </div>
+        <label class="field">
+          <span class="field-label">Bot</span>
+          <select value={editOutputChannel} on:change={(e) => selectOutputChannel(e.currentTarget.value)} disabled={outputBotOptions.length === 0}>
+            <option value="">Do not send output</option>
+            {#each outputBotOptions as opt}
+              <option value={opt.channel}>{opt.label}{opt.connected ? '' : ' · offline'}</option>
+            {/each}
+          </select>
+          <span class="field-help">The scheduler sends the agent reply through this channel adapter ID.</span>
+        </label>
+        {#if editOutputChannel}
+          <label class="field">
+            <span class="field-label">Destination ID</span>
+            <input type="text" bind:value={editOutputTo} placeholder="Telegram chat ID, Slack channel ID, Discord channel ID, or WhatsApp number" />
+            <span class="field-help">This becomes the outbound message thread/chat/channel/user ID for the selected bot.</span>
+          </label>
+          <label class="field">
+            <span class="field-label">Bot name</span>
+            <input type="text" bind:value={editOutputBotName} placeholder="Friendly bot name" />
+          </label>
+          <label class="field">
+            <span class="field-label">Template</span>
+            <textarea bind:value={editOutputTemplate} rows="3" placeholder="&#123;reply&#125;"></textarea>
+            <span class="field-help">Optional. Tokens: <code>&#123;reply&#125;</code>, <code>&#123;agent_id&#125;</code>, <code>&#123;agent_name&#125;</code>, <code>&#123;trigger&#125;</code>, <code>&#123;timestamp&#125;</code>.</span>
+          </label>
+        {/if}
+      </div>
       <label class="check">
         <input type="checkbox" bind:checked={editEnabled} />
         <span>Enabled (registers the schedule with the scheduler)</span>
@@ -523,6 +664,12 @@ schedule:
   .pill-ok { background: rgba(76,175,130,.15); color: #4caf82; }
 
   .tbl { width: 100%; border-collapse: collapse; font-size: .85rem; }
+
+  @media (max-width: 768px) {
+    /* Wide tables scroll horizontally instead of overflowing the viewport */
+    .tbl { display: block; overflow-x: auto; }
+    .tbl th, .tbl td { padding: .6rem .75rem; }
+  }
   .tbl th { padding: .6rem 1.25rem; text-align: left; color: #555a7a; font-weight: 500; font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; border-bottom: 1px solid #1a1e36; }
   .tbl td { padding: .7rem 1.25rem; border-bottom: 1px solid #0e1020; vertical-align: middle; }
   .tbl tr:last-child td { border-bottom: none; }
@@ -535,6 +682,9 @@ schedule:
   .td-action { text-align: right; }
   .actions   { display: flex; gap: .35rem; justify-content: flex-end; flex-wrap: wrap; }
   .xs { padding: .28rem .6rem; font-size: .75rem; border-radius: 6px; }
+  .output-cell { display: flex; flex-direction: column; gap: .15rem; min-width: 150px; }
+  .output-cell strong { color: #c8cadf; font-size: .78rem; font-weight: 600; }
+  .output-cell span { color: #6b7294; font-family: monospace; font-size: .7rem; word-break: break-all; }
 
   /* status cell */
   .status { font-size: .78rem; display: inline-flex; align-items: center; gap: .35rem; }
@@ -573,7 +723,7 @@ schedule:
     display: flex; justify-content: flex-end;
   }
   .history-panel {
-    width: 520px; max-width: 92vw; height: 100%;
+    width: min(520px, 100vw); max-width: 100vw; height: 100%;
     background: #141626; border-left: 1px solid #2a2f4a;
     display: flex; flex-direction: column; overflow: hidden;
   }
@@ -624,15 +774,33 @@ schedule:
 
   /* Modal */
   .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 100; }
-  .modal { background: #141626; border: 1px solid #2a2f4a; border-radius: 12px; padding: 1.5rem; width: 460px; max-width: 92vw; display: flex; flex-direction: column; gap: 1rem; }
+  .modal { background: #141626; border: 1px solid #2a2f4a; border-radius: 12px; padding: 1.5rem; width: 460px; max-width: 92vw; max-height: 88vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem; }
   .modal h2 { font-size: 1rem; font-weight: 600; }
   .modal p  { font-size: .85rem; color: #b0b5d8; line-height: 1.6; }
   .modal p.sub { color: #7b82a8; }
   .field { display: flex; flex-direction: column; gap: .3rem; }
   .field-label { font-size: .8rem; color: #c8cadf; }
+  .field select,
+  .field textarea {
+    background: #1c1f35; color: #e8eaf6; border: 1px solid #2a2f4a;
+    border-radius: 6px; padding: .5rem .65rem; font-size: .85rem;
+  }
+  .field textarea { resize: vertical; min-height: 4.5rem; font-family: inherit; line-height: 1.45; }
   .field-help { font-size: .72rem; color: #555a7a; }
   .field-help code { background: #1c1f35; padding: .05rem .3rem; border-radius: 4px; color: #8b85ff; }
+  .output-editor {
+    border: 1px solid #1a1e36; border-radius: 8px; background: #101323;
+    padding: .85rem; display: flex; flex-direction: column; gap: .8rem;
+  }
+  .output-editor-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+  .output-editor-head span { font-size: .82rem; color: #e0e1f0; font-weight: 600; }
+  .output-editor-head em { font-size: .72rem; color: #f0a060; font-style: normal; }
   .check { display: flex; align-items: center; gap: .5rem; font-size: .82rem; color: #c8cadf; }
   .check input { width: auto; }
-  .modal-row { display: flex; gap: .75rem; justify-content: flex-end; }
+  .modal-row {
+    display: flex; gap: .75rem; justify-content: flex-end;
+    position: sticky; bottom: 0; z-index: 5;
+    background: #141626; padding-top: .6rem;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.6);
+  }
 </style>

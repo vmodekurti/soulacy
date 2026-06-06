@@ -35,7 +35,7 @@ Every agent invocation produces an OTEL trace with spans for:
 - Auth middleware
 - Agent engine dispatch
 - LLM provider call (including model, token counts, latency)
-- Tool calls (web_search, url_fetch, etc.)
+- Tool calls (built-ins, MCP tools, Python tools, peer agents, and plugins)
 - Channel adapter send
 
 ### Jaeger (local dev)

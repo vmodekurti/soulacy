@@ -1,5 +1,5 @@
 import { get } from 'svelte/store'
-import { apiKey } from './stores.js'
+import { apiKey, authRequired } from './stores.js'
 
 function authHeaders() {
   const key = get(apiKey)
@@ -15,8 +15,12 @@ export async function apiFetch(path, opts = {}) {
   })
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
+    if (res.status === 401 || res.status === 403) authRequired.set(true)
     throw Object.assign(new Error(body.error || res.statusText), { status: res.status })
   }
+  // /health bypasses auth on the server, so a success there says nothing
+  // about credentials — only clear the auth-required flag on authenticated paths.
+  if (path !== '/health') authRequired.set(false)
   // Some endpoints (e.g. DELETE) return 204 No Content with an empty body —
   // calling res.json() on that throws "Unexpected end of JSON input".
   if (res.status === 204) return null
@@ -49,10 +53,10 @@ export const api = {
     ),
   },
 
-  chat: (agentId, text, userId = 'gui-user', overrides = null) =>
+  chat: (agentId, text, userId = 'gui-user', overrides = null, sessionId = '') =>
     apiFetch('/chat', {
       method: 'POST',
-      body: JSON.stringify({ agent_id: agentId, user_id: userId, text, ...(overrides ? { overrides } : {}) }),
+      body: JSON.stringify({ agent_id: agentId, user_id: userId, session_id: sessionId, text, ...(overrides ? { overrides } : {}) }),
     }),
 
   admin: {
@@ -63,11 +67,39 @@ export const api = {
     list: (agentId) => apiFetch(`/memory/${agentId}`),
   },
 
+  brainMemory: {
+    stats: () => apiFetch('/brain-memory'),
+    episodic: (agentId, limit = 100) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/episodic?limit=${limit}`),
+    writeEpisodic: (agentId, content, tags = []) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/episodic`, {
+        method: 'POST', body: JSON.stringify({ content, tags }),
+      }),
+    clearEpisodic: (agentId) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/episodic`, { method: 'DELETE' }),
+    procedural: (agentId) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/procedural`),
+    updateProcedural: (agentId, rules) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/procedural`, {
+        method: 'PUT', body: JSON.stringify({ rules }),
+      }),
+    clearProcedural: (agentId) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/procedural`, { method: 'DELETE' }),
+    contextPreview: (agentId, taskInput, maxEpisodic = 5, maxSemantic = 8) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/context-preview`, {
+        method: 'POST',
+        body: JSON.stringify({ task_input: taskInput, max_episodic: maxEpisodic, max_semantic: maxSemantic }),
+      }),
+  },
+
   channels: {
     list:    ()          => apiFetch('/channels'),
     update:  (id, patch) => apiFetch(`/channels/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     enable:  (id)        => apiFetch(`/channels/${id}/enable`,  { method: 'POST' }),
     disable: (id)        => apiFetch(`/channels/${id}/disable`, { method: 'POST' }),
+    pairWhatsAppWeb: (body) => apiFetch('/channels/whatsapp_web/pair', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
   },
 
   schedule: {
@@ -140,8 +172,10 @@ export const api = {
       })
       if (!res.ok) {
         const body = await res.json().catch(() => ({}))
+        if (res.status === 401 || res.status === 403) authRequired.set(true)
         throw Object.assign(new Error(body.error || res.statusText), { status: res.status })
       }
+      authRequired.set(false)
       return res.json()
     },
     deleteDocument: (kb, doc) =>
@@ -150,6 +184,22 @@ export const api = {
       apiFetch(`/knowledge/${encodeURIComponent(kb)}/search`, {
         method: 'POST', body: JSON.stringify({ query, top_k: topK }),
       }),
+  },
+
+  workboard: {
+    list: (filters = {}) => {
+      const params = new URLSearchParams()
+      if (filters.status)  params.set('status', filters.status)
+      if (filters.agentId) params.set('agent_id', filters.agentId)
+      const qs = params.toString()
+      return apiFetch('/workboard/tasks' + (qs ? '?' + qs : ''))
+    },
+    get:    (id)        => apiFetch(`/workboard/tasks/${id}`),
+    create: (body)      => apiFetch('/workboard/tasks',        { method: 'POST',  body: JSON.stringify(body) }),
+    update: (id, patch) => apiFetch(`/workboard/tasks/${id}`,  { method: 'PATCH', body: JSON.stringify(patch) }),
+    delete: (id)        => apiFetch(`/workboard/tasks/${id}`,  { method: 'DELETE' }),
+    run:    (id)        => apiFetch(`/workboard/tasks/${id}/run`,  { method: 'POST' }),
+    runs:   (id)        => apiFetch(`/workboard/tasks/${id}/runs`),
   },
 
   builder: {

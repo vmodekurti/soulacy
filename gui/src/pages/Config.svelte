@@ -229,6 +229,14 @@
 
   .config-layout { display: grid; grid-template-columns: 1fr 380px; gap: 1.25rem; align-items: start; }
 
+  @media (max-width: 900px) {
+    .config-layout { grid-template-columns: 1fr; }
+    .json-col { position: static; }
+  }
+  @media (max-width: 640px) {
+    .field-row { grid-template-columns: 1fr; }
+  }
+
   /* Form column */
   .form-col { display: flex; flex-direction: column; gap: 1rem; }
 

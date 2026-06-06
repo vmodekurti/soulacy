@@ -59,9 +59,9 @@ channels:
   slack:
     enabled: true
     bots:
-      - bot_token: "xoxb-system"
-        app_token: "xapp-system"
-        agent_id: system
+      - bot_token: "xoxb-assistant"
+        app_token: "xapp-assistant"
+        agent_id: assistant
       - bot_token: "xoxb-support"
         app_token: "xapp-support"
         agent_id: support-agent
@@ -71,7 +71,7 @@ This registers two adapter IDs:
 
 | Adapter ID | Agent |
 |------------|-------|
-| `slack` | `system` |
+| `slack` | `assistant` |
 | `slack-support-agent` | `support-agent` |
 
 You can configure this from the GUI: **Channels → Slack → Edit → Bot mappings**.

@@ -16,16 +16,20 @@ import (
 	"github.com/soulacy/soulacy/pkg/agent"
 )
 
+// SystemAgentID is the reserved ID for Soulacy's built-in web-only system
+// agent. It is seeded in memory and cannot be replaced by SOUL.yaml files.
+const SystemAgentID = "system"
+
 // builtinSourcePath is the sentinel SourcePath stored on built-in agent
 // definitions so LoadAll's stale-file cleanup never removes them.
 const builtinSourcePath = "__builtin__"
 
 // Loader discovers and hot-reloads agent definitions from disk.
 type Loader struct {
-	dirs    []string
-	agents  map[string]*agent.Definition
-	mu      sync.RWMutex
-	log     *zap.Logger
+	dirs   []string
+	agents map[string]*agent.Definition
+	mu     sync.RWMutex
+	log    *zap.Logger
 }
 
 // NewLoader creates a Loader that watches the given directories.
@@ -62,7 +66,7 @@ func (l *Loader) seedBuiltins() {
 // It is available immediately on first run — no config or SOUL.yaml needed.
 func builtinSystemAgent() *agent.Definition {
 	return &agent.Definition{
-		ID:          "system",
+		ID:          SystemAgentID,
 		Name:        "System",
 		Description: "Master system agent — run shell commands, scripts, install libraries, read/write files, and more.",
 		Trigger:     agent.TriggerChannel,
@@ -189,6 +193,13 @@ func (l *Loader) LoadAll() []error {
 				errs = append(errs, fmt.Errorf("load %s: %w", path, err))
 				return nil
 			}
+			if def.ID == SystemAgentID {
+				l.log.Warn("ignoring on-disk override for protected system agent",
+					zap.String("path", path),
+					zap.String("agent_id", def.ID),
+				)
+				return nil
+			}
 
 			l.agents[def.ID] = def
 			found[def.ID] = true
@@ -298,6 +309,9 @@ func (l *Loader) Upsert(dir string, def *agent.Definition) error {
 	if def.ID == "" {
 		return fmt.Errorf("agent ID is required")
 	}
+	if def.ID == SystemAgentID {
+		return fmt.Errorf("agent %q is protected and cannot be modified", def.ID)
+	}
 
 	oldPath := def.SourcePath // where this agent currently lives (empty for new agents)
 
@@ -335,6 +349,10 @@ func (l *Loader) Upsert(dir string, def *agent.Definition) error {
 func (l *Loader) Delete(id string) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+
+	if id == SystemAgentID {
+		return fmt.Errorf("agent %q is a protected built-in and cannot be deleted", id)
+	}
 
 	def, ok := l.agents[id]
 	if !ok {

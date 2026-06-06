@@ -1,155 +1,172 @@
 # Your First Agent
 
-This guide walks through building a more capable agent step by step — one that uses tools, maintains conversation history, and enforces a persona.
+This guide walks through building a capable `SOUL.yaml` agent step by step.
 
-## Minimal agent
+## Minimal Agent
 
-Every agent starts as a SOUL.yaml file:
+Every agent starts as a `SOUL.yaml` file:
 
 ```yaml
-name: helper
+id: helper
+name: Helper
 description: A simple helper agent
-model: gpt-4o-mini
-system_prompt: You are a helpful assistant.
+trigger: channel
 channels:
   - http
+llm:
+  provider: openai
+  model: gpt-4o-mini
+system_prompt: You are a helpful assistant.
+enabled: true
 ```
 
-Place this in your `agents/` directory and restart Soulacy.
+Place this at `agents/helper/SOUL.yaml`. Soulacy's watcher reloads YAML changes
+without a gateway restart in normal operation.
 
----
+## Add a Persona
 
-## Add a persona
-
-Use `system_prompt` to shape personality and scope:
+Use `system_prompt` to shape behavior and scope:
 
 ```yaml
-name: support-bot
+id: support-bot
+name: Support Bot
 description: Customer support for Acme Corp
-model: gpt-4o
-system_prompt: |
-  You are a friendly support agent for Acme Corp.
-  - Only answer questions about Acme products.
-  - If you don't know, say so and offer to escalate.
-  - Keep replies under 150 words unless the user asks for detail.
-  - Never reveal internal pricing or roadmap details.
+trigger: channel
 channels:
   - http
   - telegram
+llm:
+  provider: openai
+  model: gpt-4o
+system_prompt: |
+  You are a friendly support agent for Acme Corp.
+  - Only answer questions about Acme products.
+  - If you do not know, say so and offer to escalate.
+  - Keep replies under 150 words unless the user asks for detail.
+  - Never reveal internal pricing or roadmap details.
+enabled: true
 ```
 
----
+## Add Built-ins
 
-## Add tools
-
-Tools let your agent call functions — fetch data, run code, search the web:
+Built-ins are Go-native tools such as `web_search`, `kb_search`, and skill
+readers. Use `builtins` to keep the catalog explicit:
 
 ```yaml
-name: researcher
-description: Research assistant with web search
-model: gpt-4o
+id: researcher
+name: Researcher
+description: Research assistant with current web search
+trigger: channel
+channels:
+  - http
+llm:
+  provider: openai
+  model: gpt-4o
 system_prompt: |
-  You are a research assistant. Use search to find current information.
-tools:
+  You are a research assistant. Search for current information and cite sources.
+builtins:
   - web_search
-  - url_fetch
-channels:
-  - http
+enabled: true
 ```
 
-See the [Built-in Tools reference](../agents/tools.md) for the full list.
+See the [Agent Tools reference](../agents/tools.md) for the full tool model.
 
----
+## Add a Python Tool
 
-## Set token limits
-
-Control cost and latency per response:
+Agent-local tools are declared with a name, description, JSON Schema parameters,
+and a `python_file`:
 
 ```yaml
-name: summarizer
-model: gpt-4o-mini
-system_prompt: Summarize documents concisely.
-token_budget:
-  max_input_tokens: 16000
-  max_output_tokens: 512
-channels:
-  - http
+tools:
+  - name: summarize_file
+    description: Summarize a local text file.
+    python_file: tools/summarize_file.py
+    timeout: 30s
+    parameters:
+      type: object
+      properties:
+        path: { type: string }
+      required: [path]
 ```
 
----
+Relative paths resolve from the agent directory.
 
-## Add memory / session history
+## Add Memory
 
-Session history is enabled by default when you configure a storage backend. The agent automatically receives the last N turns of conversation context.
-
-To control context window:
+Memory controls how much stored context the agent may read and where it writes
+new memories:
 
 ```yaml
-name: assistant
-model: gpt-4o-mini
-system_prompt: You are a helpful assistant.
-session:
-  history_turns: 20      # how many prior turns to include
-channels:
-  - http
+memory:
+  read_scopes: [agent, session]
+  write_scopes: [agent]
+  max_tokens: 2000
 ```
 
----
+Set `max_tokens: 0` or omit scopes for a leaner stateless agent.
 
-## Multi-channel agent
+## Multi-Channel Agent
 
-Deploy the same agent to multiple channels simultaneously:
+Deploy the same agent to multiple channels:
 
 ```yaml
-name: concierge
+id: concierge
+name: Concierge
 description: Multi-channel concierge
-model: gpt-4o
-system_prompt: |
-  You are a concierge assistant. Be polite and efficient.
+trigger: channel
 channels:
   - http
   - telegram
   - slack
   - discord
+llm:
+  provider: openai
+  model: gpt-4o
+system_prompt: |
+  You are a concierge assistant. Be polite and efficient.
+enabled: true
 ```
 
-Each channel uses its own adapter — the agent code is unchanged.
+Each channel still needs credentials and routing in `config.yaml`.
 
----
+## Full Example
 
-## Full example
-
-```yaml title="agents/concierge.soul.yaml"
-name: concierge
+```yaml title="agents/concierge/SOUL.yaml"
+id: concierge
+name: Concierge
 description: Full-featured concierge agent
-model: gpt-4o
+trigger: channel
+channels:
+  - http
+  - telegram
+  - slack
+
+llm:
+  provider: openai
+  model: gpt-4o
+  temperature: 0.2
+  max_tokens: 1024
+
 system_prompt: |
   You are a friendly concierge at Acme Inc.
   Help users with questions, research, and task management.
   Be concise. Use bullet points for lists.
 
-tools:
+builtins:
   - web_search
-  - url_fetch
-  - calculator
 
-token_budget:
-  max_input_tokens: 32000
-  max_output_tokens: 1024
+memory:
+  read_scopes: [agent, session]
+  write_scopes: [agent]
+  max_tokens: 2000
 
-session:
-  history_turns: 30
-
-channels:
-  - http
-  - telegram
-  - slack
+max_turns: 8
+enabled: true
 ```
 
----
-
-## Next steps
+## Next Steps
 
 - [SOUL.yaml Reference](../agents/soul-yaml.md) — complete schema documentation
-- [Workflow DAGs](../agents/workflow.md) — chain agents into pipelines
+- [Agent Tools](../agents/tools.md) — built-ins, Python tools, MCP, and peers
+- [Workflow Steps](../agents/workflow.md) — checkpointed tool workflows
 - [Configuration](../configuration/index.md) — server, LLM, and storage options

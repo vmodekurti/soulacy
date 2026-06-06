@@ -1,0 +1,287 @@
+// anthropic_backend.go — LLMBackend implementation for the Anthropic Claude API.
+//
+// All three methods (Think, Plan, Reflect) make POST /v1/messages calls and
+// require the LLM to respond with structured JSON. Markdown fences are stripped
+// before unmarshalling. The caller (Loop) is responsible for retrying on
+// transient errors — this backend makes exactly one attempt per call.
+//
+// Think() is the hot path: one call per ReAct step. Keep latency low by using
+// a small model (e.g. claude-haiku-4-5-20251001) for Think and a larger model
+// for Reflect (higher max_tokens, better synthesis).
+//
+// Reflect() is where the final answer is produced. It is called once per task
+// and should use max_tokens >= 2048 to support rich structured output formats.
+package reasoning
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+const defaultAnthropicBase = "https://api.anthropic.com"
+const defaultAnthropicVersion = "2023-06-01"
+
+// AnthropicBackend implements LLMBackend using the Anthropic Messages API.
+type AnthropicBackend struct {
+	baseURL string
+	apiKey  string
+	// ThinkModel is used for Think() — default claude-haiku-4-5-20251001.
+	ThinkModel string
+	// PlanModel is used for Plan() — default claude-sonnet-4-6.
+	PlanModel string
+	// ReflectModel is used for Reflect() — default claude-sonnet-4-6.
+	ReflectModel string
+	client       *http.Client
+}
+
+// NewAnthropicBackend creates an AnthropicBackend.
+// If baseURL is empty, the default api.anthropic.com is used.
+func NewAnthropicBackend(baseURL, apiKey string) *AnthropicBackend {
+	if baseURL == "" {
+		baseURL = defaultAnthropicBase
+	}
+	return &AnthropicBackend{
+		baseURL:      strings.TrimRight(baseURL, "/"),
+		apiKey:       apiKey,
+		ThinkModel:   "claude-haiku-4-5-20251001",
+		PlanModel:    "claude-sonnet-4-6",
+		ReflectModel: "claude-sonnet-4-6",
+		client:       &http.Client{Timeout: 60 * time.Second},
+	}
+}
+
+// SetClient replaces the internal HTTP client. Intended for testing only
+// (inject a fake transport without starting a real server).
+func (b *AnthropicBackend) SetClient(c *http.Client) { b.client = c }
+
+// ─── Think ────────────────────────────────────────────────────────────────────
+
+// Think runs one ReAct step. The LLM receives the task, step history, and
+// available tools; it must respond with a ThinkResponse JSON object.
+func (b *AnthropicBackend) Think(ctx context.Context, req ThinkRequest) (ThinkResponse, error) {
+	systemPrompt := req.SystemPrompt
+	if len(req.ToolNames) > 0 {
+		systemPrompt += fmt.Sprintf("\n\nAvailable tools: %s", strings.Join(req.ToolNames, ", "))
+	}
+	systemPrompt += thinkInstructions
+
+	userContent := fmt.Sprintf("Task: %s\n\n%s",
+		req.TaskInput,
+		formatStepHistory(req.StepHistory),
+	)
+
+	body, err := b.complete(ctx, b.ThinkModel, systemPrompt, userContent, 512)
+	if err != nil {
+		return ThinkResponse{}, err
+	}
+
+	var resp ThinkResponse
+	if err := unmarshalJSON(body, &resp); err != nil {
+		return ThinkResponse{}, fmt.Errorf("reasoning: Think: parse response: %w (raw: %s)", err, truncate(body, 200))
+	}
+	return resp, nil
+}
+
+const thinkInstructions = `
+
+Respond ONLY with a JSON object in this exact schema — no markdown fences, no prose:
+{
+  "thought":      "your reasoning about the next step",
+  "is_done":      false,
+  "action":       { "tool": "<tool_name>", "input": { "<key>": "<value>" } },
+  "final_answer": ""
+}
+When the task is complete set "is_done": true, put your answer in "final_answer", and omit "action".`
+
+// ─── Plan ─────────────────────────────────────────────────────────────────────
+
+// Plan decomposes taskInput into an ordered list of PlannedStep objects.
+// Only called by StrategyPlanExecute agents.
+func (b *AnthropicBackend) Plan(ctx context.Context, systemPrompt, taskInput string, maxSteps int) (Plan, error) {
+	sp := systemPrompt + fmt.Sprintf(planInstructions, maxSteps)
+	body, err := b.complete(ctx, b.PlanModel, sp, "Task: "+taskInput, 1024)
+	if err != nil {
+		return Plan{}, err
+	}
+
+	var plan Plan
+	if err := unmarshalJSON(body, &plan); err != nil {
+		return Plan{}, fmt.Errorf("reasoning: Plan: parse response: %w (raw: %s)", err, truncate(body, 200))
+	}
+	return plan, nil
+}
+
+const planInstructions = `
+
+Decompose the task into at most %d ordered steps. Respond ONLY with a JSON object:
+{
+  "goal": "one-sentence goal",
+  "steps": [
+    { "id": "step-1", "description": "...", "tool": "<tool_name>", "depends_on": [] },
+    { "id": "step-2", "description": "...", "tool": "<tool_name>", "depends_on": ["step-1"] }
+  ]
+}
+No markdown fences. List steps in execution order. Use depends_on to express dependencies.`
+
+// ─── Reflect ──────────────────────────────────────────────────────────────────
+
+// Reflect synthesises the full step trace into the final answer.
+// This is the only call where max_tokens is high (2048).
+func (b *AnthropicBackend) Reflect(ctx context.Context, req ReflectRequest) (ReflectResponse, error) {
+	sp := req.SystemPrompt
+	if req.OutputFormat != "" {
+		sp += fmt.Sprintf("\n\nOutput format: %s", req.OutputFormat)
+	}
+	sp += reflectInstructions
+
+	userContent := fmt.Sprintf(
+		"Task: %s\n\nStep trace:\n%s\n\nNow produce the final answer.",
+		req.TaskInput,
+		formatStepHistory(req.Steps),
+	)
+
+	body, err := b.complete(ctx, b.ReflectModel, sp, userContent, 2048)
+	if err != nil {
+		return ReflectResponse{}, err
+	}
+
+	var resp ReflectResponse
+	if err := unmarshalJSON(body, &resp); err != nil {
+		// Fallback: treat the entire body as the output string.
+		return ReflectResponse{Output: body}, nil
+	}
+	return resp, nil
+}
+
+const reflectInstructions = `
+
+Synthesise the task result from the step trace. Respond ONLY with a JSON object:
+{
+  "output":        "the final answer in the requested output format",
+  "updated_rules": "optional: revised operating rules in Markdown (only if you learned something worth remembering)"
+}
+No markdown fences around the JSON itself. The "output" field may contain Markdown.`
+
+// ─── HTTP ─────────────────────────────────────────────────────────────────────
+
+type anthropicRequest struct {
+	Model     string             `json:"model"`
+	MaxTokens int                `json:"max_tokens"`
+	System    string             `json:"system"`
+	Messages  []anthropicMessage `json:"messages"`
+}
+
+type anthropicMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+type anthropicResponse struct {
+	Content []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"content"`
+	Error *struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+// complete makes one POST /v1/messages call and returns the text content.
+func (b *AnthropicBackend) complete(ctx context.Context, model, system, userMsg string, maxTokens int) (string, error) {
+	payload := anthropicRequest{
+		Model:     model,
+		MaxTokens: maxTokens,
+		System:    system,
+		Messages:  []anthropicMessage{{Role: "user", Content: userMsg}},
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("reasoning: anthropic: marshal: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		b.baseURL+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("reasoning: anthropic: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", b.apiKey)
+	req.Header.Set("anthropic-version", defaultAnthropicVersion)
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("reasoning: anthropic: http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("reasoning: anthropic: read body: %w", err)
+	}
+
+	var ar anthropicResponse
+	if err := json.Unmarshal(raw, &ar); err != nil {
+		return "", fmt.Errorf("reasoning: anthropic: decode: %w (status %d)", err, resp.StatusCode)
+	}
+	if ar.Error != nil {
+		return "", fmt.Errorf("reasoning: anthropic: API error %s: %s", ar.Error.Type, ar.Error.Message)
+	}
+	if resp.StatusCode >= 300 {
+		return "", fmt.Errorf("reasoning: anthropic: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	}
+	for _, block := range ar.Content {
+		if block.Type == "text" {
+			return block.Text, nil
+		}
+	}
+	return "", fmt.Errorf("reasoning: anthropic: no text block in response")
+}
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+// formatStepHistory renders the step trace as thought/action/observation triplets.
+func formatStepHistory(steps []Step) string {
+	if len(steps) == 0 {
+		return "(no steps yet)"
+	}
+	var sb strings.Builder
+	for _, s := range steps {
+		sb.WriteString(fmt.Sprintf("Thought: %s\n", s.Thought))
+		if s.Action.Tool != "" {
+			sb.WriteString(fmt.Sprintf("Action: %s(%v)\n", s.Action.Tool, s.Action.Input))
+		}
+		sb.WriteString(fmt.Sprintf("Observation: %s\n\n", s.Obs.Content))
+	}
+	return sb.String()
+}
+
+// unmarshalJSON strips markdown fences then unmarshals.
+func unmarshalJSON(s string, v any) error {
+	s = strings.TrimSpace(s)
+	// Strip ```json ... ``` or ``` ... ``` fences
+	if strings.HasPrefix(s, "```") {
+		if i := strings.Index(s, "\n"); i >= 0 {
+			s = s[i+1:]
+		}
+		if j := strings.LastIndex(s, "```"); j >= 0 {
+			s = s[:j]
+		}
+		s = strings.TrimSpace(s)
+	}
+	return json.Unmarshal([]byte(s), v)
+}
+
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}

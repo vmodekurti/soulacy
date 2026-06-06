@@ -105,6 +105,12 @@
     tools: [], skills: [], knowledge: [], agents: [], max_turns: 5, stream_reply: false, enabled: true,
   })
 
+  function isSystemAgent(agent) {
+    return agent?.id === 'system'
+  }
+
+  $: editingProtected = isSystemAgent(selected)
+
   async function load() {
     try {
       const res = await api.agents.list()
@@ -287,6 +293,10 @@
 
   async function save() {
     if (!editing) return
+    if (editingProtected) {
+      saveMsg = '✗ System agent is protected'
+      return
+    }
     saving  = true
     saveMsg = ''
     try {
@@ -307,6 +317,7 @@
 
   async function toggleEnabled(agent, e) {
     e.stopPropagation()
+    if (isSystemAgent(agent)) return
     try {
       agent.enabled ? await api.agents.disable(agent.id)
                     : await api.agents.enable(agent.id)
@@ -320,6 +331,10 @@
 
   async function deleteAgent() {
     if (!selected) return
+    if (editingProtected) {
+      error = 'System agent is protected'
+      return
+    }
     if (!confirm(`Delete agent "${selected.id}"? This cannot be undone.`)) return
     deleting = true
     try {
@@ -564,6 +579,7 @@ console.log(reply);` : ''
           </div>
           <button class="toggle" class:on={agent.enabled}
                   title={agent.enabled ? 'Disable' : 'Enable'}
+                  disabled={isSystemAgent(agent)}
                   on:click={(e) => toggleEnabled(agent, e)}>
             {agent.enabled ? '●' : '○'}
           </button>
@@ -588,14 +604,14 @@ console.log(reply);` : ''
                         title="Toggle inline chat panel">
                   {showPlay ? '× Close' : '💬 Test'}
                 </button>
-                <button class="btn-danger" on:click={deleteAgent} disabled={deleting}>
+                <button class="btn-danger" on:click={deleteAgent} disabled={deleting || editingProtected}>
                   {deleting ? '…' : 'Delete'}
                 </button>
               {/if}
               <button class="btn-secondary" on:click={validateEditing} disabled={validating}>
                 {validating ? 'Checking…' : 'Validate'}
               </button>
-              <button class="btn-primary" on:click={save} disabled={saving}>
+              <button class="btn-primary" on:click={save} disabled={saving || editingProtected}>
                 {saving ? 'Saving…' : 'Save'}
               </button>
               {#if saveMsg}
@@ -792,6 +808,111 @@ console.log(reply);` : ''
             <div class="field">
               <span class="field-label">Memory max tokens <span class="optional">(how many recent entries to inject into context)</span></span>
               <input type="number" bind:value={editing.memory.max_tokens} min="0" max="100000" />
+            </div>
+
+            <!-- ── Reasoning loop ── -->
+            <div class="sep">Reasoning loop <span class="optional">(multi-step ReAct / Plan-Execute)</span></div>
+            <div class="field">
+              <span class="field-label">Strategy</span>
+              <div class="strategy-cards">
+                {#each [
+                  { val: '',             icon: '⚡', title: 'None',          desc: 'Classic single-call (default)' },
+                  { val: 'react',        icon: '🔄', title: 'ReAct',         desc: 'Iterative think → act → observe' },
+                  { val: 'plan_execute', icon: '📋', title: 'Plan-Execute',  desc: 'Decompose → execute plan steps' },
+                ] as s}
+                  <button
+                    class="strategy-card {(editing.reasoning?.strategy||'') === s.val ? 'active' : ''}"
+                    on:click={() => { editing.reasoning = editing.reasoning || {}; editing.reasoning.strategy = s.val; editing = editing }}
+                  >
+                    <span class="sc-icon">{s.icon}</span>
+                    <span class="sc-title">{s.title}</span>
+                    <span class="sc-desc">{s.desc}</span>
+                  </button>
+                {/each}
+              </div>
+            </div>
+
+            {#if editing.reasoning?.strategy}
+              <div class="field-row">
+                <div class="field">
+                  <span class="field-label">Max steps <span class="optional">(default 8)</span></span>
+                  <input type="number" min="1" max="50"
+                    value={editing.reasoning?.max_steps || ''}
+                    on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.max_steps = Number(e.target.value)||0 }} />
+                </div>
+                {#if editing.reasoning?.strategy === 'plan_execute'}
+                  <div class="field">
+                    <span class="field-label">Max plan steps <span class="optional">(default 6)</span></span>
+                    <input type="number" min="1" max="20"
+                      value={editing.reasoning?.max_plan_steps || ''}
+                      on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.max_plan_steps = Number(e.target.value)||0 }} />
+                  </div>
+                {/if}
+                <div class="field">
+                  <span class="field-label">Step timeout <span class="optional">(e.g. 30s)</span></span>
+                  <input type="text" placeholder="30s"
+                    value={editing.reasoning?.step_timeout || ''}
+                    on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.step_timeout = e.target.value }} />
+                </div>
+                <div class="field">
+                  <span class="field-label">Total timeout <span class="optional">(e.g. 180s)</span></span>
+                  <input type="text" placeholder="180s"
+                    value={editing.reasoning?.total_timeout || ''}
+                    on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.total_timeout = e.target.value }} />
+                </div>
+              </div>
+            {/if}
+
+            <!-- ── Brain memory ── -->
+            <div class="sep">Brain memory <span class="optional">(long-term episodic / procedural / semantic)</span></div>
+            <div class="brain-mem-grid">
+              {#each [
+                { key: 'episodic',   icon: '🕐', label: 'Episodic',   desc: 'Task history. Injected as "Recent task history".' },
+                { key: 'semantic',   icon: '🔍', label: 'Semantic',   desc: 'Knowledge chunks (vector search).' },
+                { key: 'procedural', icon: '📋', label: 'Procedural', desc: 'Operating rules the agent learns over time.' },
+              ] as layer}
+                {@const cfg = editing.brain_memory?.[layer.key] || {}}
+                <div class="bm-card {cfg.enabled ? 'enabled' : ''}">
+                  <div class="bm-header">
+                    <span class="bm-icon">{layer.icon}</span>
+                    <span class="bm-label">{layer.label}</span>
+                    <label class="toggle-sm">
+                      <input type="checkbox" checked={!!cfg.enabled}
+                        on:change={e => {
+                          editing.brain_memory = editing.brain_memory || {}
+                          editing.brain_memory[layer.key] = editing.brain_memory[layer.key] || {}
+                          editing.brain_memory[layer.key].enabled = e.target.checked
+                          editing = editing
+                        }} />
+                      <span class="toggle-track-sm"></span>
+                    </label>
+                  </div>
+                  <div class="bm-desc">{layer.desc}</div>
+                  {#if cfg.enabled}
+                    <div class="bm-fields">
+                      <div class="bm-field">
+                        <span class="bm-field-lbl">Max inject</span>
+                        <input class="bm-num" type="number" min="1" max="50"
+                          value={cfg.max_inject || ''}
+                          on:input={e => {
+                            editing.brain_memory[layer.key].max_inject = Number(e.target.value)||0
+                            editing = editing
+                          }} />
+                      </div>
+                      {#if layer.key === 'procedural'}
+                        <label class="bm-check">
+                          <input type="checkbox" checked={!!cfg.auto_update}
+                            on:change={e => {
+                              editing.brain_memory[layer.key].auto_update = e.target.checked
+                              editing = editing
+                            }} />
+                          <span>Auto-update after each task</span>
+                        </label>
+                      {/if}
+                    </div>
+                  {/if}
+                </div>
+              {/each}
             </div>
 
             {#if editing.trigger === 'channel'}
@@ -1158,6 +1279,17 @@ console.log(reply);` : ''
 
   .split    { display: flex; gap: 1rem; flex: 1; min-height: 0; }
 
+  @media (max-width: 900px) {
+    /* Stack list / editor / playground vertically on tablet & mobile */
+    .split    { flex-direction: column; overflow-y: auto; }
+    .list-col { width: 100%; max-height: 220px; flex-shrink: 0; }
+    .play-col { width: 100%; flex-shrink: 0; }
+  }
+  @media (max-width: 640px) {
+    .row-2, .row-3 { grid-template-columns: 1fr; }
+    .param-grid    { grid-template-columns: 1fr; }
+  }
+
   /* List */
   .list-col { width: 250px; flex-shrink: 0; overflow-y: auto; display: flex; flex-direction: column; gap: .45rem; }
   .agent-card {
@@ -1427,4 +1559,54 @@ console.log(reply);` : ''
   }
   .tpl-use:disabled { opacity: .55; cursor: wait; }
   .tpl-empty { color: #6b7294; font-size: .8rem; text-align: center; padding: 2rem 0; }
+
+  /* ── Reasoning strategy picker ── */
+  .strategy-cards { display: flex; gap: .55rem; flex-wrap: wrap; }
+  .strategy-card {
+    flex: 1; min-width: 130px; max-width: 200px;
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 9px;
+    padding: .75rem .9rem; cursor: pointer; display: flex; flex-direction: column;
+    gap: .2rem; text-align: left; transition: border-color .15s, background .15s;
+  }
+  .strategy-card:hover { border-color: #6c63ff44; background: #141626; }
+  .strategy-card.active { border-color: #6c63ff; background: rgba(108,99,255,.1); }
+  .sc-icon  { font-size: 1.2rem; }
+  .sc-title { font-size: .83rem; font-weight: 600; color: #c5c9e8; }
+  .sc-desc  { font-size: .72rem; color: #6b7294; line-height: 1.4; }
+  .field-row { display: flex; gap: .6rem; flex-wrap: wrap; }
+  .field-row .field { flex: 1; min-width: 120px; }
+
+  /* ── Brain memory cards ── */
+  .brain-mem-grid { display: flex; gap: .6rem; flex-wrap: wrap; }
+  .bm-card {
+    flex: 1; min-width: 160px; background: #0e1020; border: 1px solid #1a1e36;
+    border-radius: 9px; padding: .75rem .9rem; display: flex; flex-direction: column; gap: .4rem;
+    transition: border-color .15s;
+  }
+  .bm-card.enabled { border-color: #6c63ff44; background: rgba(108,99,255,.04); }
+  .bm-header { display: flex; align-items: center; gap: .45rem; }
+  .bm-icon  { font-size: 1rem; }
+  .bm-label { font-size: .82rem; font-weight: 600; color: #c5c9e8; flex: 1; }
+  .bm-desc  { font-size: .73rem; color: #6b7294; line-height: 1.4; }
+  .bm-fields { display: flex; flex-direction: column; gap: .4rem; margin-top: .25rem; }
+  .bm-field { display: flex; align-items: center; gap: .5rem; }
+  .bm-field-lbl { font-size: .7rem; color: #6b7294; white-space: nowrap; }
+  .bm-num { width: 64px; padding: .25rem .4rem; font-size: .8rem; }
+  .bm-check { display: flex; align-items: center; gap: .4rem; font-size: .73rem; color: #9da3c0; cursor: pointer; }
+  .bm-check input { cursor: pointer; }
+
+  /* ── Small toggle ── */
+  .toggle-sm { position: relative; display: inline-flex; align-items: center; cursor: pointer; }
+  .toggle-sm input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .toggle-track-sm {
+    width: 28px; height: 15px; background: #1a1e36; border-radius: 999px;
+    transition: background .2s; border: 1px solid #2a2f4a;
+  }
+  .toggle-sm input:checked ~ .toggle-track-sm { background: #6c63ff; border-color: #6c63ff; }
+  .toggle-track-sm::after {
+    content: ''; position: absolute; top: 2px; left: 3px;
+    width: 11px; height: 11px; border-radius: 50%; background: #fff;
+    transition: transform .2s; transform: translateX(0);
+  }
+  .toggle-sm input:checked ~ .toggle-track-sm::after { transform: translateX(13px); }
 </style>

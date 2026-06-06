@@ -328,6 +328,7 @@
                 <tr>
                   <th class="check-col">
                     <input type="checkbox"
+                           aria-label="Select all documents"
                            checked={selectedDocs.size === documents.length && documents.length > 0}
                            indeterminate={selectedDocs.size > 0 && selectedDocs.size < documents.length}
                            on:change={toggleAllDocs} />
@@ -340,6 +341,7 @@
                   <tr class:row-selected={selectedDocs.has(d.id)}>
                     <td class="check-col">
                       <input type="checkbox"
+                             aria-label={`Select ${d.title}`}
                              checked={selectedDocs.has(d.id)}
                              on:change={() => toggleDoc(d.id)} />
                     </td>
@@ -636,9 +638,15 @@
   }
   .modal {
     background: #141626; border: 1px solid #2a2f4a; border-radius: 12px;
-    padding: 1.5rem; width: 420px; max-width: 92vw; display: flex; flex-direction: column; gap: .75rem;
+    padding: 1.5rem; width: 420px; max-width: 92vw; max-height: 88vh; overflow-y: auto;
+    display: flex; flex-direction: column; gap: .75rem;
   }
   .modal.wide { width: 620px; }
   .modal h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: .25rem; }
-  .modal-row { display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem; }
+  .modal-row {
+    display: flex; justify-content: flex-end; gap: .5rem; margin-top: .5rem;
+    position: sticky; bottom: 0; z-index: 5;
+    background: #141626; padding-top: .6rem;
+    box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.6);
+  }
 </style>

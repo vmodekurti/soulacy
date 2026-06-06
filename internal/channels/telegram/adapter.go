@@ -10,6 +10,8 @@
 //	    token: "YOUR_BOT_TOKEN"
 //	    agent_id: "my-agent"
 //	    allowed_user_ids: [123456789, 987654321]  # whitelist; empty = allow all
+//	    trigger_phrase: "!soulacy"                # empty = all messages
+//	    ignore_groups: true
 package telegram
 
 import (
@@ -37,6 +39,7 @@ type Adapter struct {
 	token          string
 	agentID        string
 	allowedUserIDs map[int64]bool // nil/empty = allow everyone
+	activation     channels.ActivationPolicy
 	client         *http.Client
 	inbox          chan<- message.Message
 	offset         int64
@@ -58,15 +61,33 @@ func New(token, agentID string, allowedUserIDs []int64) *Adapter {
 // message's Channel field, which is how the registry routes outbound replies
 // back to the correct bot.
 func NewWithID(id, token, agentID string, allowedUserIDs []int64) *Adapter {
+	userIDs := make([]string, 0, len(allowedUserIDs))
+	for _, uid := range allowedUserIDs {
+		userIDs = append(userIDs, strconv.FormatInt(uid, 10))
+	}
+	return NewWithIDAndActivation(id, token, agentID, allowedUserIDs, channels.ActivationPolicy{
+		AllowedUserIDs: userIDs,
+	})
+}
+
+// NewWithIDAndActivation creates a Telegram adapter with shared channel
+// activation guardrails.
+func NewWithIDAndActivation(id, token, agentID string, allowedUserIDs []int64, activation channels.ActivationPolicy) *Adapter {
 	allowed := make(map[int64]bool, len(allowedUserIDs))
 	for _, uid := range allowedUserIDs {
 		allowed[uid] = true
+	}
+	if len(activation.AllowedUserIDs) == 0 {
+		for _, uid := range allowedUserIDs {
+			activation.AllowedUserIDs = append(activation.AllowedUserIDs, strconv.FormatInt(uid, 10))
+		}
 	}
 	return &Adapter{
 		id:             id,
 		token:          token,
 		agentID:        agentID,
 		allowedUserIDs: allowed,
+		activation:     activation,
 		client:         &http.Client{Timeout: 35 * time.Second},
 		stopCh:         make(chan struct{}),
 	}
@@ -109,7 +130,13 @@ func (a *Adapter) poll(ctx context.Context) {
 			if len(a.allowedUserIDs) > 0 && !a.allowedUserIDs[u.Message.From.ID] {
 				log.Printf("telegram: blocked user %d (@%s) — not in allowed_user_ids",
 					u.Message.From.ID, u.Message.From.Username)
-				a.sendText(ctx, u.Message.Chat.ID, "⛔ Unauthorized.")
+				a.offset = u.UpdateID + 1
+				continue
+			}
+			threadID := strconv.FormatInt(u.Message.Chat.ID, 10)
+			userID := strconv.FormatInt(u.Message.From.ID, 10)
+			text, ok := a.activation.Apply(u.Message.Text, threadID, userID, u.Message.Chat.Type != "private")
+			if !ok {
 				a.offset = u.UpdateID + 1
 				continue
 			}
@@ -119,11 +146,11 @@ func (a *Adapter) poll(ctx context.Context) {
 				SessionID: fmt.Sprintf("%s-%d", a.id, u.Message.Chat.ID),
 				AgentID:   a.agentID,
 				Channel:   a.id, // uses adapter's own ID so multi-bot replies route correctly
-				ThreadID:  strconv.FormatInt(u.Message.Chat.ID, 10),
-				UserID:    strconv.FormatInt(u.Message.From.ID, 10),
+				ThreadID:  threadID,
+				UserID:    userID,
 				Username:  u.Message.From.Username,
 				Role:      message.RoleUser,
-				Parts:     message.Text(u.Message.Text),
+				Parts:     message.Text(text),
 				CreatedAt: time.Now().UTC(),
 			}
 
@@ -200,7 +227,8 @@ type tgUser struct {
 }
 
 type tgChat struct {
-	ID int64 `json:"id"`
+	ID   int64  `json:"id"`
+	Type string `json:"type"`
 }
 
 func (a *Adapter) getUpdates(ctx context.Context) ([]update, error) {

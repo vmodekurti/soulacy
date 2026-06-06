@@ -46,11 +46,11 @@ Soulacy is an open-source multi-agent orchestration platform. Define agents in a
 
     [:octicons-arrow-right-24: Telemetry](configuration/telemetry.md)
 
--   :material-graph: **Workflow DAGs**
+-   :material-graph: **Workflow steps**
 
     ---
 
-    Chain agents into multi-step pipelines with typed inputs, outputs, and retries.
+    Run checkpointed multi-step tool pipelines with typed inputs, outputs, and retries.
 
     [:octicons-arrow-right-24: Workflows](agents/workflow.md)
 

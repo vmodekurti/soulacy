@@ -1,94 +1,82 @@
 # Skills
 
-Skills are reusable capability bundles that combine a system prompt fragment, tool set, and configuration — packaged so they can be mixed into any agent.
+Soulacy supports Agent Skills: directories that contain a `SKILL.md` file with
+frontmatter plus markdown instructions. Skills are not YAML fragments merged
+into an agent. Instead, Soulacy exposes a lightweight skill catalog to the model
+and lets the model call `read_skill` or `read_skill_file` when it needs the full
+instructions or supporting files.
 
-## What is a skill?
+## Skill Layout
 
-A skill is a YAML fragment you can `include` in a SOUL.yaml file:
-
-```yaml title="skills/web-researcher.skill.yaml"
-tools:
-  - web_search
-  - url_fetch
-system_prompt_append: |
-  When answering factual questions, search the web to find current information.
-  Always cite your sources.
+```text
+skills/
+  csv-analysis/
+    SKILL.md
+    scripts/
+      analyze.py
 ```
 
-Apply it to an agent:
+Example `SKILL.md`:
 
-```yaml title="agents/assistant.soul.yaml"
-name: assistant
-model: gpt-4o
-system_prompt: You are a helpful assistant.
+```markdown
+---
+name: csv-analysis
+description: Analyze CSV files and produce compact summaries.
+---
+
+Use this skill when the task involves CSV inspection, cleaning, aggregation, or
+basic chart-ready summaries.
+```
+
+## Enabling Skills on an Agent
+
+Add skill names to `SOUL.yaml`:
+
+```yaml title="agents/analyst/SOUL.yaml"
+id: analyst
+name: Analyst
+trigger: channel
+channels: [http]
+llm:
+  provider: openai
+  model: gpt-4o-mini
+system_prompt: You help analyze local files.
 skills:
-  - web-researcher
-channels:
-  - http
+  - csv-analysis
+enabled: true
 ```
 
-The skill's tools and prompt fragment are merged into the agent at load time.
+Use `skills: ["*"]` or `skills: ["all"]` to expose all installed skills.
 
-## Built-in skills
+When `skills` is empty or absent, the skill catalog and skill-reading built-ins
+are not injected. This keeps small agents focused and reduces context cost.
 
-| Skill | Description |
-|-------|-------------|
-| `web-researcher` | Web search + URL fetch with citation instructions |
-| `code-helper` | Code interpreter + coding-focused prompt |
-| `data-analyst` | Calculator + code interpreter + data analysis prompt |
-| `image-reader` | Image analysis tool + vision prompt |
+## Skill Tools
 
-## Creating a skill
+Agents with skills can receive these built-ins, subject to the agent's
+`builtins` filter:
 
-Place a `.skill.yaml` file in your `skills/` directory (or configure `skills.dir` in config):
+| Tool | Purpose |
+|------|---------|
+| `read_skill` | Loads the full `SKILL.md` body for an enabled skill. |
+| `read_skill_file` | Reads a file inside an enabled skill directory, such as `scripts/analyze.py`. |
 
-```yaml title="skills/customer-support.skill.yaml"
-system_prompt_append: |
-  You are a support agent for Acme Corp.
-  - Only discuss Acme products.
-  - Escalate billing issues to human support.
-  - Be empathetic and concise.
+## Skill Search Paths
 
-tools: []  # no extra tools needed
-```
+The loader scans configured and conventional skill roots, including personal and
+project-level directories such as:
 
-Apply to multiple agents:
+- `~/.agents/skills`
+- `~/.soulacy/skills`
+- project-level skill directories configured for the gateway
 
-```yaml
-# agents/telegram-support.soul.yaml
-name: telegram-support
-model: gpt-4o-mini
-system_prompt: You help Acme customers via Telegram.
-skills:
-  - customer-support
-channels:
-  - telegram
+Use the GUI or `config.yaml` to add additional skill directories when needed.
 
-# agents/web-support.soul.yaml
-name: web-support
-model: gpt-4o-mini
-system_prompt: You help Acme customers via the web widget.
-skills:
-  - customer-support
-channels:
-  - http
-```
+## Best Practices
 
-## Skill directory
-
-```yaml title="config.yaml"
-agent_dirs:
-  - ./agents
-skill_dirs:
-  - ./skills
-```
-
-## Multiple skills
-
-Skills are merged in order — later skills override earlier ones for conflicting fields:
-
-```yaml
-skills:
-  - web-researcher
-  - customer-support   # this prompt append comes second
-```
+- Keep the frontmatter `description` specific; it is what the model sees before
+  deciding whether to call `read_skill`.
+- Put reusable scripts, templates, or examples beside `SKILL.md`.
+- Prefer skills for instructions and reusable procedure; prefer Python tools or
+  MCP tools for executable capability.
+- Enable only the skills an agent is likely to need.

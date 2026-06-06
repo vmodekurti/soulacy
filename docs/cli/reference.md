@@ -62,6 +62,107 @@ When a configured provider exposes a model list, validation suggests better alte
 
 ---
 
+## `sy channel`
+
+Manage channel adapters from the terminal.
+
+```bash
+sy channel list
+sy channel status whatsapp_web
+sy channel enable telegram
+sy channel disable whatsapp_web
+sy channel update whatsapp_web --set trigger_phrase='!soulacy' --set ignore_groups=true
+```
+
+Each adapter also has a first-class command namespace:
+
+```bash
+sy channel http status
+
+sy channel telegram configure \
+  --token "$TELEGRAM_BOT_TOKEN" \
+  --agent assistant \
+  --trigger '!soulacy' \
+  --allowed-users '123456789'
+
+sy channel slack configure \
+  --bot-token "$SLACK_BOT_TOKEN" \
+  --app-token "$SLACK_APP_TOKEN" \
+  --agent assistant \
+  --trigger '!soulacy'
+
+sy channel discord configure \
+  --token "$DISCORD_BOT_TOKEN" \
+  --agent assistant \
+  --guild '1234567890' \
+  --trigger '!soulacy'
+
+sy channel whatsapp configure \
+  --phone-number-id "$WA_PHONE_NUMBER_ID" \
+  --access-token "$WA_ACCESS_TOKEN" \
+  --verify-token "$WA_VERIFY_TOKEN" \
+  --app-secret "$WA_APP_SECRET" \
+  --agent assistant \
+  --trigger '!soulacy'
+```
+
+Every configurable adapter namespace supports:
+
+```bash
+sy channel <adapter> status
+sy channel <adapter> enable
+sy channel <adapter> disable
+sy channel <adapter> configure ...
+```
+
+### Activation safety
+
+Adapter-specific `configure` commands expose the same safety model:
+
+- `--trigger` sets the wake phrase; messages must start with it.
+- `--allow-groups` opts into group/server/channel activation.
+- `--allowed-chats` restricts activation to specific platform destinations.
+- `--allowed-users` restricts activation to specific senders.
+
+### WhatsApp Web pairing
+
+The CLI supports the same guarded WhatsApp Web setup as the GUI:
+
+```bash
+sy channel whatsapp-web pair --agent assistant
+```
+
+By default, pairing uses safe activation rules:
+
+- messages must start with `!soulacy`
+- group chats are ignored
+
+Customize those rules explicitly:
+
+```bash
+sy channel whatsapp-web pair \
+  --agent assistant \
+  --trigger '!ask' \
+  --allowed-chats '12345@s.whatsapp.net'
+```
+
+Allow group chats only when that is intentional:
+
+```bash
+sy channel whatsapp-web pair --agent assistant --allow-groups
+```
+
+Check connection state and the current QR payload:
+
+```bash
+sy channel whatsapp-web status
+```
+
+The CLI prints the QR pairing payload. Use the Channels GUI for a rendered QR
+image, or pipe the payload into a trusted terminal QR renderer.
+
+---
+
 ## `soulacy serve`
 
 Start the Soulacy server.

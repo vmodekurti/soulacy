@@ -71,7 +71,7 @@ func (a *SQLiteArchive) Archive(e Entry) error {
 		INSERT OR IGNORE INTO memories
 			(id, agent_id, session_id, scope, provenance, key, content, metadata, created_at, expires_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.ID, e.AgentID, e.SessionID, e.Scope, e.Provenance,
+		e.ID, e.AgentID, e.SessionID, e.Scope, "", // provenance column kept for schema compat, no longer used
 		e.Key, e.Content, string(meta), e.CreatedAt, e.ExpiresAt,
 	)
 	if err != nil {
@@ -171,8 +171,9 @@ func scanEntries(rows *sql.Rows) ([]Entry, error) {
 		var e Entry
 		var meta string
 		var expiresAt sql.NullTime
+		var ignoredProvenance string // retained in schema for compat, discarded on read
 		if err := rows.Scan(
-			&e.ID, &e.AgentID, &e.SessionID, &e.Scope, &e.Provenance,
+			&e.ID, &e.AgentID, &e.SessionID, &e.Scope, &ignoredProvenance,
 			&e.Key, &e.Content, &meta, &e.CreatedAt, &expiresAt,
 		); err != nil {
 			return nil, err

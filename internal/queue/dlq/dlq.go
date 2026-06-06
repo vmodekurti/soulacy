@@ -225,30 +225,19 @@ type rowScanner interface {
 }
 
 func scanDeadLetter(r rowScanner) (DeadLetter, error) {
-	var (
-		dl            DeadLetter
-		createdAtStr  string
-		lastAttemptStr string
-	)
+	var dl DeadLetter
+	// Scan time.Time directly so the mattn/go-sqlite3 driver handles the
+	// format conversion (same fix as apikeys, memory, session).
 	if err := r.Scan(
 		&dl.ID,
 		&dl.Queue,
 		&dl.Payload,
 		&dl.ErrorMsg,
 		&dl.Attempts,
-		&createdAtStr,
-		&lastAttemptStr,
+		&dl.CreatedAt,
+		&dl.LastAttemptAt,
 	); err != nil {
 		return DeadLetter{}, err
-	}
-	var err error
-	dl.CreatedAt, err = time.Parse(tsLayout, createdAtStr)
-	if err != nil {
-		return DeadLetter{}, fmt.Errorf("dlq: parse created_at %q: %w", createdAtStr, err)
-	}
-	dl.LastAttemptAt, err = time.Parse(tsLayout, lastAttemptStr)
-	if err != nil {
-		return DeadLetter{}, fmt.Errorf("dlq: parse last_attempt_at %q: %w", lastAttemptStr, err)
 	}
 	return dl, nil
 }
