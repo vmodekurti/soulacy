@@ -139,11 +139,11 @@ func protectedSystemAgentResponse(c *fiber.Ctx) error {
 	})
 }
 
-func channelReferencesProtectedSystem(id string, settings map[string]string, bots []map[string]any) bool {
+func channelReferencesProtectedSystem(id string, settings map[string]any, bots []map[string]any) bool {
 	if id == "http" {
 		return false
 	}
-	if isProtectedSystemAgent(settings["agent_id"]) {
+	if isProtectedSystemAgent(fmt.Sprint(settings["agent_id"])) {
 		return true
 	}
 	for _, bot := range bots {
@@ -983,9 +983,9 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 	}
 
 	var req struct {
-		Enabled  *bool             `json:"enabled"`
-		Settings map[string]string `json:"settings"`
-		Bots     []map[string]any  `json:"bots"`
+		Enabled  *bool            `json:"enabled"`
+		Settings map[string]any   `json:"settings"`
+		Bots     []map[string]any `json:"bots"`
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
@@ -1011,9 +1011,20 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 		chMap["enabled"] = *req.Enabled
 	}
 	for _, f := range spec.Fields {
-		val, present := req.Settings[f.Key]
+		rawVal, present := req.Settings[f.Key]
 		if !present {
 			continue
+		}
+		var val string
+		switch v := rawVal.(type) {
+		case bool:
+			val = strconv.FormatBool(v)
+		case string:
+			val = v
+		case nil:
+			val = ""
+		default:
+			val = fmt.Sprint(v)
 		}
 		// Preserve a secret when the client sends back the mask or blank.
 		if f.Secret && (val == "" || val == "***") {
