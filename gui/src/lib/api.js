@@ -186,6 +186,13 @@ export const api = {
       }),
   },
 
+  history: {
+    get:  (sessionId, limit = 0) =>
+      apiFetch(`/history/${encodeURIComponent(sessionId)}${limit ? '?limit=' + limit : ''}`),
+    fork: (sessionId, body) =>
+      apiFetch(`/history/${encodeURIComponent(sessionId)}/fork`, { method: 'POST', body: JSON.stringify(body) }),
+  },
+
   runs: {
     metrics: (sessionId, agentId = '') =>
       apiFetch(`/runs/${encodeURIComponent(sessionId)}/metrics${agentId ? '?agent_id=' + encodeURIComponent(agentId) : ''}`),
