@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
+	"github.com/soulacy/soulacy/internal/caps"
 	"github.com/soulacy/soulacy/pkg/plugin"
 )
 
@@ -36,6 +37,7 @@ type LoadedPlugin struct {
 	Manifest plugin.Manifest
 	Dir      string
 	Tools    []plugin.ToolSpec // all tools contributed by this plugin
+	Caps     *caps.Set         // compiled capability set (default-deny; E5)
 }
 
 // Loader scans plugin directories, parses manifests, and exposes the combined
@@ -104,7 +106,15 @@ func (l *Loader) loadPlugin(dir string) error {
 		return fmt.Errorf("manifest missing required field 'id'")
 	}
 
-	lp := &LoadedPlugin{Manifest: m, Dir: dir}
+	// Validate declared capabilities (Story E5). Plugins are default-deny
+	// principals; a manifest asking for unknown capabilities or mismatched
+	// scopes is refused outright rather than silently narrowed.
+	capSet, err := caps.NewSet(m.ID, m.Permissions)
+	if err != nil {
+		return fmt.Errorf("invalid permissions: %w", err)
+	}
+
+	lp := &LoadedPlugin{Manifest: m, Dir: dir, Caps: capSet}
 
 	// m.Tools is []string — names of tool libraries declared in the manifest.
 	// Build a set so auto-discovery below can skip undeclared files when the

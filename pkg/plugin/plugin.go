@@ -23,6 +23,34 @@ type Manifest struct {
 
 	// Minimum Soulacy version required
 	RequiresVersion string `yaml:"requires_version,omitempty"`
+
+	// Permissions declares the host capabilities this plugin requests.
+	// Plugins are default-deny security principals: anything not listed here
+	// is refused at the host-API boundary. Validation and enforcement live in
+	// internal/caps; this is pure manifest data.
+	Permissions []Permission `yaml:"permissions,omitempty"`
+}
+
+// Permission is one capability grant requested in plugin.yaml.
+//
+// Cap uses the `resource.action` grammar (e.g. "vector.search",
+// "channel.send", "events.subscribe"). Exactly one scope list applies per
+// capability — which one is determined by the capability's registered scope
+// kind. An empty scope list grants the capability unscoped; "*" as a list
+// entry matches any value.
+//
+//	permissions:
+//	  - cap: vector.search
+//	    agents: [support-bot]
+//	  - cap: channel.send
+//	    channels: [matrix]
+//	  - cap: events.subscribe
+//	    types: [run.finished]
+type Permission struct {
+	Cap      string   `yaml:"cap" json:"cap"`
+	Agents   []string `yaml:"agents,omitempty" json:"agents,omitempty"`
+	Channels []string `yaml:"channels,omitempty" json:"channels,omitempty"`
+	Types    []string `yaml:"types,omitempty" json:"types,omitempty"`
 }
 
 // Plugin is the runtime representation of a loaded plugin.
