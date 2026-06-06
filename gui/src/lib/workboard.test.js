@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel } from './workboard.js'
+import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl } from './workboard.js'
 
 describe('workboard column model', () => {
   it('has five columns in lifecycle order', () => {
@@ -85,5 +85,27 @@ describe('groupByStatus', () => {
 
   it('tolerates null input', () => {
     expect(groupByStatus(null).todo).toEqual([])
+  })
+})
+
+describe('artifact helpers (Story 13)', () => {
+  it('artifactName takes the base name', () => {
+    expect(artifactName('/tmp/reports/q4.pdf')).toBe('q4.pdf')
+    expect(artifactName('plain.txt')).toBe('plain.txt')
+    expect(artifactName('')).toBe('')
+  })
+
+  it('formatBytes scales units', () => {
+    expect(formatBytes(0)).toBe('0 B')
+    expect(formatBytes(999)).toBe('999 B')
+    expect(formatBytes(1500)).toBe('1.5 KB')
+    expect(formatBytes(3400000)).toBe('3.4 MB')
+    expect(formatBytes(5600000000)).toBe('5.6 GB')
+    expect(formatBytes(undefined)).toBe('0 B')
+  })
+
+  it('artifactDownloadUrl appends the key only when present', () => {
+    expect(artifactDownloadUrl(7)).toBe('/api/v1/workboard/artifacts/7/download')
+    expect(artifactDownloadUrl(7, 'k&y')).toBe('/api/v1/workboard/artifacts/7/download?api_key=k%26y')
   })
 })

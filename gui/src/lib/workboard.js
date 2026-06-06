@@ -38,6 +38,32 @@ export function runLabel(task) {
   return task && task.status === 'failed' ? 'Retry' : 'Run'
 }
 
+/** Short display name for an artifact: the file's base name. */
+export function artifactName(path) {
+  if (!path) return ''
+  const parts = String(path).split('/')
+  return parts[parts.length - 1] || path
+}
+
+/** Human file size: 0 B, 999 B, 1.2 KB, 3.4 MB, 5.6 GB. */
+export function formatBytes(n) {
+  n = Number(n) || 0
+  if (n < 1000) return `${n} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let u = -1
+  do { n /= 1000; u++ } while (n >= 1000 && u < units.length - 1)
+  return `${n.toFixed(1)} ${units[u]}`
+}
+
+/**
+ * Download URL for an artifact (api_key query param mirrors how the
+ * gateway accepts credentials on direct links).
+ */
+export function artifactDownloadUrl(artifactId, apiKey = '') {
+  const base = `/api/v1/workboard/artifacts/${artifactId}/download`
+  return apiKey ? `${base}?api_key=${encodeURIComponent(apiKey)}` : base
+}
+
 /** Groups a task list into { status: [tasks] } with every column present. */
 export function groupByStatus(tasks) {
   const cols = {}

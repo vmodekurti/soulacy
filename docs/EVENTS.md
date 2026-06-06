@@ -35,6 +35,7 @@ verbatim). It may be an object, a string, or null.
 | `run.started` | a Workboard run begins | `task_id`, `task_title`, `run_id`, `attempt` |
 | `run.finished` | a Workboard run succeeds | same as run.started |
 | `run.failed` | a Workboard run fails | + `failure_reason` |
+| `run.artifact` | a run produced a file (Story 13) | + `path`, `size_bytes`, `tool` |
 
 New types may be added at any time; consumers must ignore unknown types.
 
