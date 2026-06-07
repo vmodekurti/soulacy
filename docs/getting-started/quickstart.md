@@ -7,7 +7,7 @@ A working agent, the web GUI, and your first chat — in under five minutes.
 === "macOS / Linux"
 
     ```bash
-    curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/scripts/install.sh | bash
+    curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash
     ```
 
 === "From source"
