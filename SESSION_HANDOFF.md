@@ -1,30 +1,37 @@
 # Session Handoff
 
-Last updated: 2026-06-07 end of session 8. **M1–M9 COMPLETE + all audit
-follow-ups + soulspace workspace + E23. M10 IN PROGRESS: next story is
-E24, then E25.** Suite green at every commit (root + sdk Go suites,
-vitest 121/121, vite build clean). Branch: `feature/integrated-roadmap`,
-working tree clean.
+Last updated: 2026-06-07 end of session 9. **M1–M10 COMPLETE — every
+planned roadmap story is done** (E24 + E25 landed in session 9, plus
+Vasu's agent-editor lookup-picker request). Suite green at every commit
+(root 74 pkgs + sdk Go suites, vitest 137/137, vite build clean).
+Branch: `feature/integrated-roadmap`, working tree clean.
 
 ---
 
 ## ⏩ START HERE (fresh session)
 
-**Next work, in order (prompts in docs/BACKLOG.md, M10 section):**
-1. **E24 — storage-backend sidecar protocol + shared mounts.** Extend the
-   ECP pattern (sdk/extchannel, E3) to vector/queue/storage backends:
-   new `sdk/extstorage` JSON-RPC-over-stdio contract with Negotiate +
-   versioned frames + an E11-style conformance kit; plus a per-run shared
-   scratch directory passed to sidecars by absolute path (auditor: reuse
-   the staging-dir pattern, do NOT invent /tmp/soulacy-shared). Reuse:
-   sdk/extchannel wire types + sidecartest kit as the template,
-   internal/channels/external supervisor for process lifecycle,
-   E10 factory registries for config-driven selection.
-2. **E25 — flow.yaml cyclic graphs.** Conditional edges + bounded cycles
-   compiled onto the EXISTING WorkflowExecutor + checkpoint store
-   (internal/runtime/workflow.go, checkpoint.go); register as reasoning
-   strategy "flow" via registry.RegisterReasoningStrategy (E15) so
-   SOUL.yaml selects it. GUI Flow page renders read-only first.
+**No queued stories — the roadmap (M1–M10) is complete. Await Vasu's
+direction.** Natural follow-ups already flagged as pending in docs/code:
+- Storage-sidecar auto-respawn w/ subscription replay (E24 v1 is
+  fail-fast: crashed sidecar errors calls + surfaces via Client.Done();
+  see lifecycle note in docs/EXTERNAL_STORAGE_PROTOCOL.md).
+- `storage: {backend: external}` host wiring for the memory ARCHIVE
+  (extstorage.StorageBackend adapter exists + tested end-to-end; wire.go
+  wiring pends because archive.DB() also feeds sqlite-vec — own story).
+- Flow page graph EDITING (read-only render shipped in E25).
+- E14 (WASM) remains demand-gated.
+
+**Session 9 landed (full detail in "Session 9 progress" below):**
+- **E24 ✅** External Storage Protocol: sdk/extstorage + storagetest kit,
+  python reference sidecar, internal/extstorage host adapters
+  ("external" vector/queue factories), per-run shared scratch mounts
+  (+ ECP hello_ack shared_dir). docs/EXTERNAL_STORAGE_PROTOCOL.md.
+- **E25 ✅** flow graphs: WorkflowSpec nodes/edges, CompileFlow/RunFlow
+  (bounded cycles, edge budget default ×1), visit-indexed checkpoints +
+  proven resume, "flow" strategy via E15 registry, Flow page read-only
+  render. docs/FLOW_GRAPHS.md.
+- **GUI pickers ✅** (Vasu mid-session request): FilePicker (📂 Browse)
+  on the Python-file field; ChipPicker ▾ browse-all on every chip field.
 
 **Standing rules from Vasu:** TDD; commit on green; keep developing
 without stopping for approval between stories; keep this handoff updated.
@@ -66,18 +73,68 @@ without stopping for approval between stories; keep this handoff updated.
 
 ## ⚠ Mac-side checklist (the human half)
 
-1. **Rebuild dist + binary, restart** (dist was rebuilt 2026-06-07 but
-   MORE GUI landed after: rulebook history/lock/diff on Brain Mem,
-   Templates tab, editable Plugin settings, approval-modal security
-   report): `cd gui && npm run build`, then `./build-and-restart.command`.
+1. **Rebuild dist + binary, restart** (sessions 8+9 GUI: rulebook
+   history/lock/diff, Templates tab, editable Plugin settings,
+   approval-modal security report, agent-editor lookup pickers, Flow
+   page graph render): `cd gui && npm run build`, then
+   `./build-and-restart.command`.
 2. **Optional: migrate to soulspace** — `sy workspace info`,
    `sy workspace migrate --dry-run`, stop gateway, `sy workspace migrate`.
    Legacy layout keeps working untouched until then.
 3. Visual QA: Story 15 checklist (below) + Templates tab, Config plugin
-   settings (a *** secret must survive a save), plugin approval modal
-   (verdict badge + findings + migrations), reasoning.* events in
-   Activity/Chat, rulebook history + lock + rollback on Brain Mem.
+   settings (a *** secret must survive a save), plugin approval modal,
+   reasoning.* events in Activity/Chat, rulebook history + lock +
+   rollback on Brain Mem, **agent editor pickers (📂 Browse on Python
+   file, ▾ on chip fields), Flow page with a nodes/edges agent**.
 4. `go generate ./...` not needed — builtins_gen.go committed regenerated.
+
+## Session 9 progress (M10: E24 + E25 + Vasu's picker request)
+
+- **E24 ✅** (5f55dfe, 09a428f, 45a64d7, 6b755b6): External Storage
+  Protocol. `sdk/extstorage`: JSON-RPC 2.0 over NDJSON (Message/Parse/
+  Write), Negotiate min-version w/ MANDATORY shared-dir echo, method
+  families vector.* / queue.* (deliveries = queue.message notifications,
+  ack round-trip) / storage.* (memory archive; Vasu co-authored the
+  storage extension mid-session — merged + tested). storagetest kit:
+  negotiate ≤5s, -32601 on unknown methods, vector round-trip,
+  junk-line tolerance, shutdown ≤5s; runs in CI against
+  scripts/reference-storage-sidecar.py (python3, stdlib-only).
+  `internal/extstorage`: Client (id-correlated calls, notification
+  dispatch, no-grace kill on failed negotiate, WriteScratchFile),
+  Vector/Queue/Storage backends (≥1KiB content spills to scratch files
+  as content_file), "external" vector+queue factories (E10) wired in
+  app (scratch under <ws data>/scratch, swept at boot); config
+  vector/queue/storage gain command/args. ECP side: extchannel Frame
+  gains shared_dir (hello_ack), Adapter.SetSharedDir,
+  SupervisorConfig.SharedDir (re-advertised across restarts),
+  plugins.Wire provisions per-channel scratch (WireDeps.ScratchRoot).
+- **E25 ✅** (bc1f779): graph workflows. Contract in sdk/reasoning/flow.go
+  (FlowSpec/FlowNode[tool|agent|branch]/FlowEdge, Config.Flow appended);
+  CompileFlow + RunFlow in internal/reasoning (ordered conditional
+  edges, per-edge max_iterations DEFAULT 1 → cycles bounded by
+  construction, global budget 100, FlowHooks w/ visit keys node#visit);
+  "flow" strategy registered via E15 (chat path, env.Tools bridge,
+  steps surface as reasoning.step); WorkflowExecutor graph mode
+  (internal/runtime/flow.go: checkpoint hooks, RunTool bridge with
+  JSON-string unwrap so predicates can address {{.verdict.ok}}); resume
+  proven (restored vars feed later nodes). pkg/agent.WorkflowSpec gains
+  nodes/edges/entry/max_node_executions + FlowSpec(); DeepCopy extended.
+  GUI Flow page renders graph agents read-only (lib/flowgraph.js BFS
+  layout + vitest). Builtins pin: reasoning {flow, plan_execute, react},
+  queues/vectors gain "external".
+- **GUI pickers ✅** (3bdcc35, Vasu request w/ screenshot): every
+  agent-editor lookup box got a button — FilePicker.svelte (input +
+  📂 Browse searchable dropdown; pick autofills tool name/description)
+  replaces the select+input combo on Python file; ChipPicker gained ▾
+  browse-all. lib/pickerutils.js (+vitest).
+- Backlog hygiene: session 8's table edit had accidentally added a bogus
+  "✅ M10 COMPLETE (session 9)" row before E24/E25 existed — removed,
+  then M10 marked complete FOR REAL at end of session 9.
+- Env notes for next session: `go test ./...` in one bash call dies with
+  the 45s tool timeout — run per-package chunks (~25 pkgs/call, see
+  $S/pkgs.txt trick); background `nohup go test &` does NOT survive the
+  call ending. gofmt drift pre-exists in ~35 files (comment alignment,
+  different gofmt vintage) — format ONLY files you touch.
 
 ## Session 8 progress (M8 + M9)
 
