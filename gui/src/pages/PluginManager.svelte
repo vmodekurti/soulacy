@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
-  import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary } from '../lib/pluginmanage.js'
+  import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary, securityVerdict, securityFindingLines } from '../lib/pluginmanage.js'
 
   let plugins  = []
   let loading  = true
@@ -192,6 +192,16 @@
         <p class="risk">{riskSummary(preview)}</p>
         {#if preview.description}<p class="hint">{preview.description}</p>{/if}
 
+        {#if securityVerdict(preview.security)}
+          <h3>Safety introspection</h3>
+          <p class="sec-badge {securityVerdict(preview.security).cls}">{securityVerdict(preview.security).label}</p>
+          {#if preview.security.findings?.length}
+            <ul class="sec-findings">
+              {#each securityFindingLines(preview.security) as line}<li>{line}</li>{/each}
+            </ul>
+          {/if}
+        {/if}
+
         {#if preview.permissions?.length}
           <h3>Requested capabilities</h3>
           <ul>{#each permissionLines(preview.permissions) as line}<li>{line}</li>{/each}</ul>
@@ -267,6 +277,11 @@
   .modal h3 { font-size: 0.85rem; margin: 12px 0 4px; color: var(--muted, #8888a0); text-transform: uppercase; }
   .modal ul { margin: 0; padding-left: 18px; font-family: monospace; font-size: 0.82rem; }
   .risk { font-weight: 600; }
+  .sec-badge { font-weight: 600; padding: 4px 10px; border-radius: 6px; display: inline-block; }
+  .sec-badge.ok { background: rgba(76, 175, 130, 0.15); color: #4caf82; }
+  .sec-badge.warn { background: rgba(240, 160, 96, 0.15); color: #f0a060; }
+  .sec-badge.danger { background: rgba(240, 96, 96, 0.18); color: #f06060; }
+  .sec-findings { font-size: 0.85em; max-height: 180px; overflow-y: auto; }
   .modal-footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;
     position: sticky; bottom: 0; background: var(--panel, #16161e); padding-top: 8px; }
 

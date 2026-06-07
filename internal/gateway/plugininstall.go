@@ -8,9 +8,14 @@ package gateway
 // (plugins load at boot), which every response states explicitly.
 
 import (
+	"context"
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/soulacy/soulacy/internal/introspect"
 	"github.com/soulacy/soulacy/internal/plugininstall"
+	"github.com/soulacy/soulacy/pkg/plugin"
 )
 
 const restartNote = "Restart the gateway for plugin changes to take effect."
@@ -18,6 +23,11 @@ const restartNote = "Restart the gateway for plugin changes to take effect."
 // SetPluginInstaller wires the installer. Call after New(); routes return
 // 503 until wired (same pattern as SetWorkboardStore).
 func (s *Server) SetPluginInstaller(ins *plugininstall.Installer) { s.pluginInstaller = ins }
+
+// SetSafetyPipeline wires the E20 pre-installation introspection pipeline.
+// When set, every staged plugin's Preview carries a SecurityReport for the
+// approval dialog. nil (the default) leaves Preview.Security empty.
+func (s *Server) SetSafetyPipeline(p *introspect.Pipeline) { s.safetyPipeline = p }
 
 func (s *Server) requireInstaller(c *fiber.Ctx) (*plugininstall.Installer, bool) {
 	if s.pluginInstaller == nil {
@@ -64,6 +74,22 @@ func (s *Server) handleStagePlugin(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	// E20 — safety introspection on the staged dir before anyone approves.
+	// Pipeline degradations become findings, never failures; a missing
+	// pipeline simply leaves Security nil (older deployments).
+	if s.safetyPipeline != nil {
+		stagedDir := ins.StagedDir(pv.StagedID)
+		var mp *plugin.Manifest
+		if m, merr := plugininstall.ReadManifest(stagedDir); merr == nil {
+			mp = &m
+		}
+		ictx, cancel := context.WithTimeout(c.Context(), 90*time.Second)
+		report := s.safetyPipeline.Run(ictx, stagedDir, mp)
+		cancel()
+		pv.Security = &report
+	}
+
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"preview": pv,
 		"note":    "Nothing is active yet. Review the requested permissions and credentials, then approve.",

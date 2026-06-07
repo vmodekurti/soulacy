@@ -53,10 +53,11 @@ import (
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/costs"
 	"github.com/soulacy/soulacy/internal/credentials"
+	"github.com/soulacy/soulacy/internal/introspect"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
-	"github.com/soulacy/soulacy/internal/plugininstall"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/plugininstall"
 	"github.com/soulacy/soulacy/internal/queue/dlq"
 	"github.com/soulacy/soulacy/internal/ratelimit"
 	"github.com/soulacy/soulacy/internal/rbac"
@@ -123,6 +124,10 @@ type Server struct {
 	// pluginInstaller manages installer-owned plugins (Story E13). Wired
 	// via SetPluginInstaller; install routes 503 until then.
 	pluginInstaller *plugininstall.Installer
+
+	// safetyPipeline runs E20 pre-installation introspection on staged
+	// plugins. Wired via SetSafetyPipeline; nil = Preview.Security omitted.
+	safetyPipeline *introspect.Pipeline
 
 	// voiceMinter is the realtime-voice control plane (Story 11). Wired via
 	// SetVoiceMinter; nil = voice unavailable (graceful fallback).

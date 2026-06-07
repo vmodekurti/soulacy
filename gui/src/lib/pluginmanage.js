@@ -38,6 +38,29 @@ export function statusInfo(p) {
   return { label: 'enabled', cls: 'ok' };
 }
 
+// securityVerdict maps an E20 SecurityReport to an approval-dialog badge.
+// null report (pipeline not configured / older gateway) → null, render nothing.
+export function securityVerdict(report) {
+  if (!report) return null;
+  switch (report.verdict) {
+    case 'danger':  return { label: 'DANGER — critical findings', cls: 'danger' };
+    case 'caution': return { label: 'Caution — review findings', cls: 'warn' };
+    default:        return { label: 'Passed safety checks', cls: 'ok' };
+  }
+}
+
+// securityFindingLines renders SecurityReport findings for the dialog,
+// most severe first; info-level skip notices sort last.
+export function securityFindingLines(report) {
+  const rank = { critical: 0, warning: 1, info: 2 };
+  const fs = [...(report?.findings || [])];
+  fs.sort((a, b) => (rank[a.severity] ?? 3) - (rank[b.severity] ?? 3));
+  return fs.map((f) => {
+    const where = f.file ? ` [${f.file}${f.line ? `:${f.line}` : ''}]` : '';
+    return `${(f.severity || 'info').toUpperCase()} (${f.check})${where}: ${f.message}`;
+  });
+}
+
 // riskSummary gives the approval dialog a one-line risk statement.
 export function riskSummary(preview) {
   const nPerm = preview?.permissions?.length || 0;
