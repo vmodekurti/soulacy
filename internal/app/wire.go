@@ -845,6 +845,34 @@ func (a *App) Run(parent context.Context) error {
 		}
 	}
 
+	// ── Third-party registry channels (E10/E12) ──────────────────────────────
+	// Any channels.<key> block whose key isn't handled above resolves through
+	// the SDK factory registry under that key — this is how flavored-binary
+	// drivers (docs/CUSTOM_DISTRIBUTIONS.md) wire from config with no host
+	// changes. Unknown names warn and skip; the gateway always boots.
+	for chID, chCfg := range chanCfg {
+		switch chID {
+		case "telegram", "discord", "slack", "whatsapp", "whatsapp_web", "http":
+			continue
+		}
+		if enabled, _ := chCfg["enabled"].(bool); !enabled {
+			continue
+		}
+		agentID, _ := chCfg["agent_id"].(string)
+		if !externalChannelAgentAllowed(chID, agentID, log) {
+			continue
+		}
+		a, cerr := buildChannel(chID, chID, chCfg, log)
+		if cerr != nil {
+			log.Warn("channel skipped (no registered factory or bad config)",
+				zap.String("channel", chID), zap.Error(cerr))
+			continue
+		}
+		chanReg.Register(a)
+		log.Info("registry channel registered",
+			zap.String("channel", chID), zap.String("agent_id", agentID))
+	}
+
 	if errs := chanReg.StartAll(ctx); len(errs) > 0 {
 		for _, e := range errs {
 			log.Warn("channel start error", zap.Error(e))
