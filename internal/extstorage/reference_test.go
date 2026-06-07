@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,6 +95,42 @@ func TestReferenceSidecarEndToEnd(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("no delivery from python reference within 5s")
+	}
+}
+
+// TestReferenceSidecarLargeContentSpillsToSharedDir pins the shared-mount
+// transport: ≥1KiB content travels as a content_file under the scratch
+// dir, and the sidecar resolves it back to the full text.
+func TestReferenceSidecarLargeContentSpillsToSharedDir(t *testing.T) {
+	script := referenceSidecar(t)
+	vb, err := NewVectorBackend(context.Background(), ClientConfig{
+		Name:        "py-spill",
+		Command:     "python3",
+		Args:        []string{script},
+		ScratchRoot: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("NewVectorBackend: %v", err)
+	}
+	defer vb.Close()
+
+	big := "soulacy spill marker " + strings.Repeat("x", 2048)
+	err = vb.Write(context.Background(), memory.Entry{
+		ID: "big1", AgentID: "a1", Content: big, CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	hits, err := vb.Search(context.Background(), "a1", "spill marker", 1)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits = %d", len(hits))
+	}
+	if hits[0].Entry.Content != big {
+		t.Errorf("content round-trip lost: got %d bytes, want %d",
+			len(hits[0].Entry.Content), len(big))
 	}
 }
 

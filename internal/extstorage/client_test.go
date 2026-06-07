@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +31,8 @@ func runHelperSidecar(mode string) {
 	out := os.Stdout
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 0, 4096), 4*1024*1024)
+
+	var sharedDir string
 
 	type entry struct {
 		ID, AgentID, Content string
@@ -72,6 +75,7 @@ func runHelperSidecar(mode string) {
 		case sdkext.MethodNegotiate:
 			var p sdkext.NegotiateParams
 			_ = json.Unmarshal(m.Params, &p)
+			sharedDir = p.SharedDir
 			shared := p.SharedDir
 			if mode == "noecho" {
 				shared = "/somewhere/else"
@@ -92,14 +96,8 @@ func runHelperSidecar(mode string) {
 			var p sdkext.VectorWriteParams
 			_ = json.Unmarshal(m.Params, &p)
 			content := p.Content
-			// Shared-mount transport: content_file is relative to the
-			// negotiated shared dir, which the host passes as our CWD --
-			// no, it travels in negotiate params; helper reads env-free:
-			// the test writes the absolute path into content_file's dir
-			// via SHARED_DIR env set by... simpler: resolve relative to
-			// the env var the host test sets.
 			if p.ContentFile != "" {
-				b, err := os.ReadFile(os.Getenv("HELPER_SHARED_DIR") + "/" + p.ContentFile)
+				b, err := os.ReadFile(filepath.Join(sharedDir, p.ContentFile))
 				if err == nil {
 					content = string(b)
 				}
@@ -115,6 +113,10 @@ func runHelperSidecar(mode string) {
 					continue
 				}
 				if strings.Contains(e.Content, p.Query) {
+					// If the helper stored it, let's also return it. Wait, does the helper support returning ContentFile?
+					// Yes, let's optionally return ContentFile or Content. If we want to test that the host reads it,
+					// we can return it as ContentFile! Wait, if we return it as ContentFile, we should write it first.
+					// But we don't have to for basic roundtrip. Let's just return Content.
 					hits = append(hits, sdkext.VectorHit{ID: e.ID, AgentID: e.AgentID, Content: e.Content, Distance: 0.1})
 				}
 			}
@@ -155,7 +157,7 @@ func runHelperSidecar(mode string) {
 			entry := p.Entry
 			content := entry.Content
 			if p.ContentFile != "" {
-				b, err := os.ReadFile(os.Getenv("HELPER_SHARED_DIR") + "/" + p.ContentFile)
+				b, err := os.ReadFile(filepath.Join(sharedDir, p.ContentFile))
 				if err == nil {
 					content = string(b)
 				}

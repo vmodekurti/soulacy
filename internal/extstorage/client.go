@@ -12,10 +12,15 @@ package extstorage
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -288,4 +293,45 @@ func (c *Client) Close() error {
 		c.cleanup()
 	}
 	return nil
+}
+
+// WriteScratchFile writes content to a new file in the scratch directory
+// and returns the relative path to it.
+func (c *Client) WriteScratchFile(prefix string, content string) (string, error) {
+	c.mu.Lock()
+	scratch := c.scratch
+	c.mu.Unlock()
+	if scratch == "" {
+		return "", fmt.Errorf("extstorage: scratch directory not initialized")
+	}
+	var rnd [8]byte
+	if _, err := rand.Read(rnd[:]); err != nil {
+		return "", fmt.Errorf("extstorage: failed to generate random bytes: %w", err)
+	}
+	relPath := fmt.Sprintf("%s-%s.txt", prefix, hex.EncodeToString(rnd[:]))
+	fullPath := filepath.Join(scratch, relPath)
+	if err := os.WriteFile(fullPath, []byte(content), 0o600); err != nil {
+		return "", fmt.Errorf("extstorage: write scratch file: %w", err)
+	}
+	return relPath, nil
+}
+
+// ReadScratchFile reads content from a relative path in the scratch directory.
+func (c *Client) ReadScratchFile(relPath string) (string, error) {
+	c.mu.Lock()
+	scratch := c.scratch
+	c.mu.Unlock()
+	if scratch == "" {
+		return "", fmt.Errorf("extstorage: scratch directory not initialized")
+	}
+	// Prevent directory traversal
+	path := filepath.Clean(filepath.Join(scratch, relPath))
+	if !strings.HasPrefix(path, filepath.Clean(scratch)) {
+		return "", fmt.Errorf("extstorage: content file escapes scratch directory")
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("extstorage: read scratch file: %w", err)
+	}
+	return string(b), nil
 }
