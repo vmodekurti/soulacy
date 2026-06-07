@@ -114,6 +114,20 @@
     inputEl?.focus()
     showSuggestions = true
   }
+
+  // Lookup button: browse the full option list without typing.
+  function toggleBrowse(e) {
+    e.stopPropagation()
+    if (disabled) return
+    if (showSuggestions) {
+      showSuggestions = false
+    } else {
+      inputText = ''
+      activeIndex = 0
+      showSuggestions = true
+      inputEl?.focus()
+    }
+  }
 </script>
 
 <div
@@ -147,6 +161,16 @@
         on:input={() => { showSuggestions = true; activeIndex = 0 }}
         placeholder={value.length === 0 ? placeholder : ''}
       />
+    {/if}
+    {#if !disabled && options.length > 0}
+      <button
+        type="button"
+        class="browse-btn"
+        title="Browse all options"
+        aria-label="Browse all options"
+        on:click={toggleBrowse}
+        on:mousedown|preventDefault|stopPropagation
+      >▾</button>
     {/if}
   </div>
 
@@ -215,6 +239,14 @@
     background: transparent; border: none; outline: none;
     color: #e8eaf6; font-size: .85rem; padding: .15rem 0;
   }
+
+  .browse-btn {
+    margin-left: auto; flex-shrink: 0;
+    background: rgba(108,99,255,.14); border: 1px solid rgba(108,99,255,.45);
+    color: #ada8ff; border-radius: 6px; cursor: pointer;
+    font-size: .8rem; line-height: 1; padding: .25rem .5rem;
+  }
+  .browse-btn:hover { background: rgba(108,99,255,.25); }
 
   .suggestions {
     position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 50;

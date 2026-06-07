@@ -3,6 +3,7 @@
   import { api } from '../lib/api.js'
   import { apiKey } from '../lib/stores.js'
   import ChipPicker from '../lib/ChipPicker.svelte'
+  import FilePicker from '../lib/FilePicker.svelte'
 
   let agents   = []
   let selected = null   // the agent currently shown in the editor
@@ -62,6 +63,9 @@
     }))
   $: builtinOptions = (catalog.builtins || []).map(b => ({
     value: b.name, label: b.name, description: b.description || '',
+  }))
+  $: pythonFileOptions = (catalog.python_tools || []).map(pt => ({
+    value: pt.path, label: pt.name, description: pt.description || '',
   }))
   // The tool_choice dropdown is a UNION of meta-options + peers + builtins.
   // Computed reactively from editing.agents and editing.builtins so the list
@@ -957,18 +961,14 @@ console.log(reply);` : ''
                   </div>
 
                   <div class="field">
-                    <span class="field-label">Python file</span>
-                    {#if (catalog.python_tools || []).length > 0}
-                      <select value={tool.python_file || ''}
-                              on:change={(e) => onPythonFilePicked(i, e.target.value)}>
-                        <option value="">— pick a file or paste a path below —</option>
-                        {#each catalog.python_tools as pt}
-                          <option value={pt.path}>{pt.name} &nbsp;·&nbsp; {pt.path}</option>
-                        {/each}
-                      </select>
-                    {/if}
-                    <input bind:value={tool.python_file}
-                           placeholder="~/.soulacy/tools/your_tool.py" />
+                    <span class="field-label">Python file — type a path or 📂 Browse the tool catalog</span>
+                    <FilePicker
+                      value={tool.python_file || ''}
+                      options={pythonFileOptions}
+                      placeholder="~/.soulacy/tools/your_tool.py"
+                      on:change={(e) => { editing.tools[i].python_file = e.detail; editing = editing }}
+                      on:pick={(e) => onPythonFilePicked(i, e.detail.value)}
+                    />
                   </div>
 
                   <div class="field">
