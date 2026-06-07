@@ -1,7 +1,8 @@
 # Session Handoff
 
-Last updated: 2026-06-06 (session 7: E10 COMPLETE — parts 2–3; previously
-session 6: E9 + E10 part 1, M5, M4, M3)
+Last updated: 2026-06-06 (session 7: E10 parts 2–3, E15, E16, E17 ALL
+COMPLETE — M6 remaining: E11 → E12 → E13; previously session 6: E9 + E10
+part 1, M5, M4, M3)
 
 ---
 
@@ -723,7 +724,8 @@ session is done, then re-run the suite.
    GOCACHE=$PWD/.gocache go test -p 2 -count=1 -timeout 60s -coverprofile=coverage.out ./... 2>&1 | grep -E "^(ok|FAIL|---)"
    go tool cover -func=coverage.out | tail -1
    ```
-   Expected: **56.2% total**, all packages green (verified end of session 5).
+   Expected: **~58.8% total**, all packages green (verified end of session 7;
+   sdk module suite separately: `cd sdk && go test ./...`).
 
 2. Do **not** revert any files. All changes are intentional.
 
@@ -773,7 +775,9 @@ session is done, then re-run the suite.
 ## Coverage target
 
 - **Mathematical ceiling**: ~65% (untestable packages hold ~35% of all statements)
-- **Current total**: **56.2%** (measured 2026-06-06 session 5, all packages green;
+- **Current total**: **58.8%** (measured 2026-06-06 session 7, all packages
+  green; denominator shifted when main.go's wiring moved into testable
+  internal/app — wire.go is boot glue and stays uncovered;
   includes new internal/workboard at 87.5%)
 - **Remaining gap**: ~9pp needed to reach 65%
 
