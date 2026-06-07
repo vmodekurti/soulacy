@@ -20,6 +20,10 @@ on the SDK, never on `internal/` packages.
 | `sdk/storage` | `storage.ActionLogBackend`, `storage.MemoryBackend` |
 | `sdk/registry` | Named factory registries — drivers self-register from `init()` |
 | `sdk/reasoning` | `reasoning.Strategy` — pluggable reasoning loops (E15) |
+| `sdk/extchannel` | External Channel Protocol v1 wire types (NDJSON frames) |
+| `sdk/extchannel/sidecartest` | Sidecar protocol conformance runner (E11) |
+| `sdk/channel/channeltest` | `RunAdapterSuite` — channel adapter conformance kit (E11) |
+| `sdk/llm/providertest` | `RunProviderSuite` — LLM provider conformance kit (E11) |
 
 The application re-exports all of these as type aliases at the historical
 paths (`pkg/message`, `internal/channels`, `internal/llm`, `internal/queue`,
