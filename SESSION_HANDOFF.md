@@ -1,7 +1,7 @@
 # Session Handoff
 
-Last updated: 2026-06-06 (session 6: E5 complete; previously session 5:
-Stories 5–6 + extensibility blueprint and E-track stories)
+Last updated: 2026-06-06 (session 7: E10 COMPLETE — parts 2–3; previously
+session 6: E9 + E10 part 1, M5, M4, M3)
 
 ---
 
@@ -26,11 +26,52 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 part 1
-  ✅ (SDK factory registries) — NEXT: E10 parts 2–3 (see below), then
-  E15 → E16 → E17 → E11 → E12 → E13.**
+  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅
+  (all 3 parts) — NEXT: E15 (pluggable reasoning loops), then
+  E16 → E17 → E11 → E12 → E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E10 parts 2–3 (registry-routed built-ins + internal/app) — complete
+(TDD, session 7, root suite green exit-0, sdk suite green, total 58.8%).**
+- Part 2 — built-in drivers self-register via init():
+  · channels: telegram/discord/slack/whatsapp each gained `register.go`
+    (+tests). Factory cfg = the YAML channel/bot map verbatim + host keys
+    `id` (adapter id) and `logger` (*zap.Logger, documented host-internal
+    escape hatch; whatsapp needs it). Empty required keys = factory error.
+  · providers: ONE `internal/llm/register.go` registers ollama/openai/
+    anthropic/gemini (+"google" alias — GeminiProvider.ID() is "google";
+    config key stays `google`). openai factory doubles as the generic
+    OpenAI-compatible adapter (custom `id` key).
+  · queues: memory/nats; vectors: sqlite-vec (takes live `store` =
+    *memory.VectorStore key)/qdrant (takes live `embedder` key).
+  · `internal/cfgmap` — strict coercion helpers (Str/Int/Bool/BoolPtr/Map)
+    for factory config maps. Wrong type → caller default, never garbage.
+  · activation parsing promoted: `channels.ActivationFromConfig` /
+    ParseInt64List/ParseStringList/ParseDelimitedList/ParseBoolValue
+    (configparse.go; old main.go locals deleted). NOTE: AllowedUserIDs now
+    deduped; missing trigger_phrase no longer renders "<nil>" (latent bug).
+  · `cmd/soulacy/builtins_gen.go` — generated blank-import file
+    (go:generate in gen.go → scripts/genbuiltins; add a driver = add to
+    the list there + regenerate). `TestAllBuiltinsRegistered` pins all 4
+    registries. Hardcoded constructor paths in the host are DELETED.
+  · Queue backend now closed uniformly via the sdk Backend.Close()
+    (memory backend previously never closed — harmless, now tidy).
+- Part 3 — `internal/app` composition root:
+  · `app.New(cfg, opts...)` (nil-config error, security guardrail print,
+    logger build; `WithConfigPath`, `WithLogger`) + `App.Run(ctx)` =
+    verbatim port of the old run() body (wire.go), same ordering, same
+    defer semantics; SIGINT/SIGTERM + parent-ctx cancellation.
+  · notify.go (failureNotifier) and recover.go (replayIncompleteRuns)
+    moved to internal/app via git mv. Bridge adapters in adapters.go;
+    buildChannel/providerCfgMap/sanitizeID etc. in channels.go.
+  · cmd/soulacy/main.go = 52-line shell (sandbox intercept → config.Load →
+    app.New → app.Run). builtins_test.go stays in package main.
+- NOTE for E15: follow the same pattern — `RegisterReasoningStrategy` in a
+  new sdk registry (or extend sdk/registry), reasoning interfaces promoted
+  per the story, conformance test that injects a custom loop.
+- NOTE for E12: scripts/genbuiltins is the seed of the flavored-binary
+  tool's import-file generation.
 
 **E10 part 1 (SDK factory registries) — complete (TDD, session 6).**
 - `sdk/registry` — database/sql-style named registries with generics:
