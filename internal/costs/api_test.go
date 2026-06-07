@@ -671,4 +671,3 @@ func TestHandleGetAgentCosts_AuthWithValidKey_Returns200(t *testing.T) {
 		t.Fatalf("expected agent_id=agent1, body=%v", body)
 	}
 }
-

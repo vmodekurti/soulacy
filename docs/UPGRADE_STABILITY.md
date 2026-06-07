@@ -13,6 +13,13 @@ store's per-KB vec-table rebuild, which is a runtime data operation (re-
 index), not a schema migration. Plugin schemas go through
 `internal/pluginmigrate` (E16: transactional, checksummed, namespaced).
 
+**Adopted (2026-06-07):** every SQLite store now records its schema
+version at boot via `sqlitex.RecordSchemaVersion(db, "<component>", 1)`
+right after its idempotent bootstrap — components: workboard, costs,
+rbac, apikeys, dlq, checkpoints, memory_archive, actionlog, knowledge.
+RecordSchemaVersion never downgrades, so databases already migrated past
+v1 keep their version.
+
 **Going forward:** stores that need to EVOLVE schema (add columns/tables
 after release) use the shared helper in `internal/sqlitex`:
 

@@ -61,6 +61,12 @@ func NewSQLiteArchive(path string) (*SQLiteArchive, error) {
 		}
 	}
 
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above;
+	// future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "memory_archive", 1); err != nil {
+		return nil, err
+	}
+
 	return &SQLiteArchive{db: db}, nil
 }
 

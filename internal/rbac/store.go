@@ -67,6 +67,13 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 	if _, err := db.Exec(grantSchema); err != nil {
 		return nil, fmt.Errorf("rbac: schema: %w", err)
 	}
+
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above;
+	// future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "rbac", 1); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &SQLiteStore{db: db}, nil
 }
 
@@ -194,8 +201,8 @@ type NoopStore struct{}
 func (NoopStore) CanAccessAgent(role, _, action string) (bool, error) {
 	return HasPermission(role, ResourceAgents, action), nil
 }
-func (NoopStore) SetAgentGrant(AgentGrant) error           { return nil }
-func (NoopStore) DeleteAgentGrant(_, _ string) error       { return nil }
-func (NoopStore) ListAgentGrants() ([]AgentGrant, error)   { return nil, nil }
+func (NoopStore) SetAgentGrant(AgentGrant) error                        { return nil }
+func (NoopStore) DeleteAgentGrant(_, _ string) error                    { return nil }
+func (NoopStore) ListAgentGrants() ([]AgentGrant, error)                { return nil, nil }
 func (NoopStore) ListAgentGrantsForRole(_ string) ([]AgentGrant, error) { return nil, nil }
-func (NoopStore) Close() error                             { return nil }
+func (NoopStore) Close() error                                          { return nil }

@@ -19,7 +19,7 @@ import (
 type APIKey struct {
 	ID         string     `json:"id"`
 	Name       string     `json:"name"`
-	Prefix     string     `json:"prefix"`      // first 8 chars, display only
+	Prefix     string     `json:"prefix"` // first 8 chars, display only
 	Scopes     []string   `json:"scopes"`
 	CreatedAt  time.Time  `json:"created_at"`
 	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
@@ -77,6 +77,13 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above;
+	// future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "apikeys", 1); err != nil {
 		db.Close()
 		return nil, err
 	}

@@ -41,6 +41,12 @@ func NewCheckpointStore(path string) (*CheckpointStore, error) {
 		db.Close()
 		return nil, err
 	}
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above;
+	// future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "checkpoints", 1); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &CheckpointStore{db: db}, nil
 }
 

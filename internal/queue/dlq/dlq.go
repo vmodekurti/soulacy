@@ -21,10 +21,10 @@ var ErrNotFound = fmt.Errorf("dlq: entry not found")
 // DeadLetter is a failed job entry.
 type DeadLetter struct {
 	ID            string    `json:"id"`
-	Queue         string    `json:"queue"`         // source queue name
-	Payload       []byte    `json:"payload"`       // original job payload (JSON)
-	ErrorMsg      string    `json:"error"`         // last error message
-	Attempts      int       `json:"attempts"`      // how many times it was tried
+	Queue         string    `json:"queue"`    // source queue name
+	Payload       []byte    `json:"payload"`  // original job payload (JSON)
+	ErrorMsg      string    `json:"error"`    // last error message
+	Attempts      int       `json:"attempts"` // how many times it was tried
 	CreatedAt     time.Time `json:"created_at"`
 	LastAttemptAt time.Time `json:"last_attempt_at"`
 }
@@ -107,6 +107,13 @@ func NewSQLiteStore(path string) (*SQLiteStore, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above;
+	// future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "dlq", 1); err != nil {
 		db.Close()
 		return nil, err
 	}

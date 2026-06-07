@@ -150,3 +150,31 @@ func TestMigrateSchema_ValidatesOrdering(t *testing.T) {
 		t.Error("duplicate versions must be refused")
 	}
 }
+
+func TestRecordSchemaVersion_NeverDowngrades(t *testing.T) {
+	db := openTestDB(t)
+	if err := RecordSchemaVersion(db, "legacy", 1); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := SchemaVersion(db, "legacy"); v != 1 {
+		t.Fatalf("version = %d, want 1", v)
+	}
+	// Idempotent re-record.
+	if err := RecordSchemaVersion(db, "legacy", 1); err != nil {
+		t.Fatal(err)
+	}
+	// A future MigrateSchema bumps to 3; the boot-time Record(1) must not
+	// pull it back down.
+	if _, err := MigrateSchema(db, "legacy", []SchemaMigration{
+		{Version: 2, SQL: `CREATE TABLE l2 (x INTEGER)`},
+		{Version: 3, SQL: `CREATE TABLE l3 (x INTEGER)`},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordSchemaVersion(db, "legacy", 1); err != nil {
+		t.Fatal(err)
+	}
+	if v, _ := SchemaVersion(db, "legacy"); v != 3 {
+		t.Errorf("version after re-record = %d, want 3 (no downgrade)", v)
+	}
+}

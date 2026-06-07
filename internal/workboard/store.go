@@ -49,10 +49,10 @@ type Task struct {
 	Description string     `json:"description"`
 	AgentID     string     `json:"agent_id"`
 	Status      string     `json:"status"`
-	Owner       string     `json:"owner,omitempty"`    // Story 14
-	Priority    string     `json:"priority"`           // low|normal|high|urgent
-	Tags        []string   `json:"tags"`               // normalised lowercase
-	DueAt       *time.Time `json:"due_at,omitempty"`   // nil = no due date
+	Owner       string     `json:"owner,omitempty"`  // Story 14
+	Priority    string     `json:"priority"`         // low|normal|high|urgent
+	Tags        []string   `json:"tags"`             // normalised lowercase
+	DueAt       *time.Time `json:"due_at,omitempty"` // nil = no due date
 	CreatedAt   time.Time  `json:"created_at"`
 	UpdatedAt   time.Time  `json:"updated_at"`
 }
@@ -121,6 +121,12 @@ func NewStore(path string) (*Store, error) {
 	}
 	if _, err := db.Exec(commentsSchema); err != nil {
 		db.Close()
+		return nil, err
+	}
+
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above.
+	// Future schema changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "workboard", 1); err != nil {
 		return nil, err
 	}
 	// Idempotent column additions for databases created before Story 14.
