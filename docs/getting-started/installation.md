@@ -1,92 +1,94 @@
 # Installation
 
+The fastest path is the one-command installer — it brings its own dependencies.
+
+## One command (macOS / Linux — recommended)
+
+```bash
+curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash
+```
+
+What it does:
+
+1. Detects your OS/architecture (macOS & Linux, amd64 & arm64).
+2. Downloads the latest release binaries — or, if no release is published yet,
+   **builds from source automatically**, fetching private copies of Go and
+   Node into `~/.soulacy/toolchain` when they're missing (no Homebrew, no
+   system package changes).
+3. Installs `soulacy` (the gateway) and `sy` (the CLI) to `/usr/local/bin`.
+4. Creates your workspace at `~/.soulacy/soulspace` with a default config.
+5. Offers to install [Ollama](https://ollama.com) and pull `llama3` so you
+   have a local LLM out of the box.
+6. Offers to start the gateway and open the GUI at `http://localhost:18789`.
+
+!!! tip "Pin a version"
+    `SOULACY_VERSION=v0.2.0 curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash`
+
 ## Requirements
 
-| Requirement | Version |
-|-------------|---------|
-| Go | 1.25+ (only if building from source) |
-| Docker | 24+ (optional) |
-| OS | macOS 13+, Linux (amd64/arm64), Windows 11 |
-
----
-
-## Homebrew (macOS — recommended)
-
-```bash
-brew tap vmodekurti/soulacy
-brew install soulacy
-soulacy version
-```
-
----
-
-## Docker
-
-```bash
-# Pull latest
-docker pull ghcr.io/vmodekurti/soulacy:latest
-
-# Run with your config
-docker run -d \
-  --name soulacy \
-  -p 8080:8080 \
-  -v $(pwd)/config.yaml:/app/config.yaml \
-  -v $(pwd)/agents:/app/agents \
-  ghcr.io/vmodekurti/soulacy:latest
-```
-
-Prefer Compose? See the [Docker deployment guide](../deployment/docker.md).
-
----
-
-## Pre-built binaries
-
-1. Go to [GitHub Releases](https://github.com/vmodekurti/soulacy/releases)
-2. Download the archive for your platform:
-   - `soulacy_darwin_arm64.tar.gz` — Apple Silicon
-   - `soulacy_darwin_amd64.tar.gz` — Intel Mac
-   - `soulacy_linux_amd64.tar.gz` — Linux x86-64
-   - `soulacy_linux_arm64.tar.gz` — Linux ARM
-3. Extract and move to your `$PATH`:
-
-```bash
-tar -xzf soulacy_darwin_arm64.tar.gz
-sudo mv soulacy /usr/local/bin/
-soulacy version
-```
-
----
-
-## Go install
-
-```bash
-go install github.com/soulacy/soulacy/cmd/soulacy@latest
-```
-
-Ensure `$(go env GOPATH)/bin` is on your `$PATH`.
-
----
+| | |
+|---|---|
+| OS | macOS 13+ or Linux (amd64 / arm64) |
+| Tools | `curl` and `tar` — everything else is installed automatically |
+| LLM | Ollama (local, free) **or** an OpenAI / Anthropic / Gemini API key |
 
 ## Build from source
 
 ```bash
 git clone https://github.com/vmodekurti/soulacy.git
 cd soulacy
-make build
-# binary is at ./bin/soulacy
+make all          # GUI + gateway + CLI → ./bin/soulacy and ./bin/sy
+sudo install -m755 bin/soulacy bin/sy /usr/local/bin/
 ```
 
----
+`make all` needs Go 1.25+ and Node 18+ on your PATH (`make build` alone skips
+the GUI — the binary embeds the web UI at compile time, so use `make all`).
 
-## Verify the installation
+## Docker
+
+From a checkout (works today, builds the image locally):
 
 ```bash
-soulacy version
-# Soulacy v0.1.0 (go1.25 darwin/arm64)
+git clone https://github.com/vmodekurti/soulacy.git && cd soulacy
+docker compose up --build -d
 ```
 
----
+The gateway listens on **18789**; state persists in the
+`/home/soulacy/.soulacy` volume:
+
+```bash
+docker run -d --name soulacy \
+  -p 18789:18789 \
+  -v soulacy-data:/home/soulacy/.soulacy \
+  ghcr.io/vmodekurti/soulacy:latest   # published with tagged releases
+```
+
+More (Compose details, reverse proxies): [Docker deployment guide](../deployment/docker.md).
+
+## Pre-built binaries
+
+Tagged releases publish `soulacy_<version>_<os>_<arch>.tar.gz` bundles
+(each contains both `soulacy` and `sy`) on
+[GitHub Releases](https://github.com/vmodekurti/soulacy/releases):
+
+```bash
+tar -xzf soulacy_v0.2.0_darwin_arm64.tar.gz
+sudo install -m755 soulacy sy /usr/local/bin/
+```
+
+If the releases page is empty, use the one-command installer above — it
+falls back to a source build automatically.
+
+## Verify
+
+```bash
+sy version         # CLI + framework version
+sy doctor          # checks workspace, config, providers, and the gateway
+```
+
+(`soulacy` itself takes no `version` subcommand — running it starts the gateway.)
 
 ## What's next?
 
-Follow the [Quick Start](quickstart.md) to create your first agent.
+1. `sy setup` — the interactive wizard (provider, channel, first agent).
+2. Follow the [Quick Start](quickstart.md), then take the [GUI tour](gui-tour.md).
