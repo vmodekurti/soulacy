@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary } from './pluginmanage.js';
+import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary, securityVerdict, securityFindingLines } from './pluginmanage.js';
 
 describe('sourceKind', () => {
   it('classifies sources', () => {
@@ -54,5 +54,34 @@ describe('riskSummary', () => {
   });
   it('benign when nothing requested', () => {
     expect(riskSummary({})).toContain('no capabilities');
+  });
+});
+
+describe('securityVerdict (E20)', () => {
+  it('returns null without a report', () => {
+    expect(securityVerdict(null)).toBeNull();
+    expect(securityVerdict(undefined)).toBeNull();
+  });
+  it('maps verdicts to badges', () => {
+    expect(securityVerdict({ verdict: 'pass' }).cls).toBe('ok');
+    expect(securityVerdict({ verdict: 'caution' }).cls).toBe('warn');
+    expect(securityVerdict({ verdict: 'danger' }).cls).toBe('danger');
+  });
+});
+
+describe('securityFindingLines (E20)', () => {
+  it('sorts critical first and formats file:line', () => {
+    const lines = securityFindingLines({ findings: [
+      { check: 'llm_audit', severity: 'info', message: 'audit skipped: no LLM available' },
+      { check: 'static', severity: 'critical', file: 'tool.py', line: 3, message: 'eval()' },
+      { check: 'dry_run', severity: 'warning', message: 'wrote files' },
+    ]});
+    expect(lines[0]).toContain('CRITICAL');
+    expect(lines[0]).toContain('tool.py:3');
+    expect(lines[1]).toContain('WARNING');
+    expect(lines[2]).toContain('audit skipped');
+  });
+  it('empty report renders nothing', () => {
+    expect(securityFindingLines({})).toEqual([]);
   });
 });

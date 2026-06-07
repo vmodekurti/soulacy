@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/soulacy/soulacy/internal/introspect"
 	"github.com/soulacy/soulacy/pkg/plugin"
 )
 
@@ -56,7 +57,22 @@ type Preview struct {
 	Channels    []string               `json:"channels,omitempty"`
 	Providers   []string               `json:"providers,omitempty"`
 	Fingerprint string                 `json:"fingerprint"`
+
+	// Security carries the E20 pre-installation introspection report
+	// (static scan + LLM audit + sandboxed dry-run). Attached by the
+	// gateway after Stage when a safety pipeline is configured; nil when
+	// introspection didn't run.
+	Security *introspect.SecurityReport `json:"security,omitempty"`
 }
+
+// StagedDir returns the on-disk path of a staged plugin so callers (the E20
+// safety pipeline) can inspect it. The directory exists only between Stage
+// and Approve/Discard.
+func (ins *Installer) StagedDir(stagedID string) string { return ins.stagePath(stagedID) }
+
+// ReadManifest parses the plugin.yaml in dir. Exported for the safety
+// pipeline, which needs the declared sidecar hooks for its dry-run.
+func ReadManifest(dir string) (plugin.Manifest, error) { return readManifest(dir) }
 
 // Stage fetches source into the staging area and returns the approval
 // preview. Source forms:

@@ -37,6 +37,7 @@ import (
 	"github.com/soulacy/soulacy/internal/executor/process"
 	"github.com/soulacy/soulacy/internal/gateway"
 	"github.com/soulacy/soulacy/internal/hooks"
+	"github.com/soulacy/soulacy/internal/introspect"
 	"github.com/soulacy/soulacy/internal/knowledge"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
@@ -1066,6 +1067,37 @@ func (a *App) Run(parent context.Context) error {
 			srv.SetPluginInstaller(pins)
 			log.Info("plugin installer ready", zap.String("dir", cfg.PluginDirs[0]))
 		}
+	}
+
+	// Pre-installation safety introspection (Story E20): static scan always
+	// runs; the LLM audit uses the router's default provider (degrades to a
+	// skip finding when no provider answers); the dry-run reuses the F1
+	// rlimit sandbox when enabled.
+	{
+		pipeline := &introspect.Pipeline{}
+		if len(llmRouter.ProviderIDs()) > 0 {
+			pipeline.Auditor = &introspect.RouterAuditor{Router: llmRouter}
+		}
+		if sbx := cfg.Runtime.Sandbox; sbx.Enabled {
+			if selfPath, e := os.Executable(); e == nil {
+				pipeline.DryRun = &introspect.DryRunConfig{
+					SelfPath: selfPath,
+					Limits: sandbox.Limits{
+						Enabled:    true,
+						CPUSeconds: sbx.CPUSeconds,
+						MemoryMB:   sbx.MemoryMB,
+						OpenFiles:  sbx.OpenFiles,
+						FileSizeMB: sbx.FileSizeMB,
+					},
+					Timeout: 5 * time.Second,
+				}
+			}
+		} else {
+			// Even unsandboxed hosts get the bounded dry-run (timeout +
+			// write detection + dead HTTP proxy).
+			pipeline.DryRun = &introspect.DryRunConfig{Timeout: 5 * time.Second}
+		}
+		srv.SetSafetyPipeline(pipeline)
 	}
 
 	// Package registries (Story E19): multi-registry resolution engine for
