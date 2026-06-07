@@ -7,6 +7,7 @@ on:
     paths:
       - "docs/**"
       - "mkdocs.yml"
+      - "scripts/install.sh"
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
@@ -27,6 +28,13 @@ jobs:
 
       - name: Install MkDocs Material
         run: pip install mkdocs-material
+
+      # The installer is served from the docs site root:
+      #   curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash
+      # scripts/install.sh is the source of truth; docs/install.sh is the
+      # published copy, refreshed on every deploy.
+      - name: Sync installer into the site
+        run: cp scripts/install.sh docs/install.sh
 
       - name: Build and deploy docs
         run: mkdocs gh-deploy --force

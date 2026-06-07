@@ -8,7 +8,7 @@ Think of it as Ollama — but for agents.
 
 ```bash
 # install, set up, talk to your first agent — under five minutes
-curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/scripts/install.sh | bash
+curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash
 sy setup
 sy chat --agent assistant "What can you do?"
 ```

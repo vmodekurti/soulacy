@@ -53,7 +53,7 @@ Builds the GUI, compiles the binaries, installs to `/usr/local/bin`, registers a
 ### Linux — one line
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/soulacy/soulacy/main/scripts/install.sh | bash
+curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash
 ```
 
 Downloads the pre-built binary for your platform, installs it, and registers a `systemd` service that starts on boot.
