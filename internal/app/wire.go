@@ -957,6 +957,22 @@ func (a *App) Run(parent context.Context) error {
 			if command == "" {
 				command = "node"
 			}
+			if sessionDir == "" {
+				sessionDir = filepath.Join(ws.Data, "whatsapp-web")
+			}
+			// Installed binaries have no repo checkout: when args are
+			// absent or point at a missing script, materialise the
+			// embedded sidecar into the session dir (the pair API installs
+			// the Baileys dependency next to it).
+			if agentID != "" {
+				if _, statErr := os.Stat(firstOr(args, "")); len(args) == 0 || statErr != nil {
+					if sp, serr := wawebchan.EnsureSidecarScript(sessionDir); serr != nil {
+						log.Warn("whatsapp_web sidecar script unavailable", zap.Error(serr))
+					} else {
+						args = []string{sp}
+					}
+				}
+			}
 			if len(args) > 0 && agentID != "" {
 				if externalChannelAgentAllowed("whatsapp_web", agentID, log) {
 					waWeb := wawebchan.New("whatsapp_web", command, args, sessionDir, agentID, accountID, activation, log)
