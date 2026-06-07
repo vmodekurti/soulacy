@@ -446,6 +446,11 @@ type RegistryConfig struct {
 	Priority int `mapstructure:"priority"`
 	// AuthHeaders are sent verbatim on every http request to this registry.
 	AuthHeaders map[string]string `mapstructure:"auth_headers"`
+	// SigningKey is the registry operator's hex-encoded 32-byte ed25519
+	// public key. When set, EVERY package from this registry must carry a
+	// valid signature over its archive sha256 digest — unsigned packages
+	// are refused.
+	SigningKey string `mapstructure:"signing_key"`
 }
 
 // Load reads configuration from disk and environment, returning a validated Config

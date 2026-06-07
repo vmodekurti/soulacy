@@ -58,6 +58,9 @@ func FromConfig(cfgs []config.RegistryConfig, log *zap.Logger) (*Engine, []error
 			"id":       id,
 			"base_url": rc.BaseURL,
 		}
+		if rc.SigningKey != "" {
+			m["signing_key"] = rc.SigningKey
+		}
 		if len(rc.AuthHeaders) > 0 {
 			ah := make(map[string]any, len(rc.AuthHeaders))
 			for k, v := range rc.AuthHeaders {
@@ -77,6 +80,19 @@ func FromConfig(cfgs []config.RegistryConfig, log *zap.Logger) (*Engine, []error
 		entries = append(entries, Entry{Provider: p, Priority: rc.Priority})
 	}
 	return NewEngine(entries, log), errs
+}
+
+// VerifiesSignatures reports whether the named provider enforces ed25519
+// package signatures (the CLI consent prompt shows provenance with it).
+func (e *Engine) VerifiesSignatures(providerID string) bool {
+	for _, en := range e.entries {
+		if en.Provider.ID() != providerID {
+			continue
+		}
+		v, ok := en.Provider.(interface{ VerifiesSignatures() bool })
+		return ok && v.VerifiesSignatures()
+	}
+	return false
 }
 
 // Providers lists provider IDs in resolution order.

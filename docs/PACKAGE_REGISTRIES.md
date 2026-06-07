@@ -65,6 +65,28 @@ the engine falls through to real registries. Fetch is the shared shallow
 clone (`plugininstall.GitClone`, `.git` stripped, 120 s timeout). Search
 always returns nothing — git hosts are not an index.
 
+## Package signatures (ed25519)
+
+Registry operators sign the **raw 32 bytes of each archive's sha256
+digest** with an ed25519 private key; `Package.Signature` carries the
+signature base64-encoded. Operators publish the 32-byte public key
+hex-encoded; consumers pin it per registry:
+
+```yaml
+registries:
+  - id: main
+    type: http
+    base_url: https://registry.example.com
+    signing_key: "3b6a27bc…"   # hex ed25519 public key
+```
+
+With `signing_key` set, EVERY package from that registry must carry a
+valid signature — unsigned or tampered packages are refused at fetch,
+before extraction. Without it, integrity rests on the sha256 checksum
+alone and the CLI marks signatures as UNVERIFIED. Malformed keys fail at
+boot, not at first fetch. The reference server (`soulacy registry serve
+--signing-key-file`) produces compatible signatures.
+
 ## Custom providers
 
 ```go

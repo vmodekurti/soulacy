@@ -6,6 +6,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -212,5 +214,60 @@ func TestRegistriesFromConfig_DefaultsToGit(t *testing.T) {
 	ids := eng.Providers()
 	if len(ids) != 1 || ids[0] != "git" {
 		t.Errorf("default providers = %v, want [git]", ids)
+	}
+}
+
+func TestRemoteSkillInstall_SignedRegistry(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	archive, checksum := buildSkillArchive(t, map[string]string{"SKILL.md": "# Signed Skill\nDoes signed things."})
+	sig, err := pkgregistry.SignChecksum(priv, checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/v1/packages/", func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"slug": "signed-skill", "version": "2.0.0", "checksum": checksum,
+			"signature": sig, "source": srv.URL + "/a.tar.gz",
+		})
+	})
+	mux.HandleFunc("/a.tar.gz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(archive) })
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	eng := registriesFromConfig([]config.RegistryConfig{
+		{ID: "signed", Type: "http", BaseURL: srv.URL, Priority: 1,
+			SigningKey: hex.EncodeToString(pub)},
+	}, zap.NewNop())
+
+	var out bytes.Buffer
+	err = remoteSkillInstall(context.Background(), eng, "signed-skill", remoteInstallOpts{
+		SkillsDir: t.TempDir(), AssumeYes: true, Out: &out,
+	})
+	if err != nil {
+		t.Fatalf("signed install: %v\n%s", err, out.String())
+	}
+	if !strings.Contains(out.String(), "signature: ed25519, verified") {
+		t.Errorf("verified-signature provenance missing:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "Skill: Signed Skill") {
+		t.Errorf("SKILL.md heading missing from consent summary:\n%s", out.String())
+	}
+}
+
+func TestRemoteSkillInstall_UnsignedReportedInOutput(t *testing.T) {
+	archive, checksum := buildSkillArchive(t, map[string]string{"SKILL.md": "# x"})
+	srv := fakeRegistry(t, "plain", archive, checksum)
+	var out bytes.Buffer
+	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "plain", remoteInstallOpts{
+		SkillsDir: t.TempDir(), AssumeYes: true, Out: &out,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "signature: none") {
+		t.Errorf("unsigned provenance missing:\n%s", out.String())
 	}
 }

@@ -199,6 +199,7 @@ server:
 #       priority: 10
 #       auth_headers:
 #           Authorization: "Bearer sk_..."
+#       signing_key: "3b6a27bc..."  # hex ed25519 public key; when set, unsigned/tampered packages are refused
 #     - id: github
 #       type: git
 #       priority: 100
