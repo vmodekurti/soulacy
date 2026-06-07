@@ -10,6 +10,7 @@ import (
 	_ "github.com/soulacy/soulacy/internal/channels/telegram"
 	_ "github.com/soulacy/soulacy/internal/channels/whatsapp"
 	_ "github.com/soulacy/soulacy/internal/llm"
+	_ "github.com/soulacy/soulacy/internal/pkgregistry"
 	_ "github.com/soulacy/soulacy/internal/queue/memory"
 	_ "github.com/soulacy/soulacy/internal/queue/nats"
 	_ "github.com/soulacy/soulacy/internal/reasoning"
