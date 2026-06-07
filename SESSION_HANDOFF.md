@@ -65,12 +65,31 @@ E19, E20, E18, E22, 17, 18, 19, E21 all done; suite green at every commit)
   clean in-sandbox).
 - ⚠ REBUILD internal/webui/dist ON THE MAC (sandbox can't ship dist).
 
-**ROADMAP STATUS: every planned milestone (M1–M9) is COMPLETE.** E14
-(WASM) remains demand-gated. Next session: no queued stories — await
-Vasu's direction (candidates: Story 15 + session-8 GUI visual QA on the
-Mac, E18 consent UX polish, adopting sqlitex.MigrateSchema in stores
-that evolve schema, tightening Send-ctx kit once third-party adapters
-catch up).
+**ROADMAP STATUS: every planned milestone (M1–M9) is COMPLETE, and all
+four follow-ups landed in session 8 part 2 (Vasu: "Except for WASM,
+implement the rest"):**
+
+- **Send-ctx kit tightened ✅** (bba6e74): cancelled-ctx error must wrap
+  context.Canceled; exposed+fixed discord ignoring ctx entirely;
+  whatsapp gained the fail-fast guard.
+- **Schema versioning adopted ✅** (6a11b07): sqlitex.RecordSchemaVersion
+  (never downgrades); all nine SQLite stores record v1 at boot —
+  workboard, costs, rbac, apikeys, dlq, checkpoints, memory_archive,
+  actionlog, knowledge. Bootstraps byte-identical; evolutions use
+  MigrateSchema v2+.
+- **Ed25519 signatures + consent polish ✅** (66801f3): registries gain
+  signing_key (hex pub key) → unsigned/tampered packages refused at
+  fetch; SignChecksum/VerifySignature in internal/pkgregistry;
+  Engine.VerifiesSignatures; sy skill install shows signature
+  provenance + SKILL.md heading + tools/migrations/caps/credentials.
+- **Reference registry server ✅** (10c2930): internal/registryserver +
+  `soulacy registry serve/keygen` — flat <slug>-<version>.tar.gz dir,
+  sidecar metadata, latest-version resolve, signing, traversal-guarded
+  archives; END-TO-END test against the real E19 client.
+
+E14 (WASM) remains demand-gated — the ONLY deferred item. Next session:
+await Vasu's direction; Mac-side QA checklist above still applies
+(rebuild dist done 2026-06-07; binary rebuild + visual QA pending).
 
 (Previous: session 7: E10 parts 2–3, E15, E16, E17, E11, E12, E13,
 Story 15 — M6/M7 complete; session 6: E9 + E10 part 1, M5, M4, M3)
