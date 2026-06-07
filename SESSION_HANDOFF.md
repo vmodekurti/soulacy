@@ -87,6 +87,18 @@ implement the rest"):**
   sidecar metadata, latest-version resolve, signing, traversal-guarded
   archives; END-TO-END test against the real E19 client.
 
+- **Soulspace workspace ✅** (aafda81, requested by Vasu 2026-06-07):
+  installations now organize under ~/.soulacy/soulspace (agents/ skills/
+  plugins/ data/=all dbs, secrets/ 0700, etc.). Resolver:
+  SOULACY_WORKSPACE env → soulspace → legacy flat ~/.soulacy (detected,
+  untouched) → fresh soulspace. ~30 hardcoded paths routed through
+  config.ResolveWorkspace(). `sy workspace info` + `sy workspace
+  migrate` (--dry-run/-y; planned renames, WAL siblings, config.yaml
+  path rewriting). docs/WORKSPACE.md.
+  ⚠ Vasu's Mac is a LEGACY install — it keeps working as-is; run
+  `sy workspace migrate --dry-run` then (gateway stopped)
+  `sy workspace migrate` whenever ready.
+
 E14 (WASM) remains demand-gated — the ONLY deferred item. Next session:
 await Vasu's direction; Mac-side QA checklist above still applies
 (rebuild dist done 2026-06-07; binary rebuild + visual QA pending).
