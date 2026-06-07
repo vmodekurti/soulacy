@@ -34,6 +34,13 @@ func runHelperSidecar(mode string) {
 		ID, AgentID, Content string
 	}
 	var store []entry
+
+	type storageEntry struct {
+		ID, AgentID, SessionID, Scope, Key, Content string
+		CreatedAt time.Time
+	}
+	var storageStore []storageEntry
+
 	subs := map[string]string{} // id → subject
 	nextSub := 0
 
@@ -71,7 +78,7 @@ func runHelperSidecar(mode string) {
 			respond(id, sdkext.NegotiateResult{
 				Protocol:     1,
 				Name:         "go-helper",
-				Capabilities: []string{"vector", "queue"},
+				Capabilities: []string{"vector", "queue", "storage"},
 				SharedDir:    shared,
 			})
 			if mode == "crashafterhello" {

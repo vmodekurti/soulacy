@@ -22,6 +22,7 @@ class State:
     def __init__(self):
         self.shared_dir = ""
         self.entries = []  # vector store: list of dicts
+        self.storage_entries = [] # memory archive: list of dicts
         self.subs = {}     # subscription_id -> {"subject": ..., "group": ...}
         self.next_sub = 0
         self.lock = threading.Lock()
@@ -85,7 +86,7 @@ def handle(msg):
         reply(msg_id, result={
             "protocol": min(proto, PROTOCOL_VERSION),
             "name": "reference-storage-sidecar",
-            "capabilities": ["vector", "queue"],
+            "capabilities": ["vector", "queue", "storage"],
             "shared_dir": STATE.shared_dir,
         })
         return True
@@ -127,6 +128,78 @@ def handle(msg):
             "content": e["content"], "timestamp": e["timestamp"],
             "distance": 1.0 - score(query, e["content"]),
         } for e in hits]})
+        return True
+
+    if method == "storage.archive":
+        try:
+            entry = params.get("entry") or {}
+            content = entry.get("content", "")
+            rel = params.get("content_file", "")
+            if rel and STATE.shared_dir:
+                import os
+                path = os.path.normpath(os.path.join(STATE.shared_dir, rel))
+                if not path.startswith(os.path.normpath(STATE.shared_dir)):
+                    raise ValueError("content_file escapes shared dir")
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                entry["content"] = content
+        except Exception as e:
+            reply(msg_id, error=err(-32000, "content_file: %s" % e))
+            return True
+        with STATE.lock:
+            if not any(e.get("id") == entry.get("id") for e in STATE.storage_entries):
+                STATE.storage_entries.append(entry)
+        reply(msg_id, result={"ok": True})
+        return True
+
+    if method == "storage.search":
+        agent = params.get("agent_id", "")
+        query = params.get("query", "")
+        limit = params.get("limit", 5) or 5
+        with STATE.lock:
+            pool = [e for e in STATE.storage_entries
+                    if not agent or e.get("agent_id") == agent]
+        hits = sorted(pool, key=lambda e: -score(query, e.get("content", "")))[:limit]
+        reply(msg_id, result={"entries": hits})
+        return True
+
+    if method == "storage.read_by_scope":
+        agent = params.get("agent_id", "")
+        session = params.get("session_id", "")
+        scope = params.get("scope", "")
+        limit = params.get("limit", 5) or 5
+        with STATE.lock:
+            pool = [e for e in STATE.storage_entries
+                    if e.get("agent_id") == agent and
+                       e.get("session_id") == session and
+                       e.get("scope") == scope]
+        pool = sorted(pool, key=lambda e: e.get("created_at", ""), reverse=True)[:limit]
+        reply(msg_id, result={"entries": pool})
+        return True
+
+    if method == "storage.read_global":
+        agent = params.get("agent_id", "")
+        limit = params.get("limit", 5) or 5
+        with STATE.lock:
+            pool = [e for e in STATE.storage_entries
+                    if e.get("agent_id") == agent]
+        pool = sorted(pool, key=lambda e: e.get("created_at", ""), reverse=True)[:limit]
+        reply(msg_id, result={"entries": pool})
+        return True
+
+    if method == "storage.prune":
+        agent = params.get("agent_id", "")
+        before_str = params.get("before", "")
+        deleted = 0
+        with STATE.lock:
+            new_entries = []
+            for e in STATE.storage_entries:
+                if e.get("agent_id") == agent and e.get("created_at", "") < before_str:
+                    deleted += 1
+                else:
+                    new_entries.append(e)
+            STATE.storage_entries = new_entries
+        reply(msg_id, result={"rows_deleted": deleted})
         return True
 
     if method == "queue.publish":
