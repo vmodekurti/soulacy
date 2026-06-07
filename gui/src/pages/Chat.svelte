@@ -185,7 +185,8 @@
   }
 
   function isThinkingEvent(ev) {
-    return ['llm.call', 'llm.result', 'tool.call', 'tool.result', 'tool.log', 'error'].includes(ev.type || '')
+    return ['llm.call', 'llm.result', 'tool.call', 'tool.result', 'tool.log', 'error',
+            'reasoning.start', 'reasoning.step', 'reasoning.result'].includes(ev.type || '')
   }
 
   function toggleThinking(thinking) {
@@ -212,6 +213,9 @@
       case 'tool.call':   return `Calling tool ${p.name || 'tool'}`
       case 'tool.result': return `Tool ${p.name || 'tool'} returned`
       case 'tool.log':    return `Tool log`
+      case 'reasoning.start':  return `Reasoning loop started (${p.strategy || '?'})`
+      case 'reasoning.step':   return `Step ${p.index ?? '?'}${p.tool ? ` → ${p.tool}` : ''}`
+      case 'reasoning.result': return `Reasoning finished — ${p.steps ?? 0} step${p.steps === 1 ? '' : 's'}`
       case 'error':       return `Error${p.stage ? ` in ${p.stage}` : ''}`
       default:            return ev.type || 'event'
     }
@@ -224,6 +228,8 @@
     if (ev.type === 'tool.log') return snippet(typeof p === 'string' ? p : p.line || JSON.stringify(p), 260)
     if (ev.type === 'error') return snippet(p.error || p.message || JSON.stringify(p), 260)
     if (ev.type === 'llm.result') return `${p.duration_ms ?? 0}ms · ${p.input_tokens ?? 0} in / ${p.output_tokens ?? 0} out`
+    if (ev.type === 'reasoning.step') return snippet(p.thought || '', 220)
+    if (ev.type === 'reasoning.result') return `${p.duration_ms ?? 0}ms · ${p.confident ? 'confident' : 'not confident'}`
     return ''
   }
 

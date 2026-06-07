@@ -77,6 +77,9 @@
     'llm.result':  { label: 'LLM',    color: '#8b85ff', icon: '↙' },
     'tool.call':   { label: 'TOOL',   color: '#f0a060', icon: '🔧' },
     'tool.result': { label: 'TOOL',   color: '#f0a060', icon: '↩' },
+    'reasoning.start':  { label: 'LOOP', color: '#5bc0de', icon: '▶' },
+    'reasoning.step':   { label: 'LOOP', color: '#5bc0de', icon: '∴' },
+    'reasoning.result': { label: 'LOOP', color: '#5bc0de', icon: '■' },
     'message.out': { label: 'REPLY',  color: '#4caf82', icon: '✓' },
     'error':       { label: 'ERROR',  color: '#f06060', icon: '✖' },
     'connected':   { label: 'SYS',    color: '#555a7a', icon: '•' },
@@ -101,6 +104,9 @@
       case 'llm.result':  return `LLM result — ${p.output_tokens ?? 0} out / ${p.input_tokens ?? 0} in tokens · ${p.duration_ms ?? 0}ms${p.tool_calls ? ` · ${p.tool_calls} tool call(s)` : ''}`
       case 'tool.call':   return `${p.name || 'tool'}(${snippet(JSON.stringify(p.arguments || {}), 80)})`
       case 'tool.result': return `${p.name || 'tool'} → ${snippet(p.content, 100)}`
+      case 'reasoning.start':  return `reasoning loop started — ${p.strategy || '?'} · max ${p.max_steps ?? '?'} steps · ${p.tools ?? 0} tools`
+      case 'reasoning.step':   return `step ${p.index ?? '?'}: ${snippet(p.thought, 90)}${p.tool ? ` → ${p.tool}` : ''}`
+      case 'reasoning.result': return `loop finished — ${p.steps ?? 0} step(s) · ${p.confident ? 'confident' : 'not confident'} · ${p.duration_ms ?? 0}ms`
       case 'message.out': return `reply — ${snippet(partsText(p), 120)}`
       case 'error':       return `[${p.stage || 'error'}] ${snippet(p.error, 160)}`
       case 'connected':   return String(ev.payload || 'stream connected')
