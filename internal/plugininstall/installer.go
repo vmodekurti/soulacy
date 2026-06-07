@@ -160,11 +160,11 @@ func (ins *Installer) Discard(stagedID string) error {
 
 // Installed describes one installer-managed plugin for the management UI.
 type Installed struct {
-	ID          string                 `json:"id"`
-	Name        string                 `json:"name,omitempty"`
-	Source      string                 `json:"source"`
-	Enabled     bool                   `json:"enabled"`
-	InstalledAt time.Time              `json:"installed_at"`
+	ID          string    `json:"id"`
+	Name        string    `json:"name,omitempty"`
+	Source      string    `json:"source"`
+	Enabled     bool      `json:"enabled"`
+	InstalledAt time.Time `json:"installed_at"`
 	// NeedsReapproval is true when the on-disk manifest now requests
 	// different permissions than were approved. The plugin does NOT load
 	// until Reapprove.
