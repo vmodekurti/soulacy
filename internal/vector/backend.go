@@ -16,28 +16,12 @@
 // reference a concrete implementation directly.
 package vector
 
-import (
-	"context"
+import sdkvector "github.com/soulacy/soulacy/sdk/vector"
 
-	"github.com/soulacy/soulacy/internal/memory"
+// Canonical vector contract types live in the versioned SDK (Story E9).
+type (
+	// Result is one hit from a semantic search.
+	Result = sdkvector.Result
+	// Backend is the interface satisfied by every vector-store implementation.
+	Backend = sdkvector.Backend
 )
-
-// Result is one hit from a semantic search.
-type Result struct {
-	Entry    memory.Entry
-	Distance float64 // cosine or L2 distance; lower = more similar
-}
-
-// Backend is the interface satisfied by every vector-store implementation.
-type Backend interface {
-	// Write embeds entry.Content and stores it in the vector index.
-	Write(ctx context.Context, entry memory.Entry) error
-
-	// Search embeds query and returns the topK most similar entries.
-	// An empty agentID searches across all agents (Qdrant supports filters;
-	// sqlite-vec searches the full index and returns results for any agent).
-	Search(ctx context.Context, agentID, query string, topK int) ([]Result, error)
-
-	// Close releases all held resources (connections, goroutines, etc.).
-	Close() error
-}

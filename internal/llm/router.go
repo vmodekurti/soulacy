@@ -10,92 +10,29 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/soulacy/soulacy/pkg/message"
+	sdkllm "github.com/soulacy/soulacy/sdk/llm"
 )
 
-// CompletionRequest is the provider-agnostic input to an LLM call.
-type CompletionRequest struct {
-	Model       string
-	Messages    []ChatMessage
-	Tools       []ToolSchema
-	Temperature float64
-	MaxTokens   int
-	Stream      bool
-
-	// ResponseFormat hints the provider to constrain its output. Empty = free
-	// text. "json" = the response must be a single JSON value (object/array).
-	// "json_schema" + JSONSchema = the response must validate against the
-	// supplied JSON Schema (where supported — OpenAI structured outputs,
-	// Gemini responseSchema; on Anthropic/Ollama we fall back to JSON-mode
-	// + post-validation in the engine).
-	ResponseFormat string
-	JSONSchema     map[string]any
-
-	// ToolChoice constrains the model's tool-selection behaviour for this
-	// single request. Empty = no constraint. Otherwise one of:
-	//   "auto"        — model decides
-	//   "none"        — must not call a tool
-	//   "required"    — must call at least one tool
-	//   "<tool_name>" — must call this specific tool
-	// The caller (engine) is responsible for clearing this between turns so
-	// only turn 1 forces delegation; subsequent turns can synthesise freely.
-	ToolChoice string
-}
-
-// ChatMessage mirrors the role/content structure used by all major LLM APIs.
-type ChatMessage struct {
-	Role    string // "system", "user", "assistant", "tool"
-	Content string
-	// For tool result messages:
-	ToolCallID string
-	Name       string // tool name (for tool-role messages)
-	// For assistant messages that include tool calls:
-	ToolCalls []message.ToolCall
-}
-
-// ToolSchema is the JSON Schema description of a callable tool.
-type ToolSchema struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description"`
-	Parameters  map[string]any `json:"parameters"`
-}
-
-// CompletionResponse carries the LLM's answer back to the runtime.
-type CompletionResponse struct {
-	Content   string
-	ToolCalls []message.ToolCall
-	// Usage statistics
-	InputTokens  int
-	OutputTokens int
-	// Prompt caching statistics (Anthropic only; zero on other providers).
-	// CacheCreationTokens is the number of input tokens written to cache this
-	// turn (billed at 1.25× standard input rate).
-	// CacheReadTokens is the number of input tokens served from cache this
-	// turn (billed at 0.1× standard input rate — 90% discount).
-	CacheCreationTokens int
-	CacheReadTokens     int
-	// If Stream is true, tokens arrive on this channel. Closed when done.
-	Stream <-chan string
-}
-
-// Provider is the interface every LLM backend must implement.
-type Provider interface {
-	// ID returns the provider's unique identifier (e.g. "ollama", "openai").
-	ID() string
-
-	// Complete sends a chat-completion request and returns the response.
-	// ctx carries deadline and cancellation.
-	Complete(ctx context.Context, req CompletionRequest) (*CompletionResponse, error)
-
-	// Models returns the list of available model identifiers.
-	Models(ctx context.Context) ([]string, error)
-}
+// Canonical LLM contract types live in the versioned SDK (Story E9);
+// these aliases keep every existing import path working unchanged.
+type (
+	// CompletionRequest is the provider-agnostic input to an LLM call.
+	CompletionRequest = sdkllm.CompletionRequest
+	// ChatMessage mirrors the role/content structure used by all major LLM APIs.
+	ChatMessage = sdkllm.ChatMessage
+	// ToolSchema is the JSON Schema description of a callable tool.
+	ToolSchema = sdkllm.ToolSchema
+	// CompletionResponse carries the LLM's answer back to the runtime.
+	CompletionResponse = sdkllm.CompletionResponse
+	// Provider is the interface every LLM inference backend implements.
+	Provider = sdkllm.Provider
+)
 
 // Router dispatches LLM calls to registered providers.
 type Router struct {
-	mu          sync.RWMutex
-	providers   map[string]Provider
-	defaultID   string
+	mu        sync.RWMutex
+	providers map[string]Provider
+	defaultID string
 }
 
 // NewRouter creates a Router with the given default provider ID.

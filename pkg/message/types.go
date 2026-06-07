@@ -1,89 +1,45 @@
-// Package message defines the canonical message types that flow through Soulacy.
-// All channel adapters translate their platform-specific formats into these types,
-// ensuring the runtime never has to know which channel a message came from.
+// Package message re-exports the canonical Soulacy message types from the
+// versioned SDK module (github.com/soulacy/soulacy/sdk/message, Story E9).
+// Every name here is a type alias or re-export — existing imports compile
+// unchanged and values are interchangeable with SDK values.
 package message
 
-import "time"
+import sdkmsg "github.com/soulacy/soulacy/sdk/message"
 
 // Role identifies the origin of a message in a conversation.
-type Role string
+type Role = sdkmsg.Role
 
 const (
-	RoleUser      Role = "user"
-	RoleAssistant Role = "assistant"
-	RoleSystem    Role = "system"
-	RoleTool      Role = "tool"
+	RoleUser      = sdkmsg.RoleUser
+	RoleAssistant = sdkmsg.RoleAssistant
+	RoleSystem    = sdkmsg.RoleSystem
+	RoleTool      = sdkmsg.RoleTool
 )
 
-// ContentType describes the media type of a message part.
-type ContentType string
+// ContentType identifies the kind of a message part.
+type ContentType = sdkmsg.ContentType
 
 const (
-	ContentText  ContentType = "text"
-	ContentImage ContentType = "image"
-	ContentAudio ContentType = "audio"
-	ContentFile  ContentType = "file"
+	ContentText  = sdkmsg.ContentText
+	ContentImage = sdkmsg.ContentImage
+	ContentFile  = sdkmsg.ContentFile
+	ContentAudio = sdkmsg.ContentAudio
 )
 
-// Part is one piece of a (possibly multi-modal) message body.
-type Part struct {
-	Type     ContentType `json:"type"`
-	Text     string      `json:"text,omitempty"`
-	MimeType string      `json:"mime_type,omitempty"`
-	Data     []byte      `json:"data,omitempty"` // base64 decoded
-	URL      string      `json:"url,omitempty"`
-}
+// Part is one piece of message content.
+type Part = sdkmsg.Part
 
-// Message is the canonical inbound/outbound message shared across all subsystems.
-type Message struct {
-	ID        string            `json:"id"`
-	SessionID string            `json:"session_id"`
-	AgentID   string            `json:"agent_id"`
-	Channel   string            `json:"channel"`   // e.g. "telegram", "discord", "http"
-	ThreadID  string            `json:"thread_id"` // channel-native thread/conversation id
-	UserID    string            `json:"user_id"`
-	Username  string            `json:"username"`
-	Role      Role              `json:"role"`
-	Parts     []Part            `json:"parts"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-}
+// Message is the canonical message envelope.
+type Message = sdkmsg.Message
 
-// Text is a convenience constructor for a plain-text message.
-func Text(text string) []Part {
-	return []Part{{Type: ContentText, Text: text}}
-}
+// Text builds a single-text-part content slice.
+var Text = sdkmsg.Text
 
-// ToolCall represents a request from the LLM to call a specific tool.
-type ToolCall struct {
-	ID        string         `json:"id"`
-	Name      string         `json:"name"`
-	Arguments map[string]any `json:"arguments"`
+// ToolCall is a model-requested tool invocation.
+type ToolCall = sdkmsg.ToolCall
 
-	// ThoughtSignature is an opaque base64 blob returned by Gemini 2.5 thinking
-	// models alongside each functionCall. It must be echoed back verbatim in
-	// subsequent turns or Gemini returns a 400 INVALID_ARGUMENT.
-	// Other providers leave this field empty and it is not transmitted.
-	ThoughtSignature string `json:"thought_signature,omitempty"`
-}
+// ToolResult is the outcome of one tool invocation.
+type ToolResult = sdkmsg.ToolResult
 
-// ToolResult carries the result back from a tool execution.
-type ToolResult struct {
-	CallID  string `json:"call_id"`
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	IsError bool   `json:"is_error"`
-}
-
-// Event is a structured log event streamed over WebSocket to the GUI.
-type Event struct {
-	Type      string    `json:"type"` // message.in, message.out, tool.call, tool.result, error
-	AgentID   string    `json:"agent_id"`
-	SessionID string    `json:"session_id"`
-	Payload   any       `json:"payload"`
-	Timestamp time.Time `json:"timestamp"`
-
-	// Parts carries typed media attachments associated with this event.
-	// Nil for events that carry no attachment context.
-	Parts []TypedPart `json:"parts,omitempty"`
-}
+// Event is one observability event (message.in, tool.call, …).
+type Event = sdkmsg.Event

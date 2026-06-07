@@ -2,6 +2,10 @@ module github.com/soulacy/soulacy
 
 go 1.25.0
 
+require github.com/soulacy/soulacy/sdk v0.1.0
+
+replace github.com/soulacy/soulacy/sdk => ./sdk
+
 require (
 	github.com/asg017/sqlite-vec-go-bindings v0.1.6
 	github.com/fsnotify/fsnotify v1.7.0

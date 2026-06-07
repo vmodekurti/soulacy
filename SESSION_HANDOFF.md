@@ -26,11 +26,37 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). Next up: M6 — E9
-  (extract versioned Go SDK module), then E10 → E15 → E16 → E17 → E11 →
-  E12 → E13.**
+  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅ — next up:
+  E10 (factory registries + decompose main.go), then E15 → E16 → E17 →
+  E11 → E12 → E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E9 (versioned Go SDK module) — complete (session 6, full suite green).**
+- NEW MODULE `sdk/` (`github.com/soulacy/soulacy/sdk`, go.mod of its own,
+  STDLIB-ONLY — no third-party deps, by policy). Root go.mod: `require
+  …/sdk v0.1.0` + `replace …/sdk => ./sdk`.
+- Canonical contracts moved into the SDK; old paths became TYPE ALIASES
+  (identical types, not conversions — nothing else changed):
+  · sdk/message ← pkg/message (types/attachment/progress; pkg/message now
+    aliases + `var Text/UnmarshalPartJSON` re-exports; its tests untouched
+    and passing against the aliases)
+  · sdk/channel ← channels.Adapter + AdapterStatus
+  · sdk/llm ← llm.Provider, CompletionRequest/Response, ChatMessage,
+    ToolSchema
+  · sdk/queue ← queue.Message (+Ack/NewMessage), Subscription, Backend
+  · sdk/memory ← memory.Entry + Scope (+constants; needed by vector/storage)
+  · sdk/vector ← vector.Result + Backend
+  · sdk/storage ← storage.ActionLogBackend + MemoryBackend
+- `sdk/README.md` — compatibility policy: semver; interfaces FROZEN per
+  major (additive capability via extension interfaces + type assertion,
+  never new methods); structs append-only with zero-value compat;
+  constants append-only; wire-format versions live in the protocols, not
+  the SDK; no dependencies ever. Conformance kits land in E11.
+- Both modules: build ✓ vet ✓ full suite green (62 root pkgs + sdk).
+- NOTE for E10: factory registries (RegisterFactory for channels/
+  providers/backends) belong in the SDK per the story; the blank-import
+  file generates into cmd/soulacy.
 
 **Story 14 (task collaboration primitives) — complete (TDD, session 6).
 M5 done. Suite total 62.7%.**

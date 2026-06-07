@@ -16,37 +16,16 @@ import (
 
 	"github.com/soulacy/soulacy/internal/metrics"
 	"github.com/soulacy/soulacy/pkg/message"
+	sdkchannel "github.com/soulacy/soulacy/sdk/channel"
 )
 
-// Adapter is the interface every channel must implement.
-type Adapter interface {
-	// ID returns the unique identifier for this channel type (e.g. "telegram").
-	ID() string
-
-	// Name returns a human-readable display name.
-	Name() string
-
-	// Start connects to the platform and begins receiving messages.
-	// Inbound messages must be posted to the provided inbox channel.
-	// Start must be non-blocking — launch a goroutine internally.
-	Start(ctx context.Context, inbox chan<- message.Message) error
-
-	// Send delivers an outbound message to the platform.
-	Send(ctx context.Context, msg message.Message) error
-
-	// Stop gracefully disconnects from the platform.
-	Stop() error
-
-	// Status reports whether the adapter is connected.
-	Status() AdapterStatus
-}
+// Adapter is the interface every channel must implement. Canonical
+// definition lives in the versioned SDK (Story E9); this alias keeps every
+// existing import path working unchanged.
+type Adapter = sdkchannel.Adapter
 
 // AdapterStatus describes the current connection state of a channel adapter.
-type AdapterStatus struct {
-	Connected bool   `json:"connected"`
-	Detail    string `json:"detail,omitempty"` // e.g. "polling" or error message
-	QRCode    string `json:"qr_code,omitempty"`
-}
+type AdapterStatus = sdkchannel.AdapterStatus
 
 // Registry holds all registered channel adapters and routes outbound messages.
 //
