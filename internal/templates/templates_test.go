@@ -355,3 +355,32 @@ func TestParseEntryNameStripsExtension(t *testing.T) {
 		}
 	}
 }
+
+// Story E21: the four default agentic workflows ship in the embedded
+// catalog. Removing one is a product regression, not a refactor.
+func TestDefaultWorkflowsShipped(t *testing.T) {
+	c := New("") // no user dir — embedded only
+	entries, err := c.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"meeting-minutes":    false,
+		"inbox-triage":       false,
+		"market-monitor":     false,
+		"compliance-auditor": false,
+	}
+	for _, e := range entries {
+		if _, ok := want[e.Name]; ok {
+			want[e.Name] = true
+			if e.Description == "" || e.DisplayName == "" {
+				t.Errorf("workflow template %q missing display name/description", e.Name)
+			}
+		}
+	}
+	for name, found := range want {
+		if !found {
+			t.Errorf("default workflow template %q missing from embedded catalog", name)
+		}
+	}
+}
