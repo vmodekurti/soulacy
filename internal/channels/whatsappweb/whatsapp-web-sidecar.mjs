@@ -61,6 +61,8 @@ async function main() {
   const makeWASocket = baileys.default?.default || baileys.default || baileys.makeWASocket;
   const useMultiFileAuthState = baileys.useMultiFileAuthState || baileys.default?.useMultiFileAuthState;
   const DisconnectReason = baileys.DisconnectReason || baileys.default?.DisconnectReason || {};
+  const jidNormalizedUser = baileys.jidNormalizedUser || baileys.default?.jidNormalizedUser
+    || ((jid) => String(jid || '').replace(/:\d+(?=@)/, ''));
 
   if (!makeWASocket || !useMultiFileAuthState) {
     emit({ type: 'error', detail: 'Unsupported Baileys export shape. Update @whiskeysockets/baileys.' });
@@ -69,6 +71,22 @@ async function main() {
   }
 
   let sock;
+
+  // Ids of messages WE sent — used to tell the user's own typing in the
+  // "Message yourself" chat apart from the agent's replies echoing back
+  // (both arrive with fromMe=true). Without this, self-chat support would
+  // loop: agent reply → upsert → agent reply…
+  const sentIds = new Set();
+  function rememberSent(id) {
+    if (!id) return;
+    sentIds.add(id);
+    if (sentIds.size > 500) {
+      for (const old of sentIds) {
+        sentIds.delete(old);
+        if (sentIds.size <= 250) break;
+      }
+    }
+  }
 
   async function connect() {
     // Auth state is (re-)loaded on every connect so a cleared session dir
@@ -116,8 +134,17 @@ async function main() {
 
     sock.ev.on('messages.upsert', ({ messages, type }) => {
       if (type !== 'notify') return;
+      const selfJid = jidNormalizedUser(sock.user?.id || '');
       for (const msg of messages || []) {
-        if (!msg.message || msg.key?.fromMe) continue;
+        if (!msg.message) continue;
+        if (msg.key?.fromMe) {
+          // Own messages are ignored EXCEPT in the "Message yourself"
+          // chat, which doubles as a private playground for the agent.
+          // The agent's own replies (ids we sent) never re-trigger it.
+          const chat = jidNormalizedUser(msg.key?.remoteJid || '');
+          const isSelfChat = selfJid !== '' && chat === selfJid;
+          if (!isSelfChat || sentIds.has(msg.key?.id)) continue;
+        }
         const text = textFromMessage(msg.message).trim();
         if (!text) continue;
         emit({
@@ -152,7 +179,8 @@ async function main() {
     }
     if (cmd.type !== 'send') return;
     try {
-      await sock.sendMessage(cmd.to, { text: String(cmd.text || '') });
+      const sent = await sock.sendMessage(cmd.to, { text: String(cmd.text || '') });
+      rememberSent(sent?.key?.id);
     } catch (error) {
       emit({ type: 'error', detail: 'send failed', error: String(error?.message || error) });
     }
