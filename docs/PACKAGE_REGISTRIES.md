@@ -126,3 +126,44 @@ client — including signature verification — is pinned by
 - `sy skill install <slug>` (Story E18) — registry resolve → safety audit
   (E20) → consent → verified extract → hot-load.
 - The GUI install flow (E13) — uses the same engine for slug-based installs.
+
+## Skill directories (type: skillssh — Story E26)
+
+`skillssh` registries speak the skills.sh directory API
+(https://skills.sh/docs/api): `GET /api/v1/skills/search?q=`,
+`GET /api/v1/skills/{owner}/{repo}/{skill}` (full file tree inline),
+`GET /api/v1/skills/audit/{id}` (partner security audits — surfaced in
+the install consent prompt; Soulacy's own E20 introspection still runs on
+every install). Slugs are skills.sh ids: `owner/repo/skill`.
+
+```yaml
+registries:
+  - id: skills.sh
+    type: skillssh
+    base_url: https://skills.sh
+    priority: 50
+```
+
+```bash
+sy skill install vercel-labs/skills/find-skills
+```
+
+## Reviewing new sources (Story E26)
+
+Point the framework at ANY url and it identifies what it is and guides
+you to add it:
+
+```bash
+sy registry probe https://www.skills.sh/     # review only
+sy registry add   https://www.skills.sh/     # review + consent + save
+sy registry list
+```
+
+Detection: known git hosts → `git` entry; skills.sh API shape →
+`skillssh`; E19 `/v1/search` shape → `http`; anything else reports the
+GitHub repos the page links (installable directly via
+`sy skill install github.com/owner/repo`). The GUI equivalent lives on
+the Skills page (➕ Skill sources → paste URL → Review → Add); gateway
+endpoints: `GET/POST /api/v1/registries`, `POST /api/v1/registries/probe`
+(config RBAC). Saving appends to the `registries:` block —
+`sy skill install` picks it up immediately, GUI installs after a restart.

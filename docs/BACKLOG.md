@@ -31,6 +31,7 @@ stabilized through real use.
 | ✅ | M8 Registry & Safety | **E18 → E19 → E20 → E22** | **COMPLETE** (session 8, 2026-06-07). |
 | ✅ | M9 Default Workflows | **E21** | **COMPLETE** (session 8). Four workflows shipped: Meeting Minutes, Smart Inbox Triage, Competitor & Market Monitor, Document Compliance Auditor. |
 | ✅ | M10 Audit response | **E23 → E24 → E25** | **COMPLETE** (session 9, 2026-06-07). E23: versioned rulebooks (session 8). E24: External Storage Protocol — sdk/extstorage JSON-RPC-over-stdio for vector/queue/storage sidecars, conformance kit + python reference, per-run shared scratch mounts (also on ECP hello_ack). E25: workflow graph form (nodes/edges, conditional predicates, bounded cycles default ×1, visit-indexed checkpoints + resume), "flow" reasoning strategy, Flow page read-only graph render. Docs: EXTERNAL_STORAGE_PROTOCOL.md, FLOW_GRAPHS.md. |
+| ✅ | M11 Source discovery | **E26** | **COMPLETE** (session 9, requested by Vasu). URL source review: `skillssh` registry provider (skills.sh API: search + inline file trees + partner audits in consent), pkgregistry.Probe (git host / skillssh / E19 http / page-with-repo-links detection), `sy registry probe|add|list` (gateway-or-direct config write), gateway /api/v1/registries{,/probe}, Skills page ➕ Skill sources modal. docs/PACKAGE_REGISTRIES.md §skillssh. |
 | ⏸ | Deferred | E14 (WASM) | demand-gated; see EXTENSIBILITY.md §7. |
 
 ## Story prompts

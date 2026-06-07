@@ -15,6 +15,15 @@
   let asError    = ''
   let asSuccess  = ''
 
+  // Skill sources modal (Story E26: review a URL → add as registry source)
+  let srcModal   = false
+  let srcURL     = ''
+  let srcBusy    = false
+  let srcError   = ''
+  let srcSuccess = ''
+  let srcReport  = null   // pkgregistry.ProbeReport
+  let sources    = []     // configured registries
+
   async function load() {
     loading = true
     error   = ''
@@ -73,6 +82,56 @@
     }
   }
 
+  async function openSrcModal() {
+    srcURL = ''; srcError = ''; srcSuccess = ''; srcReport = null
+    srcModal = true
+    try {
+      const res = await api.registries.list()
+      sources = res.registries || []
+    } catch { sources = [] }
+  }
+  function closeSrcModal() { srcModal = false }
+
+  async function probeSource() {
+    if (!srcURL.trim()) return
+    srcBusy = true; srcError = ''; srcSuccess = ''; srcReport = null
+    try {
+      srcReport = await api.registries.probe(srcURL.trim())
+    } catch (e) {
+      srcError = e.message
+    } finally {
+      srcBusy = false
+    }
+  }
+
+  async function addSource() {
+    if (!srcReport?.suggested) return
+    srcBusy = true; srcError = ''
+    try {
+      const s = srcReport.suggested
+      const res = await api.registries.add({
+        id: s.ID || s.id, type: s.Type || s.type,
+        base_url: s.BaseURL || s.base_url || '', priority: s.Priority || s.priority || 0,
+      })
+      srcSuccess = res.message || 'Source saved.'
+      const list = await api.registries.list()
+      sources = list.registries || []
+      srcReport = null
+      srcURL = ''
+    } catch (e) {
+      srcError = e.message
+    } finally {
+      srcBusy = false
+    }
+  }
+
+  const kindLabels = {
+    skillssh: '📚 Skill directory (skills.sh-compatible)',
+    http:     '📦 Soulacy package registry',
+    git:      '🐙 Git host',
+    unknown:  '❓ Not a recognisable registry',
+  }
+
   onMount(load)
 </script>
 
@@ -80,10 +139,93 @@
   <div class="page-header">
     <h1>Agent Skills</h1>
     <div class="header-actions">
+      <button class="btn-as" on:click={openSrcModal}>➕ Skill sources</button>
       <button class="btn-as" on:click={openASModal}>⚡ From AgenticSkills</button>
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
     </div>
   </div>
+
+  <!-- Skill sources modal (Story E26) -->
+  {#if srcModal}
+    <div
+      class="modal-backdrop"
+      role="button"
+      tabindex="0"
+      aria-label="Close skill sources modal"
+      on:click|self={closeSrcModal}
+      on:keydown={(e) => e.key === 'Escape' && closeSrcModal()}
+    >
+      <div class="modal">
+        <div class="modal-header">
+          <h2>Skill sources</h2>
+          <button class="modal-close" on:click={closeSrcModal}>✕</button>
+        </div>
+
+        {#if sources.length > 0}
+          <div class="src-list">
+            {#each sources as s (s.id)}
+              <div class="src-row">
+                <span class="src-id">{s.id}</span>
+                <span class="src-type">{s.type}</span>
+                {#if s.base_url}<span class="src-url">{s.base_url}</span>{/if}
+                {#if s.has_auth}<span class="src-auth" title="auth headers configured">🔑</span>{/if}
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p class="as-hint">No sources configured yet.</p>
+        {/if}
+
+        <p class="as-hint">
+          Paste any URL — a skill directory like <strong>skills.sh</strong>, a Soulacy
+          registry, or a GitHub host — and Review will identify it and suggest the
+          config entry. Installs always run the local safety pipeline.
+        </p>
+
+        <div class="src-probe-row">
+          <input
+            class="as-input"
+            type="url"
+            aria-label="Source URL"
+            placeholder="https://www.skills.sh/"
+            bind:value={srcURL}
+            disabled={srcBusy}
+            on:keydown={(e) => e.key === 'Enter' && probeSource()}
+          />
+          <button class="btn-as" on:click={probeSource} disabled={srcBusy || !srcURL.trim()}>
+            {srcBusy ? 'Reviewing…' : '🔍 Review'}
+          </button>
+        </div>
+
+        {#if srcError}<div class="as-err">{srcError}</div>{/if}
+        {#if srcSuccess}<div class="as-ok">✓ {srcSuccess}</div>{/if}
+
+        {#if srcReport}
+          <div class="src-report">
+            <div class="src-kind">{kindLabels[srcReport.kind] || srcReport.kind}</div>
+            <p>{srcReport.detail}</p>
+            {#if srcReport.has_audits}
+              <p class="src-audits">🛡 Publishes third-party security audits (shown at install consent).</p>
+            {/if}
+            {#if (srcReport.samples || []).length > 0}
+              <div class="src-samples">
+                {#each srcReport.samples.slice(0, 6) as smp}
+                  <code>{smp}</code>
+                {/each}
+              </div>
+            {/if}
+            {#if srcReport.suggested}
+              <div class="modal-footer">
+                <button class="btn-as" on:click={addSource} disabled={srcBusy}>
+                  ➕ Add "{srcReport.suggested.ID || srcReport.suggested.id}" as a source
+                </button>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      </div>
+    </div>
+  {/if}
 
   <!-- AgenticSkills provisioner modal -->
   {#if asModal}
@@ -367,5 +509,32 @@
   @media (max-width: 768px) {
     .layout { flex-direction: column; overflow: visible; }
     .layout > :first-child { width: 100%; max-height: 240px; }
+  }
+
+  /* Story E26: skill sources modal */
+  .src-list { display: flex; flex-direction: column; gap: .3rem; margin-bottom: .6rem; }
+  .src-row {
+    display: flex; align-items: center; gap: .6rem;
+    background: #0e1020; border: 1px solid #2a2f4a; border-radius: 6px;
+    padding: .35rem .6rem; font-size: .8rem;
+  }
+  .src-id { font-family: monospace; color: #8b85ff; }
+  .src-type {
+    background: rgba(108,99,255,.15); border-radius: 999px;
+    padding: .05rem .5rem; font-size: .7rem; color: #ada8ff;
+  }
+  .src-url { color: #6b7294; font-size: .75rem; overflow: hidden; text-overflow: ellipsis; }
+  .src-probe-row { display: flex; gap: .5rem; align-items: stretch; }
+  .src-probe-row .as-input { flex: 1; }
+  .src-report {
+    margin-top: .7rem; background: #0e1020; border: 1px solid #2a2f4a;
+    border-radius: 8px; padding: .7rem .8rem; font-size: .83rem; color: #c8cadf;
+  }
+  .src-kind { font-weight: 600; margin-bottom: .3rem; }
+  .src-audits { color: #4caf82; font-size: .78rem; }
+  .src-samples { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+  .src-samples code {
+    background: rgba(108,99,255,.12); border-radius: 4px;
+    padding: .1rem .4rem; font-size: .72rem; color: #ada8ff;
   }
 </style>

@@ -17,4 +17,9 @@ func init() {
 	registry.MustRegisterPkgRegistry("git", func(cfg map[string]any) (sdkpkg.Provider, error) {
 		return newGitProvider(cfg)
 	})
+	// skills.sh-style directories (Story E26): search + inline file trees +
+	// partner security audits.
+	registry.MustRegisterPkgRegistry("skillssh", func(cfg map[string]any) (sdkpkg.Provider, error) {
+		return newSkillsShProvider(cfg)
+	})
 }

@@ -153,6 +153,13 @@ export const api = {
     }),
   },
 
+  // Skill sources / package registries (Story E26)
+  registries: {
+    list:  ()      => apiFetch('/registries'),
+    probe: (url)   => apiFetch('/registries/probe', { method: 'POST', body: JSON.stringify({ url }) }),
+    add:   (entry) => apiFetch('/registries', { method: 'POST', body: JSON.stringify(entry) }),
+  },
+
   mcp: {
     list:   ()        => apiFetch('/mcp'),
     create: (body)    => apiFetch('/mcp',                                       { method: 'POST',   body: JSON.stringify(body) }),
