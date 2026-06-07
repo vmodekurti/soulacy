@@ -35,6 +35,7 @@ import (
 	"github.com/soulacy/soulacy/internal/executor"
 	"github.com/soulacy/soulacy/internal/executor/pool"
 	"github.com/soulacy/soulacy/internal/executor/process"
+	"github.com/soulacy/soulacy/internal/extstorage"
 	"github.com/soulacy/soulacy/internal/gateway"
 	"github.com/soulacy/soulacy/internal/hooks"
 	"github.com/soulacy/soulacy/internal/introspect"
@@ -144,6 +145,40 @@ func (a *App) Run(parent context.Context) error {
 		actionBackend = pgAL
 		memBackend = pgMem
 		log.Info("storage backend: postgres", zap.String("log_dir", pgLogDir))
+	case "external":
+		// Action log falls back to SQLite
+		logsDir := ws.Logs
+		actionsDB := ws.DB("actions")
+		sqAL, sqErr := actionlog.New(logsDir, actionsDB, log)
+		if sqErr != nil {
+			return fmt.Errorf("sqlite action log: %w", sqErr)
+		}
+		defer sqAL.Close()
+		actionBackend = storagesqlite.NewActionLog(sqAL)
+
+		// Storage Backend is external sidecar
+		if cfg.Storage.Command == "" {
+			return fmt.Errorf("external storage backend: missing command configuration")
+		}
+		scratchRoot := "/tmp/soulacy-shared/"
+		if err := os.MkdirAll(scratchRoot, 0755); err != nil {
+			return fmt.Errorf("external storage backend: create scratch root: %w", err)
+		}
+
+		cc := extstorage.ClientConfig{
+			Name:        "storage-external",
+			Command:     cfg.Storage.Command,
+			Args:        cfg.Storage.Args,
+			ScratchRoot: scratchRoot,
+			Log:         log,
+		}
+		extMem, err := extstorage.NewStorageBackend(parent, cc)
+		if err != nil {
+			return fmt.Errorf("external storage backend: %w", err)
+		}
+		defer extMem.Close()
+		memBackend = extMem
+		log.Info("storage backend: external sidecar", zap.String("command", cfg.Storage.Command))
 	default: // "sqlite" or empty
 		logsDir := ws.Logs
 		actionsDB := ws.DB("actions")
@@ -453,11 +488,15 @@ func (a *App) Run(parent context.Context) error {
 				)
 			}
 		case "external": // storage sidecar over stdio (E24)
+			scratchRoot := "/tmp/soulacy-shared/"
+			if err := os.MkdirAll(scratchRoot, 0755); err != nil {
+				log.Warn("external vector scratch root create failed", zap.Error(err))
+			}
 			eb, _, eerr := registry.NewVector("external", map[string]any{
 				"id":           "vector-external",
 				"command":      cfg.Vector.Command,
 				"args":         cfg.Vector.Args,
-				"scratch_root": filepath.Join(ws.Data, "scratch"),
+				"scratch_root": scratchRoot,
 				"logger":       log,
 			})
 			if eerr != nil {
@@ -534,7 +573,7 @@ func (a *App) Run(parent context.Context) error {
 		"id":           "queue-external",
 		"command":      cfg.Queue.Command,
 		"args":         cfg.Queue.Args,
-		"scratch_root": filepath.Join(ws.Data, "scratch"),
+		"scratch_root": "/tmp/soulacy-shared/",
 		"logger":       log,
 	})
 	if !qok {

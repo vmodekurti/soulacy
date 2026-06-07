@@ -668,6 +668,11 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/config", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleGetConfig)
 	api.Patch("/config", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handlePatchConfig)
 
+	// Skill sources / package registries (Story E26: review URL → add source)
+	api.Get("/registries", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleListRegistries)
+	api.Post("/registries/probe", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleProbeRegistry)
+	api.Post("/registries", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleAddRegistry)
+
 	// Logs (tail gateway log file)
 	api.Get("/logs", s.rbacMW(rbac.ResourceLogs, rbac.ActionRead), s.handleGetLogs)
 

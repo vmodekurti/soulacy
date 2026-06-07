@@ -117,6 +117,7 @@ Quick start:
 		buildWorkspaceCmd(), // sy workspace — soulspace info + migration
 		buildPullCmd(),      // sy pull — agent marketplace
 		buildEvalCmd(),      // sy eval — evaluation framework
+		buildRegistryCmd(),  // sy registry — review + manage skill sources (E26)
 		buildVersionCmd(),
 	)
 	return root
