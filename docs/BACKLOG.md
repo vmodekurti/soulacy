@@ -30,8 +30,7 @@ stabilized through real use.
 | ✅ | M7 Polish | **15** | **CODE-COMPLETE** (page titles, Config plugin-settings section, responsive stacking for Flow/Knowledge/Skills, button consistency; destructive actions verified already consistent). Remaining: visual QA on the Mac — checklist in SESSION_HANDOFF. |
 | ✅ | M8 Registry & Safety | **E18 → E19 → E20 → E22** | **COMPLETE** (session 8, 2026-06-07). |
 | ✅ | M9 Default Workflows | **E21** | **COMPLETE** (session 8). Four workflows shipped: Meeting Minutes, Smart Inbox Triage, Competitor & Market Monitor, Document Compliance Auditor. |
-| ✅ | M10 Memory & DB Safety | **E23 → E24 → E25** | **COMPLETE** (session 9). Memory isolation via scratch mounts; vector store versioning; cyclic workflow graph safety guards. |
-| 10 | M10 Audit response | **E23 → E24 → E25** | added 2026-06-07 from external audit. E23: versioned rulebooks (drift control — START HERE); E24: storage-backend sidecar protocol + shared mounts; E25: flow.yaml cyclic graphs. |
+| 10 | M10 Audit response | **E23 → E24 → E25** | added 2026-06-07 from external audit. E23 ✅ (versioned rulebooks, session 8); E24: storage-backend sidecar protocol + shared mounts; E25: flow.yaml cyclic graphs. |
 | ⏸ | Deferred | E14 (WASM) | demand-gated; see EXTENSIBILITY.md §7. |
 
 ## Story prompts

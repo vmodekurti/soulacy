@@ -39,6 +39,12 @@ type SupervisorConfig struct {
 	// fresh secrets. An error blocks the spawn and is retried through the
 	// normal crash/backoff loop. nil inherits the parent environment.
 	Env func() ([]string, error)
+
+	// SharedDir, when set, is advertised to every spawn in hello_ack
+	// (Story E24 shared mounts): the absolute per-run scratch directory
+	// for file-based attachment transport. Survives restarts — the same
+	// dir is re-advertised to the respawned sidecar.
+	SharedDir string
 }
 
 func (c *SupervisorConfig) defaults() {
@@ -126,6 +132,9 @@ func (s *Supervisor) newAdapter() (*Adapter, error) {
 	command, args := s.buildCommand()
 	a := New(s.id, command, args, s.agentID, s.activation, s.log)
 	a.handshakeTimeout = s.handshakeTimeout
+	if s.cfg.SharedDir != "" {
+		a.SetSharedDir(s.cfg.SharedDir)
+	}
 	if s.cfg.Env != nil {
 		env, err := s.cfg.Env()
 		if err != nil {

@@ -46,6 +46,23 @@ func TestHelperSidecar(t *testing.T) {
 		fmt.Fprintln(out, `{"type":"hello","protocol":1,"name":"flaky"}`)
 		time.Sleep(300 * time.Millisecond)
 		os.Exit(1)
+	case "shareddir":
+		// Echoes the hello_ack shared_dir into the status detail (Story
+		// E24 shared mounts: contract proof for the ECP side).
+		fmt.Fprintln(out, `{"type":"hello","protocol":1,"name":"shareddir"}`)
+		for in.Scan() {
+			f, err := ParseFrame(in.Bytes())
+			if err != nil {
+				continue
+			}
+			switch f.Type {
+			case "hello_ack":
+				fmt.Fprintf(out, `{"type":"status","connected":true,"detail":"shared=%s"}`+"\n", f.SharedDir)
+			case "shutdown":
+				return
+			}
+		}
+		return
 	case "envecho":
 		// Reports selected env vars in the status detail so tests can prove
 		// which variables the host injected (E6 credential delegation).

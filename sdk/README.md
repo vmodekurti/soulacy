@@ -22,6 +22,8 @@ on the SDK, never on `internal/` packages.
 | `sdk/reasoning` | `reasoning.Strategy` — pluggable reasoning loops (E15) |
 | `sdk/extchannel` | External Channel Protocol v1 wire types (NDJSON frames) |
 | `sdk/extchannel/sidecartest` | Sidecar protocol conformance runner (E11) |
+| `sdk/extstorage` | External Storage Protocol v1 — JSON-RPC over stdio for vector/queue sidecars (E24) |
+| `sdk/extstorage/storagetest` | Storage sidecar conformance runner (E24) |
 | `sdk/channel/channeltest` | `RunAdapterSuite` — channel adapter conformance kit (E11) |
 | `sdk/llm/providertest` | `RunProviderSuite` — LLM provider conformance kit (E11) |
 

@@ -2,6 +2,8 @@
 package reasoning
 
 import (
+	"encoding/json"
+	"net/http"
 	"strings"
 	"time"
 
@@ -97,14 +99,47 @@ func DefaultBackendFor(def *agent.Definition, keys ProviderKeys) LLMBackend {
 		if model != "" {
 			// Use the declared model for Think (hot path).
 			// Plan/Reflect keep qwen2.5:72b for better JSON structure unless the
-			// declared model is already a large qwen variant.
+			// declared model is already a large qwen variant or if qwen2.5:72b is not installed.
 			b.ThinkModel = model
 			if isLargeQwen(model) {
+				b.PlanReflectModel = model
+			} else if !ollamaHasModel(baseURL, "qwen2.5:72b") {
 				b.PlanReflectModel = model
 			}
 		}
 		return b
 	}
+}
+
+// ollamaHasModel queries Ollama's local tags API to verify if targetModel is installed.
+func ollamaHasModel(baseURL, targetModel string) bool {
+	if baseURL == "" {
+		baseURL = "http://localhost:11434"
+	}
+	baseURL = strings.TrimRight(baseURL, "/")
+	client := &http.Client{Timeout: 200 * time.Millisecond}
+	resp, err := client.Get(baseURL + "/api/tags")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return false
+	}
+	var payload struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return false
+	}
+	for _, m := range payload.Models {
+		if m.Name == targetModel || strings.HasPrefix(m.Name, targetModel+":") || strings.Contains(m.Name, targetModel) {
+			return true
+		}
+	}
+	return false
 }
 
 // isLargeQwen returns true for qwen models likely good enough for Plan/Reflect

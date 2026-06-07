@@ -34,8 +34,14 @@ Gateway side: `internal/channels/external.Adapter`. Conformance check:
 2. Gateway replies with the negotiated version — `min(gateway, sidecar)`:
 
    ```json
-   {"type":"hello_ack","protocol":1}
+   {"type":"hello_ack","protocol":1,"shared_dir":"/abs/path/scratch/ch-1a2b3c"}
    ```
+
+   `shared_dir` (optional, Story E24 shared mounts) is the absolute path
+   of a per-run scratch directory the gateway provisioned for this
+   sidecar. Large attachments move as files under it — referenced by
+   relative path — instead of inline frame payloads. Absent/empty = no
+   shared dir; sidecars must tolerate both (append-only field rule).
 
 3. From then on both sides speak the negotiated version.
 

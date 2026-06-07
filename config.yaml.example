@@ -204,3 +204,18 @@ server:
 #     - id: github
 #       type: git
 #       priority: 100
+
+# ── External storage sidecars (Story E24) ────────────────────────────────────
+# Vector and queue backends can be served by a sidecar process speaking the
+# External Storage Protocol (JSON-RPC 2.0 over stdio) — third-party database
+# drivers without recompiling. See docs/EXTERNAL_STORAGE_PROTOCOL.md. The
+# gateway provisions a per-run shared scratch directory (workspace
+# data/scratch/…) and passes it in negotiate.shared_dir; large payloads move
+# as files under it. Conformance kit: sdk/extstorage/storagetest.
+# vector:
+#     backend: external
+#     command: /usr/local/bin/my-vector-sidecar
+#     args: ["--db", "/var/lib/mydb"]
+# queue:
+#     backend: external
+#     command: /usr/local/bin/my-queue-sidecar

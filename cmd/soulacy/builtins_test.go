@@ -14,8 +14,8 @@ func TestAllBuiltinsRegistered(t *testing.T) {
 	want := map[string][]string{
 		"channels":      {"discord", "slack", "telegram", "whatsapp"},
 		"providers":     {"anthropic", "gemini", "google", "ollama", "openai"},
-		"queues":        {"memory", "nats"},
-		"vectors":       {"qdrant", "sqlite-vec"},
+		"queues":        {"external", "memory", "nats"},
+		"vectors":       {"external", "qdrant", "sqlite-vec"},
 		"reasoning":     {"plan_execute", "react"},
 		"pkgregistries": {"git", "http"},
 	}

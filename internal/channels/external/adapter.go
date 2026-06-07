@@ -43,6 +43,11 @@ type Adapter struct {
 	// delegation (E6): a minimal base env plus only the declared secrets.
 	env []string
 
+	// sharedDir, when set, is advertised in hello_ack (Story E24 shared
+	// mounts): the absolute per-run scratch directory where large
+	// attachments move as files instead of inline frame payloads.
+	sharedDir string
+
 	mu          sync.Mutex
 	inbox       chan<- message.Message
 	cmd         *exec.Cmd
@@ -90,6 +95,14 @@ func (a *Adapter) SetEnv(env []string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.env = env
+}
+
+// SetSharedDir advertises a per-run shared scratch directory to the
+// sidecar in hello_ack (Story E24). Must be called before Start.
+func (a *Adapter) SetSharedDir(dir string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sharedDir = dir
 }
 
 // Name reports the sidecar-announced name once the handshake completed.
@@ -191,9 +204,10 @@ func (a *Adapter) readLoop(ctx context.Context, r io.Reader) {
 		a.sidecarName = f.Name
 		a.negotiated = v
 		stdin := a.stdin
+		sharedDir := a.sharedDir
 		a.mu.Unlock()
 		if stdin != nil {
-			if err := WriteFrame(stdin, Frame{Type: "hello_ack", Protocol: v}); err != nil {
+			if err := WriteFrame(stdin, Frame{Type: "hello_ack", Protocol: v, SharedDir: sharedDir}); err != nil {
 				a.setStatus(false, "hello_ack write failed: "+err.Error(), "")
 				close(handshook)
 				return
