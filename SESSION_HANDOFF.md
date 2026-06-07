@@ -1,8 +1,79 @@
 # Session Handoff
 
-Last updated: 2026-06-06 (session 7: E10 parts 2–3, E15, E16, E17 ALL
-COMPLETE — M6 remaining: E11 → E12 → E13; previously session 6: E9 + E10
-part 1, M5, M4, M3)
+Last updated: 2026-06-07 (session 8: **M8 AND M9 COMPLETE** — Story 16,
+E19, E20, E18, E22, 17, 18, 19, E21 all done; suite green at every commit)
+
+## ⚠ Mac-side checklist (the human half)
+
+1. **Rebuild internal/webui/dist**: `cd gui && npm run build` (sandbox
+   builds to /tmp; dist is not committed from here). New GUI surfaces to
+   QA: Templates tab (main nav), editable Plugin settings on Config,
+   security report + migrations in the plugin approval modal,
+   reasoning.start/step/result events in Activity + Chat thinking.
+2. Story 15's visual QA checklist (below) still stands if not yet done.
+3. `go generate ./...` not needed — builtins_gen.go committed regenerated.
+
+## Session 8 progress (M8 + M9)
+
+- **Story 16 ✅** (commit 0cad2a3): reasoning loops wired into
+  Engine.Handle. Branch via LoopConfigFromDefinition right after the
+  prefix-cache prime; `internal/runtime/reasoning.go` has the
+  ToolExecutor bridge (reasoningToolExecutor → runTool, full policy
+  surface) + SetReasoningKeys/SetReasoningBackendFactory (test hook).
+  Shared run tail extracted to finalizeReply. Events:
+  reasoning.start/step/result (Activity + Chat thinking render them).
+- **E19 ✅** (commit ~e19): sdk/pkgregistry contract + sdk/registry
+  factories; internal/pkgregistry http+git providers + priority/fallback
+  Engine + FromConfig; `registries:` config block; plugininstall exports
+  GitClone/VerifyAndExtract; genbuiltins pins http/git.
+  docs/PACKAGE_REGISTRIES.md.
+- **E20 ✅** (commit 512447b): internal/introspect — StaticScan (python
+  rules + injection markers), RouterAuditor (graceful 'audit skipped'
+  degradation), DryRun (rlimit wrapper, dead HTTP proxy, write detection
+  via snapshot diff) → SecurityReport{findings,severity,verdict}.
+  E13 Preview.Security + gateway SetSafetyPipeline + GUI approval modal
+  rendering. docs/SAFETY_INTROSPECTION.md.
+- **E18 ✅** (commit 638bbdb): `sy skill install <slug>` remote flow in
+  cmd/sy/skillinstall.go (testable core remoteSkillInstall): registry
+  resolve → staged fetch → E20 report → consent (--yes never bypasses
+  danger) → atomic activate → hot-load via NEW POST /api/v1/skills/rescan.
+- **E22 ✅** (commit 531d0bf): sqlitex.MigrateSchema + shared
+  soulacy_schema_version table (additive-only default, Destructive
+  opt-in, per-step tx, pre-upgrade fixture test); /api/v1 contract
+  tests (internal/gateway/contract_test.go); sdk_major manifest gate
+  (plugins.CurrentSDKMajor=1); Loader.Diagnostics() → boot events
+  (type=error, stage=plugin-load) + chaos test. docs/UPGRADE_STABILITY.md.
+- **Story 17 ✅** (commit ab41bca): manifest v2 `migrations:` —
+  load-time pluginmigrate.Validate (refuse=warn+skip+diagnostic),
+  applied after plugin load via E16 runner, shown in E13 preview +
+  approval modal (migrationLines).
+- **Story 18 ✅** (commit e4fb67f): editable plugins_config —
+  PatchableConfig.PluginsConfig with merge semantics (null deletes,
+  '***' SKIPPED server-side so redacted round-trips keep secrets);
+  Config-page key/value editor (lib/pluginsettings.js, type-safe
+  unchanged-row round-trip).
+- **Story 19 ✅** (commit 7bc00f3): (a) telegram/slack/http Send ctx
+  discipline + channeltest Send_CancelledContext_FailsFast; (b)
+  `soulacy build` subcommand (logic → internal/buildtool, script stays
+  as shell); (c) /ws/events accepts splg_ plugin tokens gated by
+  events.subscribe via caps enforcer.
+- **E21 ✅ (M9)** (commit 7137e88): four workflow templates embedded
+  (meeting-minutes, inbox-triage, market-monitor, compliance-auditor;
+  pinned by TestDefaultWorkflowsShipped) + Templates tab in the GUI
+  main nav with one-click agent creation.
+- Suite green at every commit (root + sdk; vitest 116/116; vite build
+  clean in-sandbox).
+- ⚠ REBUILD internal/webui/dist ON THE MAC (sandbox can't ship dist).
+
+**ROADMAP STATUS: every planned milestone (M1–M9) is COMPLETE.** E14
+(WASM) remains demand-gated. Next session: no queued stories — await
+Vasu's direction (candidates: Story 15 + session-8 GUI visual QA on the
+Mac, E18 consent UX polish, adopting sqlitex.MigrateSchema in stores
+that evolve schema, tightening Send-ctx kit once third-party adapters
+catch up).
+
+(Previous: session 7: E10 parts 2–3, E15, E16, E17, E11, E12, E13,
+Story 15 — M6/M7 complete; session 6: E9 + E10 part 1, M5, M4, M3)
 
 ---
 
