@@ -16,12 +16,14 @@ func TestAllBuiltinsRegistered(t *testing.T) {
 		"providers": {"anthropic", "gemini", "google", "ollama", "openai"},
 		"queues":    {"memory", "nats"},
 		"vectors":   {"qdrant", "sqlite-vec"},
+		"reasoning": {"plan_execute", "react"},
 	}
 	got := map[string][]string{
 		"channels":  registry.Channels(),
 		"providers": registry.Providers(),
 		"queues":    registry.Queues(),
 		"vectors":   registry.Vectors(),
+		"reasoning": registry.ReasoningStrategies(),
 	}
 	for kind, names := range want {
 		have := map[string]bool{}

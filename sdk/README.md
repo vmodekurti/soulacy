@@ -18,6 +18,8 @@ on the SDK, never on `internal/` packages.
 | `sdk/vector` | `vector.Backend` — semantic search stores |
 | `sdk/memory` | Memory `Entry`/`Scope` shared by vector + storage |
 | `sdk/storage` | `storage.ActionLogBackend`, `storage.MemoryBackend` |
+| `sdk/registry` | Named factory registries — drivers self-register from `init()` |
+| `sdk/reasoning` | `reasoning.Strategy` — pluggable reasoning loops (E15) |
 
 The application re-exports all of these as type aliases at the historical
 paths (`pkg/message`, `internal/channels`, `internal/llm`, `internal/queue`,
