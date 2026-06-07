@@ -27,7 +27,7 @@ import (
 // Adapter is the HTTP webhook channel adapter.
 type Adapter struct {
 	inbox     chan<- message.Message
-	mu        sync.Mutex            // guards responses
+	mu        sync.Mutex             // guards responses
 	responses map[string]chan string // correlates request IDs to response channels
 	connected bool
 }
@@ -91,9 +91,14 @@ func (a *Adapter) Release(msgID string) {
 }
 
 // Send delivers the agent's reply to the waiting HTTP handler.
-func (a *Adapter) Send(_ context.Context, msg message.Message) error {
+func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if len(msg.Parts) == 0 {
 		return nil
+	}
+	// Story 19a — honour the caller's context: a cancelled caller must not
+	// have its reply delivered as if nothing happened.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("http: send: %w", err)
 	}
 	// Extract text from first part
 	text := msg.Parts[0].Text

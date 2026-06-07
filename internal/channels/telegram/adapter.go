@@ -169,11 +169,17 @@ func (a *Adapter) poll(ctx context.Context) {
 	}
 }
 
-func (a *Adapter) Send(_ context.Context, msg message.Message) error {
+// Send honours the caller's context (Story 19a): cancellation/deadline
+// propagate into the Telegram HTTP request instead of being swallowed by a
+// fresh context.Background().
+func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if len(msg.Parts) == 0 {
 		return nil
 	}
-	return a.sendText(context.Background(), mustParseInt64(msg.ThreadID), msg.Parts[0].Text)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("telegram: send: %w", err)
+	}
+	return a.sendText(ctx, mustParseInt64(msg.ThreadID), msg.Parts[0].Text)
 }
 
 func (a *Adapter) sendText(ctx context.Context, chatID int64, text string) error {

@@ -206,15 +206,20 @@ func (a *Adapter) run(ctx context.Context, wsURL string) error {
 	}
 }
 
-func (a *Adapter) Send(_ context.Context, msg message.Message) error {
+// Send honours the caller's context (Story 19a): cancellation/deadline
+// propagate into the Slack HTTP request.
+func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if len(msg.Parts) == 0 {
 		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("slack: send: %w", err)
 	}
 	body, _ := json.Marshal(map[string]string{
 		"channel": msg.ThreadID,
 		"text":    msg.Parts[0].Text,
 	})
-	req, _ := http.NewRequest(http.MethodPost, slackAPI+"/chat.postMessage", bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, slackAPI+"/chat.postMessage", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+a.botToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req)
