@@ -515,14 +515,21 @@ func Load(cfgPath string) (*Config, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("cannot determine home directory: %w", err)
 	}
-	setHomeDefaults(v, home)
+	ws, wsErr := ResolveWorkspace()
+	if wsErr != nil {
+		return nil, "", fmt.Errorf("resolving workspace: %w", wsErr)
+	}
+	setHomeDefaults(v, ws)
 
 	// Config file
 	if cfgPath != "" {
 		v.SetConfigFile(cfgPath)
 	} else {
-		// Search CWD first (project-level config wins for dev), then fall back to home dir.
+		// Search CWD first (project-level config wins for dev), then the
+		// workspace, then the legacy flat ~/.soulacy (harmless duplicate
+		// when the workspace IS legacy).
 		v.AddConfigPath(".")
+		v.AddConfigPath(ws.Root)
 		v.AddConfigPath(filepath.Join(home, ".soulacy"))
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
@@ -544,9 +551,7 @@ func Load(cfgPath string) (*Config, string, error) {
 
 	resolvedPath := v.ConfigFileUsed()
 	if resolvedPath == "" {
-		if home, _ := os.UserHomeDir(); home != "" {
-			resolvedPath = filepath.Join(home, ".soulacy", "config.yaml")
-		}
+		resolvedPath = ws.ConfigFile
 	}
 
 	cfg := &Config{}
@@ -557,29 +562,30 @@ func Load(cfgPath string) (*Config, string, error) {
 	return cfg, resolvedPath, nil
 }
 
-func setHomeDefaults(v *viper.Viper, home string) {
-	dataDir := filepath.Join(home, ".soulacy")
-	v.SetDefault("agent_dirs", []string{filepath.Join(dataDir, "agents")})
-	v.SetDefault("plugin_dirs", []string{filepath.Join(dataDir, "plugins")})
-	v.SetDefault("memory.dir", filepath.Join(dataDir, "memory"))
-	v.SetDefault("memory.sqlite_path", filepath.Join(dataDir, "archive.db"))
-	v.SetDefault("knowledge.db_path", filepath.Join(dataDir, "knowledge.db"))
-	v.SetDefault("runtime.audit_dir", filepath.Join(dataDir, "audit"))
-	v.SetDefault("server.gui_static_dir", filepath.Join(dataDir, "gui"))
+func setHomeDefaults(v *viper.Viper, ws Paths) {
+	v.SetDefault("agent_dirs", []string{ws.Agents})
+	v.SetDefault("plugin_dirs", []string{ws.Plugins})
+	v.SetDefault("memory.dir", ws.Memory)
+	v.SetDefault("memory.sqlite_path", ws.DB("archive"))
+	v.SetDefault("knowledge.db_path", ws.DB("knowledge"))
+	v.SetDefault("runtime.audit_dir", ws.Audit)
+	v.SetDefault("server.gui_static_dir", ws.GUI)
 }
 
-// DataDir returns the Soulacy home directory (~/.soulacy).
+// DataDir returns the workspace root: ~/.soulacy/soulspace for new
+// installations, the legacy flat ~/.soulacy for pre-soulspace ones.
+// Prefer ResolveWorkspace for structured paths.
 func DataDir() (string, error) {
-	home, err := os.UserHomeDir()
+	ws, err := ResolveWorkspace()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".soulacy"), nil
+	return ws.Root, nil
 }
 
-// EnsureDirs creates all directories Soulacy needs to run.
+// EnsureDirs creates all directories Soulacy needs to run — the full
+// workspace layout plus any explicitly configured paths.
 func EnsureDirs(cfg *Config) error {
-	home, _ := os.UserHomeDir()
 	dirs := []string{
 		cfg.Memory.Dir,
 		filepath.Dir(cfg.Memory.SQLitePath),
@@ -587,8 +593,8 @@ func EnsureDirs(cfg *Config) error {
 	if cfg.Knowledge.DBPath != "" {
 		dirs = append(dirs, filepath.Dir(cfg.Knowledge.DBPath))
 	}
-	if home != "" {
-		dirs = append(dirs, filepath.Join(home, ".soulacy", "skills"))
+	if ws, err := ResolveWorkspace(); err == nil {
+		dirs = append(dirs, ws.Dirs()...)
 	}
 	dirs = append(dirs, cfg.AgentDirs...)
 	dirs = append(dirs, cfg.PluginDirs...)
@@ -604,6 +610,10 @@ func EnsureDirs(cfg *Config) error {
 		if err := os.MkdirAll(d, 0755); err != nil {
 			return fmt.Errorf("creating dir %s: %w", d, err)
 		}
+	}
+	// Secrets hold key material — owner-only.
+	if ws, err := ResolveWorkspace(); err == nil {
+		_ = os.Chmod(ws.Secrets, 0o700)
 	}
 	return nil
 }

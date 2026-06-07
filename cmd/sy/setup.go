@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 // ── ANSI colour helpers ───────────────────────────────────────────────────────
@@ -113,7 +115,7 @@ func runSetupWizard() error {
 		OllamaURL:   "http://localhost:11434",
 		PythonBin:   "python3",
 		LogLevel:    "info",
-		DataDir:     filepath.Join(home, ".soulacy"),
+		DataDir:     setupDataDir(home),
 	}
 	cfg.ConfigPath = filepath.Join(cfg.DataDir, "config.yaml")
 
@@ -694,4 +696,13 @@ func fetchOllamaModels(baseURL string) []string {
 		}
 	}
 	return names
+}
+
+// setupDataDir picks the workspace root for new setups: the organized
+// soulspace layout unless a legacy flat ~/.soulacy already exists.
+func setupDataDir(home string) string {
+	if ws, err := config.ResolveWorkspace(); err == nil {
+		return ws.Root
+	}
+	return filepath.Join(home, ".soulacy")
 }

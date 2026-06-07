@@ -22,6 +22,8 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/soulacy/soulacy/internal/agentmemory"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 // handleBrainMemoryStats returns per-agent brain memory statistics for all
@@ -43,11 +45,11 @@ func (s *Server) handleBrainMemoryStats(c *fiber.Ctx) error {
 			lastActivity = &t
 		}
 		out = append(out, fiber.Map{
-			"agent_id":        def.ID,
-			"agent_name":      def.Name,
-			"episodic_count":  len(records),
-			"has_procedural":  procedural != "",
-			"last_activity":   lastActivity,
+			"agent_id":       def.ID,
+			"agent_name":     def.Name,
+			"episodic_count": len(records),
+			"has_procedural": procedural != "",
+			"last_activity":  lastActivity,
 		})
 	}
 	return c.JSON(fiber.Map{"enabled": true, "agents": out})
@@ -213,11 +215,11 @@ func (s *Server) handleContextPreview(c *fiber.Ctx) error {
 
 	block := agentmemory.BuildContextBlock(result)
 	return c.JSON(fiber.Map{
-		"context_block":    block,
-		"episodic_count":   len(result.EpisodicSummary),
-		"semantic_count":   len(result.SemanticChunks),
-		"has_procedural":   result.ProceduralRules != "",
-		"token_estimate":   len(block) / 4,
+		"context_block":  block,
+		"episodic_count": len(result.EpisodicSummary),
+		"semantic_count": len(result.SemanticChunks),
+		"has_procedural": result.ProceduralRules != "",
+		"token_estimate": len(block) / 4,
 	})
 }
 
@@ -232,7 +234,11 @@ func brainMemoryDir() string {
 	dir := os.Getenv("SOULACY_MEMORY_DIR")
 	if dir == "" {
 		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".soulacy", "memory")
+		if wsPaths, werr := config.ResolveWorkspace(); werr == nil {
+			dir = wsPaths.Memory
+		} else {
+			dir = filepath.Join(home, ".soulacy", "memory")
+		}
 	}
 	return dir
 }

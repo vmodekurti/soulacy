@@ -1462,7 +1462,11 @@ func (s *Server) InvalidateToolCatalog() {
 func (s *Server) PythonToolDirs() []string {
 	var dirs []string
 	if home, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(home, ".soulacy", "tools"))
+		if wsPaths, werr := config.ResolveWorkspace(); werr == nil {
+			dirs = append(dirs, wsPaths.Tools)
+		} else {
+			dirs = append(dirs, filepath.Join(home, ".soulacy", "tools"))
+		}
 	}
 	for _, ad := range s.cfg.AgentDirs {
 		dirs = append(dirs, filepath.Join(ad, "tools"))
@@ -2813,14 +2817,14 @@ func (s *Server) handleProvisionAgenticSkill(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"ok": false, "error": "failed to read SKILL.md"})
 	}
 
-	// 4. Write to ~/.soulacy/skills/<slug>/SKILL.md.
-	home, err := os.UserHomeDir()
+	// 4. Write to <workspace>/skills/<slug>/SKILL.md.
+	wsPaths, err := config.ResolveWorkspace()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
-			"ok": false, "error": "cannot determine home directory",
+			"ok": false, "error": "cannot resolve workspace",
 		})
 	}
-	skillDir := filepath.Join(home, ".soulacy", "skills", slug)
+	skillDir := filepath.Join(wsPaths.Skills, slug)
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"ok": false, "error": fmt.Sprintf("create skill dir: %v", err),

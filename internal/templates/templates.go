@@ -5,12 +5,12 @@
 // a wired-up flow in ~5 seconds.
 //
 // Discovery order (later entries take precedence):
-//   1. Embedded defaults — shipped with the binary so the gateway works
-//      out-of-the-box. Located in ./embedded/*.yaml relative to this file.
-//   2. User dir (optional) — every *.yaml in the configured user templates
-//      dir (default ~/.soulacy/templates). Same-name files override the
-//      embedded ones, so a user can replace any default by dropping a file
-//      with the matching basename.
+//  1. Embedded defaults — shipped with the binary so the gateway works
+//     out-of-the-box. Located in ./embedded/*.yaml relative to this file.
+//  2. User dir (optional) — every *.yaml in the configured user templates
+//     dir (default ~/.soulacy/templates). Same-name files override the
+//     embedded ones, so a user can replace any default by dropping a file
+//     with the matching basename.
 //
 // Each template is a regular SOUL.yaml. Its `id`, `name`, and `description`
 // fields double as the template's display metadata — no separate manifest.
@@ -29,6 +29,8 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/soulacy/soulacy/pkg/agent"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 //go:embed embedded/*.yaml
@@ -52,12 +54,12 @@ func New(userDir string) *Catalog {
 // returned alongside the parsed Definition so callers can either write the
 // file verbatim (after ID rewriting) or use the parsed form for inspection.
 type Entry struct {
-	Name        string             `json:"name"`        // basename without extension, the public handle
-	DisplayName string             `json:"display_name"` // from Definition.Name
-	Description string             `json:"description"`  // from Definition.Description
-	Tags        []string           `json:"tags"`
-	Source      string             `json:"source"`       // "embedded" | "user"
-	Definition  *agent.Definition  `json:"definition"`   // parsed (for previews — engine isn't going to run this)
+	Name        string            `json:"name"`         // basename without extension, the public handle
+	DisplayName string            `json:"display_name"` // from Definition.Name
+	Description string            `json:"description"`  // from Definition.Description
+	Tags        []string          `json:"tags"`
+	Source      string            `json:"source"`     // "embedded" | "user"
+	Definition  *agent.Definition `json:"definition"` // parsed (for previews — engine isn't going to run this)
 }
 
 // List returns all templates sorted by Name, with user-dir entries shadowing
@@ -242,6 +244,8 @@ func DefaultUserDir() string {
 	if err != nil {
 		return ""
 	}
+	if ws, err := config.ResolveWorkspace(); err == nil {
+		return ws.Templates
+	}
 	return filepath.Join(home, ".soulacy", "templates")
 }
-

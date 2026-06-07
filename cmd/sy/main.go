@@ -72,6 +72,9 @@ Quick start:
 			viper.SetConfigName("config")
 			viper.SetConfigType("yaml")
 			home, _ := os.UserHomeDir()
+			if ws, werr := config.ResolveWorkspace(); werr == nil {
+				viper.AddConfigPath(ws.Root)
+			}
 			viper.AddConfigPath(home + "/.soulacy")
 			viper.AddConfigPath(".")
 			viper.SetEnvPrefix("SOULACY")
@@ -111,8 +114,9 @@ Quick start:
 		buildLogsCmd(),
 		buildServerCmd(),
 		buildDoctorCmd(),
-		buildPullCmd(), // sy pull — agent marketplace
-		buildEvalCmd(), // sy eval — evaluation framework
+		buildWorkspaceCmd(), // sy workspace — soulspace info + migration
+		buildPullCmd(),      // sy pull — agent marketplace
+		buildEvalCmd(),      // sy eval — evaluation framework
 		buildVersionCmd(),
 	)
 	return root
@@ -695,7 +699,7 @@ func runRemoteSkillInstall(ctx context.Context, slug string, assumeYes bool) err
 		return err
 	}
 	return remoteSkillInstall(ctx, eng, slug, remoteInstallOpts{
-		SkillsDir: filepath.Join(home, ".soulacy", "skills"),
+		SkillsDir: workspaceSkills(home),
 		AssumeYes: assumeYes,
 		Confirm: func(prompt string) bool {
 			fmt.Print(prompt)
@@ -750,8 +754,9 @@ func installSkill(src string) error {
 		}
 	}
 
-	dest := home + "/.soulacy/skills/" + name
-	if err := os.MkdirAll(home+"/.soulacy/skills", 0755); err != nil {
+	skillsRoot := workspaceSkills(home)
+	dest := filepath.Join(skillsRoot, name)
+	if err := os.MkdirAll(skillsRoot, 0755); err != nil {
 		return err
 	}
 
@@ -1085,4 +1090,13 @@ func groupPolicyLabel(ignoreGroups bool) string {
 		return "ignored"
 	}
 	return "allowed"
+}
+
+// workspaceSkills resolves the workspace skills dir (soulspace layout for
+// new installs, flat ~/.soulacy/skills for legacy installations).
+func workspaceSkills(home string) string {
+	if ws, err := config.ResolveWorkspace(); err == nil {
+		return ws.Skills
+	}
+	return filepath.Join(home, ".soulacy", "skills")
 }

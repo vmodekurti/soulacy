@@ -14,6 +14,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 func buildPullCmd() *cobra.Command {
@@ -35,7 +37,11 @@ Examples:
 		},
 	}
 	homeDir, _ := os.UserHomeDir()
-	cmd.Flags().StringVarP(&outputDir, "dir", "d", filepath.Join(homeDir, ".soulacy", "agents"),
+	defaultAgents := filepath.Join(homeDir, ".soulacy", "agents")
+	if ws, werr := config.ResolveWorkspace(); werr == nil {
+		defaultAgents = ws.Agents
+	}
+	cmd.Flags().StringVarP(&outputDir, "dir", "d", defaultAgents,
 		"Directory to save the pulled agent YAML")
 	cmd.Flags().BoolVarP(&force, "force", "f", false, "Overwrite existing file without prompt")
 	return cmd
