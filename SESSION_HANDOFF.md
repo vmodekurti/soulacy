@@ -26,11 +26,31 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅ — next up:
-  E10 (factory registries + decompose main.go), then E15 → E16 → E17 →
-  E11 → E12 → E13.**
+  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 part 1
+  ✅ (SDK factory registries) — NEXT: E10 parts 2–3 (see below), then
+  E15 → E16 → E17 → E11 → E12 → E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E10 part 1 (SDK factory registries) — complete (TDD, session 6).**
+- `sdk/registry` — database/sql-style named registries with generics:
+  Register{Channel,Provider,Queue,Vector} (error on dup/empty/nil) +
+  Must* panic variants for driver init(); New{Channel,Provider,Queue,
+  Vector}(name,cfg) → (T, ok, err) where ok=false on unknown name so the
+  HOST FALLS BACK to built-in wiring (strangler); sorted name listings.
+  6 tests, sdk suite green.
+- **E10 REMAINING (parts 2–3, next session):**
+  part 2 — resolve config entries against the registries in main.go with
+  fallback to existing hardcoded wiring; register the built-ins (telegram/
+  slack/discord/whatsapp channels, ollama/openai/anthropic/gemini
+  providers, memory/nats queues, sqlitevec/qdrant vectors) via init()
+  self-registration in their own packages + a generated blank-import file
+  in cmd/soulacy (go:generate); delete hardcoded paths ONLY when all
+  built-ins are registry-routed and the suite is green.
+  part 3 — extract internal/app exposing app.New(cfg, opts...) and shrink
+  cmd/soulacy/main.go (~1300 lines) to a thin composition root, ONE
+  subsystem at a time with a green suite between steps (storage → llm →
+  channels → gateway wiring order suggested).
 
 **E9 (versioned Go SDK module) — complete (session 6, full suite green).**
 - NEW MODULE `sdk/` (`github.com/soulacy/soulacy/sdk`, go.mod of its own,
