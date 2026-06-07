@@ -101,6 +101,26 @@ Add the package to the flavored-binary build (`soulacybuild --with …`, E12)
 and select it with `type: s3` in a `registries:` entry. Unknown types are
 warned and skipped at boot — a typo never bricks the gateway.
 
+## Reference server
+
+`internal/registryserver` is the reference implementation of the protocol,
+shipped as a subcommand:
+
+```bash
+soulacy registry keygen --out ~/.soulacy/registry-signing.key   # prints the public key
+soulacy registry serve --dir ./packages --addr 127.0.0.1:18790 \
+    --signing-key-file ~/.soulacy/registry-signing.key
+```
+
+Layout: a flat directory of `<slug>-<version>.tar.gz` archives (also
+.tgz/.zip); optional `<slug>.yaml` sidecars add `description:` metadata.
+The newest version per slug (numeric dotted compare) is what Resolve
+returns; checksums are computed at index time and every package is signed
+when a key is configured. Archive serving is traversal-guarded (only
+indexed basenames are reachable). End-to-end conformance with the E19
+client — including signature verification — is pinned by
+`internal/registryserver/registryserver_test.go`.
+
 ## Consumers
 
 - `sy skill install <slug>` (Story E18) — registry resolve → safety audit
