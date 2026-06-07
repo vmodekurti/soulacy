@@ -204,3 +204,101 @@ func TestRegistryFactories(t *testing.T) {
 		t.Errorf("cc = %+v", cc)
 	}
 }
+
+func TestBackends_FileSpilling(t *testing.T) {
+	// 1. Test Vector Spilling
+	vBack, err := NewVectorBackend(context.Background(), helperConfig(t, "happy"))
+	if err != nil {
+		t.Fatalf("NewVectorBackend: %v", err)
+	}
+	defer vBack.Close()
+
+	// Content >= 1024 bytes
+	largeContent := strings.Repeat("a", 1500)
+	err = vBack.Write(context.Background(), memory.Entry{
+		ID: "e-large", AgentID: "a1", Scope: memory.ScopeAgent,
+		Content: largeContent, CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Vector Write: %v", err)
+	}
+
+	// Verify that a file was indeed written to the scratch directory
+	files, err := os.ReadDir(vBack.Client().SharedDir())
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	foundVectorFile := false
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), "vector-") {
+			foundVectorFile = true
+			data, err := os.ReadFile(filepath.Join(vBack.Client().SharedDir(), f.Name()))
+			if err != nil {
+				t.Fatalf("ReadFile %s: %v", f.Name(), err)
+			}
+			if string(data) != largeContent {
+				t.Errorf("vector file content mismatch, got len %d, want %d", len(data), len(largeContent))
+			}
+		}
+	}
+	if !foundVectorFile {
+		t.Errorf("expected to find spilled vector file in scratch dir, but got files: %v", files)
+	}
+
+	// Verify that we can search and read it back
+	hits, err := vBack.Search(context.Background(), "a1", "aaaa", 5)
+	if err != nil {
+		t.Fatalf("Vector Search: %v", err)
+	}
+	if len(hits) != 1 || hits[0].Entry.Content != largeContent {
+		t.Fatalf("expected to read back large content, got len %d", len(hits))
+	}
+
+	// 2. Test Storage Spilling
+	sBack, err := NewStorageBackend(context.Background(), helperConfig(t, "happy"))
+	if err != nil {
+		t.Fatalf("NewStorageBackend: %v", err)
+	}
+	defer sBack.Close()
+
+	largeStorageContent := strings.Repeat("b", 2000)
+	err = sBack.Archive(memory.Entry{
+		ID: "m-large", AgentID: "a1", Scope: memory.ScopeAgent,
+		Content: largeStorageContent, CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Storage Archive: %v", err)
+	}
+
+	// Verify that a storage file was written to scratch directory
+	files, err = os.ReadDir(sBack.Client().SharedDir())
+	if err != nil {
+		t.Fatalf("ReadDir storage: %v", err)
+	}
+	foundStorageFile := false
+	for _, f := range files {
+		if strings.HasPrefix(f.Name(), "storage-") {
+			foundStorageFile = true
+			data, err := os.ReadFile(filepath.Join(sBack.Client().SharedDir(), f.Name()))
+			if err != nil {
+				t.Fatalf("ReadFile %s: %v", f.Name(), err)
+			}
+			if string(data) != largeStorageContent {
+				t.Errorf("storage file content mismatch, got len %d, want %d", len(data), len(largeStorageContent))
+			}
+		}
+	}
+	if !foundStorageFile {
+		t.Errorf("expected to find spilled storage file in scratch dir")
+	}
+
+	// Verify roundtrip search
+	entries, err := sBack.Search("a1", "bbbb", 5)
+	if err != nil {
+		t.Fatalf("Storage Search: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Content != largeStorageContent {
+		t.Fatalf("expected to read back large archived content, got entries %+v", entries)
+	}
+}
+

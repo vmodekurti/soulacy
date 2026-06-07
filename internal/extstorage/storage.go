@@ -46,8 +46,22 @@ func (b *StorageBackend) call(method string, params, result any) error {
 
 // Archive implements storage.MemoryBackend.
 func (b *StorageBackend) Archive(entry memory.Entry) error {
+	params := sdkext.StorageArchiveParams{
+		Entry: entry,
+	}
+
+	if len(entry.Content) >= 1024 {
+		relPath, err := b.c.WriteScratchFile("storage", entry.Content)
+		if err != nil {
+			return err
+		}
+		params.ContentFile = relPath
+		// Clear content to prevent sending it twice
+		params.Entry.Content = ""
+	}
+
 	var res sdkext.StorageArchiveResult
-	return b.call(sdkext.MethodStorageArchive, sdkext.StorageArchiveParams{Entry: entry}, &res)
+	return b.call(sdkext.MethodStorageArchive, params, &res)
 }
 
 // Search implements storage.MemoryBackend.

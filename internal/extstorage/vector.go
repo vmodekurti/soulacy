@@ -35,15 +35,26 @@ func (b *VectorBackend) Client() *Client { return b.c }
 
 // Write implements vector.Backend.
 func (b *VectorBackend) Write(ctx context.Context, entry memory.Entry) error {
-	var res sdkext.VectorWriteResult
-	return b.c.Call(ctx, sdkext.MethodVectorWrite, sdkext.VectorWriteParams{
+	params := sdkext.VectorWriteParams{
 		ID:        entry.ID,
 		AgentID:   entry.AgentID,
 		SessionID: entry.SessionID,
 		Scope:     string(entry.Scope),
-		Content:   entry.Content,
 		Timestamp: entry.CreatedAt.Unix(),
-	}, &res)
+	}
+
+	if len(entry.Content) >= 1024 {
+		relPath, err := b.c.WriteScratchFile("vector", entry.Content)
+		if err != nil {
+			return err
+		}
+		params.ContentFile = relPath
+	} else {
+		params.Content = entry.Content
+	}
+
+	var res sdkext.VectorWriteResult
+	return b.c.Call(ctx, sdkext.MethodVectorWrite, params, &res)
 }
 
 // Search implements vector.Backend.
@@ -57,13 +68,21 @@ func (b *VectorBackend) Search(ctx context.Context, agentID, query string, topK 
 	}
 	out := make([]vector.Result, 0, len(res.Results))
 	for _, h := range res.Results {
+		content := h.Content
+		if h.ContentFile != "" {
+			var err error
+			content, err = b.c.ReadScratchFile(h.ContentFile)
+			if err != nil {
+				return nil, err
+			}
+		}
 		out = append(out, vector.Result{
 			Entry: memory.Entry{
 				ID:        h.ID,
 				AgentID:   h.AgentID,
 				SessionID: h.SessionID,
 				Scope:     memory.Scope(h.Scope),
-				Content:   h.Content,
+				Content:   content,
 				CreatedAt: time.Unix(h.Timestamp, 0),
 			},
 			Distance: h.Distance,
