@@ -47,6 +47,69 @@ func TestVectorBackend_WriteSearchRoundTrip(t *testing.T) {
 	}
 }
 
+func TestStorageBackend_ArchiveSearchPruneRoundTrip(t *testing.T) {
+	b, err := NewStorageBackend(context.Background(), helperConfig(t, "happy"))
+	if err != nil {
+		t.Fatalf("NewStorageBackend: %v", err)
+	}
+	defer b.Close()
+
+	now := time.Now().Truncate(time.Second)
+	err = b.Archive(memory.Entry{
+		ID: "m1", AgentID: "a1", SessionID: "s1", Scope: memory.ScopeAgent,
+		Content: "archived memory content", CreatedAt: now,
+	})
+	if err != nil {
+		t.Fatalf("Archive: %v", err)
+	}
+
+	entries, err := b.Search("a1", "memory", 5)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "m1" {
+		t.Fatalf("Search entries = %+v", entries)
+	}
+	if entries[0].Content != "archived memory content" {
+		t.Errorf("content = %q", entries[0].Content)
+	}
+
+	// Read by scope
+	entries, err = b.ReadByScope("a1", "s1", memory.ScopeAgent, 5)
+	if err != nil {
+		t.Fatalf("ReadByScope: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "m1" {
+		t.Fatalf("ReadByScope entries = %+v", entries)
+	}
+
+	// Read global
+	entries, err = b.ReadGlobal("a1", 5)
+	if err != nil {
+		t.Fatalf("ReadGlobal: %v", err)
+	}
+	if len(entries) != 1 || entries[0].ID != "m1" {
+		t.Fatalf("ReadGlobal entries = %+v", entries)
+	}
+
+	// Prune
+	deleted, err := b.Prune("a1", now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("expected 1 row deleted, got %d", deleted)
+	}
+
+	entries, err = b.ReadGlobal("a1", 5)
+	if err != nil {
+		t.Fatalf("ReadGlobal after prune: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 entries after prune, got %+v", entries)
+	}
+}
+
 func TestQueueBackend_PublishSubscribeAck(t *testing.T) {
 	b, err := NewQueueBackend(context.Background(), helperConfig(t, "happy"))
 	if err != nil {
