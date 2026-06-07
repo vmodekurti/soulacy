@@ -19,6 +19,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,6 +32,9 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"go.uber.org/zap"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 var (
@@ -645,17 +649,80 @@ func buildSkillCmd() *cobra.Command {
 		},
 	})
 
-	// install — copies a local skill directory into ~/.soulacy/skills/
-	cmd.AddCommand(&cobra.Command{
-		Use:   "install <path>",
-		Short: "Install a skill from a local directory into ~/.soulacy/skills/",
-		Args:  cobra.ExactArgs(1),
+	// install — local directory (original behaviour) OR remote package slug
+	// resolved through the configured registries (Story E18).
+	var assumeYes bool
+	installCmd := &cobra.Command{
+		Use:   "install <path|slug>",
+		Short: "Install a skill from a local directory, a registry slug, or a git source",
+		Long: `Install a skill into ~/.soulacy/skills/.
+
+Local directory:  sy skill install ./my-skill
+Registry slug:    sy skill install self-improving-agent
+Git source:       sy skill install github.com/user/my-skill
+
+Remote installs resolve through the registries: block in config.yaml
+(falling back to a bare git provider), run the safety introspection
+pipeline (static scan + sandboxed dry-run), display a consent prompt,
+and hot-load the skill through the gateway's /skills/rescan API.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return installSkill(args[0])
+			// Local directory keeps the original behaviour exactly.
+			if st, err := os.Stat(args[0]); err == nil && st.IsDir() {
+				return installSkill(args[0])
+			}
+			return runRemoteSkillInstall(cmd.Context(), args[0], assumeYes)
 		},
-	})
+	}
+	installCmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Skip the consent prompt (never bypasses a danger verdict)")
+	cmd.AddCommand(installCmd)
 
 	return cmd
+}
+
+// runRemoteSkillInstall assembles the E18 flow from the CLI environment:
+// registries from the loaded viper config, consent on stdin, hot-load via
+// the gateway API.
+func runRemoteSkillInstall(ctx context.Context, slug string, assumeYes bool) error {
+	var regs []config.RegistryConfig
+	if err := viper.UnmarshalKey("registries", &regs); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: registries config unreadable: %v\n", err)
+	}
+	eng := registriesFromConfig(regs, zap.NewNop())
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	return remoteSkillInstall(ctx, eng, slug, remoteInstallOpts{
+		SkillsDir: filepath.Join(home, ".soulacy", "skills"),
+		AssumeYes: assumeYes,
+		Confirm: func(prompt string) bool {
+			fmt.Print(prompt)
+			var answer string
+			_, _ = fmt.Scanln(&answer)
+			a := strings.ToLower(strings.TrimSpace(answer))
+			return a == "y" || a == "yes"
+		},
+		Rescan: func() error {
+			req, rerr := http.NewRequest(http.MethodPost, gatewayURL+"/api/v1/skills/rescan", nil)
+			if rerr != nil {
+				return rerr
+			}
+			if apiKey != "" {
+				req.Header.Set("Authorization", "Bearer "+apiKey)
+			}
+			resp, rerr := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+			if rerr != nil {
+				return rerr
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				return fmt.Errorf("gateway returned %s", resp.Status)
+			}
+			return nil
+		},
+	})
 }
 
 // installSkill copies a skill directory into ~/.soulacy/skills/<name>/.

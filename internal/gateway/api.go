@@ -2676,6 +2676,33 @@ func (s *Server) handleGetSkill(c *fiber.Ctx) error {
 //  6. Hot-rescan via the Scan() method on the loader (if available).
 var githubBlobRe = regexp.MustCompile(`href="(https://github\.com/[^/]+/[^/]+/blob/[^/"]+/[^"]+/SKILL\.md)"`)
 
+// handleRescanSkills re-scans the skill directories so freshly installed
+// skills (e.g. `sy skill install <slug>`, Story E18) hot-load without a
+// gateway restart.
+//
+// POST /api/v1/skills/rescan → { "ok": true, "count": <loaded skills> }
+func (s *Server) handleRescanSkills(c *fiber.Ctx) error {
+	if s.skillLoader == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"ok": false, "error": "skill loader unavailable",
+		})
+	}
+	scanner, ok := s.skillLoader.(interface{ Scan() []error })
+	if !ok {
+		return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{
+			"ok": false, "error": "skill loader does not support rescanning",
+		})
+	}
+	if errs := scanner.Scan(); len(errs) > 0 {
+		msgs := make([]string, len(errs))
+		for i, e := range errs {
+			msgs[i] = e.Error()
+		}
+		return c.JSON(fiber.Map{"ok": true, "count": len(s.skillLoader.All()), "warnings": msgs})
+	}
+	return c.JSON(fiber.Map{"ok": true, "count": len(s.skillLoader.All())})
+}
+
 func (s *Server) handleProvisionAgenticSkill(c *fiber.Ctx) error {
 	if s.skillLoader == nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
