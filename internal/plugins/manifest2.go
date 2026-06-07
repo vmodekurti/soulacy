@@ -22,6 +22,10 @@ import (
 	"github.com/soulacy/soulacy/pkg/plugin"
 )
 
+// CurrentSDKMajor is the soulacy SDK major version this host implements
+// (Story E22). Plugins declaring a newer sdk_major are refused at load.
+const CurrentSDKMajor = 1
+
 // SupportedManifestSchema is the newest manifest grammar this build understands.
 const SupportedManifestSchema = 2
 

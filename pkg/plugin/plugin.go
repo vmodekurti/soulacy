@@ -31,6 +31,12 @@ type Manifest struct {
 	// Loaders must warn-and-skip plugins with schemas they don't know.
 	ManifestSchema int `yaml:"manifest_schema,omitempty"`
 
+	// SDKMajor declares the soulacy SDK major version this plugin was built
+	// against (Story E22). 0 (unset) and the host's current major load;
+	// anything newer is refused at load with an upgrade hint — an SDK-v2
+	// plugin must never run against v1 contracts and fail subtly later.
+	SDKMajor int `yaml:"sdk_major,omitempty"`
+
 	// What this plugin contributes. ChannelEntry/ProviderEntry parse both
 	// the v1 string form ("telegram") and the v2 map form (id + sidecar /
 	// openai_compatible).
