@@ -10,7 +10,7 @@ import (
 // per Interval (default 1500ms). The last-received event within each window
 // is forwarded; earlier ones are dropped. One throttle per active run.
 type ProgressThrottle struct {
-	Interval time.Duration       // default 1500ms
+	Interval time.Duration // default 1500ms
 	In       chan message.ProgressEvent
 	Out      chan message.ProgressEvent
 }

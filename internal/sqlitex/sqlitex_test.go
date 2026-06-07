@@ -12,11 +12,11 @@ import (
 // TestDSN_RequiredPragmas — every Open() call must come out of this
 // helper with the four pragmas Litestream and the gateway depend on:
 //
-//   _journal_mode=WAL   — Litestream only streams WAL pages
-//   _synchronous=NORMAL — safe with WAL, ~5-10x faster commits
-//   _busy_timeout=…     — non-zero, otherwise concurrent writers fail
-//                          immediately under contention
-//   _cache_size=-20000  — per-connection 20 MiB page cache
+//	_journal_mode=WAL   — Litestream only streams WAL pages
+//	_synchronous=NORMAL — safe with WAL, ~5-10x faster commits
+//	_busy_timeout=…     — non-zero, otherwise concurrent writers fail
+//	                       immediately under contention
+//	_cache_size=-20000  — per-connection 20 MiB page cache
 //
 // A regression that dropped any of these would not surface until traffic
 // hit the locked-database path; this test catches it at build time.

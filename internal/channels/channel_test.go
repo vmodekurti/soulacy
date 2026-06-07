@@ -396,8 +396,8 @@ func (a *errorStartAdapter) Start(_ context.Context, _ chan<- message.Message) e
 	return a.startErr
 }
 func (a *errorStartAdapter) Send(_ context.Context, _ message.Message) error { return nil }
-func (a *errorStartAdapter) Stop() error                                      { return a.stopErr }
-func (a *errorStartAdapter) Status() AdapterStatus                            { return AdapterStatus{} }
+func (a *errorStartAdapter) Stop() error                                     { return a.stopErr }
+func (a *errorStartAdapter) Status() AdapterStatus                           { return AdapterStatus{} }
 
 // noopZapLogger returns a no-op zap.Logger for tests.
 func noopZapLogger(_ *testing.T) *zap.Logger {
