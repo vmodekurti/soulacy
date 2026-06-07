@@ -165,6 +165,27 @@ func (e *Engine) handleWithReasoning(ctx context.Context, def *agent.Definition,
 		Timestamp: time.Now().UTC(),
 	})
 
+	// Story E23 — self-updating rulebooks, versioned. Reflect's
+	// updated_rules persists ONLY when the agent opted in via
+	// brain_memory.procedural.auto_update, always as a new immutable
+	// version. A locked rulebook refuses the write (warn event, run
+	// continues) — drift control beats self-tuning.
+	if result.UpdatedRules != "" && def.BrainMemory.Procedural.AutoUpdate && e.brainStore != nil {
+		if v, uerr := e.brainStore.UpdateProceduralVersioned(def.ID, result.UpdatedRules, "auto_update"); uerr != nil {
+			e.sink.Emit(message.Event{
+				Type: "warn", AgentID: msg.AgentID, SessionID: msg.SessionID,
+				Payload:   map[string]any{"stage": "rulebook", "error": uerr.Error()},
+				Timestamp: time.Now().UTC(),
+			})
+		} else {
+			e.sink.Emit(message.Event{
+				Type: "rulebook.updated", AgentID: msg.AgentID, SessionID: msg.SessionID,
+				Payload:   map[string]any{"version": v, "source": "auto_update", "bytes": len(result.UpdatedRules)},
+				Timestamp: time.Now().UTC(),
+			})
+		}
+	}
+
 	finalContent := result.Output
 	if finalContent == "" {
 		finalContent = "(no final response produced)"

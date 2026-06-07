@@ -77,6 +77,11 @@ type Result struct {
 	Confident bool `json:"confident"`
 	// Duration is the total wall-clock time for the run.
 	Duration time.Duration `json:"duration"`
+	// UpdatedRules carries Reflect's revised operating rules (Story E23).
+	// Empty = the model learned nothing worth keeping. Hosts persist it
+	// ONLY when the agent opted in via brain_memory.procedural.auto_update,
+	// and always through the versioned rulebook.
+	UpdatedRules string `json:"updated_rules,omitempty"`
 }
 
 // ─── Loop ─────────────────────────────────────────────────────────────────────
@@ -136,10 +141,11 @@ func (l *Loop) Run(ctx context.Context, agentID, taskInput string) Result {
 	steps, reflectResp := strat.Run(ctx, env, taskInput)
 
 	return Result{
-		Output:    reflectResp.Output,
-		Steps:     steps,
-		Confident: !containsToolErrors(steps),
-		Duration:  time.Since(start),
+		Output:       reflectResp.Output,
+		Steps:        steps,
+		Confident:    !containsToolErrors(steps),
+		Duration:     time.Since(start),
+		UpdatedRules: reflectResp.UpdatedRules,
 	}
 }
 

@@ -606,6 +606,11 @@ func (s *Server) buildApp() *fiber.App {
 	api.Put("/brain-memory/:agentID/procedural", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleUpdateProcedural)
 	api.Delete("/brain-memory/:agentID/procedural", s.rbacMW(rbac.ResourceMemory, rbac.ActionDelete), s.handleClearProcedural)
 	api.Post("/brain-memory/:agentID/context-preview", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleContextPreview)
+	// Versioned rulebooks (Story E23): history, single versions, rollback, lock.
+	api.Get("/brain-memory/:agentID/rulebook", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleRulebookHistory)
+	api.Get("/brain-memory/:agentID/rulebook/:version", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleRulebookVersion)
+	api.Post("/brain-memory/:agentID/rulebook/rollback", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookRollback)
+	api.Post("/brain-memory/:agentID/rulebook/lock", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookLock)
 
 	// Providers
 	api.Get("/providers", s.rbacMW(rbac.ResourceProviders, rbac.ActionRead), s.handleListProviders)

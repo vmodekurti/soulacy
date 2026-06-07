@@ -79,6 +79,18 @@ export const api = {
       apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/episodic`, { method: 'DELETE' }),
     procedural: (agentId) =>
       apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/procedural`),
+    rulebook: (agentId) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/rulebook`),
+    rulebookVersion: (agentId, version) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/rulebook/${version}`),
+    rulebookRollback: (agentId, version) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/rulebook/rollback`, {
+        method: 'POST', body: JSON.stringify({ version }),
+      }),
+    rulebookLock: (agentId, locked) =>
+      apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/rulebook/lock`, {
+        method: 'POST', body: JSON.stringify({ locked }),
+      }),
     updateProcedural: (agentId, rules) =>
       apiFetch(`/brain-memory/${encodeURIComponent(agentId)}/procedural`, {
         method: 'PUT', body: JSON.stringify({ rules }),
