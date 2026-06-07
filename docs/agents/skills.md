@@ -1,82 +1,112 @@
 # Skills
 
-Soulacy supports Agent Skills: directories that contain a `SKILL.md` file with
-frontmatter plus markdown instructions. Skills are not YAML fragments merged
-into an agent. Instead, Soulacy exposes a lightweight skill catalog to the model
-and lets the model call `read_skill` or `read_skill_file` when it needs the full
-instructions or supporting files.
+Skills are reusable instruction packs — a `SKILL.md` plus supporting files — that any agent can load on demand instead of bloating its system prompt.
 
-## Skill Layout
+## Quick Start
+
+Create a skill directory and attach it to an agent:
 
 ```text
-skills/
+~/.soulacy/skills/
   csv-analysis/
     SKILL.md
     scripts/
       analyze.py
 ```
 
-Example `SKILL.md`:
-
-```markdown
+```markdown title="SKILL.md"
 ---
 name: csv-analysis
 description: Analyze CSV files and produce compact summaries.
 ---
 
-Use this skill when the task involves CSV inspection, cleaning, aggregation, or
-basic chart-ready summaries.
+Use this skill when the task involves CSV inspection, cleaning,
+aggregation, or chart-ready summaries. Run scripts/analyze.py
+for the standard column profile.
 ```
 
-## Enabling Skills on an Agent
-
-Add skill names to `SOUL.yaml`:
-
-```yaml title="agents/analyst/SOUL.yaml"
-id: analyst
-name: Analyst
-trigger: channel
-channels: [http]
-llm:
-  provider: openai
-  model: gpt-4o-mini
-system_prompt: You help analyze local files.
+```yaml title="SOUL.yaml (excerpt)"
 skills:
   - csv-analysis
-enabled: true
 ```
 
-Use `skills: ["*"]` or `skills: ["all"]` to expose all installed skills.
+That's it — the agent now sees the skill in its catalog and can read the full
+instructions when a task calls for it.
 
-When `skills` is empty or absent, the skill catalog and skill-reading built-ins
-are not injected. This keeps small agents focused and reduces context cost.
+## How Skills Work
 
-## Skill Tools
-
-Agents with skills can receive these built-ins, subject to the agent's
-`builtins` filter:
+Skills are **not** YAML fragments merged into the agent. Soulacy injects only
+a lightweight catalog (each skill's name and description) into the context.
+When the model decides a skill is relevant, it calls:
 
 | Tool | Purpose |
 |------|---------|
 | `read_skill` | Loads the full `SKILL.md` body for an enabled skill. |
-| `read_skill_file` | Reads a file inside an enabled skill directory, such as `scripts/analyze.py`. |
+| `read_skill_file` | Reads a supporting file inside the skill directory, e.g. `scripts/analyze.py`. |
 
-## Skill Search Paths
+These built-ins are only injected when the agent declares `skills:` — agents
+without skills pay zero context cost and never waste turns on skill lookups.
 
-The loader scans configured and conventional skill roots, including personal and
-project-level directories such as:
+## Attaching Skills to an Agent
 
-- `~/.agents/skills`
-- `~/.soulacy/skills`
-- project-level skill directories configured for the gateway
+```yaml
+skills:
+  - csv-analysis
+  - report-style
+```
 
-Use the GUI or `config.yaml` to add additional skill directories when needed.
+- List specific names, or use `skills: ["*"]` (or `["all"]`) to expose every
+  installed skill.
+- Empty or absent `skills:` disables the catalog and the skill-reading tools
+  entirely.
+- In the GUI, the Agents page editor has a **Skills** chip picker populated
+  from your installed skills.
+
+## Where Skills Live
+
+The loader scans these locations, in priority order (later wins on name
+collision):
+
+1. `~/.agents/skills/` — user-level, cross-client convention
+2. The workspace `skills/` directory — Soulacy-native (defaults to `~/.soulacy/skills/`)
+3. `<workdir>/.agents/skills/` — project-level, cross-client
+4. `<workdir>/.soulacy/skills/` — project-level, Soulacy-native
+5. Extra directories from `config.yaml` — highest priority
+
+So a project-level skill overrides a user-level skill of the same name, and
+explicitly configured directories override both.
+
+## Hot-Loading
+
+Skills are scanned at startup and rescanned on demand — no restart needed.
+Installing a skill through the GUI or the API triggers a rescan
+automatically; you can also force one:
+
+```bash
+curl -X POST http://localhost:8080/api/v1/skills/rescan \
+  -H "Authorization: Bearer $SOULACY_API_KEY"
+```
+
+Newly dropped skill directories appear in agent catalogs on the next run.
+
+For installing skills from registries, marketplaces, or archives, see
+[Installing Skills](../extend/installing-skills.md).
 
 ## Best Practices
 
-- Keep the frontmatter `description` specific; it is what the model sees before
-  deciding whether to call `read_skill`.
-- Put reusable scripts, templates, or examples beside `SKILL.md`.
-- Prefer skills for instructions and reusable procedure; prefer Python tools or
-  MCP tools for executable capability.
-- Enable only the skills an agent is likely to need.
+- **Make the frontmatter `description` specific.** It is the only thing the
+  model sees before deciding whether to call `read_skill` — "Analyze CSV
+  files and produce compact summaries" beats "Data helper".
+- **Keep supporting files beside `SKILL.md`** — scripts, templates, reference
+  examples — and mention them in the instructions so the model knows to fetch
+  them with `read_skill_file`.
+- **Skills for procedure, tools for capability.** A skill teaches the model
+  *how* to do something with what it already has; a
+  [Python or MCP tool](tools.md) gives it a new executable action.
+- **Enable only what each agent needs.** A focused catalog keeps small models
+  from chasing irrelevant skills.
+
+!!! tip
+    Skills follow the agentskills.io convention, so skill packs written for
+    other agent runtimes (Claude Code, etc.) generally drop straight into
+    `~/.agents/skills/` and work unchanged.

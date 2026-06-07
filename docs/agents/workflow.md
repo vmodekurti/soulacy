@@ -1,14 +1,8 @@
 # Workflow Steps
 
-`workflow` turns an agent into a checkpointed sequence of tool calls. When an
-agent declares `workflow:`, the runtime delegates to the workflow executor
-instead of the free-form LLM loop.
+A `workflow:` block turns an agent into a checkpointed tool pipeline — deterministic steps that survive crashes and resume where they left off.
 
-Current workflows are sequential tool pipelines with checkpoint persistence.
-They are useful for repeatable jobs where you want restart/resume behavior and
-clear step status.
-
-## Basic Example
+## Quick Start
 
 ```yaml title="agents/report-writer/SOUL.yaml"
 id: report-writer
@@ -38,30 +32,39 @@ workflow:
 enabled: true
 ```
 
+When an agent declares `workflow:`, the runtime delegates to the workflow
+executor instead of the free-form LLM loop. The reply is the output of the
+last completed step.
+
+!!! tip
+    Linear steps run strictly in order. If you need conditional routing,
+    loops (refine→judge), or fan-out, use the graph form —
+    [Flow Graphs](flows.md) — which lives under the same `workflow:` key.
+
 ## Step Fields
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique step ID within the workflow. Used as the checkpoint key. |
-| `tool` | Tool name to invoke. |
-| `prompt` | Optional prompt text for future LLM-assisted step behavior. |
-| `if` | Go template condition. Empty, `false`, or `0` skips the step. |
+| `id` | Unique within the workflow. Used as the checkpoint key. |
+| `tool` | Tool name to invoke — any tool the agent can normally call. |
+| `prompt` | Optional prompt text reserved for LLM-assisted step behavior. |
+| `if` | Go template condition; the step is skipped when it renders empty, `false`, or `0`. |
 | `on_error` | `abort` (default), `retry`, or `skip`. |
-| `input` | Go template that renders the tool input string. |
-| `output` | Variable name used to store this step's parsed JSON result. |
+| `input` | Go template that renders the tool's input string (usually JSON). |
+| `output` | Variable name that stores this step's parsed result for later steps. |
 
 ## Template Variables
 
-The workflow starts with:
+Templates are standard Go `text/template`. The variable map starts with:
 
 | Variable | Description |
 |----------|-------------|
-| `.trigger` | Flattened inbound message text/parts. |
+| `.trigger` | The flattened inbound message text. |
 
-When a step has `output: some_name`, its result becomes available as
-`.some_name` to later steps.
-
-Example:
+Each step with `output: some_name` adds `.some_name` for every later step.
+Results that parse as JSON become structured values (so `{{.report.title}}`
+works); anything else is stored as a plain string. Missing keys render as
+zero values rather than erroring.
 
 ```yaml
 workflow:
@@ -75,32 +78,50 @@ workflow:
       tool: write_brief
       input: '{"topic":"{{.trigger}}","search":{{.search}}}'
       output: brief
+
+    - id: publish
+      if: '{{.brief}}'          # skip when the brief is empty
+      tool: post_brief
+      input: '{{.brief}}'
 ```
 
 ## Error Handling
 
-`on_error` controls step failure:
+| `on_error` | Behavior |
+|------------|----------|
+| `abort` (or empty) | Mark the step failed, stop the workflow, surface the error. |
+| `retry` | Re-run the tool once; abort if it still fails. |
+| `skip` | Mark the step completed with no output and continue. |
 
-| Value | Behavior |
-|-------|----------|
-| `abort` or empty | Mark the step failed and stop the workflow. |
-| `retry` | Retry the tool once, then abort if it still fails. |
-| `skip` | Mark the step completed with no state and continue. |
+A failed step writes a `failed` checkpoint, so you can see exactly where a
+run died.
 
-## Checkpoints
+## Checkpointing and Resume
 
-After each step, Soulacy stores the step status and output. If a workflow run is
-resumed with the same run ID, completed steps are skipped and their saved output
-is restored into the template variable map.
+The executor checkpoints around every step:
+
+1. Before running: the step is marked `in_progress`.
+2. After success: marked `completed` with the step's output saved as state.
+3. On failure: marked `failed`.
+
+When a run is **resumed with the same run ID** (after a crash or restart),
+completed steps are skipped entirely — their saved output is restored into
+the template variable map — and execution continues from the first
+non-completed step. Side effects of completed steps are never repeated.
+
+!!! warning
+    Resume identity is the run ID. A fresh trigger always gets a new run ID
+    and re-executes everything; only resuming an existing run skips work.
 
 ## When To Use Workflows
 
-Use workflows for deterministic operational jobs:
+Workflows shine for deterministic operational jobs:
 
-- scheduled reports,
-- ingest-and-summarize tasks,
+- scheduled reports (pair with `trigger: cron`),
+- ingest-and-summarize pipelines,
 - multi-step sync jobs,
-- pipelines where retry/skip behavior matters.
+- anything where retry/skip semantics and restart safety matter.
 
-Use peer agents and normal tool calling when the model should decide the plan at
-runtime.
+Use normal tool calling or a [reasoning strategy](reasoning.md) when the
+model should decide the plan at runtime, and [Flow Graphs](flows.md) when the
+plan is fixed but branches or loops.
