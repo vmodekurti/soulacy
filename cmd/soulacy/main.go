@@ -40,6 +40,16 @@ func main() {
 		return
 	}
 
+	// `soulacy registry` — reference E19 package registry (serve/keygen).
+	// Also pre-config: a registry host needs no gateway config.
+	if len(os.Args) > 1 && os.Args[1] == "registry" {
+		if err := runRegistry(os.Args[2:]); err != nil {
+			fmt.Fprintf(os.Stderr, "soulacy registry: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "soulacy: %v\n", err)
 		os.Exit(1)
