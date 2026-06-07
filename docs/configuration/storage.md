@@ -1,88 +1,163 @@
-# Storage
+# Storage & Backends
 
-Soulacy uses a pluggable storage backend for conversation history, session data, the dead-letter queue, and agent cost records.
-
-## Reference
+Soulacy persists everything locally by default — zero external
+dependencies. When you outgrow a single node, each layer (durable storage,
+vector search, message queue) can be swapped independently via
+`config.yaml`, including out-of-process **sidecar** backends that speak the
+External Storage Protocol.
 
 ```yaml
 storage:
-  type: sqlite          # sqlite | postgres | memory
-  path: ./soulacy.db   # SQLite only
-
-  # Postgres (when type: postgres)
-  postgres:
-    dsn: "postgres://user:pass@localhost:5432/soulacy?sslmode=disable"
-    max_open_conns: 25
-    max_idle_conns: 5
-    conn_max_lifetime: 5m
-
-  # Redis — used for rate limit counters and distributed locks
-  redis:
-    addr: localhost:6379
-    password: ""
-    db: 0
+  backend: sqlite        # default — nothing else needed
 ```
 
-## Backends
+## Durable storage (`storage:`)
+
+The durable event-log and memory-archive backend.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `backend` | `sqlite` | `sqlite`, `postgres`, or `external` |
+| `postgres_dsn` | — | libpq connection string (postgres only) |
+| `postgres_log_dir` | `memory.dir` | Directory for per-agent `.log` mirror files (postgres only) |
+| `command` | — | Sidecar executable (external only) |
+| `args` | — | Sidecar arguments (external only) |
 
 ### SQLite (default)
 
-Zero-dependency, single-file database. Best for local dev, single-node deployments, and low-traffic bots.
+Embedded, zero-dependency, ideal for single-node deployments. Databases
+live under the workspace `data/` directory (see
+[Workspace Layout](workspace.md)) — `actions.db`, `archive.db`,
+`knowledge.db`, `costs.db`, `workboard.db`, and friends.
+
+### PostgreSQL
 
 ```yaml
 storage:
-  type: sqlite
-  path: /var/lib/soulacy/soulacy.db
+  backend: postgres
+  postgres_dsn: "postgres://user:pass@host:5432/soulacy?sslmode=disable"
+  # postgres_log_dir: /var/lib/soulacy/logs   # optional .log mirrors
 ```
 
-SQLite is WAL-mode enabled automatically for better concurrent read performance.
+## Vector search (`vector:`)
 
-### Postgres
+Semantic memory search. When `vector.backend` is empty, the legacy
+`memory.vector_db` setting is used for backwards compatibility.
 
-Recommended for multi-replica or high-traffic deployments.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `backend` | `""` (inherits `memory.vector_db`) | `sqlite-vec`, `qdrant`, or `external` |
+| `url` | — | Qdrant base URL, e.g. `http://localhost:6333` |
+| `collection` | — | Qdrant collection name, e.g. `soulacy_memory` |
+| `api_key` | — | Qdrant API key (optional) |
+| `dims` | `768` | Embedding dimensionality — must match your embedder |
+| `command` / `args` | — | Sidecar process (external only) |
 
 ```yaml
-storage:
-  type: postgres
-  postgres:
-    dsn: "postgres://soulacy:secret@db:5432/soulacy?sslmode=require"
-    max_open_conns: 25
+# Built-in (default behaviour when memory.vector_db: sqlite-vec)
+vector:
+  backend: sqlite-vec
+
+# Qdrant
+vector:
+  backend: qdrant
+  url: http://localhost:6333
+  collection: soulacy_memory
+  dims: 768
 ```
 
-Soulacy runs migrations automatically on startup — no `migrate` step needed.
+## Message queue (`queue:`)
 
-### Memory
+Carries the [event stream](events.md) and internal work distribution.
 
-In-memory store with no persistence. Data is lost on restart. Useful for testing.
+| Key | Default | Description |
+|-----|---------|-------------|
+| `backend` | `memory` | `memory`, `nats`, or `external` |
+| `nats_url` | `nats://localhost:4222` | NATS server URL; comma-separated list for clusters |
+| `nats_stream` | `soulacy` | JetStream stream that owns Soulacy subjects |
+| `nats_subject_prefix` | `""` (= `<stream>.>`) | Subject filter applied to the stream |
+| `nats_ack_wait` | `30s` | How long JetStream waits for an Ack before redelivering |
+| `nats_max_deliver` | `0` | Max delivery attempts per message; `0` = unlimited |
+| `command` / `args` | — | Sidecar process (external only) |
 
 ```yaml
-storage:
-  type: memory
+queue:
+  backend: nats
+  nats_url: nats://localhost:4222
+  nats_stream: soulacy
+  nats_ack_wait: 30s
 ```
 
-## Redis
+With the default `memory` backend, events exist in-process only (still
+consumed by the webhook dispatcher). Switch to `nats` to consume events
+from other processes or machines.
 
-Redis is optional and used only for:
+## External sidecars (External Storage Protocol)
 
-- Rate limit counters (distributed, across multiple nodes)
-- Distributed locks
-
-If Redis is not configured, rate limiting falls back to in-process counters (suitable for single-node).
+Vector and queue backends can be served by a **sidecar process** speaking
+the External Storage Protocol — JSON-RPC 2.0 over stdio — so third-party
+database drivers plug in at runtime in any language, without recompiling
+Soulacy. The gateway spawns the sidecar, negotiates capabilities, and
+provisions a per-run shared scratch directory (`data/scratch/…`) so large
+payloads move as files instead of stdio JSON. Full wire spec and
+conformance kit (`sdk/extstorage/storagetest`): see
+[`docs/EXTERNAL_STORAGE_PROTOCOL.md`](../EXTERNAL_STORAGE_PROTOCOL.md).
 
 ```yaml
-storage:
-  redis:
-    addr: redis:6379
-    password: "your-redis-password"
+vector:
+  backend: external
+  command: /usr/local/bin/my-vector-sidecar
+  args: ["--db", "/var/lib/mydb"]
+
+queue:
+  backend: external
+  command: /usr/local/bin/my-queue-sidecar
 ```
 
-## What is stored
+!!! note "Sidecar crash behaviour"
+    Storage sidecars are not auto-respawned in v1 — a crashed sidecar
+    fails calls with a clear error. Restart the gateway (or fix the
+    sidecar) to recover.
 
-| Data | Table / Key |
-|------|-------------|
-| Conversation history | `conversation_entries` |
-| Session metadata | `sessions` |
-| API keys (hashed) | `api_keys` |
-| Dead-letter queue | `dead_letters` |
-| Cost records | `cost_records` |
-| Agent marketplace | `agent_registry` |
+## Knowledge & embeddings (`knowledge:`)
+
+RAG defaults used by knowledge bases:
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `db_path` | `<workspace>/data/knowledge.db` | Knowledge SQLite database |
+| `embedding_provider` | `ollama` | Embedding provider |
+| `embedding_model` | `nomic-embed-text` | Embedding model |
+| `chunk_size` | `1000` | Chunk size in characters |
+| `chunk_overlap` | `200` | Chunk overlap in characters |
+
+```yaml
+knowledge:
+  embedding_provider: ollama
+  embedding_model: nomic-embed-text
+  chunk_size: 1000
+  chunk_overlap: 200
+```
+
+The default embedding model (`nomic-embed-text`) produces 768-dimension
+vectors, matching the `vector.dims` / `memory.vector_dims` default of
+`768`. If you change embedders, keep these in sync.
+
+## Memory settings (`memory:`)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `dir` | `<workspace>/memory` | Base directory for file memory |
+| `sqlite_path` | `<workspace>/data/archive.db` | SQLite memory archive |
+| `vector_db` | `""` (disabled) | Legacy vector toggle: `sqlite-vec` or empty |
+| `vector_dims` | `768` | Embedding dimensions |
+| `max_history` | `50` | Max messages kept in hot memory |
+
+## Choosing backends
+
+| Deployment | storage | vector | queue |
+|------------|---------|--------|-------|
+| Laptop / single user | `sqlite` | `sqlite-vec` | `memory` |
+| Single VPS, external observers | `sqlite` | `sqlite-vec` | `nats` |
+| Multi-instance / heavy traffic | `postgres` | `qdrant` | `nats` |
+| Custom database stack | any | `external` | `external` |

@@ -1,0 +1,127 @@
+# Upgrades & Reinstall
+
+Soulacy is built so that upgrades are boring: schemas only move forward,
+API contracts are pinned by tests, and a broken plugin can never take the
+gateway down. This page covers the standard upgrade flow, what guarantees
+back it, and the (destructive) full-reinstall escape hatch.
+
+## Standard upgrade flow
+
+```bash
+cd ~/path/to/soulacy
+git pull
+
+# Rebuild GUI + binaries
+(cd gui && npm install && npm run build)
+make all
+
+# Restart the gateway (foreground example)
+lsof -ti :18789 | xargs kill 2>/dev/null || true
+./bin/soulacy
+```
+
+On macOS checkouts, `build-and-restart.command` wraps the rebuild +
+restart steps. Under launchd/systemd, replace the last two steps with
+your service manager's restart.
+
+That's it — no migration commands. Stores upgrade their own schemas at
+boot.
+
+## Why upgrades are safe
+
+Three guard layers (design:
+[`docs/UPGRADE_STABILITY.md`](../UPGRADE_STABILITY.md)):
+
+### 1. Database schema versioning — additive only, never down
+
+- Every SQLite store (workboard, costs, rbac, apikeys, dlq, checkpoints,
+  memory archive, action log, knowledge) records its schema version in a
+  shared `soulacy_schema_version` table at boot.
+- Schema changes run through a shared migration helper: one transaction
+  per step, versions ≤ current are skipped, and a failed step rolls back
+  cleanly.
+- Migrations are **additive-only by default** — `DROP`/`RENAME`
+  statements are refused unless a step explicitly opts in as destructive
+  (reserved for deprecation cycles).
+- Versions **never downgrade**. A database touched by a newer build keeps
+  its version; don't point an older binary at it and expect new tables to
+  be understood.
+
+### 2. API contract stability
+
+Contract tests pin the `/api/v1` response envelopes that the GUI, CLI,
+and plugins depend on (agents, config, providers, skills, the plugin
+install preview, the `{"error": …}` envelope, the 401 auth gate).
+Additive fields are fine; removing or renaming a pinned key fails the
+test suite and demands a deprecation cycle. The
+[event stream](../configuration/events.md) has the same rule: schema `1`
+is only bumped for breaking changes, with dual-publishing during the
+transition.
+
+### 3. Plugin SDK major gate & graceful fallbacks
+
+- Plugin manifests may declare `sdk_major: <n>`. A plugin built against a
+  **newer** SDK major than the host is refused at load with an upgrade
+  hint — it never crashes the gateway.
+- The loader warns-and-skips broken manifests, future schemas,
+  capability/credential violations, and stale install approvals. Every
+  refused plugin is published as a boot event (`type: error`,
+  `stage: plugin-load`) so the Logs GUI explains every silently absent
+  plugin.
+- Crashed channel sidecars are contained by the supervisor (backoff
+  restarts); the gateway keeps serving.
+
+## Back up before major upgrades
+
+All state lives in one place — the workspace:
+
+```bash
+# Stop the gateway first so SQLite files are quiescent, then:
+tar -czf soulacy-backup-$(date +%F).tar.gz ~/.soulacy
+```
+
+That captures `config.yaml`, agents, skills, plugins, all databases
+(`data/`), memory, and the credential vault (`secrets/`). Restoring is
+untarring it back. Verify what your workspace contains with
+`sy workspace info` ([Workspace Layout](../configuration/workspace.md)).
+
+!!! tip "Minimum viable backup"
+    If a full archive is too big, the irreplaceable parts are
+    `config.yaml`, `agents/`, `data/`, `memory/`, and `secrets/`.
+
+## Full reinstall from scratch
+
+The repo ships `reinstall-from-scratch.command` (macOS) for when you want
+a genuinely clean slate:
+
+```bash
+./reinstall-from-scratch.command
+```
+
+What it does, in order:
+
+1. Prompts for a **typed confirmation** — you must literally type `wipe`.
+2. Stops the gateway (port 18789, plus any launchd service).
+3. **Deletes `~/.soulacy` entirely — agents, memories, the encrypted
+   credential vault, config.yaml. No backup is taken.**
+4. Rebuilds the GUI dist and binaries from the checkout (`make all`).
+5. Boots once so a fresh soulspace workspace is created, prints
+   `sy workspace info`, and offers the `sy setup` wizard.
+
+!!! danger "Destructive — everything under ~/.soulacy is gone"
+    This is a wipe, not an upgrade. If there is any chance you'll want
+    your agents, conversation history, or vault back, take the backup
+    above *first*. For a normal version bump, use the standard upgrade
+    flow — never the reinstall script.
+
+## Downgrading
+
+There is no automated downgrade. Because schema migrations only move
+forward, rolling back a binary against an upgraded database is
+unsupported — restore the matching workspace backup instead.
+
+## See also
+
+- [`docs/UPGRADE_STABILITY.md`](../UPGRADE_STABILITY.md) — full design
+- [Workspace Layout](../configuration/workspace.md) — what to back up
+- [macOS deployment](macos.md) · [Linux / VPS](linux.md) · [Docker](docker.md)

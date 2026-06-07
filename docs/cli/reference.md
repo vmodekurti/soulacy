@@ -1,312 +1,214 @@
 # CLI Reference
 
-The `soulacy` binary provides several commands.
+Two binaries:
 
-## Global flags
+- **`sy`** — the CLI client. Every GUI action is available here; commands
+  talk to a running gateway over its REST API.
+- **`soulacy`** — the gateway server itself, plus the build tool and the
+  reference package registry.
+
+## Global `sy` flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config` | `./config.yaml` | Path to config file |
-| `--log-level` | `info` | Log level: `debug`, `info`, `warn`, `error` |
-| `--log-format` | `json` | Log format: `json`, `text` |
+| `--gateway` | `http://localhost:18789` (or `cli.gateway_url` / `server.port` from config) | Gateway URL |
+| `--api-key` | `server.api_key` from config | API key for gateway authentication |
+| `--json` | `false` | Output raw JSON |
 
 ---
 
-## `sy doctor`
-
-Run local diagnostics for a Soulacy installation.
+## Getting set up
 
 ```bash
-sy doctor
-sy doctor --json
+sy setup            # interactive wizard: providers, channels, writes config.yaml
+sy doctor           # local diagnostics — config, dirs, Python, Ollama, gateway, MCP
+sy doctor --json    # machine-readable report
 ```
 
-Checks:
+`sy doctor` exits nonzero only on hard failures; warnings flag suspicious
+but non-fatal configuration (relative `agent_dirs`, non-absolute
+`runtime.python_bin`, …).
 
-- config discovery
-- runtime directories
-- `agent_dirs`
-- Python interpreter
-- Ollama reachability
-- knowledge database
-- gateway health
-- MCP server status
-
-`sy doctor` exits nonzero only when a hard failure is found. Warnings identify suspicious but non-fatal configuration, such as a relative `agent_dirs` path or non-absolute `runtime.python_bin`.
-
----
-
-## `sy agent validate`
-
-Validate an agent `SOUL.yaml` before deploying it.
+## Managing agents
 
 ```bash
+sy agent list
+sy agent get support-bot
+sy agent create --file ./SOUL.yaml
 sy agent validate examples/agents/hello-world/SOUL.yaml
-sy agent validate --file examples/agents/hello-world/SOUL.yaml --json
+sy agent enable support-bot
+sy agent disable support-bot
+sy agent trigger daily-briefing      # manually fire a scheduled agent
+sy agent delete old-bot
 ```
 
-Checks:
+`sy agent validate` checks YAML fields, trigger/schedule consistency,
+provider and model availability, tool paths, and MCP references — errors
+return nonzero, making it CI-friendly.
 
-- unknown or malformed YAML fields
-- required `id`
-- trigger and schedule consistency
-- provider configuration and default-provider fallback
-- live model availability when the provider can be queried
-- model suitability warnings for tool-heavy or structured-output agents
-- bad Go duration strings in timeouts
-- negative numeric LLM and memory settings
-- missing local `python_file` tool paths
-- malformed `mcp_servers` and `mcp_tools` entries
+Pull a definition from a URL or the public registry:
 
-When a configured provider exposes a model list, validation suggests better alternatives instead of merely saying "wrong model." Warnings keep exit code 0. Errors return nonzero, making the command useful in CI.
+```bash
+sy pull my-agent                                   # registry ID
+sy pull org/repo                                   # GitHub shorthand (main/SOUL.yaml)
+sy pull https://example.com/agents/agent.yaml      # direct URL
+sy pull my-agent --dir ~/agents --force            # custom dir, overwrite
+```
 
----
+## Chatting & evaluating
 
-## `sy channel`
+```bash
+sy chat --agent support-bot "Summarize today's tickets"
+sy chat --agent support-bot --user alice "Hello!"
 
-Manage channel adapters from the terminal.
+sy eval --agent my-agent --suite tests/smoke.json        # pass/fail report
+sy eval --agent my-agent --suite tests/smoke.json --json
+```
+
+Eval suites are JSON:
+`{"name": "smoke", "cases": [{"name":"math","input":"2+2?","expected_contains":["4"]}]}`.
+A failing case makes the command exit nonzero.
+
+## Channels
 
 ```bash
 sy channel list
 sy channel status whatsapp_web
 sy channel enable telegram
 sy channel disable whatsapp_web
-sy channel update whatsapp_web --set trigger_phrase='!soulacy' --set ignore_groups=true
+sy channel update telegram --set trigger_phrase='!soulacy' --set ignore_groups=true
 ```
 
-Each adapter also has a first-class command namespace:
+Each adapter also has a first-class namespace with
+`status` / `enable` / `disable` / `configure`:
 
 ```bash
+sy channel telegram configure --token "$TELEGRAM_BOT_TOKEN" --agent assistant
+sy channel slack configure --bot-token "$SLACK_BOT_TOKEN" --app-token "$SLACK_APP_TOKEN" --agent assistant
+sy channel discord configure --token "$DISCORD_BOT_TOKEN" --agent assistant --guild '1234567890'
+sy channel whatsapp configure --phone-number-id "$ID" --access-token "$TOK" \
+  --verify-token "$VTOK" --app-secret "$SECRET" --agent assistant
 sy channel http status
-
-sy channel telegram configure \
-  --token "$TELEGRAM_BOT_TOKEN" \
-  --agent assistant \
-  --trigger '!soulacy' \
-  --allowed-users '123456789'
-
-sy channel slack configure \
-  --bot-token "$SLACK_BOT_TOKEN" \
-  --app-token "$SLACK_APP_TOKEN" \
-  --agent assistant \
-  --trigger '!soulacy'
-
-sy channel discord configure \
-  --token "$DISCORD_BOT_TOKEN" \
-  --agent assistant \
-  --guild '1234567890' \
-  --trigger '!soulacy'
-
-sy channel whatsapp configure \
-  --phone-number-id "$WA_PHONE_NUMBER_ID" \
-  --access-token "$WA_ACCESS_TOKEN" \
-  --verify-token "$WA_VERIFY_TOKEN" \
-  --app-secret "$WA_APP_SECRET" \
-  --agent assistant \
-  --trigger '!soulacy'
 ```
 
-Every configurable adapter namespace supports:
+All `configure` commands share the activation-safety flags: `--trigger`
+(wake phrase), `--allow-groups`, `--allowed-chats`, `--allowed-users`.
+
+WhatsApp Web pairs over QR:
 
 ```bash
-sy channel <adapter> status
-sy channel <adapter> enable
-sy channel <adapter> disable
-sy channel <adapter> configure ...
+sy channel whatsapp-web pair --agent assistant            # safe defaults: trigger !soulacy, no groups
+sy channel whatsapp-web pair --agent assistant --trigger '!ask' --allow-groups
+sy channel whatsapp-web status                            # connection state + QR payload
 ```
 
-### Activation safety
-
-Adapter-specific `configure` commands expose the same safety model:
-
-- `--trigger` sets the wake phrase; messages must start with it.
-- `--allow-groups` opts into group/server/channel activation.
-- `--allowed-chats` restricts activation to specific platform destinations.
-- `--allowed-users` restricts activation to specific senders.
-
-### WhatsApp Web pairing
-
-The CLI supports the same guarded WhatsApp Web setup as the GUI:
+## Skills & registries
 
 ```bash
-sy channel whatsapp-web pair --agent assistant
+sy skill list
+sy skill get pdf-tools
+sy skill install ./my-skill                      # local directory
+sy skill install self-improving-agent            # registry slug
+sy skill install github.com/user/my-skill        # git source
+sy skill install some-skill --yes                # skip consent prompt
 ```
 
-By default, pairing uses safe activation rules:
+Remote installs resolve through the `registries:` config block (falling
+back to a bare git provider), run the safety introspection pipeline
+(static scan + sandboxed dry-run), show a consent prompt, then hot-load
+via the gateway's `/skills/rescan` API.
 
-- messages must start with `!soulacy`
-- group chats are ignored
+!!! note "`--yes` never bypasses danger"
+    `--yes` skips the routine consent prompt, but a **danger** safety
+    verdict always requires an interactive yes.
 
-Customize those rules explicitly:
+Manage skill sources:
 
 ```bash
-sy channel whatsapp-web pair \
-  --agent assistant \
-  --trigger '!ask' \
-  --allowed-chats '12345@s.whatsapp.net'
+sy registry list                                  # configured sources
+sy registry probe https://www.skills.sh/          # review what a URL is
+sy registry add https://www.skills.sh/            # probe + consent + save
+sy registry add https://reg.example.com --id main --priority 10 -y
 ```
 
-Allow group chats only when that is intentional:
+`probe` runs client-side (no gateway needed). `add` saves via the gateway
+API when it is reachable, otherwise appends directly to `config.yaml`.
+
+## Memory, schedule & logs
 
 ```bash
-sy channel whatsapp-web pair --agent assistant --allow-groups
+sy memory list --agent support-bot     # session memory entries
+sy schedule list                       # scheduled agent entries
+sy logs --follow                       # stream live events
 ```
 
-Check connection state and the current QR payload:
+## Workspace
 
 ```bash
-sy channel whatsapp-web status
+sy workspace info                  # resolved layout (soulspace vs legacy) + every path
+sy workspace migrate --dry-run     # print the migration plan, move nothing
+sy workspace migrate               # migrate legacy ~/.soulacy → soulspace (confirm; -y to skip)
 ```
 
-The CLI prints the QR pairing payload. Use the Channels GUI for a rendered QR
-image, or pipe the payload into a trusted terminal QR renderer.
+Stop the gateway before `migrate` — databases move as files. See
+[Workspace Layout](../configuration/workspace.md).
+
+## Gateway control
+
+```bash
+sy server status     # GET /health against the gateway
+sy server start      # convenience hint — run the `soulacy` binary for production
+sy version           # CLI version + resolved gateway URL
+```
 
 ---
 
-## `soulacy serve`
+## The `soulacy` binary
 
-Start the Soulacy server.
+Running `soulacy` with no subcommand starts the gateway in the
+foreground, loading config from `SOULACY_CONFIG_PATH` or the
+[workspace](../configuration/workspace.md):
 
 ```bash
-soulacy serve [flags]
+soulacy                                          # start the gateway
+SOULACY_CONFIG_PATH=/etc/soulacy/config.yaml soulacy
+```
+
+### `soulacy build`
+
+Build a flavored binary with extra driver modules compiled in
+(see [Custom Distributions](../extend/custom-distributions.md)):
+
+```bash
+soulacy build --with github.com/acme/soulacy-matrix@v1.2.0 -o bin/soulacy-matrix
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--config` | `./config.yaml` | Config file path |
-| `--host` | from config | Override server host |
-| `--port` | from config | Override server port |
-| `--dev` | `false` | Enable development mode (pretty logs, no rate limits) |
+| `--with` | — | Extra driver module, `module[@version]` (repeatable) |
+| `-o` | `bin/soulacy` | Output binary path |
+| `--skip-verify` | `false` | Skip conformance/registry test gates |
+| `--keep` | `true` | Keep the generated `builtins_extra.go` (required for rebuilds) |
 
-### Examples
+### `soulacy registry serve` / `keygen`
 
-```bash
-# Start with default config
-soulacy serve
-
-# Custom config path
-soulacy serve --config /etc/soulacy/config.yaml
-
-# Development mode
-soulacy serve --dev --log-format text
-```
-
----
-
-## `soulacy validate`
-
-Validate a config file and all SOUL.yaml files without starting the server.
+Host your own package registry
+(see [Package Registries](../extend/registries.md)):
 
 ```bash
-soulacy validate --config config.yaml
+# Generate a signing keypair (private key written 0600; public key printed)
+soulacy registry keygen --out ~/.soulacy/registry-signing.key
+
+# Serve <slug>-<version>.tar.gz archives, signed
+soulacy registry serve --dir ./packages --addr 127.0.0.1:18790 \
+    --signing-key-file ~/.soulacy/registry-signing.key
 ```
 
-Output:
+Consumers put the printed **public** key in their `registries:` entry as
+`signing_key` — unsigned or tampered packages are then refused.
 
-```
-✓ config.yaml — valid
-✓ agents/assistant.soul.yaml — valid
-✓ agents/researcher.soul.yaml — valid
-✗ agents/broken.soul.yaml — unknown field: modell (did you mean model?)
-```
-
----
-
-## `soulacy agent`
-
-Manage agents from the CLI.
-
-### List agents
-
-```bash
-soulacy agent list --config config.yaml
-```
-
-Output:
-
-```
-ID           MODEL          CHANNELS          TOOLS
-assistant    gpt-4o-mini    http,telegram     -
-researcher   gpt-4o         http              web_search,url_fetch
-```
-
-### Chat with an agent (REPL)
-
-```bash
-soulacy agent chat assistant --config config.yaml
-```
-
-Starts an interactive REPL session in the terminal:
-
-```
-Session: sess_abc123
-Type your message and press Enter. Ctrl+C to exit.
-
-> Hello!
-assistant: Hi! How can I help you today?
-
-> What's 2 + 2?
-assistant: 4.
-```
-
----
-
-## `soulacy keys`
-
-Manage API keys.
-
-### Create a key
-
-```bash
-soulacy keys create --name ci-bot --role operator --config config.yaml
-```
-
-Output:
-
-```
-API Key created:
-  ID:   ak_abc123
-  Name: ci-bot
-  Role: operator
-  Key:  sk_xxxxxxxxxxxxxxxxxxxxxxxxxx  ← save this, shown once
-```
-
-### List keys
-
-```bash
-soulacy keys list --config config.yaml
-```
-
-### Revoke a key
-
-```bash
-soulacy keys revoke ak_abc123 --config config.yaml
-```
-
----
-
-## `soulacy costs`
-
-View cost summaries from the CLI.
-
-```bash
-# 30-day summary
-soulacy costs summary --config config.yaml
-
-# Per-agent breakdown
-soulacy costs breakdown --config config.yaml --period 7d
-
-# Filter by agent
-soulacy costs breakdown --agent researcher --period 30d
-```
-
----
-
-## `soulacy version`
-
-Print version and build information.
-
-```bash
-soulacy version
-# Soulacy v0.1.0 (go1.25 linux/amd64) built 2026-05-28
-```
+| `serve` flag | Default | Description |
+|--------------|---------|-------------|
+| `--dir` | `packages` | Directory of `<slug>-<version>.tar.gz` archives |
+| `--addr` | `127.0.0.1:18790` | Listen address |
+| `--signing-key-file` | — | Hex ed25519 private key; when set, every package is signed |

@@ -1,23 +1,10 @@
 # Agent Tools
 
-Soulacy agents can call tools during an LLM run. The runtime builds each
-agent's tool catalog from five sources:
+Tools give your agent hands: Python scripts you write, Go-native built-ins, MCP tools, and peer agents, all exposed through one catalog the model picks from.
 
-1. Python tools declared in that agent's `SOUL.yaml`.
-2. Go-native built-ins such as `web_search`, `kb_search`, `read_skill`, and
-   selected system tools.
-3. MCP tools from configured MCP servers.
-4. Peer agents exposed as `agent__<id>` tools.
-5. Plugin-contributed tools, when plugins are enabled.
+## Quick Start
 
-The model sees only the tools admitted by the agent definition and gateway
-configuration.
-
-## Python Tools
-
-Declare agent-local tools under `tools:`:
-
-```yaml
+```yaml title="agents/weather/SOUL.yaml (excerpt)"
 tools:
   - name: get_weather
     description: Fetch the current weather for a location.
@@ -30,152 +17,151 @@ tools:
       required: [location]
 ```
 
-The Python file should expose a function with the same name as the tool. The
-runtime passes JSON arguments on stdin and captures stdout as the tool result.
-Relative `python_file` paths resolve from the `SOUL.yaml` directory.
+```python title="tools/get_weather.py"
+def get_weather(location):
+    # do work, return a string or anything JSON-serializable
+    return {"location": location, "temp_c": 21}
+```
 
-Use `timeout` for long-running tools. It uses Go duration syntax such as `30s`,
-`5m`, or `1h`.
+The runtime builds each agent's catalog from five sources — Python tools from
+`SOUL.yaml`, Go-native built-ins, MCP tools, peer agents (`agent__<id>`), and
+plugin tools. The model only ever sees tools admitted by the agent definition
+and gateway config.
+
+## Python Tools
+
+Each entry under `tools:` needs:
+
+| Field | Notes |
+|-------|-------|
+| `name` | Tool name (snake_case). Must match a **function of the same name** in the Python file. |
+| `description` | What the LLM reads to decide when to call it. Be specific. |
+| `python_file` | Path to the script. Relative paths resolve from the `SOUL.yaml` directory; `~/` expands to your home directory. |
+| `inline` | Alternative to `python_file`: a Python script embedded in YAML. |
+| `parameters` | JSON Schema object describing the arguments. |
+| `timeout` | Per-tool override of the global `runtime.tool_timeout`. Go duration syntax: `30s`, `5m`, `1h`. |
+
+How a call executes:
+
+1. The engine serializes the model's arguments to JSON and passes them on
+   **stdin**; your function is called as `get_weather(**args)`.
+2. The function's return value becomes the tool result — strings pass through,
+   anything else is JSON-encoded.
+3. `print()` inside your tool goes to stderr, not the result — and every
+   stderr line streams live into the Activity log as a `tool.log` event, so
+   long-running tools can report progress with
+   `print("step 2/5…", file=sys.stderr, flush=True)`.
+
+!!! tip
+    Set `timeout` per tool instead of weakening the global default. A
+    NotebookLM export that legitimately takes 20 minutes gets `timeout: 30m`;
+    everything else keeps the safety net.
+
+## The Sandbox
+
+Python tools run inside a resource sandbox — the soulacy binary re-execs
+itself as a hidden wrapper that applies syscall-level rlimits before running
+your script. Default caps:
+
+| Limit | Default |
+|-------|---------|
+| CPU time | 30 s |
+| Memory (address space) | 512 MB |
+| Open file descriptors | 256 |
+| Largest single file written | 64 MB |
+
+No external sandboxer is needed; it works on any Unix host. Operators can tune
+or disable the limits in `config.yaml`. On multi-user deployments,
+`runtime.allowed_tool_dirs` additionally restricts which paths `python_file`
+may point at — a crafted SOUL.yaml cannot execute arbitrary host files.
 
 ## Built-ins
 
-`builtins` controls Go-native tools.
+`builtins` controls which Go-native tools the engine offers:
 
-```yaml
-builtins:
-  - web_search
-  - kb_search
-```
+| YAML | Mode |
+|------|------|
+| Field absent | **Default** — gated built-ins are auto-injected when their prerequisites are met. |
+| `builtins: []` | **None** — no built-ins. Right choice for peer-only orchestrators. |
+| `builtins: [web_search, kb_search]` | **Restricted** — only the listed built-ins, still subject to their gates. |
+| `builtins: ["*"]` or `["all"]` | Same as default, written explicitly. |
 
-Modes:
+Common built-ins and their gates:
 
-| YAML | Meaning |
-|------|---------|
-| Field absent | Default gated built-ins are offered. |
-| `builtins: []` | No built-ins are offered. |
-| `builtins: ["*"]` | All gated built-ins are allowed. |
-| `builtins: [web_search]` | Only listed built-ins are allowed. |
-
-Common built-ins:
-
-| Tool | Gate | Description |
-|------|------|-------------|
-| `web_search` | Always visible unless filtered by `builtins` | Searches via the Ollama Web Search API. Requires an Ollama API key in config or `OLLAMA_API_KEY`. |
-| `kb_search` | Agent must declare `knowledge:` | Searches configured knowledge bases. |
-| `read_skill` | Agent must declare `skills:` | Reads the full body of an installed Agent Skill. |
-| `read_skill_file` | Agent must declare `skills:` | Reads a resource file inside an installed skill. |
+| Tool | Gate |
+|------|------|
+| `web_search` | Web search API key configured. |
+| `kb_search` | Agent declares `knowledge:`. |
+| `read_skill`, `read_skill_file` | Agent declares `skills:`. |
+| `shell_exec`, `run_script`, `read_file`, `write_file`, `list_dir`, `install_library` | System tools — double opt-in (below). |
 
 ## System Tools
 
-System tools provide host-level actions such as shell execution and file access.
-They require a double opt-in:
+OS-level tools require **both** sides to opt in:
 
-1. Gateway config must allow them with `runtime.allow_system_tools: true`.
-2. The agent must set `system_tools: true`.
+1. `runtime.allow_system_tools: true` in `config.yaml`.
+2. `system_tools: true` in the agent's `SOUL.yaml`.
+
+!!! warning
+    System tools execute with the gateway's OS permissions. On shared or
+    internet-exposed deployments, leave them off and use narrower Python or
+    MCP tools instead.
+
+## Confirmation Gates
+
+`confirm_tools` lists built-in tools that must pause for explicit approval
+before executing:
 
 ```yaml
-system_tools: true
 confirm_tools:
   - shell_exec
   - write_file
 ```
 
-Use `confirm_tools` for operations that should pause for operator approval.
-`confirm_tools: ["*"]` requires confirmation for every built-in tool call.
-
-System tools are powerful. On shared or exposed deployments, prefer leaving them
-off and using narrower Python or MCP tools instead.
+When the model calls a gated tool, the engine emits a `tool_confirm` event,
+shows an approval card in the Chat page, and waits for your decision before
+proceeding. `confirm_tools: ["*"]` gates every built-in call. Gates apply to
+built-in and system tools (Python and MCP tools run without a gate — restrict
+those via allowlists instead).
 
 ## MCP Tools
 
-MCP tools are namespaced as `mcp__<server>__<tool>`.
+Tools from connected MCP servers are auto-injected under the name
+`mcp__<server>__<tool>` — e.g. `mcp__github__search_repositories`. With no
+allowlist configured, agents see every connected MCP tool. Once either field
+below is present, MCP becomes deny-by-default:
 
 ```yaml
-mcp_servers:
-  - github
-mcp_tools:
-  - mcp__github__search_repositories
+mcp_servers: [github]                           # allow whole servers…
+mcp_tools: [mcp__github__search_repositories]   # …or individual tools
 ```
 
-If both `mcp_servers` and `mcp_tools` are absent, legacy agents see all
-connected MCP tools. Once either field is present, MCP becomes deny-by-default
-and only matching servers or full tool names are exposed.
-
-Use:
-
-```yaml
-mcp_servers: []
-```
-
-to expose no MCP tools, or:
-
-```yaml
-mcp_servers: ["*"]
-mcp_tools: ["*"]
-```
-
-to expose every connected MCP tool explicitly.
+A tool is allowed when **either** list admits it. Use `mcp_servers: []` to
+expose none, or `["*"]` / `["all"]` to allow everything explicitly.
 
 ## Peer-Agent Tools
 
-Expose other agents with `agents:`:
+`agents: [researcher]` registers `agent__researcher` as a callable tool. See
+[Peer Agents & Built-ins](peers-builtins.md) for delegation patterns and
+`llm.tool_choice` forcing.
 
-```yaml
-agents:
-  - researcher
-  - critic
-```
+## Editing Tools in the GUI
 
-The runtime registers those peers as `agent__researcher` and `agent__critic`.
-When called, the target agent runs in a fresh internal session with its own
-model, tools, memory, knowledge, and timeouts.
+The Agents page editor has a full tool builder — no YAML required:
 
-Use `llm.tool_choice` when delegation is mandatory:
-
-```yaml
-llm:
-  provider: ollama
-  model: qwen2.5:72b
-  tool_choice: agent__researcher
-```
-
-Soulacy will auto-delegate before the first model turn for peer tools selected
-this way, which helps with local models that ignore provider-level forced tool
-choice.
-
-## Knowledge Tools
-
-Agents with at least one knowledge base get `kb_search` when built-ins permit it:
-
-```yaml
-knowledge:
-  - finance-local
-builtins:
-  - kb_search
-```
-
-Knowledge bases are created and populated through the GUI or the
-`/api/v1/knowledge` API. Each KB records its embedding provider and model so
-different KBs can use different vector dimensions.
-
-## Skill Tools
-
-Agents with `skills:` get access to the skill catalog plus `read_skill` and
-`read_skill_file`:
-
-```yaml
-skills:
-  - csv-analysis
-```
-
-Only the skill name and description are injected initially. The model calls
-`read_skill` when it needs the full instructions.
+- **+ Add tool** creates a tool card with name, description, timeout, and a
+  JSON parameters-schema editor.
+- The **Python file** field is a picker: type a path or hit **📂 Browse** to
+  pick from the tool catalog of discovered scripts (picking one pre-fills the
+  name and description).
+- A hint chip row shows which **MCP tools are auto-injected** for the agent.
+- Built-ins are a tri-state radio: *Default*, *None (peer-only orchestrator)*,
+  or *Restricted* with a named allowlist.
 
 ## Safety Checklist
 
-- Prefer explicit `builtins`, `mcp_servers`, and `mcp_tools` allowlists for
-  production agents.
-- Use `builtins: []` for orchestrators that should only call peer agents.
+- Prefer explicit `builtins`, `mcp_servers`, and `mcp_tools` allowlists in production.
+- Use `builtins: []` for orchestrators that should only call peers.
 - Keep `system_tools` off unless the agent truly needs host access.
-- Add `confirm_tools` for destructive or high-cost actions.
-- Run `sy agent validate path/to/SOUL.yaml` before deployment.
+- Add `confirm_tools` for destructive or expensive actions.
+- Run `sy agent validate path/to/SOUL.yaml` before deploying.
