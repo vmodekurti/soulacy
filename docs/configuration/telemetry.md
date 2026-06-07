@@ -24,7 +24,7 @@ telemetry:
   cost:
     enabled: true
     # Cost records are stored in the database.
-    # View via GET /v1/costs
+    # View via GET /api/v1/costs
 ```
 
 ## Traces
@@ -84,11 +84,11 @@ Soulacy records token usage and estimated cost for every LLM call. Cost per toke
 
 ```bash
 # View cost summary
-curl http://localhost:8080/v1/costs \
+curl http://localhost:18789/api/v1/costs \
   -H "Authorization: Bearer sy_your-key"
 
 # Filter by agent
-curl "http://localhost:8080/v1/costs?agent_id=assistant&period=7d"
+curl "http://localhost:18789/api/v1/costs?agent_id=assistant&period=7d"
 ```
 
 See the [Costs API reference](../api/costs.md) for full details.
