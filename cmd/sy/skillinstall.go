@@ -73,11 +73,21 @@ func remoteSkillInstall(ctx context.Context, eng *pkgregistry.Engine, slug strin
 		return fmt.Errorf("%q is not a local directory and no configured registry resolves it: %w", slug, err)
 	}
 	fmt.Fprintf(out, "Resolved %s@%s via registry %q\n", pkg.Slug, pkg.Version, pkg.Provider)
+	if pkg.Description != "" {
+		fmt.Fprintf(out, "  %s\n", firstLine(pkg.Description))
+	}
 	if pkg.Checksum != "" {
 		fmt.Fprintf(out, "  archive sha256: %s\n", pkg.Checksum)
 	}
-	if pkg.Signature != "" {
-		fmt.Fprintf(out, "  signature: present (verify against your registry's signing key)\n")
+	// Signature provenance (verification itself is enforced inside Fetch —
+	// a registry with signing_key REFUSES unsigned/tampered packages).
+	switch {
+	case pkg.Signature != "" && eng.VerifiesSignatures(pkg.Provider):
+		fmt.Fprintf(out, "  signature: ed25519, verified against registry %q's signing_key during fetch\n", pkg.Provider)
+	case pkg.Signature != "":
+		fmt.Fprintf(out, "  signature: present but UNVERIFIED — set signing_key on registry %q to enforce verification\n", pkg.Provider)
+	default:
+		fmt.Fprintf(out, "  signature: none (unsigned package)\n")
 	}
 
 	// 2. Fetch into a staging dir — checksum verification happens inside the
@@ -110,11 +120,31 @@ func remoteSkillInstall(ctx context.Context, eng *pkgregistry.Engine, slug strin
 	report := pipeline.Run(ctx, staging, manifest)
 	printSecurityReport(out, report)
 
-	// Permissions consent — skills may bundle a plugin.yaml with grants.
-	if manifest != nil && len(manifest.Permissions) > 0 {
-		fmt.Fprintln(out, "Requested capabilities:")
-		for _, p := range manifest.Permissions {
-			fmt.Fprintf(out, "  - %s\n", p.Cap)
+	// Package summary for the consent decision.
+	if heading := skillHeading(staging); heading != "" {
+		fmt.Fprintf(out, "Skill: %s\n", heading)
+	}
+	if manifest != nil {
+		if len(manifest.Tools) > 0 {
+			fmt.Fprintf(out, "Declares %d tool librar%s.\n", len(manifest.Tools), pluralYIes(len(manifest.Tools)))
+		}
+		if len(manifest.Migrations) > 0 {
+			fmt.Fprintln(out, "Declared schema migrations:")
+			for _, mg := range manifest.Migrations {
+				fmt.Fprintf(out, "  - %s\n", mg.Name)
+			}
+		}
+		if len(manifest.Permissions) > 0 {
+			fmt.Fprintln(out, "Requested capabilities:")
+			for _, p := range manifest.Permissions {
+				fmt.Fprintf(out, "  - %s\n", p.Cap)
+			}
+		}
+		if len(manifest.Credentials) > 0 {
+			fmt.Fprintln(out, "Requested credentials:")
+			for _, cr := range manifest.Credentials {
+				fmt.Fprintf(out, "  - %s ← vault: %s\n", cr.Key, cr.From)
+			}
 		}
 	}
 
@@ -191,4 +221,36 @@ func skillDirName(slug string) string {
 		return "skill"
 	}
 	return name
+}
+
+// firstLine trims a description to its first non-empty line.
+func firstLine(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		if l := strings.TrimSpace(line); l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+// skillHeading returns the first markdown heading of the staged SKILL.md.
+func skillHeading(dir string) string {
+	body, err := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		l := strings.TrimSpace(line)
+		if strings.HasPrefix(l, "#") {
+			return strings.TrimSpace(strings.TrimLeft(l, "#"))
+		}
+	}
+	return ""
+}
+
+func pluralYIes(n int) string {
+	if n == 1 {
+		return "y"
+	}
+	return "ies"
 }

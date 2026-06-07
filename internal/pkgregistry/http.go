@@ -8,6 +8,7 @@ package pkgregistry
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +35,14 @@ type httpProvider struct {
 	baseURL string
 	headers map[string]string
 	client  *http.Client
+	// pubKey, when non-nil, makes signature verification MANDATORY for
+	// every package fetched from this registry (config signing_key).
+	pubKey ed25519.PublicKey
 }
+
+// VerifiesSignatures reports whether this registry enforces ed25519
+// signatures (signing_key configured).
+func (p *httpProvider) VerifiesSignatures() bool { return p.pubKey != nil }
 
 func newHTTPProvider(cfg map[string]any) (*httpProvider, error) {
 	base := strings.TrimRight(cfgmap.Str(cfg, "base_url", ""), "/")
@@ -47,11 +55,20 @@ func newHTTPProvider(cfg map[string]any) (*httpProvider, error) {
 			headers[k] = s
 		}
 	}
+	var pubKey ed25519.PublicKey
+	if hexKey := cfgmap.Str(cfg, "signing_key", ""); hexKey != "" {
+		k, err := parseSigningKey(hexKey)
+		if err != nil {
+			return nil, err
+		}
+		pubKey = k
+	}
 	return &httpProvider{
 		id:      cfgmap.Str(cfg, "id", "http"),
 		baseURL: base,
 		headers: headers,
 		client:  &http.Client{Timeout: 60 * time.Second},
+		pubKey:  pubKey,
 	}, nil
 }
 
@@ -122,6 +139,16 @@ func (p *httpProvider) Fetch(ctx context.Context, pkg sdkpkg.Package, dstDir str
 	}
 	if strings.TrimSpace(pkg.Checksum) == "" {
 		return fmt.Errorf("pkgregistry: %s: package %q has no checksum — refusing unverifiable archive", p.id, pkg.Slug)
+	}
+	// Signature gate: a registry with signing_key configured requires a
+	// valid ed25519 signature over the archive digest on EVERY package.
+	if p.pubKey != nil {
+		if strings.TrimSpace(pkg.Signature) == "" {
+			return fmt.Errorf("pkgregistry: %s: package %q is unsigned but this registry requires signatures", p.id, pkg.Slug)
+		}
+		if err := VerifySignature(p.pubKey, pkg.Checksum, pkg.Signature); err != nil {
+			return fmt.Errorf("pkgregistry: %s: package %q: %w", p.id, pkg.Slug, err)
+		}
 	}
 	resp, err := p.get(ctx, pkg.Source)
 	if err != nil {
