@@ -85,6 +85,12 @@ func (a *App) Run(parent context.Context) error {
 	}
 	log.Info("workspace", zap.String("root", ws.Root), zap.Bool("legacy", ws.Legacy))
 
+	// Sweep stale per-run scratch dirs (Story E24 shared mounts) left by a
+	// crashed previous run; live ones are recreated by their owners below.
+	if err := os.RemoveAll(filepath.Join(ws.Data, "scratch")); err != nil {
+		log.Warn("scratch sweep failed", zap.Error(err))
+	}
+
 	// ── Agent brain memory (episodic / semantic / procedural) ────────────────
 	// MEM-02: instantiate the CompositeStore. Base dir reads from the
 	// SOULACY_MEMORY_DIR env var (MEM-07), falling back to ~/.soulacy/memory/.
@@ -446,6 +452,21 @@ func (a *App) Run(parent context.Context) error {
 					zap.Int("dims", dims),
 				)
 			}
+		case "external": // storage sidecar over stdio (E24)
+			eb, _, eerr := registry.NewVector("external", map[string]any{
+				"id":           "vector-external",
+				"command":      cfg.Vector.Command,
+				"args":         cfg.Vector.Args,
+				"scratch_root": filepath.Join(ws.Data, "scratch"),
+				"logger":       log,
+			})
+			if eerr != nil {
+				log.Warn("external vector sidecar unavailable", zap.Error(eerr))
+			} else {
+				vecBackend = eb
+				log.Info("vector memory enabled (external sidecar)",
+					zap.String("command", cfg.Vector.Command))
+			}
 		default: // "sqlite-vec" or any legacy non-empty value
 			vs, verr := memory.NewVectorStore(archive.DB(), memEmbedder, dims)
 			if verr != nil {
@@ -509,6 +530,12 @@ func (a *App) Run(parent context.Context) error {
 		"subject_prefix": cfg.Queue.NATSSubjectPrefix,
 		"ack_wait":       cfg.Queue.NATSAckWait,
 		"max_deliver":    cfg.Queue.NATSMaxDeliver,
+		// external storage sidecar keys (backend: "external", E24)
+		"id":           "queue-external",
+		"command":      cfg.Queue.Command,
+		"args":         cfg.Queue.Args,
+		"scratch_root": filepath.Join(ws.Data, "scratch"),
+		"logger":       log,
 	})
 	if !qok {
 		return fmt.Errorf("unknown queue backend %q (registered: %v)", queueName, registry.Queues())
@@ -673,7 +700,8 @@ func (a *App) Run(parent context.Context) error {
 			Log:           log,
 			SandboxSelf:   wireSandboxSelf,
 			SandboxLimits: wireSandboxLimits,
-			PluginsConfig: cfg.PluginsConfig, // Story E17
+			PluginsConfig: cfg.PluginsConfig,                 // Story E17
+			ScratchRoot:   filepath.Join(ws.Data, "scratch"), // Story E24
 		}) {
 			log.Warn("plugin contribution skipped", zap.Error(werr))
 		}

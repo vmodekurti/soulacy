@@ -26,6 +26,8 @@ var builtins = []string{
 	"github.com/soulacy/soulacy/internal/channels/slack",
 	"github.com/soulacy/soulacy/internal/channels/telegram",
 	"github.com/soulacy/soulacy/internal/channels/whatsapp",
+	// external storage sidecars (vector + queue "external" factories, E24)
+	"github.com/soulacy/soulacy/internal/extstorage",
 	// llm providers (ollama / openai / anthropic / gemini live in one package)
 	"github.com/soulacy/soulacy/internal/llm",
 	// queue backends

@@ -46,6 +46,12 @@ type Frame struct {
 
 	// error
 	Error string `json:"error,omitempty"`
+
+	// hello_ack: absolute path of the per-run shared scratch directory the
+	// gateway created for this sidecar (Story E24 shared mounts). Large
+	// attachments move as files under it — referenced by relative path —
+	// never as inline payloads. Empty = no shared dir provisioned.
+	SharedDir string `json:"shared_dir,omitempty"`
 }
 
 // ParseFrame decodes one NDJSON line. Unknown frame types are NOT an error —

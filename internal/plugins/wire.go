@@ -20,6 +20,7 @@ import (
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/channels/external"
 	"github.com/soulacy/soulacy/internal/credentials"
+	"github.com/soulacy/soulacy/internal/extstorage"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/pkg/plugin"
@@ -57,6 +58,12 @@ type WireDeps struct {
 	// to its LoadedPlugin (Settings) so contributions and host surfaces
 	// (E13 install UX) can read it; the shape is owned by the plugin.
 	PluginsConfig map[string]map[string]any
+
+	// ScratchRoot, when set, provisions a per-channel shared scratch
+	// directory (Story E24 shared mounts) advertised to the sidecar in
+	// hello_ack. Typically <workspace data>/scratch; the host sweeps it
+	// at boot.
+	ScratchRoot string
 }
 
 // Wire registers every v2 contribution from l with the host. Returned errors
@@ -138,6 +145,14 @@ func buildSupervisor(ctx context.Context, lp *LoadedPlugin, ch plugin.ChannelEnt
 	cfg := external.SupervisorConfig{
 		SandboxSelf:   deps.SandboxSelf,
 		SandboxLimits: deps.SandboxLimits,
+	}
+	if deps.ScratchRoot != "" {
+		if dir, _, err := extstorage.NewScratchDir(deps.ScratchRoot, id+"-"+ch.ID); err != nil {
+			deps.Log.Warn("shared scratch dir unavailable for sidecar channel",
+				zap.String("plugin", id), zap.String("channel", ch.ID), zap.Error(err))
+		} else {
+			cfg.SharedDir = dir
+		}
 	}
 	if len(lp.Manifest.Credentials) > 0 && deps.Vault != nil {
 		delegator := NewDelegator(deps.Vault, deps.Log)

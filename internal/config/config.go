@@ -285,16 +285,21 @@ type StorageConfig struct {
 //
 //	backend:     "sqlite-vec"  — built-in sqlite-vec (default)
 //	             "qdrant"      — Qdrant REST API
+//	             "external"    — storage sidecar over stdio (E24)
 //	url:         "http://localhost:6333"   (Qdrant only)
 //	collection:  "soulacy_memory"        (Qdrant only)
 //	api_key:     ""                        (Qdrant optional auth)
 //	dims:        768                       (must match your embedder)
+//	command:     "/path/to/sidecar"        (external only)
+//	args:        ["--flag"]                (external only)
 type VectorConfig struct {
-	Backend    string `mapstructure:"backend"`    // "sqlite-vec" or "qdrant"
-	URL        string `mapstructure:"url"`        // Qdrant base URL
-	Collection string `mapstructure:"collection"` // Qdrant collection name
-	APIKey     string `mapstructure:"api_key"`    // Qdrant API key (optional)
-	Dims       int    `mapstructure:"dims"`       // embedding dimensionality
+	Backend    string   `mapstructure:"backend"`    // "sqlite-vec", "qdrant", or "external"
+	URL        string   `mapstructure:"url"`        // Qdrant base URL
+	Collection string   `mapstructure:"collection"` // Qdrant collection name
+	APIKey     string   `mapstructure:"api_key"`    // Qdrant API key (optional)
+	Dims       int      `mapstructure:"dims"`       // embedding dimensionality
+	Command    string   `mapstructure:"command"`    // external sidecar command (E24)
+	Args       []string `mapstructure:"args"`       // external sidecar args (E24)
 }
 
 // ExecutorConfig selects the Python tool executor backend.
@@ -344,13 +349,16 @@ type AuthConfig struct {
 //	                     How long JetStream waits for an Ack before redelivering.
 //	nats_max_deliver:    0
 //	                     Max delivery attempts per message; 0 = unlimited.
+//	command/args:        external sidecar process (backend: "external", E24)
 type QueueConfig struct {
-	Backend           string `mapstructure:"backend"`             // "memory" (default) or "nats"
-	NATSUrl           string `mapstructure:"nats_url"`            // NATS server URL
-	NATSStream        string `mapstructure:"nats_stream"`         // JetStream stream name
-	NATSSubjectPrefix string `mapstructure:"nats_subject_prefix"` // subjects filter
-	NATSAckWait       string `mapstructure:"nats_ack_wait"`       // e.g. "30s"
-	NATSMaxDeliver    int    `mapstructure:"nats_max_deliver"`    // 0 = unlimited
+	Backend           string   `mapstructure:"backend"`             // "memory" (default), "nats", or "external"
+	NATSUrl           string   `mapstructure:"nats_url"`            // NATS server URL
+	NATSStream        string   `mapstructure:"nats_stream"`         // JetStream stream name
+	NATSSubjectPrefix string   `mapstructure:"nats_subject_prefix"` // subjects filter
+	NATSAckWait       string   `mapstructure:"nats_ack_wait"`       // e.g. "30s"
+	NATSMaxDeliver    int      `mapstructure:"nats_max_deliver"`    // 0 = unlimited
+	Command           string   `mapstructure:"command"`             // external sidecar command (E24)
+	Args              []string `mapstructure:"args"`                // external sidecar args (E24)
 }
 
 type LLMConfig struct {

@@ -9,6 +9,7 @@ import (
 	_ "github.com/soulacy/soulacy/internal/channels/slack"
 	_ "github.com/soulacy/soulacy/internal/channels/telegram"
 	_ "github.com/soulacy/soulacy/internal/channels/whatsapp"
+	_ "github.com/soulacy/soulacy/internal/extstorage"
 	_ "github.com/soulacy/soulacy/internal/llm"
 	_ "github.com/soulacy/soulacy/internal/pkgregistry"
 	_ "github.com/soulacy/soulacy/internal/queue/memory"
