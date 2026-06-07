@@ -44,6 +44,7 @@ type Adapter struct {
 	connected bool
 	detail    string
 	qrCode    string
+	lastError string
 	stopOnce  sync.Once
 }
 
@@ -115,6 +116,7 @@ func (a *Adapter) Start(ctx context.Context, inbox chan<- message.Message) error
 	a.connected = false
 	a.detail = "starting sidecar"
 	a.qrCode = ""
+	a.lastError = ""
 	a.mu.Unlock()
 
 	go a.readEvents(ctx, stdout)
@@ -145,8 +147,12 @@ func (a *Adapter) readEvents(ctx context.Context, r io.Reader) {
 		case "message":
 			a.handleMessage(ctx, ev)
 		case "error":
-			a.setStatus(false, firstNonEmpty(ev.Detail, ev.Error), "")
-			a.log.Error("sidecar error", zap.String("detail", firstNonEmpty(ev.Detail, ev.Error)))
+			detail := firstNonEmpty(ev.Detail, ev.Error)
+			a.mu.Lock()
+			a.lastError = detail
+			a.mu.Unlock()
+			a.setStatus(false, detail, "")
+			a.log.Error("sidecar error", zap.String("detail", detail))
 		}
 	}
 	if err := sc.Err(); err != nil {
@@ -167,9 +173,15 @@ func (a *Adapter) waitSidecar(cmd *exec.Cmd) {
 	defer a.mu.Unlock()
 	a.connected = false
 	a.qrCode = ""
-	if err != nil {
+	switch {
+	case a.lastError != "":
+		// Keep the sidecar's own explanation — "exit status 1" tells the
+		// user nothing; "Missing @whiskeysockets/baileys…" tells them
+		// everything.
+		a.detail = a.lastError
+	case err != nil:
 		a.detail = "sidecar exited: " + err.Error()
-	} else {
+	default:
 		a.detail = "sidecar stopped"
 	}
 }

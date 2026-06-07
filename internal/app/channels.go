@@ -124,3 +124,11 @@ func sanitizeID(s string) string {
 	}
 	return b.String()
 }
+
+// firstOr returns the first element of list, or fallback when empty.
+func firstOr(list []string, fallback string) string {
+	if len(list) > 0 {
+		return list[0]
+	}
+	return fallback
+}

@@ -1101,15 +1101,29 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	if strings.TrimSpace(fmt.Sprint(chMap["command"])) == "" {
 		chMap["command"] = "node"
 	}
-	if len(parseStringListValue(chMap["args"])) == 0 {
-		chMap["args"] = []string{"scripts/whatsapp-web-sidecar.mjs"}
-	}
 	if strings.TrimSpace(fmt.Sprint(chMap["session_dir"])) == "" {
 		base := filepath.Dir(s.cfg.Memory.Dir)
 		if base == "." || base == "" {
 			base = filepath.Dir(s.cfgPath)
 		}
 		chMap["session_dir"] = filepath.Join(base, "whatsapp-web")
+	}
+	// The sidecar script + its Baileys dependency must exist for INSTALLED
+	// binaries, not just repo checkouts: materialise the embedded script
+	// into the session dir and npm-install the dependency next to it when
+	// the configured args are absent or point at a missing file.
+	sessionDirVal, _ := chMap["session_dir"].(string)
+	if existingArgs := parseStringListValue(chMap["args"]); len(existingArgs) == 0 || !pathExists(existingArgs[0]) {
+		scriptPath, serr := wawebchan.EnsureSidecarScript(sessionDirVal)
+		if serr != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": serr.Error()})
+		}
+		chMap["args"] = []string{scriptPath}
+	}
+	if scriptArgs := parseStringListValue(chMap["args"]); len(scriptArgs) > 0 {
+		if berr := wawebchan.EnsureBaileys(c.Context(), filepath.Dir(scriptArgs[0])); berr != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": berr.Error()})
+		}
 	}
 	if strings.TrimSpace(fmt.Sprint(chMap["account_id"])) == "" {
 		chMap["account_id"] = "default"
@@ -1158,6 +1172,11 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 		"ok":      true,
 		"message": "WhatsApp Web pairing started. Scan the QR when it appears.",
 	})
+}
+
+func pathExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func parseStringListValue(raw any) []string {
