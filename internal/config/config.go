@@ -275,9 +275,11 @@ type MemoryConfig struct {
 //	postgres_log_dir: path where per-agent .log mirror files are written
 //	             (defaults to the same directory as Memory.Dir)
 type StorageConfig struct {
-	Backend        string `mapstructure:"backend"`          // "sqlite" (default) or "postgres"
-	PostgresDSN    string `mapstructure:"postgres_dsn"`     // libpq connection string
-	PostgresLogDir string `mapstructure:"postgres_log_dir"` // per-agent .log mirror directory
+	Backend        string   `mapstructure:"backend"`          // "sqlite" (default), "postgres", or "external"
+	PostgresDSN    string   `mapstructure:"postgres_dsn"`     // libpq connection string
+	PostgresLogDir string   `mapstructure:"postgres_log_dir"` // per-agent .log mirror directory
+	Command        string   `mapstructure:"command"`          // external sidecar command (E24)
+	Args           []string `mapstructure:"args"`             // external sidecar args (E24)
 }
 
 // VectorConfig selects the semantic vector-search backend.

@@ -27,6 +27,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"time"
+
+	"github.com/soulacy/soulacy/sdk/memory"
 )
 
 // ProtocolVersion is the host's current External Storage Protocol version.
@@ -54,6 +57,12 @@ const (
 	// NotifyQueueMessage is sent sidecar→host (no id) to deliver one
 	// queued message to an active subscription.
 	NotifyQueueMessage = "queue.message"
+
+	MethodStorageArchive     = "storage.archive"
+	MethodStorageSearch      = "storage.search"
+	MethodStorageReadByScope = "storage.read_by_scope"
+	MethodStorageReadGlobal  = "storage.read_global"
+	MethodStoragePrune       = "storage.prune"
 )
 
 // JSON-RPC 2.0 error codes (the standard set plus protocol-specific ones).
@@ -241,13 +250,14 @@ type VectorSearchParams struct {
 
 // VectorHit is one search result.
 type VectorHit struct {
-	ID        string  `json:"id"`
-	AgentID   string  `json:"agent_id,omitempty"`
-	SessionID string  `json:"session_id,omitempty"`
-	Scope     string  `json:"scope,omitempty"`
-	Content   string  `json:"content,omitempty"`
-	Timestamp int64   `json:"timestamp,omitempty"`
-	Distance  float64 `json:"distance"`
+	ID          string  `json:"id"`
+	AgentID     string  `json:"agent_id,omitempty"`
+	SessionID   string  `json:"session_id,omitempty"`
+	Scope       string  `json:"scope,omitempty"`
+	Content     string  `json:"content,omitempty"`
+	Timestamp   int64   `json:"timestamp,omitempty"`
+	Distance    float64 `json:"distance"`
+	ContentFile string  `json:"content_file,omitempty"`
 }
 
 // VectorSearchResult carries the hits, most similar first.
@@ -297,4 +307,62 @@ type QueueMessageParams struct {
 // QueueAckParams acknowledges one delivery (host → sidecar).
 type QueueAckParams struct {
 	DeliveryID string `json:"delivery_id"`
+}
+
+// StorageArchiveParams is the payload for storage.archive (host → sidecar).
+type StorageArchiveParams struct {
+	Entry       memory.Entry `json:"entry"`
+	ContentFile string       `json:"content_file,omitempty"`
+}
+
+// StorageArchiveResult acknowledges a storage archive write.
+type StorageArchiveResult struct {
+	OK bool `json:"ok"`
+}
+
+// StorageSearchParams is the query for storage.search.
+type StorageSearchParams struct {
+	AgentID string `json:"agent_id"`
+	Query   string `json:"query"`
+	Limit   int    `json:"limit"`
+}
+
+// StorageSearchResult returns FTS/substring matches.
+type StorageSearchResult struct {
+	Entries []memory.Entry `json:"entries"`
+}
+
+// StorageReadByScopeParams lists scoped entries.
+type StorageReadByScopeParams struct {
+	AgentID   string       `json:"agent_id"`
+	SessionID string       `json:"session_id"`
+	Scope     memory.Scope `json:"scope"`
+	Limit     int          `json:"limit"`
+}
+
+// StorageReadByScopeResult returns the scoped entries.
+type StorageReadByScopeResult struct {
+	Entries []memory.Entry `json:"entries"`
+}
+
+// StorageReadGlobalParams lists global entries.
+type StorageReadGlobalParams struct {
+	AgentID string `json:"agent_id"`
+	Limit   int    `json:"limit"`
+}
+
+// StorageReadGlobalResult returns the global entries.
+type StorageReadGlobalResult struct {
+	Entries []memory.Entry `json:"entries"`
+}
+
+// StoragePruneParams deletes old records.
+type StoragePruneParams struct {
+	AgentID string    `json:"agent_id"`
+	Before  time.Time `json:"before"`
+}
+
+// StoragePruneResult returns how many records were deleted.
+type StoragePruneResult struct {
+	RowsDeleted int64 `json:"rows_deleted"`
 }
