@@ -32,6 +32,18 @@ direction.** Natural follow-ups already flagged as pending in docs/code:
   render. docs/FLOW_GRAPHS.md.
 - **GUI pickers ✅** (Vasu mid-session request): FilePicker (📂 Browse)
   on the Python-file field; ChipPicker ▾ browse-all on every chip field.
+- **E26 ✅** (b47128f, Vasu request): URL source review. 'skillssh'
+  registry provider (skills.sh API — search, inline file trees, partner
+  audits surfaced in install consent), pkgregistry.Probe (git host /
+  skillssh / E19 http / repo-link page detection → suggested registries:
+  entry), `sy registry list|probe|add`, gateway /api/v1/registries{,/probe},
+  Skills page ➕ Skill sources modal. docs/PACKAGE_REGISTRIES.md §skillssh.
+  Try: `sy registry add https://www.skills.sh/` then
+  `sy skill install anthropics/skills/skill-creator`.
+- **Reinstall script** (9cd9df2, Vasu request): ./reinstall-from-scratch.command
+  — wipes ~/.soulacy WITH NO BACKUP (Vasu chose so explicitly; requires
+  typing 'wipe'), rebuilds dist+binaries, first boot creates a fresh
+  soulspace, runs sy setup. Vasu runs it on the Mac himself.
 
 **Standing rules from Vasu:** TDD; commit on green; keep developing
 without stopping for approval between stories; keep this handoff updated.
