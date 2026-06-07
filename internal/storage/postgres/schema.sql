@@ -1,4 +1,4 @@
--- ClawStack Postgres schema — managed by goose migrations.
+-- Soulacy Postgres schema — managed by goose migrations.
 -- Apply with: goose -dir internal/storage/postgres postgres <DSN> up
 --
 -- +goose Up
