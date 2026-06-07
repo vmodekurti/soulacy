@@ -68,10 +68,12 @@ async function main() {
     return;
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(authDir);
   let sock;
 
-  function connect() {
+  async function connect() {
+    // Auth state is (re-)loaded on every connect so a cleared session dir
+    // yields a FRESH registration — that's what makes Baileys emit a QR.
+    const { state, saveCreds } = await useMultiFileAuthState(authDir);
     sock = makeWASocket({
       auth: state,
       printQRInTerminal: true,
@@ -92,8 +94,23 @@ async function main() {
       if (connection === 'close') {
         const code = lastDisconnect?.error?.output?.statusCode;
         const loggedOut = code === DisconnectReason.loggedOut;
-        emit({ type: 'status', connected: false, detail: loggedOut ? 'logged out' : 'disconnected; reconnecting' });
-        if (!loggedOut) setTimeout(connect, 3000);
+        if (loggedOut) {
+          // Stale/unlinked credentials permanently block pairing: WhatsApp
+          // refuses them and Baileys never shows a QR while they exist.
+          // Wipe the session and reconnect fresh so a new QR appears.
+          emit({ type: 'status', connected: false, detail: 'logged out — clearing stale session, generating a new QR…' });
+          try {
+            fs.rmSync(authDir, { recursive: true, force: true });
+            fs.mkdirSync(authDir, { recursive: true });
+          } catch (error) {
+            emit({ type: 'error', detail: 'failed to clear stale session dir: ' + authDir, error: String(error?.message || error) });
+            return;
+          }
+          setTimeout(() => { connect().catch(reportCrash); }, 1500);
+        } else {
+          emit({ type: 'status', connected: false, detail: 'disconnected; reconnecting' });
+          setTimeout(() => { connect().catch(reportCrash); }, 3000);
+        }
       }
     });
 
@@ -117,7 +134,12 @@ async function main() {
     });
   }
 
-  connect();
+  function reportCrash(error) {
+    emit({ type: 'error', detail: 'reconnect failed', error: String(error?.message || error) });
+    process.exitCode = 1;
+  }
+
+  await connect();
 
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on('line', async (line) => {
