@@ -24,11 +24,32 @@ const wbRunTimeout = 15 * time.Minute
 
 // wbTaskBody is the JSON payload for create/update requests. Pointers
 // distinguish "field absent" from "field set to zero value" on PATCH.
+// DueAt is RFC3339; on PATCH an empty string clears the due date.
 type wbTaskBody struct {
-	Title       *string `json:"title"`
-	Description *string `json:"description"`
-	AgentID     *string `json:"agent_id"`
-	Status      *string `json:"status"`
+	Title       *string   `json:"title"`
+	Description *string   `json:"description"`
+	AgentID     *string   `json:"agent_id"`
+	Status      *string   `json:"status"`
+	Owner       *string   `json:"owner"`
+	Priority    *string   `json:"priority"`
+	Tags        *[]string `json:"tags"`
+	DueAt       *string   `json:"due_at"`
+}
+
+// parseDueAt turns the wire value into (*time.Time, clear, error).
+func parseDueAt(raw *string) (*time.Time, bool, error) {
+	if raw == nil {
+		return nil, false, nil
+	}
+	if strings.TrimSpace(*raw) == "" {
+		return nil, true, nil
+	}
+	ts, err := time.Parse(time.RFC3339, *raw)
+	if err != nil {
+		return nil, false, fmt.Errorf("due_at must be RFC3339 (e.g. 2026-07-01T10:00:00Z): %w", err)
+	}
+	u := ts.UTC()
+	return &u, false, nil
 }
 
 // wbStoreOr503 returns the store or writes a 503 and returns nil.
@@ -107,6 +128,20 @@ func (s *Server) handleWorkboardCreate(c *fiber.Ctx) error {
 	if body.Status != nil {
 		t.Status = *body.Status
 	}
+	if body.Owner != nil {
+		t.Owner = *body.Owner
+	}
+	if body.Priority != nil {
+		t.Priority = *body.Priority
+	}
+	if body.Tags != nil {
+		t.Tags = *body.Tags
+	}
+	due, _, err := parseDueAt(body.DueAt)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	t.DueAt = due
 	created, err := store.Create(c.Context(), t)
 	if err != nil {
 		return s.wbError(c, err)
@@ -145,16 +180,89 @@ func (s *Server) handleWorkboardUpdate(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
 	}
+	due, clearDue, err := parseDueAt(body.DueAt)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
 	updated, err := store.Update(c.Context(), id, workboard.Update{
 		Title:       body.Title,
 		Description: body.Description,
 		AgentID:     body.AgentID,
 		Status:      body.Status,
+		Owner:       body.Owner,
+		Priority:    body.Priority,
+		Tags:        body.Tags,
+		DueAt:       due,
+		ClearDueAt:  clearDue,
 	})
 	if err != nil {
 		return s.wbError(c, err)
 	}
 	return c.JSON(updated)
+}
+
+// ---------------------------------------------------------------------------
+// Comments & reviewer notes (Story 14)
+// ---------------------------------------------------------------------------
+
+// handleWorkboardComments handles GET /api/v1/workboard/tasks/:id/comments
+func (s *Server) handleWorkboardComments(c *fiber.Ctx) error {
+	store := s.wbStoreOr503(c)
+	if store == nil {
+		return nil
+	}
+	id, ok := wbTaskID(c)
+	if !ok {
+		return nil
+	}
+	comments, err := store.ListComments(c.Context(), id)
+	if err != nil {
+		return s.wbError(c, err)
+	}
+	return c.JSON(fiber.Map{"comments": comments, "count": len(comments)})
+}
+
+// handleWorkboardAddComment handles POST /api/v1/workboard/tasks/:id/comments
+func (s *Server) handleWorkboardAddComment(c *fiber.Ctx) error {
+	store := s.wbStoreOr503(c)
+	if store == nil {
+		return nil
+	}
+	id, ok := wbTaskID(c)
+	if !ok {
+		return nil
+	}
+	var body struct {
+		Author string `json:"author"`
+		Body   string `json:"body"`
+		Kind   string `json:"kind"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
+	}
+	comment, err := store.AddComment(c.Context(), id, workboard.Comment{
+		Author: body.Author, Body: body.Body, Kind: body.Kind,
+	})
+	if err != nil {
+		return s.wbError(c, err)
+	}
+	return c.Status(fiber.StatusCreated).JSON(comment)
+}
+
+// handleWorkboardDeleteComment handles DELETE /api/v1/workboard/comments/:id
+func (s *Server) handleWorkboardDeleteComment(c *fiber.Ctx) error {
+	store := s.wbStoreOr503(c)
+	if store == nil {
+		return nil
+	}
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "comment id must be an integer"})
+	}
+	if err := store.DeleteComment(c.Context(), id); err != nil {
+		return s.wbError(c, err)
+	}
+	return c.SendStatus(fiber.StatusNoContent)
 }
 
 // handleWorkboardRun handles POST /api/v1/workboard/tasks/:id/run (Story 6).

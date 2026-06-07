@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl } from './workboard.js'
+import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl, PRIORITIES, priorityBadge, parseTags, formatTags, dueInfo } from './workboard.js'
 
 describe('workboard column model', () => {
   it('has five columns in lifecycle order', () => {
@@ -107,5 +107,38 @@ describe('artifact helpers (Story 13)', () => {
   it('artifactDownloadUrl appends the key only when present', () => {
     expect(artifactDownloadUrl(7)).toBe('/api/v1/workboard/artifacts/7/download')
     expect(artifactDownloadUrl(7, 'k&y')).toBe('/api/v1/workboard/artifacts/7/download?api_key=k%26y')
+  })
+})
+
+describe('collaboration helpers (Story 14)', () => {
+  it('priorityBadge marks non-normal priorities only', () => {
+    expect(priorityBadge('normal')).toBe('')
+    expect(priorityBadge('low')).toBe('▽')
+    expect(priorityBadge('high')).toBe('▲')
+    expect(priorityBadge('urgent')).toBe('‼')
+  })
+
+  it('parseTags normalises the editor input', () => {
+    expect(parseTags(' Q4, finance ,,ops')).toEqual(['q4', 'finance', 'ops'])
+    expect(parseTags('')).toEqual([])
+    expect(parseTags(null)).toEqual([])
+  })
+
+  it('formatTags round-trips', () => {
+    expect(formatTags(['q4', 'ops'])).toBe('q4, ops')
+    expect(formatTags(null)).toBe('')
+  })
+
+  it('dueInfo flags overdue and labels near dates', () => {
+    const now = new Date('2026-06-06T12:00:00Z')
+    expect(dueInfo(null)).toBeNull()
+    expect(dueInfo('2026-06-05T12:00:00Z', now).overdue).toBe(true)
+    expect(dueInfo('2026-06-06T13:00:00Z', now)).toEqual({ label: 'due today', overdue: false })
+    expect(dueInfo('2026-06-07T13:00:00Z', now).label).toBe('due tomorrow')
+    expect(dueInfo('2026-06-20T12:00:00Z', now).overdue).toBe(false)
+  })
+
+  it('PRIORITIES escalate', () => {
+    expect(PRIORITIES).toEqual(['low', 'normal', 'high', 'urgent'])
   })
 })

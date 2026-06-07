@@ -44,13 +44,17 @@ var (
 
 // Task is one work item on the board.
 type Task struct {
-	ID          int64     `json:"id"`
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	AgentID     string    `json:"agent_id"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          int64      `json:"id"`
+	Title       string     `json:"title"`
+	Description string     `json:"description"`
+	AgentID     string     `json:"agent_id"`
+	Status      string     `json:"status"`
+	Owner       string     `json:"owner,omitempty"`    // Story 14
+	Priority    string     `json:"priority"`           // low|normal|high|urgent
+	Tags        []string   `json:"tags"`               // normalised lowercase
+	DueAt       *time.Time `json:"due_at,omitempty"`   // nil = no due date
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 // Filter narrows List results. Zero values match everything.
@@ -60,11 +64,17 @@ type Filter struct {
 }
 
 // Update describes a partial update; nil fields are left unchanged.
+// ClearDueAt removes the due date (DueAt nil alone means "unchanged").
 type Update struct {
 	Title       *string
 	Description *string
 	AgentID     *string
 	Status      *string
+	Owner       *string
+	Priority    *string
+	Tags        *[]string
+	DueAt       *time.Time
+	ClearDueAt  bool
 }
 
 // Store persists tasks to SQLite.
@@ -79,6 +89,10 @@ CREATE TABLE IF NOT EXISTS workboard_tasks (
     description TEXT NOT NULL DEFAULT '',
     agent_id    TEXT NOT NULL DEFAULT '',
     status      TEXT NOT NULL DEFAULT 'todo',
+    owner       TEXT NOT NULL DEFAULT '',
+    priority    TEXT NOT NULL DEFAULT 'normal',
+    tags        TEXT NOT NULL DEFAULT '',
+    due_at      DATETIME,
     created_at  DATETIME NOT NULL,
     updated_at  DATETIME NOT NULL
 );
@@ -105,6 +119,15 @@ func NewStore(path string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err := db.Exec(commentsSchema); err != nil {
+		db.Close()
+		return nil, err
+	}
+	// Idempotent column additions for databases created before Story 14.
+	if err := migrateTaskColumns(db); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return &Store{db: db}, nil
 }
 
@@ -122,15 +145,29 @@ func (s *Store) Create(ctx context.Context, t Task) (Task, error) {
 	if !ValidStatus(t.Status) {
 		return Task{}, fmt.Errorf("%w: unknown status %q", ErrInvalid, t.Status)
 	}
+	if t.Priority == "" {
+		t.Priority = PriorityNormal
+	}
+	if !ValidPriority(t.Priority) {
+		return Task{}, fmt.Errorf("%w: unknown priority %q (want one of %v)", ErrInvalid, t.Priority, Priorities)
+	}
+	t.Tags = normalizeTags(t.Tags)
 	// Truncate to the stored DATETIME resolution so the returned struct
 	// matches what a later Get/Update reads back from SQLite.
 	now := time.Now().UTC().Truncate(time.Second)
 	t.CreatedAt = now
 	t.UpdatedAt = now
+	var due any
+	if t.DueAt != nil {
+		d := t.DueAt.UTC().Truncate(time.Second)
+		t.DueAt = &d
+		due = d.Format(timeLayout)
+	}
 	res, err := s.db.ExecContext(ctx,
-		`INSERT INTO workboard_tasks (title, description, agent_id, status, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO workboard_tasks (title, description, agent_id, status, owner, priority, tags, due_at, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		t.Title, t.Description, t.AgentID, t.Status,
+		strings.TrimSpace(t.Owner), t.Priority, tagsToCSV(t.Tags), due,
 		now.Format(timeLayout), now.Format(timeLayout),
 	)
 	if err != nil {
@@ -140,14 +177,17 @@ func (s *Store) Create(ctx context.Context, t Task) (Task, error) {
 	if err != nil {
 		return Task{}, err
 	}
+	t.Owner = strings.TrimSpace(t.Owner)
 	return t, nil
 }
+
+// taskColumns is the canonical SELECT list matching scanTask.
+const taskColumns = `id, title, description, agent_id, status, owner, priority, tags, due_at, created_at, updated_at`
 
 // Get returns one task by ID, or ErrNotFound.
 func (s *Store) Get(ctx context.Context, id int64) (Task, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, title, description, agent_id, status, created_at, updated_at
-		 FROM workboard_tasks WHERE id = ?`, id)
+		`SELECT `+taskColumns+` FROM workboard_tasks WHERE id = ?`, id)
 	return scanTask(row)
 }
 
@@ -156,8 +196,7 @@ func (s *Store) List(ctx context.Context, f Filter) ([]Task, error) {
 	if f.Status != "" && !ValidStatus(f.Status) {
 		return nil, fmt.Errorf("%w: unknown status %q", ErrInvalid, f.Status)
 	}
-	q := `SELECT id, title, description, agent_id, status, created_at, updated_at
-	      FROM workboard_tasks WHERE 1=1`
+	q := `SELECT ` + taskColumns + ` FROM workboard_tasks WHERE 1=1`
 	args := []any{}
 	if f.Status != "" {
 		q += ` AND status = ?`
@@ -194,6 +233,9 @@ func (s *Store) Update(ctx context.Context, id int64, u Update) (Task, error) {
 	if u.Title != nil && strings.TrimSpace(*u.Title) == "" {
 		return Task{}, fmt.Errorf("%w: title cannot be blank", ErrInvalid)
 	}
+	if u.Priority != nil && !ValidPriority(*u.Priority) {
+		return Task{}, fmt.Errorf("%w: unknown priority %q (want one of %v)", ErrInvalid, *u.Priority, Priorities)
+	}
 
 	sets := []string{"updated_at = ?"}
 	args := []any{time.Now().UTC().Format(timeLayout)}
@@ -212,6 +254,25 @@ func (s *Store) Update(ctx context.Context, id int64, u Update) (Task, error) {
 	if u.Status != nil {
 		sets = append(sets, "status = ?")
 		args = append(args, *u.Status)
+	}
+	if u.Owner != nil {
+		sets = append(sets, "owner = ?")
+		args = append(args, strings.TrimSpace(*u.Owner))
+	}
+	if u.Priority != nil {
+		sets = append(sets, "priority = ?")
+		args = append(args, *u.Priority)
+	}
+	if u.Tags != nil {
+		sets = append(sets, "tags = ?")
+		args = append(args, tagsToCSV(*u.Tags))
+	}
+	switch {
+	case u.ClearDueAt:
+		sets = append(sets, "due_at = NULL")
+	case u.DueAt != nil:
+		sets = append(sets, "due_at = ?")
+		args = append(args, u.DueAt.UTC().Truncate(time.Second).Format(timeLayout))
 	}
 	args = append(args, id)
 
@@ -246,7 +307,10 @@ func (s *Store) Delete(ctx context.Context, id int64) error {
 	if _, err = s.db.ExecContext(ctx, `DELETE FROM workboard_runs WHERE task_id = ?`, id); err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `DELETE FROM workboard_artifacts WHERE task_id = ?`, id)
+	if _, err = s.db.ExecContext(ctx, `DELETE FROM workboard_artifacts WHERE task_id = ?`, id); err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `DELETE FROM workboard_comments WHERE task_id = ?`, id)
 	return err
 }
 
@@ -262,12 +326,20 @@ type scanner interface {
 
 func scanTask(row scanner) (Task, error) {
 	var t Task
-	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.AgentID, &t.Status, &t.CreatedAt, &t.UpdatedAt)
+	var tagsCSV string
+	var due sql.NullTime
+	err := row.Scan(&t.ID, &t.Title, &t.Description, &t.AgentID, &t.Status,
+		&t.Owner, &t.Priority, &tagsCSV, &due, &t.CreatedAt, &t.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
 	if err != nil {
 		return Task{}, err
+	}
+	t.Tags = csvToTags(tagsCSV)
+	if due.Valid {
+		d := due.Time.UTC()
+		t.DueAt = &d
 	}
 	return t, nil
 }

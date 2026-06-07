@@ -1,7 +1,7 @@
 <script>
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
-  import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl } from '../lib/workboard.js'
+  import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl, PRIORITIES, priorityBadge, parseTags, formatTags, dueInfo } from '../lib/workboard.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
   import { apiKey } from '../lib/stores.js'
 
@@ -22,6 +22,12 @@
   // Artifacts produced by this task's runs (Story 13).
   let artifacts = []
   let artifactsLoading = false
+
+  // Comments & reviewer notes (Story 14).
+  let comments = []
+  let commentsLoading = false
+  let newComment = ''
+  let newCommentKind = 'comment'
 
   $: columns = groupByStatus(
     agentFilter ? tasks.filter(t => t.agent_id === agentFilter) : tasks
@@ -55,15 +61,70 @@
   onDestroy(() => clearInterval(pollTimer))
 
   function newTask() {
-    editing = { id: null, title: '', description: '', agent_id: agentFilter, status: 'todo' }
+    editing = {
+      id: null, title: '', description: '', agent_id: agentFilter, status: 'todo',
+      owner: '', priority: 'normal', tagsText: '', dueDate: '',
+    }
     runs = []
     artifacts = []
+    comments = []
   }
 
   function editTask(t) {
-    editing = { id: t.id, title: t.title, description: t.description, agent_id: t.agent_id, status: t.status }
+    editing = {
+      id: t.id, title: t.title, description: t.description, agent_id: t.agent_id, status: t.status,
+      owner: t.owner || '', priority: t.priority || 'normal',
+      tagsText: formatTags(t.tags), dueDate: t.due_at ? t.due_at.slice(0, 10) : '',
+    }
     loadRuns(t.id)
     loadArtifacts(t.id)
+    loadComments(t.id)
+  }
+
+  async function loadComments(taskId) {
+    commentsLoading = true
+    comments = []
+    try {
+      const resp = await api.workboard.comments(taskId)
+      comments = resp?.comments || []
+    } catch {
+      comments = []
+    } finally {
+      commentsLoading = false
+    }
+  }
+
+  async function addComment() {
+    if (!editing?.id || !newComment.trim()) return
+    error = ''
+    try {
+      await api.workboard.addComment(editing.id, {
+        body: newComment, kind: newCommentKind, author: 'gui-user',
+      })
+      newComment = ''
+      await loadComments(editing.id)
+    } catch (e) {
+      error = e.message || 'Comment failed'
+    }
+  }
+
+  async function removeComment(cid) {
+    try {
+      await api.workboard.deleteComment(cid)
+      comments = comments.filter(c => c.id !== cid)
+    } catch (e) {
+      error = e.message || 'Delete comment failed'
+    }
+  }
+
+  // The collab payload shared by create and update.
+  function collabFields() {
+    return {
+      owner: editing.owner,
+      priority: editing.priority,
+      tags: parseTags(editing.tagsText),
+      due_at: editing.dueDate ? new Date(editing.dueDate + 'T23:59:59Z').toISOString() : '',
+    }
   }
 
   async function loadArtifacts(taskId) {
@@ -119,6 +180,7 @@
           description: editing.description,
           agent_id: editing.agent_id,
           status: editing.status,
+          ...collabFields(),
         })
       } else {
         await api.workboard.update(editing.id, {
@@ -126,6 +188,7 @@
           description: editing.description,
           agent_id: editing.agent_id,
           status: editing.status,
+          ...collabFields(),
         })
       }
       editing = null
@@ -207,6 +270,13 @@
                   {#if t.agent_id}
                     <span class="task-agent">⊕ {t.agent_id}</span>
                   {/if}
+                  {#if priorityBadge(t.priority) || t.due_at || t.owner}
+                    <span class="task-badges">
+                      {#if priorityBadge(t.priority)}<span class="badge prio-{t.priority}" title="Priority: {t.priority}">{priorityBadge(t.priority)} {t.priority}</span>{/if}
+                      {#if t.due_at}{@const d = dueInfo(t.due_at)}<span class="badge due" class:overdue={d?.overdue}>{d?.label}</span>{/if}
+                      {#if t.owner}<span class="badge owner" title="Owner">@{t.owner}</span>{/if}
+                    </span>
+                  {/if}
                 </button>
                 <div class="task-actions">
                   {#if t.agent_id}
@@ -272,6 +342,26 @@
             {/each}
           </select>
         </div>
+        <div>
+          <label for="wb-owner">Owner</label>
+          <input id="wb-owner" bind:value={editing.owner} placeholder="who reviews this" />
+        </div>
+        <div>
+          <label for="wb-priority">Priority</label>
+          <select id="wb-priority" bind:value={editing.priority}>
+            {#each PRIORITIES as p}
+              <option value={p}>{p}</option>
+            {/each}
+          </select>
+        </div>
+        <div>
+          <label for="wb-tags">Tags</label>
+          <input id="wb-tags" bind:value={editing.tagsText} placeholder="comma, separated" />
+        </div>
+        <div>
+          <label for="wb-due">Due date</label>
+          <input id="wb-due" type="date" bind:value={editing.dueDate} />
+        </div>
       </div>
 
       {#if editing.id != null}
@@ -318,6 +408,37 @@
               </div>
             {/each}
           {/if}
+        </div>
+
+        <div class="comments">
+          <h3>Comments & review notes</h3>
+          {#if commentsLoading}
+            <p class="muted">Loading comments…</p>
+          {:else if comments.length === 0}
+            <p class="muted">No comments yet.</p>
+          {:else}
+            {#each comments as cm (cm.id)}
+              <div class="comment-row" class:review={cm.kind === 'review'}>
+                <div class="comment-head">
+                  <span class="comment-author">{cm.kind === 'review' ? '🔍' : '💬'} {cm.author}</span>
+                  <span class="comment-time">{new Date(cm.created_at).toLocaleString()}</span>
+                  <button class="mini danger" on:click={() => removeComment(cm.id)}
+                          aria-label="Delete comment by {cm.author}">✕</button>
+                </div>
+                <div class="comment-body">{cm.body}</div>
+              </div>
+            {/each}
+          {/if}
+          <div class="comment-compose">
+            <select bind:value={newCommentKind} aria-label="Comment kind">
+              <option value="comment">💬 comment</option>
+              <option value="review">🔍 review note</option>
+            </select>
+            <input bind:value={newComment} placeholder="Add a note…"
+                   aria-label="New comment"
+                   on:keydown={(e) => e.key === 'Enter' && addComment()} />
+            <button class="btn-secondary" on:click={addComment} disabled={!newComment.trim()}>Add</button>
+          </div>
         </div>
       {/if}
 
@@ -450,6 +571,22 @@
   .artifact-meta { font-size: 0.7rem; color: #555a7a; font-family: monospace; }
   .artifact-dl { margin-left: auto; font-size: 0.75rem; color: #7aa2ff; text-decoration: none; white-space: nowrap; }
   .artifact-dl:hover { text-decoration: underline; }
+  .task-badges { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.25rem; }
+  .badge { font-size: 0.65rem; padding: 0.05rem 0.35rem; border-radius: 8px; border: 1px solid #2a2f4a; color: #8a91b4; }
+  .badge.prio-high { color: #e8b14e; border-color: #6b5320; }
+  .badge.prio-urgent { color: #ff7676; border-color: #6b2a2a; }
+  .badge.prio-low { color: #6f86bf; }
+  .badge.due.overdue { color: #ff7676; border-color: #6b2a2a; font-weight: 600; }
+  .comments { margin-top: 1rem; }
+  .comments h3 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: #8a91b4; margin-bottom: 0.5rem; }
+  .comment-row { padding: 0.4rem 0.5rem; border-left: 2px solid #2a2f4a; margin-bottom: 0.4rem; }
+  .comment-row.review { border-left-color: #c9a227; background: #16182a; }
+  .comment-head { display: flex; gap: 0.6rem; align-items: baseline; }
+  .comment-author { font-weight: 600; font-size: 0.78rem; }
+  .comment-time { font-size: 0.68rem; color: #555a7a; margin-right: auto; }
+  .comment-body { font-size: 0.82rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+  .comment-compose { display: flex; gap: 0.5rem; margin-top: 0.5rem; }
+  .comment-compose input { flex: 1; }
 
   /* ── Modal ──────────────────────────────────────────────────────── */
   .modal-bg {
