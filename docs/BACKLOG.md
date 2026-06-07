@@ -28,6 +28,10 @@ stabilized through real use.
 | ✅ | M5 Reliability & workboard depth | **12 → 13 → 14** | done (session 6). Missed-run catch-up hardened + GUI copy; artifact tracking (run.artifact via E1, task-modal panel w/ download); collaboration primitives (owner/priority/tags/due date + comments & reviewer notes, idempotent column migrations, quiet card badges). |
 | ✅ | M6 SDK & distribution | **E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13** | E9 ✅, E10 ✅ (registry-routed built-ins + internal/app composition root; main.go is a 52-line shell), E15 ✅ (sdk/reasoning Strategy contract + registry, custom-loop conformance test), E16 ✅ (storage.RegisterMigration + internal/pluginmigrate: namespaced plugin_<id>_* tables in dedicated plugins.db, transactional, checksummed). E17 ✅ (plugins_config: parse + LoadedPlugin.Settings + redacted config API + write-preservation pinned). E11 ✅ (channeltest.RunAdapterSuite + providertest.RunProviderSuite + sdk/extchannel/sidecartest; protocol promoted to sdk/extchannel; kits run against all built-ins in CI). E12 ✅ (scripts/soulacybuild: --with module@version → builtins_extra.go + conformance gates + static binary; generic registry channel wiring; docs/CUSTOM_DISTRIBUTIONS.md). E13 ✅ (internal/plugininstall + loader gate + install API + Plugins GUI page: stage→approve flow w/ permission fingerprints, enable/disable/remove, re-approval on permission changes). **M6 COMPLETE** (session 7). |
 | ✅ | M7 Polish | **15** | **CODE-COMPLETE** (page titles, Config plugin-settings section, responsive stacking for Flow/Knowledge/Skills, button consistency; destructive actions verified already consistent). Remaining: visual QA on the Mac — checklist in SESSION_HANDOFF. |
+| ⏳ | M8 Registry & Safety | **E18 → E19 → E20 → E22** | Planned. E18: remote package CLI installer; E19: pluggable multi-registry provider; E20: pre-install safety scans (AST/LLM/sandbox); E22: database compatibility and API upgrade guards. |
+| ⏳ | M9 Default Workflows | **E21** | Planned. E21: ship high-value default workflows (Meeting Minutes, Inbox Guard, Competitor Monitor, Compliance Auditor) out-of-the-box. |
+| 8 | M8 Distribution security & stability | **16 → E19 → E20 → E18 → E22 → 17 → 18 → 19** | added by Vasu 2026-06-07 (session 7). Carryover gaps (16–19) + remote install/safety/stability track (E18–E20, E22). NOT STARTED — next session begins at Story 16. |
+| 9 | M9 Adoption | **E21** | default agentic workflows + Templates tab. NOT STARTED. |
 | ⏸ | Deferred | E14 (WASM) | demand-gated; see EXTENSIBILITY.md §7. |
 
 ## Story prompts
@@ -325,3 +329,150 @@ configuration updates back to `config.yaml`.
 *Integration (M6): pairs with E7 (manifest v2) and E13 (install UX shows
 plugin settings); config GET redaction (Story 1's safeChannelsView pattern)
 must extend to plugins_config so plugin secrets never reach the browser.*
+
+### Story E18: Remote Skill & Package CLI Installer
+Extend the CLI command `sy skill install` to support remote package resolution and installations. If the argument provided to the command is not a local directory, the CLI must treat it as a package slug (e.g., `self-improving-agent`), query the remote registry APIs, fetch the latest package version and checksum, perform a pre-installation safety audit using the static code scanner and LLM prompt auditor, display the permissions consent dialog to the user, verify integrity signatures, extract the files to `~/.soulacy/skills/`, and hot-load the new skill into the gateway.
+
+*Integration (M8): depends on E13 (discovery & install APIs) and integrates with the Safety Introspection Pipeline.*
+
+### Story E19: Pluggable Multi-Registry Provider Engine
+Implement a pluggable registry model in the Go gateway to decouple the framework from hardcoded registry endpoints (like `clawhub.ai`). Define a generic `registry.Provider` interface in the SDK (`pkg/registry`). Expose a configuration block `registries` in `config.yaml` allowing developers to configure multiple custom HTTP registries (private or public) with priority levels, authorization headers, and fallback search behaviors. Add a Git registry provider that allows installing skills directly from git clone URLs (e.g., `github.com/username/my-skill`).
+
+*Integration (M8): depends on E9 SDK and E10 factory registration patterns.*
+
+### Story E20: Pre-Installation Safety Introspection Pipeline
+Implement the safety introspection pipeline for third-party skills and plugins before installation. When a package is staged in a temporary directory (e.g., `/tmp/soulacy-audit/`), run three parallel checks:
+1. **Static AST Scan**: Parse the Python source code to detect dangerous calls (`eval`, `exec`, `subprocess`, `os.system`, or socket actions) and path traversal attempts.
+2. **AI-Powered Prompt & Code Audit**: Use an internal LLM-based auditor agent to scan `SKILL.md` for prompt injection or backdoor mismatches against the declared manifest description.
+3. **Sandboxed Dry-Run**: Run the plugin's basic startup hooks inside a restricted dry-run sandbox (applying `rlimit` and network blocks) to monitor dynamic behavior.
+Display a unified security report in the GUI/CLI before prompting the user for installation consent.
+
+*Integration (M8): pairs with E13 (Discovery UX) and E18 (CLI Remote Installer).*
+
+### Story E21: Ship Default Agentic Workflows
+Package and distribute four high-value, generic agentic workflows out-of-the-box to drive framework adoption:
+1. **Meeting Minutes & Action Items**: Ingests meeting recordings or transcripts, structures minutes, and auto-drafts task tickets.
+2. **Smart Inbox Triage**: Filters noise and pre-drafts contextual replies for review.
+3. **Competitor & Market Monitor**: Periodically tracks target URLs and news feeds to deliver weekly competitor briefs.
+4. **Document Compliance Auditor**: Audits uploaded draft text against reference policy booklets/compliance handbooks.
+Provide templates, system prompts, and default tools for these workflows within the standard installation package.
+
+*Integration (M9): polish and showcase under a new "Templates" tab in the GUI dashboard.*
+
+### Story E22: Upgrade Stability & API Compatibility Guards
+Ensure framework updates do not break active, running systems by introducing strict backward compatibility checks:
+1. **Database Schema Versioning**: Run automated migrations transactionally, ensuring column additions/alterations are backwards-compatible (never dropping or changing existing column names without depreciation cycles).
+2. **API Contract Verification**: Enforce API path versioning (`/api/v1/`) and lock down existing REST schemas. Reject plugins using incompatible SDK major versions or deprecated interfaces during the loading phase.
+3. **Graceful Fallbacks**: If a plugin or external channel sidecar fails to load due to version mismatches or startup exceptions, isolate the error, log detailed diagnostic alerts to the Logs GUI, and continue serving the remaining system subsystems.
+
+*Integration (M8): builds on E9/E10 SDK structures and E16 plugin migrations.*
+
+
+
+
+---
+
+## M8/M9 story prompts (added by Vasu, 2026-06-07)
+
+### Story 16: Wire Reasoning Loops Into The Engine
+Connect the pluggable reasoning subsystem (internal/reasoning, E15) into
+runtime.Engine's live execution path. When an agent's SOUL.yaml declares a
+reasoning: block with a strategy, Engine.Handle must construct the Loop
+(LoopConfigFromDefinition + DefaultBackendFor + a ToolExecutor bridging the
+engine's tool dispatch) and run the task through it instead of the classic
+single-call path; agents without a reasoning block keep today's behaviour
+exactly. Step traces surface as engine events (thinking section / activity
+feed); tool calls inside the loop respect existing sandbox/audit/RBAC paths.
+TDD with fake LLM backends; no behaviour change for reasoning-less agents.
+
+### Story 17: Manifest-Declared Plugin Migrations
+Extend manifest v2 with a `migrations:` list ({name, up_sql}) so installed
+(non-compiled) plugins can declare schema. The loader registers them through
+the same internal/pluginmigrate validation/runner used by E16 (namespace
+plugin_<id>_*, transactional, checksummed, applied-once); validation failures
+refuse the plugin (warn+skip). The E13 install preview must show declared
+migrations so the operator approves schema alongside permissions.
+
+### Story 18: In-GUI Plugin Settings Editing
+Upgrade the Config page Plugin settings section (E17/Story 15) from
+read-only to editable: per-plugin key/value editor that PATCHes only
+plugins_config (extend PatchableConfig), preserves unknown keys, never
+round-trips redacted secret values (*** placeholders must not overwrite real
+secrets on disk — skip unchanged-redacted fields server-side), with tests
+pinning that a redacted GET → edit → PATCH cycle keeps secrets intact.
+
+### Story 19: Hardening Pack
+(a) Telegram/Slack Send() must honour the caller context (telegram currently
+uses context.Background()); then tighten channeltest.RunAdapterSuite to
+assert Send ctx discipline. (b) Promote scripts/soulacybuild to a
+`soulacy build` subcommand. (c) Accept scoped plugin tokens on /ws/events
+gated by the events.subscribe capability (E5 grammar already defines it).
+
+### Story E18: Remote Skill & Package CLI Installer
+Extend the CLI command `sy skill install` to support remote package
+resolution. If the argument is not a local directory, treat it as a package
+slug (e.g., `self-improving-agent`): query the configured registry providers
+(E19), fetch the latest version + checksum, run the pre-installation safety
+audit (E20: static scanner + LLM prompt auditor), display the permissions
+consent dialog, verify integrity signatures, extract to ~/.soulacy/skills/,
+and hot-load the skill into the gateway (skills watcher / reload API).
+*Integration (M8): depends on E13 install APIs + E19 registries + E20
+safety pipeline. CLI lives in cmd/sy.*
+
+### Story E19: Pluggable Multi-Registry Provider Engine
+Decouple the gateway from hardcoded registry endpoints. Define a generic
+registry Provider interface in the SDK (sdk/pkgregistry — NOTE: sdk/registry
+is already the factory-registry package from E10, pick a distinct name):
+Search/Resolve/Fetch with package metadata {slug, version, checksum,
+signature?, manifest}. config.yaml gains a `registries:` block — multiple
+HTTP registries with priority, auth headers, and fallback search — plus a
+Git provider that resolves `github.com/user/my-skill` style sources (reuse
+plugininstall's gitClone). Providers self-register via the E10 factory
+pattern (registry.RegisterPkgRegistry or equivalent).
+*Integration (M8): E9 SDK + E10 factory patterns; consumed by E18 and the
+E13 GUI install flow.*
+
+### Story E20: Pre-Installation Safety Introspection Pipeline
+Before installation, run three checks against the staged package dir:
+1. Static scan — parse Python sources for dangerous calls (eval/exec/
+   subprocess/os.system/socket/ctypes), suspicious imports, and path
+   traversal attempts; severity-tagged findings.
+2. LLM prompt & code audit — an internal auditor agent (via the llm router)
+   scans SKILL.md/plugin.yaml for prompt injection and behaviour/manifest
+   mismatches; degrade gracefully when no provider is configured (report
+   "audit skipped: no LLM available", never block on it silently).
+3. Sandboxed dry-run — execute declared startup hooks under the existing
+   rlimit __exec-sandbox wrapper with network blocked; record exit status,
+   attempted writes, and runtime.
+Unified SecurityReport {findings[], severity, verdict} rendered in the GUI
+approval dialog (extend E13 Preview) and the E18 CLI consent prompt.
+*Integration (M8): pairs with E13 + E18. Stage dir already exists
+(<plugins>/.staging); reuse it rather than /tmp/soulacy-audit.*
+
+### Story E21: Ship Default Agentic Workflows
+Package four out-of-the-box workflows (templates + system prompts + default
+tools) in the standard install: Meeting Minutes & Action Items (transcript →
+structured minutes → task tickets via workboard API); Smart Inbox Triage
+(filter noise, pre-draft replies for review); Competitor & Market Monitor
+(scheduled URL/news tracking → weekly brief); Document Compliance Auditor
+(draft text vs reference policy docs via knowledge/RAG). Surface under a new
+"Templates" tab on the GUI dashboard with one-click agent creation.
+*Integration (M9): showcase polish; builds on workboard, scheduler,
+knowledge, channels.*
+
+### Story E22: Upgrade Stability & API Compatibility Guards
+1. Database schema versioning: audit every store's migrations for
+   transactional, additive-only changes (no drops/renames without
+   deprecation cycles); add a shared schema-version table + helper in
+   internal/sqlitex; cover pre-upgrade DB fixtures in tests.
+2. API contract verification: lock /api/v1 REST schemas with contract tests
+   (golden request/response shapes); reject plugins whose manifest declares
+   an incompatible SDK major version (extend the E7 schema gate) or
+   deprecated interfaces at load.
+3. Graceful fallbacks: verify+formalize that a failing plugin or sidecar
+   never takes down the gateway — isolate, emit a diagnostic event to the
+   Logs GUI (via E1 events), continue boot. Add chaos-style tests (broken
+   manifest, crashing sidecar, stale-schema plugin) proving the gateway
+   serves everything else.
+*Integration (M8): builds on E9/E10/E16; much of (3) exists (warn+skip
+loader, supervisor backoff) — the story makes it tested + observable.*

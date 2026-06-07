@@ -27,11 +27,35 @@ part 1, M5, M4, M3)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). **M6 COMPLETE
-  (E9, E10, E15, E16, E17, E11, E12, E13). M7 (Story 15) CODE-COMPLETE**
-  — the remaining polish work is VISUAL QA ON THE MAC (checklist below).
-  E14 stays demand-gated deferred. **ROADMAP DONE pending that QA.**
+  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6 COMPLETE
+  (E9, E10, E15, E16, E17, E11, E12, E13). M7 (Story 15) code-complete
+  (visual QA on the Mac remains, checklist below). E14 demand-gated.
   Suite 59.1% root + sdk green; vitest 104/104.
+
+  **NEW TRACK — M8/M9 added by Vasu (2026-06-07, session 7), prompts in
+  BACKLOG.md: M8 = Story 16 (wire reasoning loops into runtime.Engine —
+  START HERE) → E19 (pluggable package registries; NOTE sdk/registry name
+  is taken, use sdk/pkgregistry) → E20 (safety introspection pipeline:
+  static python scan + LLM auditor + sandboxed dry-run → SecurityReport in
+  E13 preview) → E18 (sy skill install <slug>: registry resolve + audit +
+  consent + hot-load; CLI lives in cmd/sy) → E22 (schema versioning, API
+  contract tests, graceful-fallback chaos tests) → 17 (manifest-declared
+  migrations through internal/pluginmigrate) → 18 (in-GUI plugins_config
+  editing; PATCH must never write *** redactions over real secrets) → 19
+  (hardening pack: Send ctx discipline + kit check, soulacy build
+  subcommand, plugin tokens on /ws/events). M9 = E21 (four default
+  workflows + Templates tab). Same standing rules: TDD, commit on green,
+  keep developing without stopping, keep this handoff updated.**
+
+  Building blocks the next session should reuse: E13's staging dir +
+  Preview struct (extend with SecurityReport, don't invent /tmp/
+  soulacy-audit); plugininstall.gitClone for E19's git provider;
+  the rlimit __exec-sandbox wrapper (internal/sandbox) for E20's dry-run;
+  skills.Loader + the existing skills watcher for E18's hot-load;
+  E7's schema gate for E22's SDK-major rejection; reasoning.
+  LoopConfigFromDefinition + DefaultBackendFor for Story 16 (the engine
+  needs a ToolExecutor bridge to its tool dispatch — watch for the
+  runtime→reasoning import direction, reasoning must not import runtime).
 
 **Story 15 (product polish, M7) — code-complete (session 7).**
 - Browser tab title tracks the active page incl. plugin panels
