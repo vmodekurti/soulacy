@@ -614,6 +614,7 @@ func (a *App) Run(parent context.Context) error {
 			Log:           log,
 			SandboxSelf:   wireSandboxSelf,
 			SandboxLimits: wireSandboxLimits,
+			PluginsConfig: cfg.PluginsConfig, // Story E17
 		}) {
 			log.Warn("plugin contribution skipped", zap.Error(werr))
 		}

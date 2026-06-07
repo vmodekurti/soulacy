@@ -175,3 +175,13 @@ server:
     gui_enabled: true
     host: 127.0.0.1
     port: 18789
+
+# ── Plugin settings (Story E17) ──────────────────────────────────────────────
+# Arbitrary plugin-specific configuration, keyed by plugin ID. The shape under
+# each key is owned by the plugin — the core parser never validates it.
+# Secret-looking values (token/secret/password/api_key/credential in the key
+# name) are redacted in the config API; the GUI never sees them.
+# plugins_config:
+#     weather-bot:
+#         units: metric
+#         cache_ttl: 15m

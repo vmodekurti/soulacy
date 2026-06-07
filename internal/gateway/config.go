@@ -81,9 +81,10 @@ func (s *Server) safeConfigView() fiber.Map {
 			"format": cfg.Log.Format,
 			"file":   cfg.Log.File,
 		},
-		"agent_dirs": cfg.AgentDirs,
-		"skill_dirs": cfg.SkillDirs,
-		"channels":   safeChannelsView(cfg.Channels),
+		"agent_dirs":     cfg.AgentDirs,
+		"skill_dirs":     cfg.SkillDirs,
+		"channels":       safeChannelsView(cfg.Channels),
+		"plugins_config": safePluginsConfigView(cfg.PluginsConfig),
 		"_meta": fiber.Map{
 			"config_path": s.cfgPath,
 			"writable":    s.cfgPath != "",
