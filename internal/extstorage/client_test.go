@@ -11,6 +11,7 @@ import (
 	"time"
 
 	sdkext "github.com/soulacy/soulacy/sdk/extstorage"
+	"github.com/soulacy/soulacy/sdk/memory"
 )
 
 // TestHelperStorageSidecar is not a real test: it is re-executed as the
@@ -37,7 +38,7 @@ func runHelperSidecar(mode string) {
 
 	type storageEntry struct {
 		ID, AgentID, SessionID, Scope, Key, Content string
-		CreatedAt time.Time
+		CreatedAt                                   time.Time
 	}
 	var storageStore []storageEntry
 
@@ -148,6 +149,98 @@ func runHelperSidecar(mode string) {
 			respond(id, sdkext.QueuePublishResult{OK: true})
 		case sdkext.MethodQueueAck:
 			respond(id, map[string]bool{"ok": true})
+		case sdkext.MethodStorageArchive:
+			var p sdkext.StorageArchiveParams
+			_ = json.Unmarshal(m.Params, &p)
+			entry := p.Entry
+			content := entry.Content
+			if p.ContentFile != "" {
+				b, err := os.ReadFile(os.Getenv("HELPER_SHARED_DIR") + "/" + p.ContentFile)
+				if err == nil {
+					content = string(b)
+				}
+			}
+			storageStore = append(storageStore, storageEntry{
+				ID:        entry.ID,
+				AgentID:   entry.AgentID,
+				SessionID: entry.SessionID,
+				Scope:     string(entry.Scope),
+				Key:       entry.Key,
+				Content:   content,
+				CreatedAt: entry.CreatedAt,
+			})
+			respond(id, sdkext.StorageArchiveResult{OK: true})
+		case sdkext.MethodStorageSearch:
+			var p sdkext.StorageSearchParams
+			_ = json.Unmarshal(m.Params, &p)
+			var entries []memory.Entry
+			for _, e := range storageStore {
+				if p.AgentID != "" && e.AgentID != p.AgentID {
+					continue
+				}
+				if strings.Contains(e.Content, p.Query) {
+					entries = append(entries, memory.Entry{
+						ID:        e.ID,
+						AgentID:   e.AgentID,
+						SessionID: e.SessionID,
+						Scope:     memory.Scope(e.Scope),
+						Key:       e.Key,
+						Content:   e.Content,
+						CreatedAt: e.CreatedAt,
+					})
+				}
+			}
+			respond(id, sdkext.StorageSearchResult{Entries: entries})
+		case sdkext.MethodStorageReadByScope:
+			var p sdkext.StorageReadByScopeParams
+			_ = json.Unmarshal(m.Params, &p)
+			var entries []memory.Entry
+			for _, e := range storageStore {
+				if e.AgentID == p.AgentID && e.SessionID == p.SessionID && e.Scope == string(p.Scope) {
+					entries = append(entries, memory.Entry{
+						ID:        e.ID,
+						AgentID:   e.AgentID,
+						SessionID: e.SessionID,
+						Scope:     memory.Scope(e.Scope),
+						Key:       e.Key,
+						Content:   e.Content,
+						CreatedAt: e.CreatedAt,
+					})
+				}
+			}
+			respond(id, sdkext.StorageReadByScopeResult{Entries: entries})
+		case sdkext.MethodStorageReadGlobal:
+			var p sdkext.StorageReadGlobalParams
+			_ = json.Unmarshal(m.Params, &p)
+			var entries []memory.Entry
+			for _, e := range storageStore {
+				if e.AgentID == p.AgentID {
+					entries = append(entries, memory.Entry{
+						ID:        e.ID,
+						AgentID:   e.AgentID,
+						SessionID: e.SessionID,
+						Scope:     memory.Scope(e.Scope),
+						Key:       e.Key,
+						Content:   e.Content,
+						CreatedAt: e.CreatedAt,
+					})
+				}
+			}
+			respond(id, sdkext.StorageReadGlobalResult{Entries: entries})
+		case sdkext.MethodStoragePrune:
+			var p sdkext.StoragePruneParams
+			_ = json.Unmarshal(m.Params, &p)
+			var keep []storageEntry
+			deleted := int64(0)
+			for _, e := range storageStore {
+				if e.AgentID == p.AgentID && e.CreatedAt.Before(p.Before) {
+					deleted++
+				} else {
+					keep = append(keep, e)
+				}
+			}
+			storageStore = keep
+			respond(id, sdkext.StoragePruneResult{RowsDeleted: deleted})
 		default:
 			_ = sdkext.WriteMessage(out, sdkext.NewErrorResponse(id, sdkext.CodeMethodNotFound, "method not found"))
 		}
