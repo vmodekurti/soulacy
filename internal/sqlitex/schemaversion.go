@@ -45,6 +45,29 @@ CREATE TABLE IF NOT EXISTS soulacy_schema_version (
 // destructiveRe flags statements that remove or rename schema objects.
 var destructiveRe = regexp.MustCompile(`(?i)\b(DROP\s+(TABLE|COLUMN|INDEX|VIEW|TRIGGER)|RENAME\s+(TO|COLUMN))\b`)
 
+// RecordSchemaVersion marks component as being at LEAST version — used by
+// stores whose v1 bootstrap predates schema versioning (idempotent
+// CREATE TABLE IF NOT EXISTS schemas). It never downgrades: a database
+// already migrated past version keeps its higher number, so calling this
+// at every boot right after the legacy bootstrap is safe. Future schema
+// changes then go through MigrateSchema with versions > 1.
+func RecordSchemaVersion(db *sql.DB, component string, version int) error {
+	current, err := SchemaVersion(db, component)
+	if err != nil {
+		return err
+	}
+	if current >= version {
+		return nil
+	}
+	_, err = db.Exec(`INSERT INTO soulacy_schema_version (component, version, updated_at) VALUES (?, ?, ?)
+		ON CONFLICT(component) DO UPDATE SET version = excluded.version, updated_at = excluded.updated_at`,
+		component, version, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("sqlitex: record %s v%d: %w", component, version, err)
+	}
+	return nil
+}
+
 // SchemaVersion returns the recorded schema version for component
 // (0 when the component has never migrated).
 func SchemaVersion(db *sql.DB, component string) (int, error) {

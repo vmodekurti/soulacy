@@ -163,6 +163,13 @@ func Open(path string) (*Store, error) {
 		}
 	}
 
+	// Schema versioning (E22 adoption): v1 = the bootstrap above INCLUDING
+	// the legacy parent_chunk_id backfill below (pre-versioning, stays
+	// best-effort); future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "knowledge", 1); err != nil {
+		return nil, fmt.Errorf("knowledge: schema version: %w", err)
+	}
+
 	// Migration: add parent_chunk_id to existing DBs (ignore error if column
 	// already exists or was included in CREATE TABLE above).
 	db.Exec(`ALTER TABLE chunks ADD COLUMN parent_chunk_id TEXT DEFAULT NULL`) //nolint:errcheck
@@ -607,16 +614,18 @@ func (s *Store) SearchFTS(kb *KB, query string, topK int) ([]SearchHit, error) {
 // Algorithm:
 //
 //  1. Run vec KNN with fetchK = max(topK*2, 10) candidates.
+//
 //  2. Run FTS5 BM25 with the same fetchK limit (FTS query sanitized of special
 //     chars to avoid parse errors).
+//
 //  3. For each unique chunk across both result sets, compute the RRF score:
 //
-//	     score(d) = Σ  1 / (k + rank_i(d))
-//	            i ∈ {vec, fts}
+//     score(d) = Σ  1 / (k + rank_i(d))
+//     i ∈ {vec, fts}
 //
-//	     where k = 60 (the standard RRF constant from Cormack et al., 2009).
-//	     k = 60 was chosen because it reduces sensitivity to outlier ranks in
-//	     the tail; lower values make the top-1 rank dominate excessively.
+//     where k = 60 (the standard RRF constant from Cormack et al., 2009).
+//     k = 60 was chosen because it reduces sensitivity to outlier ranks in
+//     the tail; lower values make the top-1 rank dominate excessively.
 //
 //  4. Sort all candidates by descending RRF score and return the top topK.
 //

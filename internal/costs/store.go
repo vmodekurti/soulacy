@@ -19,7 +19,7 @@ type UsageRecord struct {
 	PromptTokens int
 	CompTokens   int
 	TotalTokens  int
-	CostUSD      float64   // estimated; 0 if pricing not configured
+	CostUSD      float64 // estimated; 0 if pricing not configured
 	CreatedAt    time.Time
 }
 
@@ -69,6 +69,13 @@ func NewStore(path string) (*Store, error) {
 		return nil, err
 	}
 	if _, err := db.Exec(schema); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above;
+	// future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "costs", 1); err != nil {
 		db.Close()
 		return nil, err
 	}

@@ -98,7 +98,7 @@ func normalizeTags(tags []string) []string {
 	return out
 }
 
-func tagsToCSV(tags []string) string  { return strings.Join(normalizeTags(tags), ",") }
+func tagsToCSV(tags []string) string { return strings.Join(normalizeTags(tags), ",") }
 func csvToTags(csv string) []string {
 	if strings.TrimSpace(csv) == "" {
 		return []string{}

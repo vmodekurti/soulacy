@@ -1,10 +1,10 @@
 // Package actionlog records structured agent actions to two places:
 //
-//   1. A known per-agent log file (<dir>/<agent-id>.log) as JSON Lines — easy to
-//      tail, watch from the GUI, or inspect with `tail -f`. This is the location
-//      the UI polls.
-//   2. A SQLite table (agent_events) for durable, queryable history that survives
-//      restarts and supports cross-agent queries.
+//  1. A known per-agent log file (<dir>/<agent-id>.log) as JSON Lines — easy to
+//     tail, watch from the GUI, or inspect with `tail -f`. This is the location
+//     the UI polls.
+//  2. A SQLite table (agent_events) for durable, queryable history that survives
+//     restarts and supports cross-agent queries.
 //
 // Every agent execution emits events (run start, llm calls, tool calls/results,
 // reply, errors) which flow through here via the gateway EventHub.
@@ -111,6 +111,12 @@ func New(dir, dbPath string, log *zap.Logger) (*Logger, error) {
 				return nil, fmt.Errorf("actionlog: schema: %w", err)
 			}
 		}
+	}
+
+	// Schema versioning (E22 adoption): v1 = the idempotent bootstrap above;
+	// future changes go through sqlitex.MigrateSchema with v2+.
+	if err := sqlitex.RecordSchemaVersion(db, "actionlog", 1); err != nil {
+		return nil, fmt.Errorf("actionlog: schema version: %w", err)
 	}
 	l := &Logger{
 		dir:          dir,
