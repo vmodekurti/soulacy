@@ -150,6 +150,9 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if text == "" || msg.ThreadID == "" {
 		return nil // nothing to send
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("whatsapp: send: %w", err)
+	}
 
 	payload := map[string]any{
 		"messaging_product": "whatsapp",
