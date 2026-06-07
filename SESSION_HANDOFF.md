@@ -27,10 +27,31 @@ session 6: E9 + E10 part 1, M5, M4, M3)
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
   (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅,
-  E15 ✅, E16 ✅ — NEXT: E17 (dynamic plugin config schema), then
-  E11 → E12 → E13.**
+  E15 ✅, E16 ✅, E17 ✅ — NEXT: E11 (conformance test kits), then
+  E12 → E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E17 (dynamic plugin configuration schema) — complete (TDD, session 7,
+suite green).**
+- `config.Config.PluginsConfig map[string]map[string]any`
+  (`plugins_config:` keyed by plugin id; shape plugin-owned, core parser
+  never validates it). config.yaml.example documents it. 2 config tests.
+- `plugins.WireDeps.PluginsConfig` → Wire attaches each plugin's section
+  to `LoadedPlugin.Settings` (v1 AND v2 plugins). 2 wire tests.
+  internal/app passes cfg.PluginsConfig through.
+- Gateway: GET /api/v1/config now includes `plugins_config` via
+  `safePluginsConfigView` — RECURSIVE redaction with the Story-1 secret
+  heuristic; empty secrets stay empty; source never mutated
+  (internal/gateway/pluginsconfig.go, 3 tests).
+- Write preservation: handlePatchConfig already does raw-map
+  read→typed-patch→write, so unknown top-level blocks survive; PINNED by
+  TestPatchConfigPreservesPluginsConfig (secrets unmutated on disk,
+  patch still lands). GUI writes use that PATCH → preservation holds
+  regardless of Config.svelte.
+- OPTIONAL polish (not blocking): render a read-only plugins_config
+  section in Config.svelte (slot with Story 15 GUI work); deliver
+  Settings to sidecars as env JSON (consider with E13).
 
 **E16 (plugin database migrations hook) — complete (TDD, session 7, root +
 sdk suites green).**
