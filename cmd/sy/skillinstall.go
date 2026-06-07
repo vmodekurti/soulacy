@@ -1,0 +1,194 @@
+// skillinstall.go — Story E18: remote skill & package installation.
+//
+// `sy skill install <arg>` keeps its local-directory behaviour; when arg is
+// NOT a local directory it is treated as a package slug and resolved through
+// the configured registry providers (E19): resolve latest version+checksum →
+// fetch into a staging dir (sha256-verified for archives) → E20 safety
+// introspection → permissions consent prompt → move into ~/.soulacy/skills/
+// → hot-load via the gateway's POST /skills/rescan.
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/introspect"
+	"github.com/soulacy/soulacy/internal/pkgregistry"
+	"github.com/soulacy/soulacy/internal/plugininstall"
+	"github.com/soulacy/soulacy/pkg/plugin"
+	"go.uber.org/zap"
+)
+
+// remoteInstallOpts parameterises remoteSkillInstall for testability.
+type remoteInstallOpts struct {
+	// SkillsDir is the install root (normally ~/.soulacy/skills).
+	SkillsDir string
+	// AssumeYes skips the consent prompt — EXCEPT when the safety verdict
+	// is "danger", which always requires an interactive yes.
+	AssumeYes bool
+	// Confirm asks the operator a yes/no question. nil = always deny
+	// (non-interactive without --yes).
+	Confirm func(prompt string) bool
+	// Rescan triggers the gateway hot-load after install. nil = skip.
+	Rescan func() error
+	// Out receives progress output.
+	Out io.Writer
+	// Pipeline runs the E20 checks. nil = a default pipeline (static scan +
+	// bounded dry-run; LLM audit reports "skipped" — the CLI has no router).
+	Pipeline *introspect.Pipeline
+}
+
+// registriesFromConfig builds the E19 engine from the `registries:` config
+// block. With no registries configured, a bare git provider still lets
+// `sy skill install github.com/user/skill` work out of the box.
+func registriesFromConfig(entries []config.RegistryConfig, log *zap.Logger) *pkgregistry.Engine {
+	if len(entries) == 0 {
+		entries = []config.RegistryConfig{{ID: "git", Type: "git", Priority: 100}}
+	}
+	eng, errs := pkgregistry.FromConfig(entries, log)
+	for _, e := range errs {
+		fmt.Fprintf(os.Stderr, "warning: %v\n", e)
+	}
+	return eng
+}
+
+// remoteSkillInstall is the E18 flow. Returns an error for every abort path
+// so the CLI exits non-zero; the staging dir never survives a failure.
+func remoteSkillInstall(ctx context.Context, eng *pkgregistry.Engine, slug string, opts remoteInstallOpts) error {
+	out := opts.Out
+	if out == nil {
+		out = os.Stdout
+	}
+
+	// 1. Resolve through the registries (priority order, fallback).
+	pkg, err := eng.Resolve(ctx, slug)
+	if err != nil {
+		return fmt.Errorf("%q is not a local directory and no configured registry resolves it: %w", slug, err)
+	}
+	fmt.Fprintf(out, "Resolved %s@%s via registry %q\n", pkg.Slug, pkg.Version, pkg.Provider)
+	if pkg.Checksum != "" {
+		fmt.Fprintf(out, "  archive sha256: %s\n", pkg.Checksum)
+	}
+	if pkg.Signature != "" {
+		fmt.Fprintf(out, "  signature: present (verify against your registry's signing key)\n")
+	}
+
+	// 2. Fetch into a staging dir — checksum verification happens inside the
+	// provider for archives; git sources derive integrity from the clone.
+	if err := os.MkdirAll(opts.SkillsDir, 0o755); err != nil {
+		return err
+	}
+	staging := filepath.Join(opts.SkillsDir, fmt.Sprintf(".staging-%d", time.Now().UnixNano()))
+	if err := eng.Fetch(ctx, pkg, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return fmt.Errorf("fetch failed: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(staging) }
+
+	// A skill package must carry SKILL.md at its root.
+	if _, err := os.Stat(filepath.Join(staging, "SKILL.md")); err != nil {
+		cleanup()
+		return fmt.Errorf("package %q has no SKILL.md at its root — not a skill package", pkg.Slug)
+	}
+
+	// 3. Safety introspection (E20).
+	pipeline := opts.Pipeline
+	if pipeline == nil {
+		pipeline = &introspect.Pipeline{DryRun: &introspect.DryRunConfig{Timeout: 5 * time.Second}}
+	}
+	var manifest *plugin.Manifest
+	if m, merr := plugininstall.ReadManifest(staging); merr == nil {
+		manifest = &m
+	}
+	report := pipeline.Run(ctx, staging, manifest)
+	printSecurityReport(out, report)
+
+	// Permissions consent — skills may bundle a plugin.yaml with grants.
+	if manifest != nil && len(manifest.Permissions) > 0 {
+		fmt.Fprintln(out, "Requested capabilities:")
+		for _, p := range manifest.Permissions {
+			fmt.Fprintf(out, "  - %s\n", p.Cap)
+		}
+	}
+
+	// 4. Consent. --yes never bypasses a danger verdict.
+	prompt := fmt.Sprintf("Install %s@%s? [y/N] ", pkg.Slug, pkg.Version)
+	switch {
+	case report.Verdict == introspect.VerdictDanger:
+		fmt.Fprintln(out, "⚠ CRITICAL findings — explicit confirmation required (--yes does not apply).")
+		if opts.Confirm == nil || !opts.Confirm(prompt) {
+			cleanup()
+			return fmt.Errorf("install aborted (danger verdict not confirmed)")
+		}
+	case opts.AssumeYes:
+		// consent given on the command line
+	case opts.Confirm == nil || !opts.Confirm(prompt):
+		cleanup()
+		return fmt.Errorf("install aborted by user")
+	}
+
+	// 5. Activate: move staging → ~/.soulacy/skills/<name>.
+	name := skillDirName(pkg.Slug)
+	dest := filepath.Join(opts.SkillsDir, name)
+	if _, err := os.Stat(dest); err == nil {
+		cleanup()
+		return fmt.Errorf("skill %q is already installed at %s — remove it first", name, dest)
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		// cross-device fallback
+		if cerr := copyDir(staging, dest); cerr != nil {
+			cleanup()
+			return fmt.Errorf("install failed: %v (copy fallback: %v)", err, cerr)
+		}
+		cleanup()
+	}
+	fmt.Fprintf(out, "✓ Installed %s@%s → %s\n", pkg.Slug, pkg.Version, dest)
+
+	// 6. Hot-load through the gateway; degrade to a restart hint.
+	if opts.Rescan != nil {
+		if err := opts.Rescan(); err != nil {
+			fmt.Fprintf(out, "Gateway rescan failed (%v) — the skill loads on the next gateway restart.\n", err)
+		} else {
+			fmt.Fprintln(out, "✓ Gateway rescanned — skill is live.")
+		}
+	}
+	return nil
+}
+
+func printSecurityReport(out io.Writer, report introspect.SecurityReport) {
+	badge := map[string]string{
+		introspect.VerdictPass:    "✓ passed safety checks",
+		introspect.VerdictCaution: "⚠ caution — review findings",
+		introspect.VerdictDanger:  "✗ DANGER — critical findings",
+	}[report.Verdict]
+	fmt.Fprintf(out, "Safety introspection: %s\n", badge)
+	for _, f := range report.Findings {
+		loc := ""
+		if f.File != "" {
+			loc = " [" + f.File
+			if f.Line > 0 {
+				loc += fmt.Sprintf(":%d", f.Line)
+			}
+			loc += "]"
+		}
+		fmt.Fprintf(out, "  %s (%s)%s: %s\n", strings.ToUpper(string(f.Severity)), f.Check, loc, f.Message)
+	}
+}
+
+// skillDirName derives the install directory name from a slug:
+// "github.com/user/my-skill" → "my-skill"; trailing ".git" stripped.
+func skillDirName(slug string) string {
+	name := path.Base(strings.TrimSuffix(strings.TrimSuffix(slug, "/"), ".git"))
+	name = strings.TrimSuffix(name, ".git")
+	if name == "" || name == "." || name == "/" {
+		return "skill"
+	}
+	return name
+}
