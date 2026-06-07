@@ -23,7 +23,7 @@ CONFIG_DIR="/etc/soulacy"
 DATA_DIR="/var/lib/soulacy"
 SERVICE_FILE="/etc/systemd/system/soulacy.service"
 SOULACY_USER="soulacy"
-REPO="soulacy/soulacy"
+REPO="vmodekurti/soulacy"
 VERSION="${SOULACY_VERSION:-latest}"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'

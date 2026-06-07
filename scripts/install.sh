@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Soulacy installer — run with:
-#   curl -sSL https://get.soulacy.dev | sh
+#   curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/scripts/install.sh | bash
 #
 # What this does:
 #   1. Detects your OS and architecture
@@ -13,9 +13,9 @@
 
 set -euo pipefail
 
-REPO="soulacy/soulacy"
+REPO="vmodekurti/soulacy"
 INSTALL_DIR="/usr/local/bin"
-DATA_DIR="${HOME}/.soulacy"
+DATA_DIR="${HOME}/.soulacy/soulspace"
 VERSION="${SOULACY_VERSION:-latest}"
 
 RED='\033[0;31m'
@@ -26,14 +26,14 @@ NC='\033[0m'
 
 banner() {
   echo ""
-  echo -e "${BLUE}  ██████╗██╗      █████╗ ██╗    ██╗███████╗████████╗ █████╗  ██████╗██╗  ██╗${NC}"
-  echo -e "${BLUE} ██╔════╝██║     ██╔══██╗██║    ██║██╔════╝╚══██╔══╝██╔══██╗██╔════╝██║ ██╔╝${NC}"
-  echo -e "${BLUE} ██║     ██║     ███████║██║ █╗ ██║███████╗   ██║   ███████║██║     █████╔╝ ${NC}"
-  echo -e "${BLUE} ██║     ██║     ██╔══██║██║███╗██║╚════██║   ██║   ██╔══██║██║     ██╔═██╗ ${NC}"
-  echo -e "${BLUE} ╚██████╗███████╗██║  ██║╚███╔███╔╝███████║   ██║   ██║  ██║╚██████╗██║  ██╗${NC}"
-  echo -e "${BLUE}  ╚═════╝╚══════╝╚═╝  ╚═╝ ╚══╝╚══╝ ╚══════╝   ╚═╝   ╚═╝  ╚═╝ ╚═════╝╚═╝  ╚═╝${NC}"
+  echo -e "${BLUE} ███████╗ ██████╗ ██╗   ██╗██╗      █████╗  ██████╗██╗   ██╗${NC}"
+  echo -e "${BLUE} ██╔════╝██╔═══██╗██║   ██║██║     ██╔══██╗██╔════╝╚██╗ ██╔╝${NC}"
+  echo -e "${BLUE} ███████╗██║   ██║██║   ██║██║     ███████║██║      ╚████╔╝ ${NC}"
+  echo -e "${BLUE} ╚════██║██║   ██║██║   ██║██║     ██╔══██║██║       ╚██╔╝  ${NC}"
+  echo -e "${BLUE} ███████║╚██████╔╝╚██████╔╝███████╗██║  ██║╚██████╗   ██║   ${NC}"
+  echo -e "${BLUE} ╚══════╝ ╚═════╝  ╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝   ╚═╝   ${NC}"
   echo ""
-  echo -e "  Self-hosted agentic framework — ${GREEN}privacy-first${NC}, ${GREEN}security-first${NC}"
+  echo -e "  Self-hosted agent runtime — ${GREEN}one binary${NC}, ${GREEN}YAML agents${NC}, ${GREEN}no cloud required${NC}"
   echo ""
 }
 
@@ -68,30 +68,46 @@ esac
 
 log "Detected: ${OS}/${ARCH}"
 
-# ── Resolve version ───────────────────────────────────────────────────────────
-if [ "$VERSION" = "latest" ]; then
-  log "Resolving latest release..."
-  VERSION=$(curl -sf "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/') || VERSION="v0.1.0"
-fi
-log "Installing Soulacy ${VERSION}"
+# ── Source-build fallback (used when no release tarball exists) ──────────────
+build_from_source() {
+  log "Building from source (requires git, Go 1.22+, and node/npm for the GUI)..."
+  command -v git >/dev/null 2>&1 || err "git is required to build from source."
+  command -v go  >/dev/null 2>&1 || err "Go is required to build from source. Install from https://go.dev/dl/"
+  command -v npm >/dev/null 2>&1 || err "npm is required to build the GUI. Install Node from https://nodejs.org"
+  SRCDIR="${TMPDIR}/src"
+  git clone --depth 1 "https://github.com/${REPO}.git" "$SRCDIR"
+  (cd "$SRCDIR" && make all)   # GUI dist + soulacy + sy
+  cp "${SRCDIR}/bin/soulacy" "${SRCDIR}/bin/sy" "$TMPDIR/"
+}
 
-# ── Download binaries ─────────────────────────────────────────────────────────
-# Release tarballs are named: soulacy_<version>_<os>_<arch>.tar.gz
-# Each tarball contains both the `soulacy` and `sy` binaries.
-BASE_URL="https://github.com/${REPO}/releases/download/${VERSION}"
+# ── Resolve version ───────────────────────────────────────────────────────────
 TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
-TARBALL="soulacy_${VERSION}_${OS}_${ARCH}.tar.gz"
-URL="${BASE_URL}/${TARBALL}"
+if [ "$VERSION" = "latest" ]; then
+  log "Resolving latest release..."
+  VERSION=$(curl -sf "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+fi
 
-log "Downloading ${TARBALL}..."
-if curl -fsSL -o "${TMPDIR}/${TARBALL}" "$URL"; then
-  tar -xzf "${TMPDIR}/${TARBALL}" -C "$TMPDIR"
-else
-  warn "Release binary not found at $URL — building from source instead."
+if [ -z "$VERSION" ] || [ "$VERSION" = "latest" ]; then
+  warn "No published release found — building from source."
+  VERSION="dev"
   build_from_source
+else
+  # ── Download binaries ───────────────────────────────────────────────────────
+  # Release tarballs are named: soulacy_<version>_<os>_<arch>.tar.gz
+  # Each tarball contains both the `soulacy` and `sy` binaries.
+  log "Installing Soulacy ${VERSION}"
+  TARBALL="soulacy_${VERSION}_${OS}_${ARCH}.tar.gz"
+  URL="https://github.com/${REPO}/releases/download/${VERSION}/${TARBALL}"
+  log "Downloading ${TARBALL}..."
+  if curl -fsSL -o "${TMPDIR}/${TARBALL}" "$URL"; then
+    tar -xzf "${TMPDIR}/${TARBALL}" -C "$TMPDIR"
+  else
+    warn "Release binary not found at $URL — building from source instead."
+    build_from_source
+  fi
 fi
 
 # ── Install binaries ──────────────────────────────────────────────────────────
@@ -109,20 +125,22 @@ for binary in soulacy sy; do
   fi
 done
 
-# ── Create data directory ─────────────────────────────────────────────────────
-log "Creating data directory: ${DATA_DIR}"
+# ── Create workspace (soulspace layout) ──────────────────────────────────────
+# NOTE: paths live under ~/.soulacy/soulspace — creating files directly in
+# ~/.soulacy would be detected as a pre-soulspace LEGACY install.
+log "Creating workspace: ${DATA_DIR}"
 mkdir -p \
   "${DATA_DIR}/agents" \
   "${DATA_DIR}/plugins" \
   "${DATA_DIR}/memory" \
   "${DATA_DIR}/tools" \
-  "${DATA_DIR}/gui"
+  "${DATA_DIR}/skills"
 
 # Write default config if none exists
 if [ ! -f "${DATA_DIR}/config.yaml" ]; then
   cat > "${DATA_DIR}/config.yaml" << 'EOF'
 # Soulacy configuration — edit this file to customise your setup.
-# Full reference: https://docs.soulacy.dev/configuration
+# Full reference: https://vmodekurti.github.io/soulacy/configuration/
 
 server:
   host: "127.0.0.1"    # Localhost only by default — change for remote access
@@ -144,16 +162,6 @@ EOF
   ok "Default config written to ${DATA_DIR}/config.yaml"
 else
   ok "Existing config preserved at ${DATA_DIR}/config.yaml"
-fi
-
-# ── Python SDK ────────────────────────────────────────────────────────────────
-if command -v pip3 >/dev/null 2>&1; then
-  log "Installing Python SDK..."
-  pip3 install "soulacy==${VERSION#v}" --quiet 2>/dev/null \
-    || warn "Python SDK install failed — install manually with: pip install soulacy"
-  ok "Python SDK installed"
-else
-  warn "pip3 not found — skipping Python SDK. Install with: pip install soulacy"
 fi
 
 # ── Ollama check ──────────────────────────────────────────────────────────────
@@ -179,11 +187,10 @@ echo -e "  ${BLUE}sy agent list${NC}        List loaded agents"
 echo -e "  ${BLUE}sy chat --agent hello-world \"Hi\"${NC}"
 echo ""
 echo "  GUI: http://localhost:18789  (after starting the gateway)"
-echo "  Docs: https://docs.soulacy.dev"
+echo "  Docs: https://vmodekurti.github.io/soulacy"
 echo "  Config: ${DATA_DIR}/config.yaml"
 echo ""
-echo "  To start automatically on login, run:"
-echo "    soulacy --install-service"
+echo -e "  Next: run ${BLUE}sy setup${NC} for the interactive provider/channel wizard."
 echo ""
 
 # ── Auto-start option ─────────────────────────────────────────────────────────
@@ -210,12 +217,3 @@ if [ -t 0 ]; then  # only if running interactively
     fi
   fi
 fi
-
-build_from_source() {
-  log "Building from source (requires Go 1.22+)..."
-  command -v go >/dev/null 2>&1 || err "Go is required to build from source. Install from https://go.dev/dl/"
-  SRCDIR="${TMPDIR}/src"
-  git clone --depth 1 "https://github.com/${REPO}.git" "$SRCDIR"
-  (cd "$SRCDIR" && make build)
-  cp "${SRCDIR}/bin/"* "$TMPDIR/"
-}
