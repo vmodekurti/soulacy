@@ -18,6 +18,7 @@ package channeltest
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -84,6 +85,9 @@ func RunAdapterSuite(t *testing.T, newAdapter func() channel.Adapter) {
 		case err := <-done:
 			if err == nil {
 				t.Fatal("conformance: Send(cancelled ctx) must return an error, got nil")
+			}
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("conformance: Send(cancelled ctx) error must wrap context.Canceled (use %%w), got: %v", err)
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("conformance: Send(cancelled ctx) did not return within 5s — caller context ignored")

@@ -228,18 +228,23 @@ func (a *Adapter) run(ctx context.Context) error {
 	}
 }
 
-func (a *Adapter) Send(_ context.Context, msg message.Message) error {
+// Send honours the caller's context (Story 19a follow-up): cancellation
+// propagates into the Discord HTTP request and errors wrap the ctx error.
+func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if len(msg.Parts) == 0 {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("discord: send: %w", err)
+	}
 	body, _ := json.Marshal(map[string]string{"content": msg.Parts[0].Text})
 	url := fmt.Sprintf("%s/channels/%s/messages", discordAPI, msg.ThreadID)
-	req, _ := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", a.token)
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("discord: send: %w", err)
 	}
 	resp.Body.Close()
 	return nil
