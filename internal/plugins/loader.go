@@ -29,6 +29,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/soulacy/soulacy/internal/caps"
+	"github.com/soulacy/soulacy/internal/plugininstall"
 	"github.com/soulacy/soulacy/pkg/plugin"
 )
 
@@ -109,6 +110,17 @@ func (l *Loader) loadPlugin(dir string) error {
 	}
 	if m.ID == "" {
 		return fmt.Errorf("manifest missing required field 'id'")
+	}
+
+	// Install gate (Story E13): installer-managed plugins load only while
+	// enabled AND their manifest permissions match what the operator
+	// approved — an update that widens its grants stops loading until a
+	// human re-approves it in the GUI. Hand-installed plugins (no install
+	// metadata) are unaffected.
+	if v := plugininstall.Gate(dir, m.Permissions, m.Credentials); !v.Load {
+		l.log.Warn("plugins: plugin skipped by install state",
+			zap.String("id", m.ID), zap.String("reason", v.Reason))
+		return nil
 	}
 
 	// Schema gate (Story E7). Unknown future schemas are skipped outright;

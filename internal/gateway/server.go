@@ -55,6 +55,7 @@ import (
 	"github.com/soulacy/soulacy/internal/credentials"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
+	"github.com/soulacy/soulacy/internal/plugininstall"
 	"github.com/soulacy/soulacy/internal/metrics"
 	"github.com/soulacy/soulacy/internal/queue/dlq"
 	"github.com/soulacy/soulacy/internal/ratelimit"
@@ -118,6 +119,10 @@ type Server struct {
 	pluginUIs    []PluginUIMount
 	pluginTokens map[string]string
 	capsEnforcer *caps.Enforcer
+
+	// pluginInstaller manages installer-owned plugins (Story E13). Wired
+	// via SetPluginInstaller; install routes 503 until then.
+	pluginInstaller *plugininstall.Installer
 
 	// voiceMinter is the realtime-voice control plane (Story 11). Wired via
 	// SetVoiceMinter; nil = voice unavailable (graceful fallback).
@@ -517,6 +522,17 @@ func (s *Server) buildApp() *fiber.App {
 	// these routes (not in the gate's policy table).
 	api.Get("/plugins/ui", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleListPluginUIs)
 	api.Post("/plugins/:id/token", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleIssuePluginToken)
+
+	// Plugin install & management (Story E13) — admin surface, config-level
+	// rbac. Plugin principals are default-denied by pluginGateMW (E8).
+	api.Get("/plugins/installed", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleListInstalledPlugins)
+	api.Post("/plugins/install", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleStagePlugin)
+	api.Post("/plugins/install/:staged/approve", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleApprovePlugin)
+	api.Delete("/plugins/install/:staged", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleDiscardStagedPlugin)
+	api.Post("/plugins/:id/enable", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleSetPluginEnabled(true))
+	api.Post("/plugins/:id/disable", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleSetPluginEnabled(false))
+	api.Post("/plugins/:id/reapprove", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleReapprovePlugin)
+	api.Delete("/plugins/:id", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleRemovePlugin)
 
 	// Auth identity — returns claims from the current token; useful for GUI.
 	if s.authEngine != nil {
