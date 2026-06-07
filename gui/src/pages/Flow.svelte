@@ -4,6 +4,7 @@
   import { SvelteFlow, Background, Controls, MiniMap, MarkerType } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
   import { api } from '../lib/api.js'
+  import { computeFlowLayout, flowEdgeLabel, flowNodeLabel } from '../lib/flowgraph.js'
 
   let agents = []
   let selected = null
@@ -43,6 +44,9 @@
   // ── Graph builder ──────────────────────────────────────────────────────────
   // Translate a SOUL.yaml definition into a node/edge graph.
   function buildGraph(a) {
+    // Story E25: agents with a graph-form workflow render the declared
+    // nodes/edges read-only (editing comes later).
+    if (a.workflow?.nodes?.length) return buildWorkflowGraph(a)
     const ns = []
     const es = []
     const COL_X = { trigger: 40, prompt: 40, memory: 40, llm: 460, tool: 880, out: 1280 }
@@ -143,6 +147,85 @@
               animated: true,
               markerEnd: { type: MarkerType.ArrowClosed, color: '#6c63ff' },
               style: 'stroke: #6c63ff; stroke-width: 2' })
+
+    return { ns, es }
+  }
+
+  // Story E25 read-only render of workflow.nodes/edges: BFS-column layout,
+  // predicate + cycle-budget labels on edges, trigger → entry, terminal
+  // edges → Output.
+  function buildWorkflowGraph(a) {
+    const ns = []
+    const es = []
+    const wf = a.workflow
+    const layout = computeFlowLayout(wf.nodes, wf.edges || [], wf.entry)
+    const X0 = 320, DX = 320, Y0 = 80, DY = 130
+
+    const triggerLabel = a.trigger === 'cron'
+      ? `⏱ Cron — ${a.schedule?.cron || '—'}`
+      : a.trigger === 'channel'
+        ? `📡 Channel — ${(a.channels || []).join(', ') || 'http'}`
+        : `▶ ${a.trigger}`
+    ns.push({
+      id: 'trigger', type: 'input',
+      position: { x: 30, y: Y0 },
+      data: { label: triggerLabel },
+      class: 'cs-node cs-trigger',
+    })
+
+    let maxCol = 0
+    for (const n of wf.nodes) {
+      const pos = layout.get(n.id) || { col: 0, row: 0 }
+      maxCol = Math.max(maxCol, pos.col)
+      ns.push({
+        id: `wf-${n.id}`,
+        position: { x: X0 + pos.col * DX, y: Y0 + pos.row * DY },
+        data: { label: flowNodeLabel(n) },
+        class: 'cs-node ' + (n.kind === 'branch' || (!n.tool && !n.agent) ? 'cs-prompt' : 'cs-tool'),
+      })
+    }
+
+    const entry = wf.entry || wf.nodes[0].id
+    es.push({
+      id: 'e-trig-entry', source: 'trigger', target: `wf-${entry}`,
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#8b85ff' },
+      style: 'stroke: #8b85ff',
+    })
+
+    ns.push({
+      id: 'output', type: 'output',
+      position: { x: X0 + (maxCol + 1) * DX, y: Y0 },
+      data: { label: '📤 Output' },
+      class: 'cs-node cs-output',
+    })
+
+    let terminalWired = false
+    ;(wf.edges || []).forEach((e, i) => {
+      const isCycle = (layout.get(e.to)?.col ?? Infinity) <= (layout.get(e.from)?.col ?? 0)
+      const terminal = !e.to || e.to === 'end'
+      const target = terminal ? 'output' : `wf-${e.to}`
+      if (terminal) terminalWired = true
+      es.push({
+        id: `e-wf-${i}`,
+        source: `wf-${e.from}`,
+        target,
+        label: flowEdgeLabel(e) || undefined,
+        animated: isCycle && !terminal,
+        markerEnd: { type: MarkerType.ArrowClosed, color: isCycle && !terminal ? '#f0c060' : '#4caf82' },
+        style: isCycle && !terminal ? 'stroke: #f0c060' : 'stroke: #4caf82',
+      })
+    })
+    if (!terminalWired) {
+      // Flows without explicit terminal edges end wherever no edge matches;
+      // hint that by dashed-wiring the deepest column to Output.
+      const deepest = wf.nodes.filter(n => (layout.get(n.id)?.col ?? 0) === maxCol)
+      for (const n of deepest) {
+        es.push({
+          id: `e-wf-end-${n.id}`, source: `wf-${n.id}`, target: 'output',
+          style: 'stroke: #2a2f4a; stroke-dasharray: 4 4',
+        })
+      }
+    }
 
     return { ns, es }
   }

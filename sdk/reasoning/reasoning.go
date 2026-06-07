@@ -86,6 +86,9 @@ type Config struct {
 	// OutputFormat hints Reflect() how to format the final answer
 	// (e.g. "structured_markdown", "decision_brief", "plain").
 	OutputFormat string
+	// Flow carries the compiled graph for the "flow" strategy (Story E25).
+	// nil for every other strategy. Appended field — zero-value compatible.
+	Flow *FlowSpec
 }
 
 // ThinkRequest is the input to LLMBackend.Think().
