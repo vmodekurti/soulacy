@@ -649,4 +649,10 @@
     background: #141626; padding-top: .6rem;
     box-shadow: 0 -10px 12px -10px rgba(0, 0, 0, 0.6);
   }
+
+  /* Story 15: the fixed left column stacks on narrow screens. */
+  @media (max-width: 768px) {
+    .layout { flex-direction: column; overflow: visible; }
+    .layout > :first-child { width: 100%; max-height: 240px; }
+  }
 </style>

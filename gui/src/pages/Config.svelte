@@ -211,6 +211,30 @@
         </div>
 
         <div class="section">
+          <h2 class="section-title">Plugin settings</h2>
+          {#if Object.keys(config?.plugins_config || {}).length === 0}
+            <p class="hint">
+              No plugin settings configured. Add a <code>plugins_config:</code>
+              section to <code>config.yaml</code> keyed by plugin ID — each
+              plugin documents its own keys. Secret-looking values are
+              redacted here and never reach the browser.
+            </p>
+          {:else}
+            {#each Object.entries(config.plugins_config) as [pid, settings]}
+              <div class="hook-row">
+                <code class="hook-url">{pid}</code>
+                <span class="hook-meta">{JSON.stringify(settings)}</span>
+              </div>
+            {/each}
+            <p class="hint">
+              Read-only view (secrets shown as ***). Edit
+              <code>plugins_config</code> in <code>config.yaml</code> —
+              the block is preserved untouched by GUI config saves.
+            </p>
+          {/if}
+        </div>
+
+        <div class="section">
           <h2 class="section-title">Directories</h2>
           <div class="field">
             <label for="agent-dirs">Agent directories (one per line)</label>

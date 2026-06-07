@@ -239,7 +239,7 @@
           <option value={a.id}>{a.name || a.id}</option>
         {/each}
       </select>
-      <button class="btn-secondary" on:click={load} disabled={loading}>↻ Refresh</button>
+      <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
       <button class="btn-primary" on:click={newTask}>+ New Task</button>
     </div>
   </div>

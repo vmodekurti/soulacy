@@ -503,6 +503,15 @@
   .ins-hdr    { display: flex; align-items: center; justify-content: space-between;
                 padding: .8rem 1rem; border-bottom: 1px solid #1a1e36; font-weight: 600; font-size: .88rem; }
   .ins-close  { background: none; color: #6b7294; font-size: 1rem; padding: 0 .25rem; }
+
+  /* Story 15: stack the rail / canvas / inspector vertically on narrow
+     screens (same pattern as the Agents 3-pane). */
+  @media (max-width: 900px) {
+    .page      { flex-direction: column; overflow: auto; height: auto; }
+    .rail      { width: 100%; max-height: 220px; border-right: none;
+                 border-bottom: 1px solid #1a1e36; }
+    .inspector { width: 100%; border-left: none; border-top: 1px solid #1a1e36; }
+  }
   .ins-close:hover { color: #e8eaf6; }
   .ins-body   { padding: .85rem 1rem; overflow-y: auto; display: flex; flex-direction: column; gap: .55rem; }
   .ins-row    { display: flex; gap: .5rem; align-items: flex-start; justify-content: space-between;
