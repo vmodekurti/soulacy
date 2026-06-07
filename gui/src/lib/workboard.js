@@ -38,6 +38,52 @@ export function runLabel(task) {
   return task && task.status === 'failed' ? 'Retry' : 'Run'
 }
 
+// ── collaboration primitives (Story 14) ──────────────────────────────
+
+/** Priorities in escalation order. */
+export const PRIORITIES = ['low', 'normal', 'high', 'urgent']
+
+/** Emoji/visual marker per priority ('' for normal keeps cards quiet). */
+export function priorityBadge(p) {
+  switch (p) {
+    case 'low': return '▽'
+    case 'high': return '▲'
+    case 'urgent': return '‼'
+    default: return ''
+  }
+}
+
+/** "a, b, c" → ['a','b','c'] (trimmed, lowercased, empties dropped). */
+export function parseTags(s) {
+  return String(s || '')
+    .split(',')
+    .map(t => t.trim().toLowerCase())
+    .filter(Boolean)
+}
+
+/** ['a','b'] → "a, b" for the editor input. */
+export function formatTags(tags) {
+  return (tags || []).join(', ')
+}
+
+/**
+ * Compact due-date label + overdue flag for cards and the editor.
+ * Returns { label, overdue } or null when no due date.
+ */
+export function dueInfo(dueAt, now = new Date()) {
+  if (!dueAt) return null
+  const due = new Date(dueAt)
+  if (isNaN(due.getTime())) return null
+  const overdue = due.getTime() < now.getTime()
+  const days = Math.round((due.getTime() - now.getTime()) / 86400000)
+  let label
+  if (overdue) label = `overdue (${due.toLocaleDateString()})`
+  else if (days === 0) label = 'due today'
+  else if (days === 1) label = 'due tomorrow'
+  else label = `due ${due.toLocaleDateString()}`
+  return { label, overdue }
+}
+
 /** Short display name for an artifact: the file's base name. */
 export function artifactName(path) {
   if (!path) return ''

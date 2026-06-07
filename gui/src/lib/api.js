@@ -223,6 +223,9 @@ export const api = {
     run:    (id)        => apiFetch(`/workboard/tasks/${id}/run`,  { method: 'POST' }),
     runs:   (id)        => apiFetch(`/workboard/tasks/${id}/runs`),
     artifacts: (id)     => apiFetch(`/workboard/tasks/${id}/artifacts`),
+    comments:      (id)       => apiFetch(`/workboard/tasks/${id}/comments`),
+    addComment:    (id, body) => apiFetch(`/workboard/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify(body) }),
+    deleteComment: (cid)      => apiFetch(`/workboard/comments/${cid}`, { method: 'DELETE' }),
   },
 
   builder: {

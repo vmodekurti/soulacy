@@ -26,10 +26,39 @@ Stories 5–6 + extensibility blueprint and E-track stories)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5: 12 ✅ 13 ✅ — next up: Story 14
-  (task collaboration primitives).**
+  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). Next up: M6 — E9
+  (extract versioned Go SDK module), then E10 → E15 → E16 → E17 → E11 →
+  E12 → E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**Story 14 (task collaboration primitives) — complete (TDD, session 6).
+M5 done. Suite total 62.7%.**
+- `internal/workboard` — Task gained Owner, Priority (low/normal/high/
+  urgent, default normal, validated), Tags ([]string; stored CSV;
+  normalised: trim/lowercase/dedupe/drop-empties), DueAt *time.Time
+  (nullable DATETIME). Update adds pointers + ClearDueAt bool (nil DueAt
+  alone = unchanged). NEW `collab.go`: priorities, tag normalisation,
+  `workboard_comments` table + Comment{Author,Body,Kind comment|review} —
+  AddComment (validates body/kind/task-exists, author defaults "user"),
+  ListComments (oldest first), DeleteComment; task Delete cascades.
+  IDEMPOTENT MIGRATIONS: migrateTaskColumns runs ALTER TABLE ADD COLUMN
+  for pre-14 DBs, tolerating "duplicate column name" — old workboard.db
+  files upgrade in place (tested via close/reopen). 12 store tests; 84.4%.
+- `internal/gateway/workboard.go` — wbTaskBody extended (owner, priority,
+  tags, due_at RFC3339 string; PATCH due_at:"" clears); parseDueAt → 400
+  on garbage. Comment routes: GET/POST /workboard/tasks/:id/comments,
+  DELETE /workboard/comments/:id (rbac agents read/write/delete). 6 tests.
+- GUI — workboard.js: PRIORITIES, priorityBadge ('' for normal — cards
+  stay quiet), parseTags/formatTags, dueInfo (overdue flag, due today/
+  tomorrow labels) + vitest. Workboard.svelte: editor grid gained Owner /
+  Priority / Tags / Due date; modal gained Comments & review notes thread
+  (🔍 review notes amber-edged, 💬 comments, compose row w/ kind select);
+  cards show ONLY badges that carry signal (▲ high/‼ urgent, due label
+  red when overdue, @owner). Vitest 92/92 ✓, build ✓.
+- ⚠️ sandbox note: node_modules linux-arm64 binaries got pruned mid-
+  session (rollup/esbuild); reinstalled via the standing-rules tarball
+  procedure — if vitest suddenly fails with MODULE_NOT_FOUND, redo that.
 
 **Story 13 (workboard artifact tracking) — complete (TDD, session 6).**
 - `internal/workboard/artifacts.go` — `workboard_artifacts` table
