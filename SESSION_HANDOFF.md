@@ -27,12 +27,43 @@ part 1, M5, M4, M3)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅,
-  E15 ✅, E16 ✅, E17 ✅, E11 ✅, E12 ✅ — NEXT: E13 (plugin discovery &
-  install UX; GUI-heavy — needs the node toolchain tarball dance), then
-  M7 Story 15 (polish).**
+  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). **M6 COMPLETE
+  (E9, E10, E15, E16, E17, E11, E12, E13)** — NEXT: M7 = Story 15
+  (final polish incl. plugin GUI surfaces). E14 stays demand-gated
+  deferred. Suite 59.1% root + sdk green.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E13 (plugin discovery & install UX) — complete (session 7; root 59.1% +
+sdk green, vitest 101/101, vite build clean). M6 DONE.**
+- `internal/plugininstall` — Stage (git URL shallow-clone w/ .git
+  stripped / sha256-REQUIRED archive tar.gz+zip w/ traversal+256MiB-bomb
+  guards / local dir copy; staged under <plugins>/.staging — loader never
+  sees it), Approve (writes .soulacy-install.json: source, checksum,
+  ORDER-INSENSITIVE canonical fingerprint of permissions+credentials),
+  Discard, List, SetEnabled, Reapprove, Remove. `Gate(dir, perms, creds)`
+  in meta.go: no metadata (hand-installed) = always load; managed =
+  load only if enabled AND fingerprint matches. 9 installer tests incl.
+  real git-clone install + traversal refusal.
+- Loader: internal/plugins/loader.go calls plugininstall.Gate after
+  manifest parse — disabled/stale-approval plugins warn+skip (3 tests).
+- Gateway (internal/gateway/plugininstall.go; config-rbac; 503 until
+  SetPluginInstaller; plugin principals default-denied): GET /plugins/
+  installed · POST /plugins/install (→ approval Preview) · POST /plugins/
+  install/:staged/approve · DELETE /plugins/install/:staged · POST
+  /plugins/:id/{enable,disable,reapprove} · DELETE /plugins/:id. Every
+  mutation response carries the restart note. 5 API tests. Wired in
+  internal/app at plugin_dirs[0].
+- GUI: pages/PluginManager.svelte ('Plugins', ops nav group, page id
+  `pluginmgr`) — install form (checksum input appears only for
+  archives), approval modal (riskSummary headline; unscoped grants
+  rendered "UNSCOPED — applies everywhere"; credential vault refs;
+  sidecar channels/providers), list with enabled/disabled/needs-
+  re-approval badges + Re-approve/Enable/Disable/Remove.
+  lib/pluginmanage.js + 9 vitest tests; api.plugins gained 8 calls.
+  ⚠ REBUILD internal/webui/dist ON THE MAC (sandbox builds to /tmp).
+- Docs: docs/PLUGIN_INSTALL.md (flow, fingerprint semantics, trust
+  model: hand-installed plugins untouched).
 
 **E12 (flavored-binary build tool) — complete (session 7, suite green;
 end-to-end build verified in-sandbox: gates + 34MB static binary).**
