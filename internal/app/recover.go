@@ -24,7 +24,7 @@
 // /dev/null. Scheduler/cron triggers re-fire naturally and don't need
 // recovery.
 
-package main
+package app
 
 import (
 	"encoding/json"

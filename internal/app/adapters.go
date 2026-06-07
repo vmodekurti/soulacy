@@ -1,0 +1,101 @@
+package app
+
+// Small bridge adapters between subsystem interfaces. These exist so the
+// packages on either side don't have to import each other (which would
+// create cycles); the composition root is the natural home for glue.
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/soulacy/soulacy/internal/costs"
+	"github.com/soulacy/soulacy/internal/llm"
+	"github.com/soulacy/soulacy/internal/plugins"
+	"github.com/soulacy/soulacy/internal/queue/dlq"
+	"github.com/soulacy/soulacy/internal/runtime"
+	"github.com/soulacy/soulacy/internal/telemetry"
+)
+
+// llmEmbedAdapter wraps an llm.Embedder so it satisfies memory.Embedder.
+// The llm.Embedder interface takes a model name and a slice of texts; memory
+// only needs one text at a time and a fixed model baked in at construction.
+type llmEmbedAdapter struct {
+	inner llm.Embedder
+	model string
+}
+
+func (a *llmEmbedAdapter) Embed(ctx context.Context, text string) ([]float32, error) {
+	vecs, err := a.inner.Embed(ctx, a.model, []string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vecs) == 0 {
+		return nil, fmt.Errorf("embedder returned no vectors")
+	}
+	return vecs[0], nil
+}
+
+// pluginToolAdapter bridges *plugins.Loader → runtime.PluginToolProvider.
+// Converts plugin.ToolSpec → runtime.PluginTool so the engine package doesn't
+// need to import the plugins package (which would create a cycle).
+type pluginToolAdapter struct{ loader *plugins.Loader }
+
+func (a *pluginToolAdapter) AllTools() []runtime.PluginTool {
+	specs := a.loader.AllTools()
+	out := make([]runtime.PluginTool, 0, len(specs))
+	for _, s := range specs {
+		out = append(out, runtime.PluginTool{
+			Name:        s.Name,
+			Description: s.Description,
+			Parameters:  s.Parameters,
+			Handler:     s.Handler,
+		})
+	}
+	return out
+}
+
+// Ensure the adapter satisfies the interface at compile time.
+var _ runtime.PluginToolProvider = (*pluginToolAdapter)(nil)
+
+// engineTracerAdapter bridges telemetry.Tracer → runtime's local tracer
+// interface. Both use the same Start(ctx, name, ...string) signature.
+type engineTracerAdapter struct{ t telemetry.Tracer }
+
+func (a *engineTracerAdapter) Start(ctx context.Context, name string, kv ...string) (context.Context, interface{ End() }) {
+	newCtx, span := a.t.Start(ctx, name, kv...)
+	return newCtx, span
+}
+
+// engineDLQAdapter bridges dlq.Store → runtime's dead-letter interface.
+type engineDLQAdapter struct{ s dlq.Store }
+
+func (a *engineDLQAdapter) PushFailed(ctx context.Context, queue string, payload []byte, errMsg string) error {
+	return a.s.Push(ctx, dlq.DeadLetter{
+		ID:       dlq.NewID(),
+		Queue:    queue,
+		Payload:  payload,
+		ErrorMsg: errMsg,
+		Attempts: 1,
+	})
+}
+
+// engineCostStoreAdapter bridges *costs.Store → runtime's cost-recording
+// interface (individual fields → UsageRecord struct).
+type engineCostStoreAdapter struct{ s *costs.Store }
+
+func (a *engineCostStoreAdapter) Record(ctx context.Context,
+	agentID, sessionID, provider, model string,
+	promptTokens, compTokens, totalTokens int,
+	costUSD float64,
+) error {
+	return a.s.Record(ctx, costs.UsageRecord{
+		AgentID:      agentID,
+		SessionID:    sessionID,
+		Provider:     provider,
+		Model:        model,
+		PromptTokens: promptTokens,
+		CompTokens:   compTokens,
+		TotalTokens:  totalTokens,
+		CostUSD:      costUSD,
+	})
+}

@@ -1,9 +1,14 @@
-package main
+package app
 
 import (
 	"testing"
 
 	"go.uber.org/zap"
+
+	// The buildChannel tests resolve through the SDK registry, so the
+	// telegram driver's init() self-registration must be linked in (the
+	// binary gets this from cmd/soulacy/builtins_gen.go).
+	_ "github.com/soulacy/soulacy/internal/channels/telegram"
 
 	"github.com/soulacy/soulacy/internal/config"
 )
