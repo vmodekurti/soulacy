@@ -12,6 +12,7 @@ import (
 	_ "github.com/soulacy/soulacy/internal/llm"
 	_ "github.com/soulacy/soulacy/internal/queue/memory"
 	_ "github.com/soulacy/soulacy/internal/queue/nats"
+	_ "github.com/soulacy/soulacy/internal/reasoning"
 	_ "github.com/soulacy/soulacy/internal/vector/qdrant"
 	_ "github.com/soulacy/soulacy/internal/vector/sqlitevec"
 )
