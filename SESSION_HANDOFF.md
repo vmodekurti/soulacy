@@ -99,7 +99,17 @@ implement the rest"):**
   `sy workspace migrate --dry-run` then (gateway stopped)
   `sy workspace migrate` whenever ready.
 
-E14 (WASM) remains demand-gated — the ONLY deferred item. Next session:
+- **M10 opened (external audit response)** — backlog has E23/E24/E25
+  prompts. **E23 ✅** (51c0fb4): versioned rulebooks — RuleLog in
+  <memory>/rulebook.db, Loop.Run now SURFACES UpdatedRules (was silently
+  dropped!), engine persists under auto_update only, locks refuse all
+  writes (423), rollback = new version, GUI history/diff/lock/rollback
+  on the Brain Mem procedural tab. docs/RULEBOOKS.md.
+  **Remaining M10: E24 (storage-backend sidecar protocol + shared
+  mounts) → E25 (flow.yaml cyclic graphs).** Auditor endorsed this
+  priority order explicitly.
+
+E14 (WASM) remains demand-gated. Next session:
 await Vasu's direction; Mac-side QA checklist above still applies
 (rebuild dist done 2026-06-07; binary rebuild + visual QA pending).
 
