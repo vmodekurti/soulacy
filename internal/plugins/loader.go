@@ -30,8 +30,27 @@ import (
 
 	"github.com/soulacy/soulacy/internal/caps"
 	"github.com/soulacy/soulacy/internal/plugininstall"
+	"github.com/soulacy/soulacy/internal/pluginmigrate"
 	"github.com/soulacy/soulacy/pkg/plugin"
+	sdkstorage "github.com/soulacy/soulacy/sdk/storage"
 )
+
+// ManifestMigrations converts every loaded plugin's declared migrations
+// (Story 17) into the sdk/storage form the E16 runner applies. Order:
+// plugins in load order, steps in declaration order.
+func ManifestMigrations(all []*LoadedPlugin) []sdkstorage.Migration {
+	var out []sdkstorage.Migration
+	for _, lp := range all {
+		for _, mg := range lp.Manifest.Migrations {
+			out = append(out, sdkstorage.Migration{
+				PluginID: lp.Manifest.ID,
+				Name:     mg.Name,
+				UpSQL:    mg.UpSQL,
+			})
+		}
+	}
+	return out
+}
 
 // LoadedPlugin is the runtime record of a successfully loaded plugin.
 type LoadedPlugin struct {
@@ -181,6 +200,23 @@ func (l *Loader) loadPlugin(dir string) error {
 	// plugin — silently spawning a sidecar without its secrets would be worse.
 	if err := ValidateCredentialRefs(m.ID, m.Credentials); err != nil {
 		return fmt.Errorf("invalid credentials: %w", err)
+	}
+
+	// Manifest-declared migrations (Story 17): validate every step against
+	// the E16 namespace/statement rules NOW — a plugin whose schema would
+	// be refused at apply time must not load at all (warn+skip upstream).
+	seenMig := make(map[string]bool, len(m.Migrations))
+	for i, mg := range m.Migrations {
+		if strings.TrimSpace(mg.Name) == "" || strings.TrimSpace(mg.UpSQL) == "" {
+			return fmt.Errorf("migrations[%d]: name and up_sql are required", i)
+		}
+		if seenMig[mg.Name] {
+			return fmt.Errorf("migrations[%d]: duplicate name %q", i, mg.Name)
+		}
+		seenMig[mg.Name] = true
+		if err := pluginmigrate.Validate(m.ID, mg.UpSQL); err != nil {
+			return fmt.Errorf("migrations[%d] (%s): %w", i, mg.Name, err)
+		}
 	}
 
 	lp := &LoadedPlugin{Manifest: m, Dir: dir, Caps: capSet}

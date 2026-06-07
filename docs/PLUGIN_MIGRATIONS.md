@@ -51,3 +51,27 @@ strategy drivers (E10/E15) and what the E12 flavored-binary tool automates.
 `storage.RegisteredMigrations()` and applies pending steps via
 `internal/pluginmigrate.Runner`. Failures log
 `plugin migration refused or failed` warnings; the gateway always boots.
+
+## Manifest-declared migrations (Story 17)
+
+Installed (non-compiled) plugins declare schema directly in `plugin.yaml`:
+
+```yaml
+migrations:
+  - name: 001_items
+    up_sql: CREATE TABLE plugin_myid_items (id INTEGER PRIMARY KEY, name TEXT)
+  - name: 002_index
+    up_sql: CREATE INDEX plugin_myid_items_name ON plugin_myid_items(name)
+```
+
+Semantics are identical to Go-registered migrations — same validator, same
+runner, same `plugins.db`:
+
+- the **loader validates every step at load** (namespace + statement rules,
+  unique non-empty names); a violating plugin is refused (warn+skip with a
+  Logs-GUI diagnostic, Story E22) before any SQL could ever run;
+- steps apply during boot right after plugin loading, applied-once with
+  checksums — editing an applied step's SQL is an error, add a new name;
+- the **E13 install preview lists declared migrations** so the operator
+  approves schema alongside permissions (GUI approval dialog +
+  `sy skill install` consent prompt surface them).

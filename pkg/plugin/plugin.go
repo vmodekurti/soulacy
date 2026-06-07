@@ -64,11 +64,28 @@ type Manifest struct {
 	// internal/caps; this is pure manifest data.
 	Permissions []Permission `yaml:"permissions,omitempty"`
 
+	// Migrations declares schema steps for installed (non-compiled)
+	// plugins (Story 17, manifest v2). Each step runs through the same
+	// validation/runner as compiled-in plugin migrations (E16): tables
+	// namespaced plugin_<id>_*, transactional, checksummed, applied-once.
+	// A plugin whose migrations fail validation is refused at load.
+	Migrations []MigrationEntry `yaml:"migrations,omitempty"`
+
 	// Credentials declares the vault secrets this plugin's sidecars need.
 	// Only the listed secrets are injected into the sidecar environment at
 	// spawn; the vault path namespace must equal the plugin ID. Validation
 	// and delegation live in internal/plugins (E6).
 	Credentials []CredentialRef `yaml:"credentials,omitempty"`
+}
+
+// MigrationEntry is one declared schema step (Story 17).
+//
+//	migrations:
+//	  - name: 001_create_items
+//	    up_sql: CREATE TABLE plugin_myid_items (id INTEGER PRIMARY KEY)
+type MigrationEntry struct {
+	Name  string `yaml:"name" json:"name"`
+	UpSQL string `yaml:"up_sql" json:"up_sql"`
 }
 
 // CredentialRef requests one vault secret for the plugin's sidecars.
