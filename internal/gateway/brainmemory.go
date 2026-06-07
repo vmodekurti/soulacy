@@ -14,6 +14,7 @@
 package gateway
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -156,6 +157,9 @@ func (s *Server) handleUpdateProcedural(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
 	if err := store.UpdateProcedural(agentID, body.Rules); err != nil {
+		if errors.Is(err, agentmemory.ErrRulebookLocked) {
+			return c.Status(fiber.StatusLocked).JSON(fiber.Map{"error": err.Error()})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"ok": true})
@@ -171,6 +175,9 @@ func (s *Server) handleClearProcedural(c *fiber.Ctx) error {
 	}
 	agentID := c.Params("agentID")
 	if err := store.UpdateProcedural(agentID, ""); err != nil {
+		if errors.Is(err, agentmemory.ErrRulebookLocked) {
+			return c.Status(fiber.StatusLocked).JSON(fiber.Map{"error": err.Error()})
+		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.Status(fiber.StatusNoContent).Send(nil)
@@ -246,4 +253,98 @@ func brainMemoryDir() string {
 // formatMemoryPath returns the on-disk path display for an agent's episodic store.
 func formatMemoryPath(agentID string) string {
 	return fmt.Sprintf("%s/%s/episodic.jsonl", brainMemoryDir(), agentID)
+}
+
+// ── Versioned rulebooks (Story E23) ─────────────────────────────────────────
+
+// handleRulebookHistory returns the current rules, lock state, and the full
+// version history (newest first).
+//
+//	GET /api/v1/brain-memory/:agentID/rulebook
+func (s *Server) handleRulebookHistory(c *fiber.Ctx) error {
+	store := s.engine.BrainStore()
+	if store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+	}
+	agentID := c.Params("agentID")
+	versions, err := store.RulebookVersions(agentID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if versions == nil {
+		versions = []agentmemory.RuleVersion{}
+	}
+	return c.JSON(fiber.Map{
+		"agent_id": agentID,
+		"current":  store.ProceduralRules(agentID),
+		"locked":   store.RulebookLocked(agentID),
+		"versions": versions,
+	})
+}
+
+// handleRulebookVersion returns one historical version's full rules text.
+//
+//	GET /api/v1/brain-memory/:agentID/rulebook/:version
+func (s *Server) handleRulebookVersion(c *fiber.Ctx) error {
+	store := s.engine.BrainStore()
+	if store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+	}
+	agentID := c.Params("agentID")
+	version, err := c.ParamsInt("version")
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "version must be an integer"})
+	}
+	rules, err := store.RulebookVersion(agentID, version)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"agent_id": agentID, "version": version, "rules": rules})
+}
+
+// handleRulebookRollback re-applies a historical version as a NEW version.
+//
+//	POST /api/v1/brain-memory/:agentID/rulebook/rollback  {"version": 3}
+func (s *Server) handleRulebookRollback(c *fiber.Ctx) error {
+	store := s.engine.BrainStore()
+	if store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+	}
+	agentID := c.Params("agentID")
+	var body struct {
+		Version int `json:"version"`
+	}
+	if err := c.BodyParser(&body); err != nil || body.Version <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "body must be {version: <int ≥ 1>}"})
+	}
+	newVersion, err := store.RollbackProcedural(agentID, body.Version)
+	if err != nil {
+		if errors.Is(err, agentmemory.ErrRulebookLocked) {
+			return c.Status(fiber.StatusLocked).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"ok": true, "version": newVersion, "rolled_back_to": body.Version})
+}
+
+// handleRulebookLock freezes or unfreezes an agent's rules. While locked,
+// auto_update AND manual writes are refused (423).
+//
+//	POST /api/v1/brain-memory/:agentID/rulebook/lock  {"locked": true}
+func (s *Server) handleRulebookLock(c *fiber.Ctx) error {
+	store := s.engine.BrainStore()
+	if store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+	}
+	agentID := c.Params("agentID")
+	var body struct {
+		Locked bool `json:"locked"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := store.SetRulebookLocked(agentID, body.Locked); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"ok": true, "locked": body.Locked})
 }

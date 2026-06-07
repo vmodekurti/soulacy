@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/reasoning"
@@ -25,11 +26,12 @@ import (
 // ThinkRequest it sees so tests can assert on the step history the loop fed
 // back. Reflect() returns reflectOut. Plan() is unused by these tests.
 type fakeLoopBackend struct {
-	mu         sync.Mutex
-	scripted   []reasoning.ThinkResponse
-	calls      int
-	thinkReqs  []reasoning.ThinkRequest
-	reflectOut string
+	mu           sync.Mutex
+	scripted     []reasoning.ThinkResponse
+	calls        int
+	thinkReqs    []reasoning.ThinkRequest
+	reflectOut   string
+	reflectRules string
 }
 
 func (f *fakeLoopBackend) Think(_ context.Context, req reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
@@ -51,7 +53,7 @@ func (f *fakeLoopBackend) Plan(context.Context, string, string, int) (reasoning.
 func (f *fakeLoopBackend) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return reasoning.ReflectResponse{Output: f.reflectOut}, nil
+	return reasoning.ReflectResponse{Output: f.reflectOut, UpdatedRules: f.reflectRules}, nil
 }
 
 // reasoningSink records every emitted engine event.
@@ -371,5 +373,116 @@ func TestHandle_ReasoningReplyPersistedToSession(t *testing.T) {
 	}
 	if !sawUser || !sawAssistant {
 		t.Errorf("session history missing turns: user=%v assistant=%v", sawUser, sawAssistant)
+	}
+}
+
+// ── Story E23: versioned self-updating rulebooks ─────────────────────────────
+
+// With auto_update on, Reflect's updated_rules lands as a NEW rulebook
+// version and a rulebook.updated event fires.
+func TestHandle_ReasoningAutoUpdatePersistsVersionedRules(t *testing.T) {
+	def := &agent.Definition{
+		ID: "learner", Name: "Learner", Enabled: true,
+		LLM:       agent.LLMConfig{Provider: "classic-prov"},
+		Reasoning: agent.ReasoningConfig{Strategy: "react"},
+		BrainMemory: agent.BrainMemoryConfig{
+			Procedural: agent.ProceduralMemoryConfig{Enabled: true, AutoUpdate: true},
+		},
+	}
+	backend := &fakeLoopBackend{
+		scripted:     []reasoning.ThinkResponse{{IsDone: true}},
+		reflectOut:   "done",
+		reflectRules: "# Learned\n- always cite sources",
+	}
+	e, sink := newReasoningEngine(t, def, backend)
+	brain := agentmemory.NewCompositeStore(t.TempDir(), nil)
+	defer brain.Close()
+	e.SetBrainMemory(brain)
+
+	if _, err := e.Handle(context.Background(), inboundMsg("learner", "teach me")); err != nil {
+		t.Fatal(err)
+	}
+	if got := brain.ProceduralRules("learner"); !strings.Contains(got, "cite sources") {
+		t.Errorf("rules not persisted: %q", got)
+	}
+	versions, err := brain.RulebookVersions("learner")
+	if err != nil || len(versions) != 1 || versions[0].Source != "auto_update" {
+		t.Errorf("versions = %+v err=%v, want one auto_update version", versions, err)
+	}
+	if n := len(sink.byType("rulebook.updated")); n != 1 {
+		t.Errorf("rulebook.updated events = %d, want 1", n)
+	}
+}
+
+// A locked rulebook refuses the auto update: warn event, run still succeeds,
+// rules unchanged.
+func TestHandle_ReasoningAutoUpdateRespectsLock(t *testing.T) {
+	def := &agent.Definition{
+		ID: "locked-agent", Name: "Locked", Enabled: true,
+		LLM:       agent.LLMConfig{Provider: "classic-prov"},
+		Reasoning: agent.ReasoningConfig{Strategy: "react"},
+		BrainMemory: agent.BrainMemoryConfig{
+			Procedural: agent.ProceduralMemoryConfig{Enabled: true, AutoUpdate: true},
+		},
+	}
+	backend := &fakeLoopBackend{
+		scripted:     []reasoning.ThinkResponse{{IsDone: true}},
+		reflectOut:   "fine",
+		reflectRules: "# drift attempt",
+	}
+	e, sink := newReasoningEngine(t, def, backend)
+	brain := agentmemory.NewCompositeStore(t.TempDir(), nil)
+	defer brain.Close()
+	if _, err := brain.UpdateProceduralVersioned("locked-agent", "# golden rules", "manual"); err != nil {
+		t.Fatal(err)
+	}
+	if err := brain.SetRulebookLocked("locked-agent", true); err != nil {
+		t.Fatal(err)
+	}
+	e.SetBrainMemory(brain)
+
+	reply, err := e.Handle(context.Background(), inboundMsg("locked-agent", "go"))
+	if err != nil {
+		t.Fatalf("run must succeed despite the locked rulebook: %v", err)
+	}
+	if got := replyText(t, reply); got != "fine" {
+		t.Errorf("reply = %q", got)
+	}
+	if got := brain.ProceduralRules("locked-agent"); got != "# golden rules" {
+		t.Errorf("locked rules mutated: %q", got)
+	}
+	if n := len(sink.byType("rulebook.updated")); n != 0 {
+		t.Errorf("rulebook.updated fired on a locked agent (%d)", n)
+	}
+	if n := len(sink.byType("warn")); n != 1 {
+		t.Errorf("warn events = %d, want 1 (locked refusal must be visible)", n)
+	}
+}
+
+// Without the auto_update opt-in, updated_rules is DISCARDED.
+func TestHandle_ReasoningNoOptInDiscardsRules(t *testing.T) {
+	def := &agent.Definition{
+		ID: "no-optin", Name: "NoOptIn", Enabled: true,
+		LLM:       agent.LLMConfig{Provider: "classic-prov"},
+		Reasoning: agent.ReasoningConfig{Strategy: "react"},
+	}
+	backend := &fakeLoopBackend{
+		scripted:     []reasoning.ThinkResponse{{IsDone: true}},
+		reflectOut:   "ok",
+		reflectRules: "# should never persist",
+	}
+	e, sink := newReasoningEngine(t, def, backend)
+	brain := agentmemory.NewCompositeStore(t.TempDir(), nil)
+	defer brain.Close()
+	e.SetBrainMemory(brain)
+
+	if _, err := e.Handle(context.Background(), inboundMsg("no-optin", "go")); err != nil {
+		t.Fatal(err)
+	}
+	if got := brain.ProceduralRules("no-optin"); got != "" {
+		t.Errorf("rules persisted without opt-in: %q", got)
+	}
+	if n := len(sink.byType("rulebook.updated")); n != 0 {
+		t.Errorf("rulebook.updated fired without opt-in (%d)", n)
 	}
 }

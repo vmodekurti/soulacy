@@ -303,6 +303,10 @@ type CompositeStore struct {
 	episodic   *EpisodicStore
 	semantic   *InMemoryVectorStore
 	procedural *ProceduralStore
+	// rulelog versions every rulebook write (Story E23). nil when the
+	// rulebook db failed to open — writes then degrade to unversioned
+	// (never block boot), reads report no history.
+	rulelog *RuleLog
 }
 
 // NewCompositeStore creates a CompositeStore rooted at baseDir.
@@ -311,11 +315,24 @@ func NewCompositeStore(baseDir string, vectorStore *InMemoryVectorStore) *Compos
 	if vectorStore == nil {
 		vectorStore = NewInMemoryVectorStore()
 	}
+	rl, err := OpenRuleLog(filepath.Join(baseDir, "rulebook.db"))
+	if err != nil {
+		rl = nil // degrade: rules still work, just unversioned
+	}
 	return &CompositeStore{
 		episodic:   NewEpisodicStore(baseDir),
 		semantic:   vectorStore,
 		procedural: NewProceduralStore(baseDir),
+		rulelog:    rl,
 	}
+}
+
+// Close releases the rulebook database (the other backends are files).
+func (c *CompositeStore) Close() error {
+	if c.rulelog != nil {
+		return c.rulelog.Close()
+	}
+	return nil
 }
 
 // Write dispatches the record to the appropriate backend based on r.Type.
@@ -362,9 +379,70 @@ func (c *CompositeStore) Retrieve(q RetrieveQuery) (RetrieveResult, error) {
 	return result, nil
 }
 
-// UpdateProcedural overwrites the procedural rules for agentID.
+// UpdateProcedural overwrites the procedural rules for agentID through the
+// versioned path with source "manual" (the GUI PUT route lands here).
 func (c *CompositeStore) UpdateProcedural(agentID, rules string) error {
-	return c.procedural.Update(agentID, rules)
+	_, err := c.UpdateProceduralVersioned(agentID, rules, "manual")
+	return err
+}
+
+// UpdateProceduralVersioned writes rules AND appends an immutable version
+// (Story E23). Locked agents refuse every write — auto_update and manual
+// alike — with ErrRulebookLocked. Returns the new version number (0 when
+// the rule log is unavailable and the write degraded to unversioned).
+func (c *CompositeStore) UpdateProceduralVersioned(agentID, rules, source string) (int, error) {
+	if c.rulelog != nil && c.rulelog.Locked(agentID) {
+		return 0, ErrRulebookLocked
+	}
+	if err := c.procedural.Update(agentID, rules); err != nil {
+		return 0, err
+	}
+	if c.rulelog == nil {
+		return 0, nil
+	}
+	return c.rulelog.Append(agentID, rules, source)
+}
+
+// RulebookVersions lists an agent's rule history, newest first.
+func (c *CompositeStore) RulebookVersions(agentID string) ([]RuleVersion, error) {
+	if c.rulelog == nil {
+		return nil, nil
+	}
+	return c.rulelog.Versions(agentID)
+}
+
+// RulebookVersion returns the rules text of one historical version.
+func (c *CompositeStore) RulebookVersion(agentID string, version int) (string, error) {
+	if c.rulelog == nil {
+		return "", fmt.Errorf("agentmemory: rulebook history unavailable")
+	}
+	return c.rulelog.Get(agentID, version)
+}
+
+// RulebookLocked reports whether agentID's rules are frozen.
+func (c *CompositeStore) RulebookLocked(agentID string) bool {
+	return c.rulelog != nil && c.rulelog.Locked(agentID)
+}
+
+// SetRulebookLocked freezes/unfreezes an agent's rules.
+func (c *CompositeStore) SetRulebookLocked(agentID string, locked bool) error {
+	if c.rulelog == nil {
+		return fmt.Errorf("agentmemory: rulebook history unavailable")
+	}
+	return c.rulelog.SetLocked(agentID, locked)
+}
+
+// RollbackProcedural re-applies a historical version as a NEW version with
+// source "rollback" — history is never rewritten. Locked agents refuse.
+func (c *CompositeStore) RollbackProcedural(agentID string, version int) (int, error) {
+	if c.rulelog == nil {
+		return 0, fmt.Errorf("agentmemory: rulebook history unavailable")
+	}
+	rules, err := c.rulelog.Get(agentID, version)
+	if err != nil {
+		return 0, err
+	}
+	return c.UpdateProceduralVersioned(agentID, rules, "rollback")
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────

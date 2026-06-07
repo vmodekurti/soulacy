@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
+  import { diffLines, diffStats, sourceBadge } from '../lib/rulediff.js'
 
   // ── State ──────────────────────────────────────────────────────────────────
   let agentStats   = []
@@ -17,6 +18,48 @@
   let procRules    = ''
   let procDraft    = ''
   let procSaving   = false
+  // Rulebook history (E23)
+  let rbVersions = []
+  let rbLocked = false
+  let rbShowHistory = false
+  let rbDiff = null        // {version, lines, stats}
+  let rbBusy = false
+
+  async function loadRulebook() {
+    try {
+      const res = await api.brainMemory.rulebook(selectedID)
+      rbVersions = res.versions || []
+      rbLocked = !!res.locked
+    } catch { rbVersions = []; rbLocked = false }
+  }
+
+  async function toggleLock() {
+    rbBusy = true
+    try {
+      await api.brainMemory.rulebookLock(selectedID, !rbLocked)
+      rbLocked = !rbLocked
+    } catch (e) { alert(e.message) } finally { rbBusy = false }
+  }
+
+  async function viewDiff(v) {
+    rbBusy = true
+    try {
+      const res = await api.brainMemory.rulebookVersion(selectedID, v.version)
+      const lines = diffLines(res.rules, procRules)
+      rbDiff = { version: v.version, lines, stats: diffStats(lines) }
+    } catch (e) { alert(e.message) } finally { rbBusy = false }
+  }
+
+  async function rollbackTo(v) {
+    if (!confirm(`Roll back ${selectedID} to rulebook v${v.version}? This creates a new version.`)) return
+    rbBusy = true
+    try {
+      await api.brainMemory.rulebookRollback(selectedID, v.version)
+      rbDiff = null
+      await loadProcedural()
+      await loadRulebook()
+    } catch (e) { alert(e.message) } finally { rbBusy = false }
+  }
   let procPreview  = false
 
   // Context preview
@@ -65,7 +108,7 @@
     error = null; notice = null
     if (!selectedID) return
     if (activeTab === 'episodic')   await loadEpisodic()
-    if (activeTab === 'procedural') await loadProcedural()
+    if (activeTab === 'procedural') { await loadProcedural(); await loadRulebook() }
     if (activeTab === 'preview')    previewResult = null
   }
 
@@ -317,8 +360,21 @@
         <button class="btn-secondary" on:click={() => { procDraft=procRules }}>Reset</button>
         <button class="btn-primary" on:click={saveProcedural} disabled={procSaving}>{procSaving?'Saving…':'Save'}</button>
       {/if}
-      {#if procRules}<button class="btn-danger-outline" on:click={clearProcedural}>Clear</button>{/if}
+      {#if procRules}<button class="btn-danger-outline" on:click={clearProcedural} disabled={rbLocked}>Clear</button>{/if}
+      <button class="btn-secondary {rbLocked?'locked':''}" on:click={toggleLock} disabled={rbBusy}
+        title={rbLocked ? 'Rules are FROZEN — auto-updates and edits refused' : 'Freeze rules against drift'}>
+        {rbLocked ? '🔒 Locked' : '🔓 Lock'}
+      </button>
+      <button class="btn-secondary" on:click={() => rbShowHistory=!rbShowHistory}>
+        ⧗ History ({rbVersions.length})
+      </button>
     </div>
+    {#if rbLocked}
+      <div class="proc-hint locked-hint">
+        <span class="hint-icon">🔒</span>
+        <p>This rulebook is locked: auto-updates from the reasoning loop and manual edits are refused until unlocked (drift control, Story E23).</p>
+      </div>
+    {/if}
 
     <div class="proc-pane {procPreview?'split':''}">
       <div class="proc-editor-wrap">
@@ -338,6 +394,38 @@
       <div class="proc-hint">
         <span class="hint-icon">💡</span>
         <p>No rules yet. Set <code>brain_memory.procedural.auto_update: true</code> in SOUL.yaml and they will be generated after each task.</p>
+      </div>
+    {/if}
+
+    {#if rbShowHistory}
+      <div class="rb-history">
+        <h3>Rulebook history</h3>
+        {#if rbVersions.length === 0}
+          <p class="proc-info">No versions recorded yet — every save or auto-update from now on lands here.</p>
+        {:else}
+          {#each rbVersions as v (v.version)}
+            {@const badge = sourceBadge(v.source)}
+            <div class="rb-row">
+              <span class="rb-ver">v{v.version}</span>
+              <span class="rb-badge {badge.cls}">{badge.label}</span>
+              <span class="rb-meta">{new Date(v.created_at).toLocaleString()} · {v.size} B</span>
+              <div style="flex:1"></div>
+              <button class="btn-secondary rb-btn" on:click={() => viewDiff(v)} disabled={rbBusy}>Diff vs current</button>
+              <button class="btn-secondary rb-btn" on:click={() => rollbackTo(v)} disabled={rbBusy || rbLocked}>Roll back</button>
+            </div>
+          {/each}
+        {/if}
+        {#if rbDiff}
+          <div class="rb-diff">
+            <div class="rb-diff-head">
+              <strong>v{rbDiff.version} → current</strong>
+              <span class="rb-meta">+{rbDiff.stats.added} −{rbDiff.stats.removed}</span>
+              <div style="flex:1"></div>
+              <button class="btn-secondary rb-btn" on:click={() => rbDiff=null}>✕</button>
+            </div>
+            <pre class="rb-diff-body">{#each rbDiff.lines as l}<span class="dl {l.type}">{l.type==='add'?'+ ':l.type==='del'?'− ':'  '}{l.text}\n</span>{/each}</pre>
+          </div>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -501,4 +589,22 @@
   .proc-preview :global(li){margin-left:1.1rem;list-style:disc;color:#9da3c0;line-height:1.5}
   .proc-preview :global(code){font-size:.78em}
   .proc-preview :global(p){margin:.25rem 0;color:#9da3c0}
+  .locked-hint { border-color: #f0a060; }
+  .btn-secondary.locked { color: #f0a060; border-color: #f0a060; }
+  .rb-history { margin-top: 14px; padding: 12px 14px; background: #10121f; border: 1px solid #1a1e36; border-radius: 10px; }
+  .rb-history h3 { margin: 0 0 .6rem; font-size: .9rem; }
+  .rb-row { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; border-bottom: 1px solid #1a1e36; }
+  .rb-ver { font-family: monospace; color: #8b85ff; min-width: 2.6rem; }
+  .rb-badge { font-size: .65rem; padding: .08rem .45rem; border-radius: 999px; text-transform: uppercase; }
+  .rb-badge.auto { background: rgba(91,192,222,.15); color: #5bc0de; }
+  .rb-badge.manual { background: rgba(139,133,255,.15); color: #8b85ff; }
+  .rb-badge.roll { background: rgba(240,160,96,.15); color: #f0a060; }
+  .rb-meta { font-size: .72rem; color: #6b7294; }
+  .rb-btn { font-size: .72rem; padding: .2rem .55rem; }
+  .rb-diff { margin-top: .8rem; }
+  .rb-diff-head { display: flex; align-items: center; gap: .6rem; margin-bottom: .4rem; }
+  .rb-diff-body { background: #0b0d18; border: 1px solid #1a1e36; border-radius: 8px; padding: .6rem .8rem; font-size: .75rem; max-height: 320px; overflow: auto; white-space: pre-wrap; }
+  .dl.add { color: #5fce9a; }
+  .dl.del { color: #f08080; }
+  .dl.same { color: #9aa0c3; }
 </style>

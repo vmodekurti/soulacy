@@ -100,6 +100,7 @@ func (a *App) Run(parent context.Context) error {
 	var brainStore *agentmemory.CompositeStore
 	if brainMemDir != "" {
 		brainStore = agentmemory.NewCompositeStore(brainMemDir, nil)
+		defer brainStore.Close() // releases the E23 rulebook db
 		log.Info("agent brain memory enabled", zap.String("dir", brainMemDir))
 	}
 
