@@ -27,10 +27,35 @@ session 6: E9 + E10 part 1, M5, M4, M3)
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
   (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅,
-  E15 ✅ — NEXT: E16 (plugin DB migrations hook), then
-  E17 → E11 → E12 → E13.**
+  E15 ✅, E16 ✅ — NEXT: E17 (dynamic plugin config schema), then
+  E11 → E12 → E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E16 (plugin database migrations hook) — complete (TDD, session 7, root +
+sdk suites green).**
+- `sdk/storage/migrations.go` — Migration{PluginID,Name,UpSQL};
+  RegisterMigration/Must… (dup (plugin,name)/empty fields error);
+  RegisteredMigrations()/PluginMigrations() return copies, registration
+  order preserved. 2 sdk tests.
+- `internal/pluginmigrate` (NEW) — `Validate(pluginID, sql)`: every
+  statement must target the plugin's own `plugin_<sanitised id>_*` tables
+  (TablePrefix; index/trigger targets resolve to backing table via ON);
+  allowed kinds CREATE TABLE/INDEX/TRIGGER/VIEW, ALTER, DROP, INSERT,
+  UPDATE, DELETE; ATTACH/DETACH/PRAGMA/VACUUM/REINDEX/load_extension
+  refused anywhere; core-table guard list as belt-and-braces. `Runner`
+  (Open ~/.soulacy/plugins.db — DEDICATED file, never core stores):
+  plugin_schema_migrations bookkeeping (PK plugin_id+name, sha256
+  checksum — re-applying with edited SQL is an error), one tx per step
+  (rollback on failure, not recorded), failed step stops THAT plugin's
+  chain only (skipPlugin map), other plugins continue. 11 tests incl.
+  migrate-and-query integration, rollback proof, checksum semantics.
+- Wired in internal/app/wire.go right after the storage backends (the
+  "database boot phase"), warn-and-skip per plugin. Doc:
+  docs/PLUGIN_MIGRATIONS.md.
+- NOTE: registration is Go-init()-based (compiled-in plugins / flavored
+  binaries). Manifest-v2 declared migrations (YAML `migrations:` for
+  sidecar-only plugins) would be a natural E13/E17 follow-up if needed.
 
 **E15 (pluggable reasoning loops) — complete (TDD, session 7, root + sdk
 suites green).**
