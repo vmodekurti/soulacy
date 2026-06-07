@@ -31,6 +31,8 @@ var builtins = []string{
 	// queue backends
 	"github.com/soulacy/soulacy/internal/queue/memory",
 	"github.com/soulacy/soulacy/internal/queue/nats",
+	// package registries (http / git live in one package)
+	"github.com/soulacy/soulacy/internal/pkgregistry",
 	// reasoning strategies (react / plan_execute live in one package)
 	"github.com/soulacy/soulacy/internal/reasoning",
 	// vector backends

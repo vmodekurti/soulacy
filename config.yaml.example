@@ -185,3 +185,20 @@ server:
 #     weather-bot:
 #         units: metric
 #         cache_ttl: 15m
+
+# ── Package registries (Story E19) ───────────────────────────────────────────
+# Sources for `sy skill install <slug>` and the GUI install flow. Entries are
+# queried in ascending priority order (lower runs first) with fallback — the
+# first registry that resolves a slug wins. Types: http (default; an E19
+# registry serving /v1/search + /v1/packages/{slug}) and git (resolves
+# github.com/user/my-skill style sources via shallow clone).
+# registries:
+#     - id: main
+#       type: http
+#       base_url: https://registry.example.com
+#       priority: 10
+#       auth_headers:
+#           Authorization: "Bearer sk_..."
+#     - id: github
+#       type: git
+#       priority: 100

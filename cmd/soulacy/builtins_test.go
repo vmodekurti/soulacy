@@ -12,18 +12,20 @@ import (
 // fails before any user notices a silently absent channel.
 func TestAllBuiltinsRegistered(t *testing.T) {
 	want := map[string][]string{
-		"channels":  {"discord", "slack", "telegram", "whatsapp"},
-		"providers": {"anthropic", "gemini", "google", "ollama", "openai"},
-		"queues":    {"memory", "nats"},
-		"vectors":   {"qdrant", "sqlite-vec"},
-		"reasoning": {"plan_execute", "react"},
+		"channels":      {"discord", "slack", "telegram", "whatsapp"},
+		"providers":     {"anthropic", "gemini", "google", "ollama", "openai"},
+		"queues":        {"memory", "nats"},
+		"vectors":       {"qdrant", "sqlite-vec"},
+		"reasoning":     {"plan_execute", "react"},
+		"pkgregistries": {"git", "http"},
 	}
 	got := map[string][]string{
-		"channels":  registry.Channels(),
-		"providers": registry.Providers(),
-		"queues":    registry.Queues(),
-		"vectors":   registry.Vectors(),
-		"reasoning": registry.ReasoningStrategies(),
+		"channels":      registry.Channels(),
+		"providers":     registry.Providers(),
+		"queues":        registry.Queues(),
+		"vectors":       registry.Vectors(),
+		"reasoning":     registry.ReasoningStrategies(),
+		"pkgregistries": registry.PkgRegistries(),
 	}
 	for kind, names := range want {
 		have := map[string]bool{}

@@ -56,6 +56,22 @@ type Config struct {
 	// reach the browser.
 	PluginsConfig map[string]map[string]any `mapstructure:"plugins_config"`
 
+	// Registries lists package registries for skill/plugin installs
+	// (Story E19). Entries are queried in ascending Priority order with
+	// fallback: the first registry that resolves a slug wins.
+	//
+	//	registries:
+	//	  - id: main
+	//	    type: http
+	//	    base_url: https://registry.example.com
+	//	    priority: 10
+	//	    auth_headers:
+	//	      Authorization: "Bearer abc123"
+	//	  - id: github
+	//	    type: git
+	//	    priority: 100
+	Registries []RegistryConfig `mapstructure:"registries"`
+
 	// Agent definition directories to scan
 	AgentDirs []string `mapstructure:"agent_dirs"`
 
@@ -410,6 +426,26 @@ type MCPServerConfig struct {
 	Env       map[string]string `mapstructure:"env"`       // stdio: extra env
 	URL       string            `mapstructure:"url"`       // http: server URL
 	Headers   map[string]string `mapstructure:"headers"`   // http: extra headers
+}
+
+// RegistryConfig describes one package registry for skill/plugin installs
+// (Story E19). Provider construction goes through the SDK factory registry
+// (registry.NewPkgRegistry) keyed by Type, so flavored binaries can ship
+// custom registry providers.
+type RegistryConfig struct {
+	// ID is the operator-chosen name shown in consent dialogs. Defaults to
+	// Type when empty.
+	ID string `mapstructure:"id"`
+	// Type selects the provider factory: "http" (default) or "git".
+	Type string `mapstructure:"type"`
+	// BaseURL is the registry root for http providers
+	// (e.g. https://registry.example.com).
+	BaseURL string `mapstructure:"base_url"`
+	// Priority orders multi-registry resolution — LOWER runs first.
+	// Entries with equal priority keep config order.
+	Priority int `mapstructure:"priority"`
+	// AuthHeaders are sent verbatim on every http request to this registry.
+	AuthHeaders map[string]string `mapstructure:"auth_headers"`
 }
 
 // Load reads configuration from disk and environment, returning a validated Config

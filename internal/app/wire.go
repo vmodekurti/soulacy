@@ -42,6 +42,7 @@ import (
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/pkgregistry"
 	"github.com/soulacy/soulacy/internal/plugininstall"
 	"github.com/soulacy/soulacy/internal/pluginmigrate"
 	"github.com/soulacy/soulacy/internal/plugins"
@@ -1064,6 +1065,20 @@ func (a *App) Run(parent context.Context) error {
 		} else {
 			srv.SetPluginInstaller(pins)
 			log.Info("plugin installer ready", zap.String("dir", cfg.PluginDirs[0]))
+		}
+	}
+
+	// Package registries (Story E19): multi-registry resolution engine for
+	// skill/plugin installs, built from the `registries:` config block.
+	// Consumed by `sy skill install` (E18) and the GUI install flow; config
+	// errors surface at boot but never block startup.
+	if len(cfg.Registries) > 0 {
+		regEngine, regErrs := pkgregistry.FromConfig(cfg.Registries, log)
+		for _, re := range regErrs {
+			log.Warn("package registry entry skipped", zap.Error(re))
+		}
+		if ids := regEngine.Providers(); len(ids) > 0 {
+			log.Info("package registries configured", zap.Strings("ids", ids))
 		}
 	}
 

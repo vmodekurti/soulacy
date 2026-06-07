@@ -263,6 +263,21 @@ func isArchive(s string) bool {
 	return strings.HasSuffix(s, ".tar.gz") || strings.HasSuffix(s, ".tgz") || strings.HasSuffix(s, ".zip")
 }
 
+// GitClone shallow-clones url into dst and strips the .git directory.
+// Exported for reuse by the package-registry git provider (Story E19) so
+// every git fetch in the install pipeline shares one hardened path.
+func GitClone(ctx context.Context, url, dst string) error {
+	return gitClone(ctx, url, dst)
+}
+
+// VerifyAndExtract sha256-verifies archivePath against checksum (hex,
+// case-insensitive, REQUIRED) and extracts it into dst with the traversal +
+// decompression-bomb guards. Exported for reuse by the package-registry
+// HTTP provider (Story E19).
+func VerifyAndExtract(archivePath, checksum, dst string) error {
+	return verifyAndExtract(archivePath, checksum, dst)
+}
+
 func gitClone(ctx context.Context, url, dst string) error {
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
