@@ -42,6 +42,7 @@ import (
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/plugininstall"
 	"github.com/soulacy/soulacy/internal/pluginmigrate"
 	"github.com/soulacy/soulacy/internal/plugins"
 	"github.com/soulacy/soulacy/internal/queue/dlq"
@@ -1042,6 +1043,18 @@ func (a *App) Run(parent context.Context) error {
 		if len(uiMounts) > 0 {
 			srv.SetPluginUI(uiMounts)
 			log.Info("plugin GUI mounts ready", zap.Int("count", len(uiMounts)))
+		}
+	}
+
+	// Plugin install & management (Story E13): installer rooted at the first
+	// plugin_dirs entry. Staged plugins live under <root>/.staging and never
+	// load; activation requires explicit approval through the API/GUI.
+	if len(cfg.PluginDirs) > 0 {
+		if pins, pierr := plugininstall.New(cfg.PluginDirs[0]); pierr != nil {
+			log.Warn("plugin installer unavailable", zap.Error(pierr))
+		} else {
+			srv.SetPluginInstaller(pins)
+			log.Info("plugin installer ready", zap.String("dir", cfg.PluginDirs[0]))
 		}
 	}
 
