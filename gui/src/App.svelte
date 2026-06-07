@@ -19,6 +19,7 @@
   import Logs       from './pages/Logs.svelte'
   import PluginFrame from './pages/PluginFrame.svelte'
   import PluginManager from './pages/PluginManager.svelte'
+  import { pageTitle } from './lib/pagetitle.js'
   import { api } from './lib/api.js'
   import { pluginNavEntries, isPluginPage, pluginIdFromPage } from './lib/pluginui.js'
 
@@ -47,6 +48,9 @@
     { id: 'config',    icon: '≡', label: 'Config',      group: 'system'  },
     { id: 'logs',      icon: '📋', label: 'Logs',       group: 'system'  },
   ]
+
+  // Keep the browser tab title in sync with the active page (Story 15).
+  $: if (typeof document !== 'undefined') document.title = pageTitle(page, pages, pluginPages)
 
   function navigate(p) {
     page = p

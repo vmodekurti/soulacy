@@ -362,4 +362,10 @@
     padding: .75rem 1rem; font-family: monospace; font-size: .8rem;
     color: #b0b5d8; white-space: pre;
   }
+
+  /* Story 15: the fixed left column stacks on narrow screens. */
+  @media (max-width: 768px) {
+    .layout { flex-direction: column; overflow: visible; }
+    .layout > :first-child { width: 100%; max-height: 240px; }
+  }
 </style>
