@@ -26,11 +26,38 @@ session 6: E9 + E10 part 1, M5, M4, M3)
   reasoning loops, plugin DB migrations hook, dynamic plugin config schema —
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
-  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅
-  (all 3 parts) — NEXT: E15 (pluggable reasoning loops), then
-  E16 → E17 → E11 → E12 → E13.**
+  (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅,
+  E15 ✅ — NEXT: E16 (plugin DB migrations hook), then
+  E17 → E11 → E12 → E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E15 (pluggable reasoning loops) — complete (TDD, session 7, root + sdk
+suites green).**
+- `sdk/reasoning` (NEW, stdlib-only) — Strategy{Run(ctx, Env, taskInput) →
+  ([]Step, ReflectResponse)}, Env{Config, LLM, Tools}, Config (was
+  LoopConfig; Strategy field is plain string so custom names are valid),
+  LLMBackend/ToolExecutor + all Step/Plan/Think/Reflect types. internal/
+  reasoning keeps every old name as a TYPE ALIAS (LoopStrategy = string;
+  existing loop/backends tests untouched and passing).
+- `sdk/registry/reasoning.go` — RegisterReasoningStrategy/Must…/
+  NewReasoningStrategy (ok=false on unknown → host fallback)/
+  ReasoningStrategies. 3 sdk tests.
+- `internal/reasoning/strategies.go` — react + plan_execute extracted from
+  Loop methods into Strategy impls (bodies verbatim; plan failure still
+  falls back to react), registered from init(). Loop.Run: auto-detect →
+  registry resolve → ReAct fallback on unknown/error. internal/reasoning
+  added to scripts/genbuiltins + builtins_gen.go; TestAllBuiltinsRegistered
+  now pins "react"/"plan_execute" too.
+- Conformance: custom_strategy_test.go injects an "echo_conformance"
+  strategy end-to-end (incl. via agent.Definition.Reasoning.Strategy →
+  LoopConfigFromDefinition) + fallback test. Seed of the E11 kit.
+- Docs: docs/REASONING_STRATEGIES.md (contract rules, registration,
+  SOUL.yaml mapping, fallback semantics); sdk/README package table updated.
+- NOTE: the reasoning Loop is still not wired into runtime.Engine (was true
+  before E15 too — nothing outside internal/reasoning constructs Loop).
+  Engine integration is its own future story; E15 scope was the pluggable
+  dispatch, which is done.
 
 **E10 parts 2–3 (registry-routed built-ins + internal/app) — complete
 (TDD, session 7, root suite green exit-0, sdk suite green, total 58.8%).**
