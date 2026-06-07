@@ -1,17 +1,83 @@
 # Session Handoff
 
-Last updated: 2026-06-07 (session 8: **M8 AND M9 COMPLETE** — Story 16,
-E19, E20, E18, E22, 17, 18, 19, E21 all done; suite green at every commit)
+Last updated: 2026-06-07 end of session 8. **M1–M9 COMPLETE + all audit
+follow-ups + soulspace workspace + E23. M10 IN PROGRESS: next story is
+E24, then E25.** Suite green at every commit (root + sdk Go suites,
+vitest 121/121, vite build clean). Branch: `feature/integrated-roadmap`,
+working tree clean.
+
+---
+
+## ⏩ START HERE (fresh session)
+
+**Next work, in order (prompts in docs/BACKLOG.md, M10 section):**
+1. **E24 — storage-backend sidecar protocol + shared mounts.** Extend the
+   ECP pattern (sdk/extchannel, E3) to vector/queue/storage backends:
+   new `sdk/extstorage` JSON-RPC-over-stdio contract with Negotiate +
+   versioned frames + an E11-style conformance kit; plus a per-run shared
+   scratch directory passed to sidecars by absolute path (auditor: reuse
+   the staging-dir pattern, do NOT invent /tmp/soulacy-shared). Reuse:
+   sdk/extchannel wire types + sidecartest kit as the template,
+   internal/channels/external supervisor for process lifecycle,
+   E10 factory registries for config-driven selection.
+2. **E25 — flow.yaml cyclic graphs.** Conditional edges + bounded cycles
+   compiled onto the EXISTING WorkflowExecutor + checkpoint store
+   (internal/runtime/workflow.go, checkpoint.go); register as reasoning
+   strategy "flow" via registry.RegisterReasoningStrategy (E15) so
+   SOUL.yaml selects it. GUI Flow page renders read-only first.
+
+**Standing rules from Vasu:** TDD; commit on green; keep developing
+without stopping for approval between stories; keep this handoff updated.
+
+**Sandbox environment recipe (the painful parts, solved):**
+- Go is NOT preinstalled. Install: download
+  `https://go.dev/dl/go1.25.0.linux-arm64.tar.gz` (sandbox is aarch64),
+  extract OUTSIDE the repo mount (e.g. /sessions/<session>/go-toolchain),
+  export `GOTOOLCHAIN=local`.
+- GOCACHE/GOMODCACHE must live OUTSIDE the repo mount (the mount refuses
+  .partial-file removals): e.g. /sessions/<session>/gocache + gomodcache.
+- cgo needs sqlite3.h: copy
+  `$GOMODCACHE/github.com/mattn/go-sqlite3@v1.14.22/sqlite3-binding.h`
+  to a dir as `sqlite3.h` and export `CGO_CFLAGS="-I<that dir>"`.
+- Full test invocation that works:
+  `PATH=<go>/bin:$PATH GOCACHE=… GOMODCACHE=… GOTOOLCHAIN=local
+  CGO_CFLAGS="-I…" go test ./...` (root) and `cd sdk && go test ./...`.
+- GUI: if vitest fails with "Cannot find module
+  @rollup/rollup-linux-arm64-gnu" (happens after Vasu runs npm on the
+  Mac), run `npm install --no-save @rollup/rollup-linux-arm64-gnu` in
+  gui/. Vite builds must target /tmp (dist is gitignored; the Mac embeds
+  it at compile time).
+- Stale `.git/index.lock` / `.git/HEAD.lock` may linger from prior
+  sessions: rm them (needs the cowork file-delete permission once).
+- gui/index.html + internal/storage/postgres/schema.sql were Vasu's
+  local edits — now committed; the tree should stay clean.
+
+**Architecture cheat sheet for the next stories:**
+- Workspace paths: `config.ResolveWorkspace()` → Paths{Agents, Skills,
+  Data, …}; NEVER hardcode ~/.soulacy (legacy installs resolve to flat
+  paths automatically; soulspace = ~/.soulacy/soulspace).
+- New SQLite stores: open via internal/sqlitex, version schema with
+  sqlitex.MigrateSchema (additive-only default) — see RULEBOOKS.md /
+  rulelog.go for the freshest example.
+- Engine event types render in Activity.svelte TYPE_META + Chat.svelte
+  isThinkingEvent — add new types in both.
+- Conformance kits live in sdk/*/…test packages; in-tree CI runners in
+  internal/llm + internal/channels (E11 pattern).
 
 ## ⚠ Mac-side checklist (the human half)
 
-1. **Rebuild internal/webui/dist**: `cd gui && npm run build` (sandbox
-   builds to /tmp; dist is not committed from here). New GUI surfaces to
-   QA: Templates tab (main nav), editable Plugin settings on Config,
-   security report + migrations in the plugin approval modal,
-   reasoning.start/step/result events in Activity + Chat thinking.
-2. Story 15's visual QA checklist (below) still stands if not yet done.
-3. `go generate ./...` not needed — builtins_gen.go committed regenerated.
+1. **Rebuild dist + binary, restart** (dist was rebuilt 2026-06-07 but
+   MORE GUI landed after: rulebook history/lock/diff on Brain Mem,
+   Templates tab, editable Plugin settings, approval-modal security
+   report): `cd gui && npm run build`, then `./build-and-restart.command`.
+2. **Optional: migrate to soulspace** — `sy workspace info`,
+   `sy workspace migrate --dry-run`, stop gateway, `sy workspace migrate`.
+   Legacy layout keeps working untouched until then.
+3. Visual QA: Story 15 checklist (below) + Templates tab, Config plugin
+   settings (a *** secret must survive a save), plugin approval modal
+   (verdict badge + findings + migrations), reasoning.* events in
+   Activity/Chat, rulebook history + lock + rollback on Brain Mem.
+4. `go generate ./...` not needed — builtins_gen.go committed regenerated.
 
 ## Session 8 progress (M8 + M9)
 
