@@ -18,6 +18,7 @@
   import Config     from './pages/Config.svelte'
   import Logs       from './pages/Logs.svelte'
   import PluginFrame from './pages/PluginFrame.svelte'
+  import PluginManager from './pages/PluginManager.svelte'
   import { api } from './lib/api.js'
   import { pluginNavEntries, isPluginPage, pluginIdFromPage } from './lib/pluginui.js'
 
@@ -40,6 +41,7 @@
     { id: 'schedule',  icon: '⏱', label: 'Schedule',   group: 'ops'     },
     { id: 'skills',    icon: '🧩', label: 'Skills',     group: 'ops'     },
     { id: 'mcp',       icon: '🔌', label: 'MCP',        group: 'ops'     },
+    { id: 'pluginmgr', icon: '🧱', label: 'Plugins',    group: 'ops'     },
     { id: 'providers', icon: '⚙', label: 'Providers',  group: 'ops'     },
     { id: 'activity',  icon: '📈', label: 'Activity',   group: 'system'  },
     { id: 'config',    icon: '≡', label: 'Config',      group: 'system'  },
@@ -193,6 +195,8 @@
       <Providers />
     {:else if page === 'mcp'}
       <MCP />
+    {:else if page === 'pluginmgr'}
+      <PluginManager />
     {:else if page === 'activity'}
       <Activity />
     {:else if page === 'config'}
