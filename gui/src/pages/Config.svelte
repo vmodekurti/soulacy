@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
+  import { rowsFromSettings, settingsPatchFromRows } from '../lib/pluginsettings.js'
 
   let config   = null
   let loading  = true
@@ -22,6 +23,46 @@
   let agentDirs = ''
   let skillDirs = ''
 
+  // Plugin settings editor (Story 18): pid → editable rows; originals kept
+  // for type-safe round-trips. Secrets arrive redacted as '***' and the
+  // server skips those placeholders on PATCH, so saving never clobbers
+  // real values on disk.
+  let pluginRows = {}
+  let pluginOriginals = {}
+  let newPluginId = ''
+
+  function seedPluginEditor(pc) {
+    pluginOriginals = pc || {}
+    pluginRows = {}
+    for (const [pid, settings] of Object.entries(pluginOriginals)) {
+      pluginRows[pid] = rowsFromSettings(settings)
+    }
+  }
+
+  function addRow(pid) {
+    pluginRows[pid] = [...pluginRows[pid], { key: '', value: '' }]
+  }
+
+  function removeRow(pid, idx) {
+    pluginRows[pid] = pluginRows[pid].filter((_, i) => i !== idx)
+  }
+
+  function addPlugin() {
+    const pid = newPluginId.trim()
+    if (!pid || pluginRows[pid]) return
+    pluginOriginals = { ...pluginOriginals, [pid]: {} }
+    pluginRows = { ...pluginRows, [pid]: [{ key: '', value: '' }] }
+    newPluginId = ''
+  }
+
+  function pluginsConfigPatch() {
+    const patch = {}
+    for (const [pid, rows] of Object.entries(pluginRows)) {
+      patch[pid] = settingsPatchFromRows(pluginOriginals[pid], rows)
+    }
+    return patch
+  }
+
   async function load() {
     loading = true
     error   = ''
@@ -39,6 +80,7 @@
       defaultProvider = config.llm?.default_provider || ''
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
+      seedPluginEditor(config.plugins_config)
     } catch (e) {
       error = e.message
     } finally {
@@ -63,8 +105,11 @@
         agent_dirs: agentDirs.split('\n').map(s => s.trim()).filter(Boolean),
         skill_dirs: skillDirs.split('\n').map(s => s.trim()).filter(Boolean),
       }
+      const pcPatch = pluginsConfigPatch()
+      if (Object.keys(pcPatch).length > 0) patch.plugins_config = pcPatch
       const res = await api.config.patch(patch)
       config = res.config
+      seedPluginEditor(config.plugins_config)
       saved  = true
       setTimeout(() => { saved = false }, 3000)
     } catch (e) {
@@ -212,25 +257,46 @@
 
         <div class="section">
           <h2 class="section-title">Plugin settings</h2>
-          {#if Object.keys(config?.plugins_config || {}).length === 0}
+          {#if Object.keys(pluginRows).length === 0}
             <p class="hint">
-              No plugin settings configured. Add a <code>plugins_config:</code>
-              section to <code>config.yaml</code> keyed by plugin ID — each
-              plugin documents its own keys. Secret-looking values are
+              No plugin settings configured. Add a plugin ID below (or a
+              <code>plugins_config:</code> block in <code>config.yaml</code>) —
+              each plugin documents its own keys. Secret-looking values are
               redacted here and never reach the browser.
             </p>
           {:else}
-            {#each Object.entries(config.plugins_config) as [pid, settings]}
-              <div class="hook-row">
+            {#each Object.entries(pluginRows) as [pid, rows] (pid)}
+              <div class="plugin-settings">
                 <code class="hook-url">{pid}</code>
-                <span class="hook-meta">{JSON.stringify(settings)}</span>
+                {#each rows as row, idx}
+                  <div class="kv-row">
+                    <input type="text" class="kv-key" placeholder="key"
+                           bind:value={row.key} disabled={!writable} />
+                    <input type="text" class="kv-val" placeholder="value (JSON for objects/numbers)"
+                           bind:value={row.value} disabled={!writable} />
+                    {#if writable}
+                      <button class="link-danger kv-del" title="Remove key"
+                              on:click={() => removeRow(pid, idx)}>✕</button>
+                    {/if}
+                  </div>
+                {/each}
+                {#if writable}
+                  <button class="btn-secondary kv-add" on:click={() => addRow(pid)}>+ Add key</button>
+                {/if}
               </div>
             {/each}
             <p class="hint">
-              Read-only view (secrets shown as ***). Edit
-              <code>plugins_config</code> in <code>config.yaml</code> —
-              the block is preserved untouched by GUI config saves.
+              Secrets show as <code>***</code> — leaving them unchanged keeps
+              the real value on disk. Removing a row deletes that key on save.
             </p>
+          {/if}
+          {#if writable}
+            <div class="kv-row">
+              <input type="text" class="kv-key" placeholder="plugin id"
+                     bind:value={newPluginId} />
+              <button class="btn-secondary" on:click={addPlugin}
+                      disabled={!newPluginId.trim()}>+ Add plugin section</button>
+            </div>
           {/if}
         </div>
 
@@ -319,4 +385,12 @@
               background: #10121f; border: 1px solid #1a1e36; border-radius: 8px; }
   .hook-url { font-size: .78rem; color: #8b85ff; overflow-wrap: anywhere; }
   .hook-meta { font-size: .7rem; font-family: monospace; color: #6b7294; }
+  .plugin-settings { display: flex; flex-direction: column; gap: .35rem; padding: .5rem .65rem;
+                     background: #10121f; border: 1px solid #1a1e36; border-radius: 8px;
+                     margin-bottom: .5rem; }
+  .kv-row { display: flex; gap: .4rem; align-items: center; }
+  .kv-key { flex: 0 0 32%; }
+  .kv-val { flex: 1; font-family: monospace; font-size: .78rem; }
+  .kv-del { flex: 0 0 auto; }
+  .kv-add { align-self: flex-start; font-size: .75rem; padding: .25rem .6rem; }
 </style>

@@ -192,6 +192,13 @@ type PatchableConfig struct {
 
 	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDirs []string `json:"skill_dirs" yaml:"skill_dirs"`
+
+	// PluginsConfig edits plugin settings (Story 18). Merge semantics per
+	// plugin section: present keys are set, JSON null deletes a key, a nil
+	// section deletes the plugin's block, and "***" values are SKIPPED —
+	// the GUI edits the redacted view, so round-tripped placeholders must
+	// never overwrite real secrets on disk. Unknown keys are preserved.
+	PluginsConfig map[string]map[string]any `json:"plugins_config" yaml:"plugins_config"`
 }
 
 // handlePatchConfig merges partial config updates into config.yaml on disk.
@@ -320,6 +327,49 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 	}
 	if len(patch.SkillDirs) > 0 {
 		dst["skill_dirs"] = patch.SkillDirs
+	}
+	if len(patch.PluginsConfig) > 0 {
+		pc := getOrCreateMap(dst, "plugins_config")
+		for pluginID, settings := range patch.PluginsConfig {
+			if settings == nil {
+				delete(pc, pluginID)
+				continue
+			}
+			cur, _ := pc[pluginID].(map[string]any)
+			if cur == nil {
+				cur = map[string]any{}
+			}
+			mergePluginSettings(cur, settings)
+			pc[pluginID] = cur
+		}
+	}
+}
+
+// mergePluginSettings applies one plugin's settings patch (Story 18):
+// JSON null deletes a key; "***" placeholders are skipped so the redacted
+// GUI view can round-trip without clobbering real secrets on disk; nested
+// maps merge recursively; everything else is set verbatim. Keys absent
+// from the patch are preserved.
+func mergePluginSettings(dst, patch map[string]any) {
+	for k, v := range patch {
+		switch vv := v.(type) {
+		case nil:
+			delete(dst, k)
+		case string:
+			if vv == "***" {
+				continue // redaction placeholder — keep the on-disk value
+			}
+			dst[k] = vv
+		case map[string]any:
+			sub, _ := dst[k].(map[string]any)
+			if sub == nil {
+				sub = map[string]any{}
+			}
+			mergePluginSettings(sub, vv)
+			dst[k] = sub
+		default:
+			dst[k] = v
+		}
 	}
 }
 
