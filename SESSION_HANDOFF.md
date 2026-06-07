@@ -28,10 +28,32 @@ part 1, M5, M4, M3)
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
   (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅,
-  E15 ✅, E16 ✅, E17 ✅, E11 ✅ — NEXT: E12 (flavored-binary tool), then
-  E13.**
+  E15 ✅, E16 ✅, E17 ✅, E11 ✅, E12 ✅ — NEXT: E13 (plugin discovery &
+  install UX; GUI-heavy — needs the node toolchain tarball dance), then
+  M7 Story 15 (polish).**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E12 (flavored-binary build tool) — complete (session 7, suite green;
+end-to-end build verified in-sandbox: gates + 34MB static binary).**
+- `scripts/soulacybuild` — `go run ./scripts/soulacybuild --with
+  <module>[@version] (repeatable) -o bin/...`: go get each module →
+  write generated `cmd/soulacy/builtins_extra.go` (blank imports; kept by
+  default for reproducible rebuilds; never conflicts with builtins_gen.go)
+  → verification gates (E11 kits: TestConformance on internal/llm +
+  internal/channels; TestRunConformance|TestPoCVoiceSidecarConformance on
+  external — runs the real python reference sidecar; plus
+  TestAllBuiltinsRegistered) → `go build -trimpath ./cmd/soulacy`.
+  `--skip-verify`, `--keep` flags. parseWith/generateExtraImports unit
+  tested. Promote to a `soulacy build` subcommand later (E13 polish).
+- internal/app/wire.go gained the GENERIC registry channel loop: any
+  `channels.<key>` block not in {telegram,discord,slack,whatsapp,
+  whatsapp_web,http} with enabled:true resolves via registry.NewChannel
+  under that key (system-agent guard applies; unknown factory = warn+
+  skip). Flavored-binary channels configure exactly like built-ins.
+- Docs: docs/CUSTOM_DISTRIBUTIONS.md (full Matrix-channel walkthrough:
+  driver init() registration, out-of-tree E11 kit test, build command,
+  config.yaml incl. plugins_config).
 
 **E11 (conformance test kits) — complete (session 7, root + sdk green).**
 - `sdk/channel/channeltest.RunAdapterSuite(t, newAdapter)` — network-free
