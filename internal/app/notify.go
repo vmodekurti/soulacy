@@ -16,7 +16,7 @@
 //   • Otherwise → still nothing on the wire, but we log a warn so the
 //     operator at least sees it in /tmp/soulacy.log.
 
-package main
+package app
 
 import (
 	"context"
@@ -121,10 +121,10 @@ func (f *failureNotifier) resolveTarget(def *agent.Definition, inbound message.M
 
 func renderFailureTemplate(tmpl string, def *agent.Definition, errMsg string) string {
 	repl := strings.NewReplacer(
-		"{agent_id}",   def.ID,
+		"{agent_id}", def.ID,
 		"{agent_name}", def.Name,
-		"{timestamp}",  time.Now().UTC().Format(time.RFC3339),
-		"{error}",      errMsg,
+		"{timestamp}", time.Now().UTC().Format(time.RFC3339),
+		"{error}", errMsg,
 	)
 	return repl.Replace(tmpl)
 }
