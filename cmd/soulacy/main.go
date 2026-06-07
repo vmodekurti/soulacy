@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -21,16 +20,12 @@ import (
 	"github.com/soulacy/soulacy/internal/actionlog"
 	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/audit"
-	"github.com/soulacy/soulacy/internal/caps"
-	"github.com/soulacy/soulacy/internal/voice"
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/auth/apikeys"
 	"github.com/soulacy/soulacy/internal/builder"
+	"github.com/soulacy/soulacy/internal/caps"
 	"github.com/soulacy/soulacy/internal/channels"
-	discordchan "github.com/soulacy/soulacy/internal/channels/discord"
 	httpchan "github.com/soulacy/soulacy/internal/channels/http"
-	slackchan "github.com/soulacy/soulacy/internal/channels/slack"
-	telegramchan "github.com/soulacy/soulacy/internal/channels/telegram"
 	wachan "github.com/soulacy/soulacy/internal/channels/whatsapp"
 	wawebchan "github.com/soulacy/soulacy/internal/channels/whatsappweb"
 	"github.com/soulacy/soulacy/internal/config"
@@ -48,10 +43,7 @@ import (
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/metrics"
 	"github.com/soulacy/soulacy/internal/plugins"
-	"github.com/soulacy/soulacy/internal/queue"
 	"github.com/soulacy/soulacy/internal/queue/dlq"
-	queuememory "github.com/soulacy/soulacy/internal/queue/memory"
-	queuenats "github.com/soulacy/soulacy/internal/queue/nats"
 	"github.com/soulacy/soulacy/internal/ratelimit"
 	"github.com/soulacy/soulacy/internal/rbac"
 	"github.com/soulacy/soulacy/internal/runtime"
@@ -64,9 +56,9 @@ import (
 	storagesqlite "github.com/soulacy/soulacy/internal/storage/sqlite"
 	"github.com/soulacy/soulacy/internal/telemetry"
 	"github.com/soulacy/soulacy/internal/vector"
-	vectorqdrant "github.com/soulacy/soulacy/internal/vector/qdrant"
-	vectorsqlitevec "github.com/soulacy/soulacy/internal/vector/sqlitevec"
+	"github.com/soulacy/soulacy/internal/voice"
 	"github.com/soulacy/soulacy/internal/workboard"
+	"github.com/soulacy/soulacy/sdk/registry"
 )
 
 // llmEmbedAdapter wraps an llm.Embedder so it satisfies memory.Embedder.
@@ -287,48 +279,42 @@ func run() error {
 	}
 
 	// ── LLM Router ───────────────────────────────────────────────────────────
+	// Providers are resolved through the SDK factory registry (Story E10);
+	// the built-ins self-register from init() via cmd/soulacy/builtins_gen.go.
 	llmRouter := llm.NewRouter(cfg.LLM.DefaultProvider)
 
-	// Register Ollama (default, always available)
+	// Ollama registers unconditionally (zero-config local default).
 	ollamaCfg := cfg.LLM.Providers["ollama"]
-	model := ollamaCfg.Model
-	if model == "" {
-		model = "llama3"
+	if p, ok, perr := registry.NewProvider("ollama", providerCfgMap(ollamaCfg)); ok && perr == nil {
+		llmRouter.Register(p)
+	} else {
+		log.Warn("ollama provider init failed", zap.Error(perr))
 	}
-	llmRouter.Register(llm.NewOllamaProvider(ollamaCfg.BaseURL, model, ollamaCfg.KeepAlive, ollamaCfg.Options))
 
-	// Register OpenAI (also serves OpenRouter / Together / Groq / vLLM / any
-	// OpenAI-compatible endpoint — set base_url accordingly).
-	if openaiCfg, ok := cfg.LLM.Providers["openai"]; ok && openaiCfg.APIKey != "" {
-		baseURL := openaiCfg.BaseURL
-		if baseURL == "" {
-			baseURL = "https://api.openai.com/v1"
-		}
-		llmRouter.Register(llm.NewOpenAIProviderWithOptions("openai", baseURL, openaiCfg.APIKey, openaiCfg.Model, openaiCfg.Organization, openaiCfg.ParallelToolCalls))
-	}
-	// Register Anthropic (native Messages API).
-	if anthropicCfg, ok := cfg.LLM.Providers["anthropic"]; ok && anthropicCfg.APIKey != "" {
-		llmRouter.Register(llm.NewAnthropicProviderWithOptions(
-			anthropicCfg.BaseURL, anthropicCfg.APIKey, anthropicCfg.Model,
-			anthropicCfg.PromptCaching, anthropicCfg.ExtendedThinking, anthropicCfg.ThinkingBudget,
-		))
-	}
-	// Register Google Gemini.
-	if googleCfg, ok := cfg.LLM.Providers["google"]; ok && googleCfg.APIKey != "" {
-		llmRouter.Register(llm.NewGeminiProviderWithOptions(googleCfg.BaseURL, googleCfg.APIKey, googleCfg.Model, googleCfg.ThinkingBudget, googleCfg.SafetyLevel))
-	}
-	// Additional OpenAI-compatible providers configured by URL — anything else
-	// in cfg.LLM.Providers with a base_url and api_key gets a generic OpenAI
-	// adapter. Lets users add OpenRouter / Together / Groq / vLLM under their
-	// own id without code changes (e.g. "openrouter": { base_url: "https://...", api_key: "..." }).
+	// Every other configured provider resolves by its config id. Known names
+	// hit their dedicated factory; anything else with base_url + api_key gets
+	// the generic OpenAI-compatible adapter (OpenRouter / Together / Groq /
+	// vLLM under a custom id, no code changes).
 	for id, pcfg := range cfg.LLM.Providers {
-		switch id {
-		case "ollama", "openai", "anthropic", "google":
+		if id == "ollama" || pcfg.APIKey == "" {
 			continue
 		}
-		if pcfg.APIKey != "" && pcfg.BaseURL != "" {
-			llmRouter.Register(llm.NewOpenAIProviderWithOptions(id, pcfg.BaseURL, pcfg.APIKey, pcfg.Model, pcfg.Organization, pcfg.ParallelToolCalls))
+		m := providerCfgMap(pcfg)
+		m["id"] = id
+		p, ok, perr := registry.NewProvider(id, m)
+		if !ok {
+			if pcfg.BaseURL == "" {
+				log.Warn("llm provider skipped: unknown id and no base_url for the generic adapter",
+					zap.String("id", id))
+				continue
+			}
+			p, _, perr = registry.NewProvider("openai", m)
 		}
+		if perr != nil {
+			log.Warn("llm provider init failed", zap.String("id", id), zap.Error(perr))
+			continue
+		}
+		llmRouter.Register(p)
 	}
 	log.Info("llm providers registered",
 		zap.Strings("ids", llmRouter.ProviderIDs()),
@@ -510,32 +496,34 @@ func run() error {
 			dims = 768
 		}
 
+		// Resolved through the SDK factory registry (Story E10). The
+		// sqlite-vec path keeps building *memory.VectorStore host-side —
+		// the engine consumes the store directly — and hands it to the
+		// factory under the "store" key.
 		switch vectorBackendKey {
 		case "qdrant":
-			qdrantURL := cfg.Vector.URL
-			if qdrantURL == "" {
-				qdrantURL = "http://localhost:6333"
+			qURL := cfg.Vector.URL
+			if qURL == "" {
+				qURL = "http://localhost:6333"
 			}
-			col := cfg.Vector.Collection
-			if col == "" {
-				col = "soulacy_memory"
+			qCol := cfg.Vector.Collection
+			if qCol == "" {
+				qCol = "soulacy_memory"
 			}
-			qctx, qcancel := context.WithTimeout(context.Background(), 15*time.Second)
-			qb, qerr := vectorqdrant.New(qctx, vectorqdrant.Config{
-				BaseURL:    qdrantURL,
-				Collection: col,
-				APIKey:     cfg.Vector.APIKey,
-				Dims:       dims,
-				Embedder:   memEmbedder,
+			qb, _, qerr := registry.NewVector("qdrant", map[string]any{
+				"base_url":   qURL,
+				"collection": qCol,
+				"api_key":    cfg.Vector.APIKey,
+				"dims":       dims,
+				"embedder":   memory.Embedder(memEmbedder),
 			})
-			qcancel()
 			if qerr != nil {
 				log.Warn("qdrant vector backend unavailable", zap.Error(qerr))
 			} else {
 				vecBackend = qb
 				log.Info("vector memory enabled (qdrant)",
-					zap.String("url", qdrantURL),
-					zap.String("collection", col),
+					zap.String("url", qURL),
+					zap.String("collection", qCol),
 					zap.Int("dims", dims),
 				)
 			}
@@ -545,11 +533,16 @@ func run() error {
 				log.Warn("vector memory disabled (sqlite-vec not loaded or schema error)", zap.Error(verr))
 			} else {
 				vectorStore = vs
-				vecBackend = vectorsqlitevec.New(vs)
-				log.Info("vector memory enabled (sqlite-vec)",
-					zap.Int("dims", dims),
-					zap.String("embedding_provider", cfg.Knowledge.EmbeddingProvider),
-				)
+				svb, _, sverr := registry.NewVector("sqlite-vec", map[string]any{"store": vs})
+				if sverr != nil {
+					log.Warn("sqlite-vec backend init failed", zap.Error(sverr))
+				} else {
+					vecBackend = svb
+					log.Info("vector memory enabled (sqlite-vec)",
+						zap.Int("dims", dims),
+						zap.String("embedding_provider", cfg.Knowledge.EmbeddingProvider),
+					)
+				}
 			}
 		}
 	}
@@ -591,33 +584,26 @@ func run() error {
 	// The queue is currently wired but not yet consumed by the engine; it is
 	// available for future channel adapters, inter-gateway message passing, and
 	// Phase 3 tasks (RBAC event bus, cost-tracking events, etc.).
-	var queueBackend queue.Backend
-	switch cfg.Queue.Backend {
-	case "nats":
-		ackWait, _ := time.ParseDuration(cfg.Queue.NATSAckWait)
-		if ackWait == 0 {
-			ackWait = 30 * time.Second
-		}
-		nb, nerr := queuenats.New(queuenats.Config{
-			URL:           cfg.Queue.NATSUrl,
-			StreamName:    cfg.Queue.NATSStream,
-			SubjectPrefix: cfg.Queue.NATSSubjectPrefix,
-			AckWait:       ackWait,
-			MaxDeliver:    cfg.Queue.NATSMaxDeliver,
-		})
-		if nerr != nil {
-			return fmt.Errorf("nats queue backend: %w", nerr)
-		}
-		defer nb.Close()
-		queueBackend = nb
-		log.Info("queue backend: nats jetstream",
-			zap.String("url", cfg.Queue.NATSUrl),
-			zap.String("stream", cfg.Queue.NATSStream),
-		)
-	default: // "memory" or empty
-		queueBackend = queuememory.New()
-		log.Info("queue backend: in-process memory")
+	// Resolved through the SDK factory registry (Story E10).
+	queueName := cfg.Queue.Backend
+	if queueName == "" {
+		queueName = "memory"
 	}
+	queueBackend, qok, qerr := registry.NewQueue(queueName, map[string]any{
+		"url":            cfg.Queue.NATSUrl,
+		"stream":         cfg.Queue.NATSStream,
+		"subject_prefix": cfg.Queue.NATSSubjectPrefix,
+		"ack_wait":       cfg.Queue.NATSAckWait,
+		"max_deliver":    cfg.Queue.NATSMaxDeliver,
+	})
+	if !qok {
+		return fmt.Errorf("unknown queue backend %q (registered: %v)", queueName, registry.Queues())
+	}
+	if qerr != nil {
+		return fmt.Errorf("%s queue backend: %w", queueName, qerr)
+	}
+	defer queueBackend.Close()
+	log.Info("queue backend ready", zap.String("backend", queueName))
 	// ── Event publishing (extensibility E1) ───────────────────────────────────
 	// Every EventHub emission is wrapped in a schema-v1 envelope and published
 	// to the queue backend on "soulacy.events.<type>" (see docs/EVENTS.md).
@@ -816,14 +802,17 @@ func run() error {
 						if !externalChannelAgentAllowed(adapterIDForLog("telegram", i, agentID), agentID, log) {
 							continue
 						}
-						allowedIDs := parseTelegramAllowedIDs(botMap)
 						// Primary bot keeps the canonical "telegram" ID for backwards
 						// compatibility; additional bots get "telegram-<agentID>".
 						adapterID := "telegram"
 						if i > 0 {
 							adapterID = "telegram-" + sanitizeID(agentID)
 						}
-						tg := telegramchan.NewWithIDAndActivation(adapterID, token, agentID, allowedIDs, activationPolicyFromConfig(botMap, true))
+						tg, cerr := buildChannel("telegram", adapterID, botMap, log)
+						if cerr != nil {
+							log.Warn("telegram bot skipped", zap.String("adapter_id", adapterID), zap.Error(cerr))
+							continue
+						}
 						chanReg.Register(tg)
 						log.Info("telegram bot registered",
 							zap.String("adapter_id", adapterID),
@@ -837,9 +826,11 @@ func run() error {
 				agentID, _ := tgCfg["agent_id"].(string)
 				if token != "" {
 					if externalChannelAgentAllowed("telegram", agentID, log) {
-						allowedIDs := parseTelegramAllowedIDs(tgCfg)
-						tg := telegramchan.NewWithIDAndActivation("telegram", token, agentID, allowedIDs, activationPolicyFromConfig(tgCfg, true))
-						chanReg.Register(tg)
+						if tg, cerr := buildChannel("telegram", "telegram", tgCfg, log); cerr != nil {
+							log.Warn("telegram channel skipped", zap.Error(cerr))
+						} else {
+							chanReg.Register(tg)
+						}
 					}
 				}
 			}
@@ -863,7 +854,6 @@ func run() error {
 						}
 						token, _ := botMap["token"].(string)
 						agentID, _ := botMap["agent_id"].(string)
-						guildID, _ := botMap["guild_id"].(string)
 						botName, _ := botMap["bot_name"].(string)
 						if token == "" {
 							continue
@@ -875,7 +865,11 @@ func run() error {
 						if i > 0 {
 							adapterID = "discord-" + sanitizeID(agentID)
 						}
-						ds := discordchan.NewWithIDAndActivation(adapterID, token, agentID, guildID, activationPolicyFromConfig(botMap, true))
+						ds, cerr := buildChannel("discord", adapterID, botMap, log)
+						if cerr != nil {
+							log.Warn("discord bot skipped", zap.String("adapter_id", adapterID), zap.Error(cerr))
+							continue
+						}
 						chanReg.Register(ds)
 						log.Info("discord bot registered",
 							zap.String("adapter_id", adapterID),
@@ -886,11 +880,13 @@ func run() error {
 			} else {
 				token, _ := dsCfg["token"].(string)
 				agentID, _ := dsCfg["agent_id"].(string)
-				guildID, _ := dsCfg["guild_id"].(string)
 				if token != "" {
 					if externalChannelAgentAllowed("discord", agentID, log) {
-						ds := discordchan.NewWithIDAndActivation("discord", token, agentID, guildID, activationPolicyFromConfig(dsCfg, true))
-						chanReg.Register(ds)
+						if ds, cerr := buildChannel("discord", "discord", dsCfg, log); cerr != nil {
+							log.Warn("discord channel skipped", zap.Error(cerr))
+						} else {
+							chanReg.Register(ds)
+						}
 					}
 				}
 			}
@@ -926,7 +922,11 @@ func run() error {
 						if i > 0 {
 							adapterID = "slack-" + sanitizeID(agentID)
 						}
-						sl := slackchan.NewWithIDAndActivation(adapterID, botToken, appToken, agentID, activationPolicyFromConfig(botMap, true))
+						sl, cerr := buildChannel("slack", adapterID, botMap, log)
+						if cerr != nil {
+							log.Warn("slack bot skipped", zap.String("adapter_id", adapterID), zap.Error(cerr))
+							continue
+						}
 						chanReg.Register(sl)
 						log.Info("slack bot registered",
 							zap.String("adapter_id", adapterID),
@@ -940,8 +940,11 @@ func run() error {
 				agentID, _ := slCfg["agent_id"].(string)
 				if botToken != "" && appToken != "" {
 					if externalChannelAgentAllowed("slack", agentID, log) {
-						sl := slackchan.NewWithIDAndActivation("slack", botToken, appToken, agentID, activationPolicyFromConfig(slCfg, true))
-						chanReg.Register(sl)
+						if sl, cerr := buildChannel("slack", "slack", slCfg, log); cerr != nil {
+							log.Warn("slack channel skipped", zap.Error(cerr))
+						} else {
+							chanReg.Register(sl)
+						}
 					}
 				}
 			}
@@ -954,17 +957,23 @@ func run() error {
 	var waAdapter *wachan.Adapter
 	if waCfg, ok := chanCfg["whatsapp"]; ok {
 		if enabled, _ := waCfg["enabled"].(bool); enabled {
+			// app_secret (HMAC verification on inbound webhook POSTs,
+			// PRODUCTION_AUDIT → CRIT/Security) is consumed by the factory.
 			phoneNumberID, _ := waCfg["phone_number_id"].(string)
 			accessToken, _ := waCfg["access_token"].(string)
 			verifyToken, _ := waCfg["verify_token"].(string)
-			// app_secret is used to verify the HMAC on inbound webhook
-			// POSTs. PRODUCTION_AUDIT → CRIT/Security.
-			appSecret, _ := waCfg["app_secret"].(string)
 			agentID, _ := waCfg["agent_id"].(string)
 			if phoneNumberID != "" && accessToken != "" && verifyToken != "" {
 				if externalChannelAgentAllowed("whatsapp", agentID, log) {
-					waAdapter = wachan.NewWithActivation(phoneNumberID, accessToken, verifyToken, appSecret, agentID, activationPolicyFromConfig(waCfg, false), log)
-					chanReg.Register(waAdapter) // StartAll will call waAdapter.Start()
+					if wa, cerr := buildChannel("whatsapp", "", waCfg, log); cerr != nil {
+						log.Warn("whatsapp channel skipped", zap.Error(cerr))
+					} else {
+						// The gateway needs the concrete adapter for its
+						// webhook routes; the factory contract returns the
+						// channel.Adapter interface.
+						waAdapter, _ = wa.(*wachan.Adapter)
+						chanReg.Register(wa) // StartAll will call wa.Start()
+					}
 				}
 			}
 		}
@@ -976,11 +985,11 @@ func run() error {
 	if waWebCfg, ok := chanCfg["whatsapp_web"]; ok {
 		if enabled, _ := waWebCfg["enabled"].(bool); enabled {
 			command, _ := waWebCfg["command"].(string)
-			args := parseStringList(waWebCfg["args"])
+			args := channels.ParseStringList(waWebCfg["args"])
 			sessionDir, _ := waWebCfg["session_dir"].(string)
 			accountID, _ := waWebCfg["account_id"].(string)
 			agentID, _ := waWebCfg["agent_id"].(string)
-			activation := activationPolicyFromConfig(waWebCfg, true)
+			activation := channels.ActivationFromConfig(waWebCfg, true)
 			if command == "" {
 				command = "node"
 			}
@@ -1316,101 +1325,68 @@ func run() error {
 	return srv.Listen(ctx)
 }
 
-// parseTelegramAllowedIDs extracts the allowed_user_ids list from a channel
-// config block (works for both single-bot and multi-bot map shapes).
-func parseTelegramAllowedIDs(m map[string]any) []int64 {
-	raw, ok := m["allowed_user_ids"]
+// buildChannel resolves a channel adapter through the SDK factory registry
+// (Story E10). The bot/channel config map is passed to the factory verbatim,
+// plus the host-chosen adapter id (when non-empty) and the process logger
+// under the documented host-internal "logger" key.
+func buildChannel(name, adapterID string, cfg map[string]any, log *zap.Logger) (channels.Adapter, error) {
+	m := make(map[string]any, len(cfg)+2)
+	for k, v := range cfg {
+		m[k] = v
+	}
+	if adapterID != "" {
+		m["id"] = adapterID
+	}
+	m["logger"] = log
+	a, ok, err := registry.NewChannel(name, m)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("no channel factory registered for %q (registered: %v)", name, registry.Channels())
 	}
-	var out []int64
-	if list, ok := raw.([]any); ok {
-		for _, item := range list {
-			switch v := item.(type) {
-			case int64:
-				out = append(out, v)
-			case float64:
-				out = append(out, int64(v))
-			case int:
-				out = append(out, int64(v))
-			}
-		}
+	if err != nil {
+		return nil, err
 	}
-	return out
+	return a, nil
 }
 
-// parseStringList extracts a string argv list from config values that may have
-// been loaded from YAML as []any, []string, or a whitespace-separated string.
-func parseStringList(raw any) []string {
-	switch v := raw.(type) {
-	case []string:
-		return v
-	case []any:
-		out := make([]string, 0, len(v))
-		for _, item := range v {
-			if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
-				out = append(out, s)
-			}
-		}
-		return out
-	case string:
-		return strings.Fields(v)
-	default:
-		return nil
+// providerCfgMap converts a config.ProviderConfig struct into the schemaless
+// map the SDK provider factories consume (Story E10). Zero values are
+// omitted so factory defaults apply.
+func providerCfgMap(p config.ProviderConfig) map[string]any {
+	m := map[string]any{}
+	if p.BaseURL != "" {
+		m["base_url"] = p.BaseURL
 	}
-}
-
-func parseDelimitedConfigList(raw any) []string {
-	switch v := raw.(type) {
-	case []string, []any:
-		return parseStringList(raw)
-	case string:
-		parts := strings.FieldsFunc(v, func(r rune) bool {
-			return r == ',' || r == '\n' || r == '\t'
-		})
-		out := make([]string, 0, len(parts))
-		for _, p := range parts {
-			p = strings.TrimSpace(p)
-			if p != "" {
-				out = append(out, p)
-			}
-		}
-		return out
-	default:
-		return nil
+	if p.APIKey != "" {
+		m["api_key"] = p.APIKey
 	}
-}
-
-func parseBoolConfig(raw any, fallback bool) bool {
-	switch v := raw.(type) {
-	case bool:
-		return v
-	case string:
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "true", "yes", "1", "on":
-			return true
-		case "false", "no", "0", "off":
-			return false
-		}
+	if p.Model != "" {
+		m["model"] = p.Model
 	}
-	return fallback
-}
-
-func activationPolicyFromConfig(m map[string]any, defaultIgnoreGroups bool) channels.ActivationPolicy {
-	trigger := strings.TrimSpace(fmt.Sprint(m["trigger_phrase"]))
-	if trigger == "" {
-		trigger = "!soulacy"
+	if p.KeepAlive != "" {
+		m["keep_alive"] = p.KeepAlive
 	}
-	userIDs := parseDelimitedConfigList(m["allowed_user_ids"])
-	for _, uid := range parseTelegramAllowedIDs(m) {
-		userIDs = append(userIDs, strconv.FormatInt(uid, 10))
+	if p.Options != nil {
+		m["options"] = p.Options
 	}
-	return channels.ActivationPolicy{
-		TriggerPhrase:    trigger,
-		IgnoreGroups:     parseBoolConfig(m["ignore_groups"], defaultIgnoreGroups),
-		AllowedThreadIDs: parseDelimitedConfigList(m["allowed_chat_ids"]),
-		AllowedUserIDs:   userIDs,
+	if p.PromptCaching {
+		m["prompt_caching"] = true
 	}
+	if p.ExtendedThinking {
+		m["extended_thinking"] = true
+	}
+	if p.ThinkingBudget != 0 {
+		m["thinking_budget"] = p.ThinkingBudget
+	}
+	if p.SafetyLevel != "" {
+		m["safety_level"] = p.SafetyLevel
+	}
+	if p.Organization != "" {
+		m["organization"] = p.Organization
+	}
+	if p.ParallelToolCalls != nil {
+		m["parallel_tool_calls"] = p.ParallelToolCalls
+	}
+	return m
 }
 
 func adapterIDForLog(channel string, index int, agentID string) string {
