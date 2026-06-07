@@ -28,9 +28,30 @@ part 1, M5, M4, M3)
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
   (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). **M6 COMPLETE
-  (E9, E10, E15, E16, E17, E11, E12, E13)** — NEXT: M7 = Story 15
-  (final polish incl. plugin GUI surfaces). E14 stays demand-gated
-  deferred. Suite 59.1% root + sdk green.**
+  (E9, E10, E15, E16, E17, E11, E12, E13). M7 (Story 15) CODE-COMPLETE**
+  — the remaining polish work is VISUAL QA ON THE MAC (checklist below).
+  E14 stays demand-gated deferred. **ROADMAP DONE pending that QA.**
+  Suite 59.1% root + sdk green; vitest 104/104.
+
+**Story 15 (product polish, M7) — code-complete (session 7).**
+- Browser tab title tracks the active page incl. plugin panels
+  (lib/pagetitle.js, wired reactively in App.svelte).
+- Config page: read-only "Plugin settings" section rendering the
+  redacted plugins_config block (E17) with empty-state + edit guidance.
+- Responsive leftovers from Story 2 closed: Flow rail/canvas/inspector
+  stacks ≤900px; Knowledge + Skills 260px left columns stack ≤768px.
+- Button consistency: refresh standardised on "↺ Refresh" (Workboard
+  was ↻). Destructive-action audit: already consistent everywhere
+  (btn-danger/link-danger + confirm() on every delete) — no changes.
+- index.html title was already "Soulacy" (fixed Mac-side; that file has
+  UNSTAGED local edits from Vasu's session — left untouched, same for
+  internal/storage/postgres/schema.sql).
+- **Mac visual QA checklist (the human half of Story 15):** rebuild
+  internal/webui/dist (`cd gui && npm run build`); walk Dashboard,
+  Agents, Chat, Schedule, Workboard, Config, Logs, Providers, Plugins
+  on desktop + a phone: empty states read well, dense pages (Activity,
+  Logs, Workboard) aren't noisy, plugin iframe panels + install/
+  permission dialogs feel native, tab titles update while navigating.
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
 
