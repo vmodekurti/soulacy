@@ -38,6 +38,11 @@ type LoadedPlugin struct {
 	Dir      string
 	Tools    []plugin.ToolSpec // all tools contributed by this plugin
 	Caps     *caps.Set         // compiled capability set (default-deny; E5)
+
+	// Settings is the plugin's plugins_config section from config.yaml
+	// (Story E17; attached by plugins.Wire). Shape is plugin-owned; nil
+	// when the operator configured nothing.
+	Settings map[string]any
 }
 
 // Loader scans plugin directories, parses manifests, and exposes the combined

@@ -41,6 +41,21 @@ type Config struct {
 	// Plugin directories to scan
 	PluginDirs []string `mapstructure:"plugin_dirs"`
 
+	// PluginsConfig collects arbitrary plugin-specific settings (Story E17),
+	// keyed by plugin ID. The shape under each key is owned entirely by the
+	// plugin — the core parser never validates it, so plugins can grow
+	// settings without core changes or unmarshalling errors:
+	//
+	//	plugins_config:
+	//	  weather-bot:
+	//	    units: metric
+	//	    cache_ttl: 15m
+	//
+	// Exposed to plugin wiring via plugins.Wire (WireDeps.PluginsConfig);
+	// the gateway config API redacts secret-looking values before they
+	// reach the browser.
+	PluginsConfig map[string]map[string]any `mapstructure:"plugins_config"`
+
 	// Agent definition directories to scan
 	AgentDirs []string `mapstructure:"agent_dirs"`
 

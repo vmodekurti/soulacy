@@ -51,6 +51,12 @@ type WireDeps struct {
 
 	// WatchInterval is the credential-rotation poll cadence (default 30s).
 	WatchInterval time.Duration
+
+	// PluginsConfig is the parsed plugins_config block from config.yaml
+	// (Story E17), keyed by plugin ID. Wire attaches each plugin's section
+	// to its LoadedPlugin (Settings) so contributions and host surfaces
+	// (E13 install UX) can read it; the shape is owned by the plugin.
+	PluginsConfig map[string]map[string]any
 }
 
 // Wire registers every v2 contribution from l with the host. Returned errors
@@ -62,6 +68,11 @@ func Wire(ctx context.Context, l *Loader, deps WireDeps) []error {
 	reg := &hostRegistry{deps: deps, log: deps.Log}
 	var errs []error
 	for _, lp := range l.All() {
+		// plugins_config sections attach to every loaded plugin, v1 and v2
+		// alike (Story E17) — tools-only plugins have settings too.
+		if section, ok := deps.PluginsConfig[lp.Manifest.ID]; ok {
+			lp.Settings = section
+		}
 		if !lp.isV2() {
 			continue
 		}
