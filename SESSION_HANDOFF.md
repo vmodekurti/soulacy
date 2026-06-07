@@ -28,10 +28,36 @@ part 1, M5, M4, M3)
   slotted into M6 as E9 → E10 → E15 → E16 → E17 → E11 → E12 → E13.
   **Work happens on branch `feature/integrated-roadmap`**. **M3 COMPLETE
   (E3–E8). M4 COMPLETE (10–11). M5 COMPLETE (12–14). M6: E9 ✅, E10 ✅,
-  E15 ✅, E16 ✅, E17 ✅ — NEXT: E11 (conformance test kits), then
-  E12 → E13.**
+  E15 ✅, E16 ✅, E17 ✅, E11 ✅ — NEXT: E12 (flavored-binary tool), then
+  E13.**
   **Vasu's instruction (2026-06-06, session 6): keep developing without
   stopping for approval between stories; keep this handoff updated.**
+
+**E11 (conformance test kits) — complete (session 7, root + sdk green).**
+- `sdk/channel/channeltest.RunAdapterSuite(t, newAdapter)` — network-free
+  contract kit: ID/Name stability, Status safe before Start, empty-message
+  Send never panics, Stop idempotent + safe before Start, post-Stop status
+  sanity. `sdk/llm/providertest.RunProviderSuite(t, newProvider)` — ID
+  stability + CONTEXT DISCIPLINE: Complete(cancelled ctx) must error
+  within 5s (never hang/panic); Models likewise (static lists may
+  succeed). Both call the factory per subtest.
+- Protocol promotion: `sdk/extchannel` now owns the ECP v1 wire types
+  (Frame/ParseFrame/WriteFrame/Negotiate/ProtocolVersion; error prefix
+  changed external:→extchannel:, no tests asserted on it);
+  internal/channels/external/protocol.go = aliases + thin fn re-exports.
+  `sdk/extchannel/sidecartest.RunConformance` is the exported E3 runner;
+  internal RunConformance delegates to it (python reference-sidecar tests
+  exercise the exported kit now).
+- In-tree CI runs: internal/llm/providers_conformance_test.go (4 providers,
+  base URLs at 127.0.0.1:1 so nothing leaves the host) and
+  internal/channels/adapters_conformance_test.go (telegram/discord/slack/
+  whatsapp built via the E10 registry path + http adapter direct).
+- NOTE for E12: flavored binaries should run these kits against bundled
+  third-party drivers as the post-build verification step.
+- Known quirk (pre-existing, NOT fixed in E11): telegram/slack Send()
+  ignores the caller ctx (telegram uses context.Background() internally).
+  The kit deliberately doesn't assert Send ctx discipline yet; tightening
+  it = small follow-up (fix adapters first, then add the check).
 
 **E17 (dynamic plugin configuration schema) — complete (TDD, session 7,
 suite green).**
