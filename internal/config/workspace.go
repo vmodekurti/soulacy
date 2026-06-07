@@ -1,0 +1,163 @@
+package config
+
+// Workspace resolution — the "soulspace" layout.
+//
+// Fresh installations get ONE organized workspace instead of files
+// scattered across a flat dot-directory:
+//
+//	~/.soulacy/soulspace/
+//	├── config.yaml        # the one config file
+//	├── agents/            # SOUL.yaml definitions
+//	├── skills/            # installed skills
+//	├── plugins/           # installed plugins (+ .staging)
+//	├── templates/         # user template overrides
+//	├── tools/             # shared python tools
+//	├── memory/            # brain memory (episodic/semantic/procedural)
+//	├── data/              # ALL databases (actions.db, archive.db, …)
+//	├── logs/              # log files
+//	├── audit/             # tool-call audit JSONL
+//	├── secrets/           # credential vault, signing keys (0700)
+//	├── registry/          # packages for `soulacy registry serve`
+//	└── gui/               # optional static GUI override
+//
+// Resolution order:
+//  1. SOULACY_WORKSPACE env var → that directory, soulspace layout.
+//  2. ~/.soulacy/soulspace exists → soulspace layout (post-migration or
+//     fresh install).
+//  3. ~/.soulacy exists with legacy content (config.yaml / agents/ /
+//     actions.db) → LEGACY layout rooted at ~/.soulacy: every path maps to
+//     its historical location, so pre-soulspace installations keep working
+//     bit-for-bit until the operator runs `sy workspace migrate`.
+//  4. Nothing exists → soulspace layout at ~/.soulacy/soulspace
+//     (directories created by EnsureDirs).
+
+import (
+	"os"
+	"path/filepath"
+)
+
+// SoulspaceDirName is the workspace directory created for new installations.
+const SoulspaceDirName = "soulspace"
+
+// Paths locates every directory and database the framework uses. Resolve
+// it once via ResolveWorkspace; explicit config values still win over
+// these defaults wherever a config field exists.
+type Paths struct {
+	// Root is the workspace root (~/.soulacy/soulspace, $SOULACY_WORKSPACE,
+	// or the legacy ~/.soulacy).
+	Root string
+	// Legacy is true when running on a pre-soulspace flat layout.
+	Legacy bool
+
+	Agents    string
+	Skills    string
+	Plugins   string
+	Templates string
+	Tools     string
+	Memory    string
+	Data      string // database directory (legacy: == Root)
+	Logs      string
+	Audit     string
+	Secrets   string
+	Registry  string
+	GUI       string
+
+	// ConfigFile is where config.yaml lives (and is created on writes).
+	ConfigFile string
+}
+
+// DB returns the path of a named SQLite database ("actions" → actions.db).
+func (p Paths) DB(name string) string {
+	return filepath.Join(p.Data, name+".db")
+}
+
+// CredentialsDB is the encrypted vault. In the soulspace layout it lives
+// under secrets/ (it holds key material, not operational data); legacy
+// keeps the historical flat location.
+func (p Paths) CredentialsDB() string {
+	if p.Legacy {
+		return filepath.Join(p.Root, "credentials.db")
+	}
+	return filepath.Join(p.Secrets, "credentials.db")
+}
+
+// Dirs lists every directory of the layout (for EnsureDirs / migration).
+func (p Paths) Dirs() []string {
+	return []string{
+		p.Agents, p.Skills, p.Plugins, p.Templates, p.Tools,
+		p.Memory, p.Data, p.Logs, p.Audit, p.Secrets, p.Registry,
+	}
+}
+
+// soulspacePaths builds the organized layout rooted at root.
+func soulspacePaths(root string) Paths {
+	return Paths{
+		Root:       root,
+		Agents:     filepath.Join(root, "agents"),
+		Skills:     filepath.Join(root, "skills"),
+		Plugins:    filepath.Join(root, "plugins"),
+		Templates:  filepath.Join(root, "templates"),
+		Tools:      filepath.Join(root, "tools"),
+		Memory:     filepath.Join(root, "memory"),
+		Data:       filepath.Join(root, "data"),
+		Logs:       filepath.Join(root, "logs"),
+		Audit:      filepath.Join(root, "audit"),
+		Secrets:    filepath.Join(root, "secrets"),
+		Registry:   filepath.Join(root, "registry"),
+		GUI:        filepath.Join(root, "gui"),
+		ConfigFile: filepath.Join(root, "config.yaml"),
+	}
+}
+
+// legacyPaths maps the historical flat ~/.soulacy layout.
+func legacyPaths(root string) Paths {
+	return Paths{
+		Root:       root,
+		Legacy:     true,
+		Agents:     filepath.Join(root, "agents"),
+		Skills:     filepath.Join(root, "skills"),
+		Plugins:    filepath.Join(root, "plugins"),
+		Templates:  filepath.Join(root, "templates"),
+		Tools:      filepath.Join(root, "tools"),
+		Memory:     filepath.Join(root, "memory"),
+		Data:       root, // databases sat flat in the root
+		Logs:       filepath.Join(root, "logs"),
+		Audit:      filepath.Join(root, "audit"),
+		Secrets:    filepath.Join(root, "secrets"),
+		Registry:   filepath.Join(root, "registry"),
+		GUI:        filepath.Join(root, "gui"),
+		ConfigFile: filepath.Join(root, "config.yaml"),
+	}
+}
+
+// hasLegacyContent reports whether dir looks like a pre-soulspace
+// installation (rather than an empty or unrelated directory).
+func hasLegacyContent(dir string) bool {
+	for _, marker := range []string{"config.yaml", "agents", "actions.db", "skills"} {
+		if _, err := os.Stat(filepath.Join(dir, marker)); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveWorkspace applies the resolution order documented above. It never
+// creates directories — EnsureDirs does that after config load.
+func ResolveWorkspace() (Paths, error) {
+	if env := os.Getenv("SOULACY_WORKSPACE"); env != "" {
+		return soulspacePaths(env), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return Paths{}, err
+	}
+	dotDir := filepath.Join(home, ".soulacy")
+	soulspace := filepath.Join(dotDir, SoulspaceDirName)
+	if st, err := os.Stat(soulspace); err == nil && st.IsDir() {
+		return soulspacePaths(soulspace), nil
+	}
+	if hasLegacyContent(dotDir) {
+		return legacyPaths(dotDir), nil
+	}
+	return soulspacePaths(soulspace), nil
+}

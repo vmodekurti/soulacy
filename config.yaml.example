@@ -1,5 +1,6 @@
 # Soulacy configuration example
-# Copy to ~/.soulacy/config.yaml and fill in your values.
+# Copy to ~/.soulacy/soulspace/config.yaml (the workspace; legacy installs
+# keep ~/.soulacy/config.yaml — see docs/WORKSPACE.md) and fill in values.
 # NEVER commit config.yaml — it may contain secrets.
 
 # ── Agent directories ─────────────────────────────────────────────────────────

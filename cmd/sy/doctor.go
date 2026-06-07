@@ -13,6 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 type doctorStatus string
@@ -77,6 +79,9 @@ func runDoctor() error {
 
 	home, _ := os.UserHomeDir()
 	runtimeDir := filepath.Join(home, ".soulacy")
+	if ws, werr := config.ResolveWorkspace(); werr == nil {
+		runtimeDir = ws.Root
+	}
 
 	add(checkConfig())
 	add(checkRuntimeDir(runtimeDir))

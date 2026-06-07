@@ -76,13 +76,21 @@ func (a *App) Run(parent context.Context) error {
 
 	log.Info("Soulacy starting", zap.String("version", config.Version))
 
+	// Workspace paths ("soulspace"): one organized root for every default
+	// location. Legacy flat ~/.soulacy installations resolve to their
+	// historical paths untouched (migrate with `sy workspace migrate`).
+	ws, err := config.ResolveWorkspace()
+	if err != nil {
+		return fmt.Errorf("resolve workspace: %w", err)
+	}
+	log.Info("workspace", zap.String("root", ws.Root), zap.Bool("legacy", ws.Legacy))
+
 	// ── Agent brain memory (episodic / semantic / procedural) ────────────────
 	// MEM-02: instantiate the CompositeStore. Base dir reads from the
 	// SOULACY_MEMORY_DIR env var (MEM-07), falling back to ~/.soulacy/memory/.
 	brainMemDir := os.Getenv("SOULACY_MEMORY_DIR")
 	if brainMemDir == "" {
-		home, _ := os.UserHomeDir()
-		brainMemDir = filepath.Join(home, ".soulacy", "memory")
+		brainMemDir = ws.Memory
 	}
 	if err := os.MkdirAll(brainMemDir, 0755); err != nil {
 		log.Warn("brain memory dir create failed — long-term memory disabled",
@@ -110,7 +118,6 @@ func (a *App) Run(parent context.Context) error {
 	// ── Storage backend (action log + memory archive) ─────────────────────
 	// Default: SQLite wrappers around the existing types (zero new deps).
 	// Optional: Postgres via pgx/v5 when storage.backend = "postgres".
-	home, _ := os.UserHomeDir()
 	var (
 		actionBackend storage.ActionLogBackend
 		memBackend    storage.MemoryBackend
@@ -119,7 +126,7 @@ func (a *App) Run(parent context.Context) error {
 	case "postgres":
 		pgLogDir := cfg.Storage.PostgresLogDir
 		if pgLogDir == "" {
-			pgLogDir = filepath.Join(home, ".soulacy", "logs")
+			pgLogDir = ws.Logs
 		}
 		pgAL, pgMem, _, pgErr := storagepg.Open(cfg.Storage.PostgresDSN, pgLogDir, log)
 		if pgErr != nil {
@@ -131,8 +138,8 @@ func (a *App) Run(parent context.Context) error {
 		memBackend = pgMem
 		log.Info("storage backend: postgres", zap.String("log_dir", pgLogDir))
 	default: // "sqlite" or empty
-		logsDir := filepath.Join(home, ".soulacy", "logs")
-		actionsDB := filepath.Join(home, ".soulacy", "actions.db")
+		logsDir := ws.Logs
+		actionsDB := ws.DB("actions")
 		sqAL, sqErr := actionlog.New(logsDir, actionsDB, log)
 		if sqErr != nil {
 			return fmt.Errorf("sqlite action log: %w", sqErr)
@@ -150,7 +157,7 @@ func (a *App) Run(parent context.Context) error {
 	// core stores). Namespace enforcement (plugin_<id>_* tables only) happens
 	// before any SQL executes; a broken plugin warns and skips, never aborts.
 	if pending := sdkstorage.RegisteredMigrations(); len(pending) > 0 {
-		pmPath := filepath.Join(home, ".soulacy", "plugins.db")
+		pmPath := ws.DB("plugins")
 		if pm, pmErr := pluginmigrate.Open(pmPath); pmErr != nil {
 			log.Warn("plugin database unavailable; plugin migrations skipped", zap.Error(pmErr))
 		} else {
@@ -255,7 +262,7 @@ func (a *App) Run(parent context.Context) error {
 	// runner — dedicated plugins.db, transactional, checksummed,
 	// applied-once. A failing step skips that plugin's chain only.
 	if pending := plugins.ManifestMigrations(pluginLoader.All()); len(pending) > 0 {
-		pmPath := filepath.Join(home, ".soulacy", "plugins.db")
+		pmPath := ws.DB("plugins")
 		if pm, pmErr := pluginmigrate.Open(pmPath); pmErr != nil {
 			log.Warn("plugin database unavailable; manifest migrations skipped", zap.Error(pmErr))
 		} else {
@@ -622,7 +629,7 @@ func (a *App) Run(parent context.Context) error {
 	if kmsErr != nil {
 		log.Warn("credential vault KMS init failed, vault disabled", zap.Error(kmsErr))
 	} else {
-		vaultPath := filepath.Join(home, ".soulacy", "credentials.db")
+		vaultPath := ws.CredentialsDB()
 		if cv, cvErr := credentials.NewSQLiteVault(vaultPath, localKMS); cvErr != nil {
 			log.Warn("credential vault unavailable", zap.String("path", vaultPath), zap.Error(cvErr))
 		} else {
@@ -1008,7 +1015,7 @@ func (a *App) Run(parent context.Context) error {
 	// ── RBAC Manager ──────────────────────────────────────────────────────────
 	// Per-agent grants persist in SQLite; the static default policy lives in
 	// the rbac package. NoopStore fallback = static-policy-only degradation.
-	rbacDBPath := filepath.Join(home, ".soulacy", "rbac.db")
+	rbacDBPath := ws.DB("rbac")
 	var rbacStore rbac.Store
 	if rs, rerr := rbac.NewSQLiteStore(rbacDBPath); rerr != nil {
 		log.Warn("RBAC SQLite store unavailable, falling back to static policy only",
@@ -1022,7 +1029,7 @@ func (a *App) Run(parent context.Context) error {
 	rbacManager := rbac.NewManager(rbacStore, log)
 
 	// ── Workflow Checkpoint Store (E5) ────────────────────────────────────────
-	checkpointPath := filepath.Join(home, ".soulacy", "checkpoints.db")
+	checkpointPath := ws.DB("checkpoints")
 	if cs, cserr := runtime.NewCheckpointStore(checkpointPath); cserr != nil {
 		log.Warn("workflow checkpoint store unavailable", zap.Error(cserr))
 	} else {
@@ -1051,7 +1058,7 @@ func (a *App) Run(parent context.Context) error {
 	}
 
 	// ── Cost Store ────────────────────────────────────────────────────────────
-	costsPath := filepath.Join(home, ".soulacy", "costs.db")
+	costsPath := ws.DB("costs")
 	var openedCostStore *costs.Store
 	if costsStore, cserr := costs.NewStore(costsPath); cserr != nil {
 		log.Warn("cost store unavailable", zap.Error(cserr))
@@ -1178,7 +1185,7 @@ func (a *App) Run(parent context.Context) error {
 	}
 
 	// ── Workboard Store (Story 5) ─────────────────────────────────────────────
-	workboardPath := filepath.Join(home, ".soulacy", "workboard.db")
+	workboardPath := ws.DB("workboard")
 	if wbStore, wberr := workboard.NewStore(workboardPath); wberr != nil {
 		log.Warn("workboard store unavailable", zap.Error(wberr))
 	} else {
@@ -1215,7 +1222,7 @@ func (a *App) Run(parent context.Context) error {
 	}
 
 	// ── API Key Store ─────────────────────────────────────────────────────────
-	apiKeyPath := filepath.Join(home, ".soulacy", "apikeys.db")
+	apiKeyPath := ws.DB("apikeys")
 	if akStore, akErr := apikeys.NewSQLiteStore(apiKeyPath); akErr != nil {
 		log.Warn("api key store unavailable", zap.Error(akErr))
 	} else {
@@ -1226,7 +1233,7 @@ func (a *App) Run(parent context.Context) error {
 	}
 
 	// ── Dead-Letter Queue ─────────────────────────────────────────────────────
-	dlqPath := filepath.Join(home, ".soulacy", "dlq.db")
+	dlqPath := ws.DB("dlq")
 	if dlqStore, dlqErr := dlq.NewSQLiteStore(dlqPath); dlqErr != nil {
 		log.Warn("dead-letter queue unavailable", zap.Error(dlqErr))
 	} else {
@@ -1237,7 +1244,7 @@ func (a *App) Run(parent context.Context) error {
 	}
 
 	// ── Conversation History Store ────────────────────────────────────────────
-	historyPath := filepath.Join(home, ".soulacy", "history.db")
+	historyPath := ws.DB("history")
 	if histStore, histErr := session.NewSQLiteHistoryStore(historyPath); histErr != nil {
 		log.Warn("conversation history store unavailable", zap.Error(histErr))
 	} else {

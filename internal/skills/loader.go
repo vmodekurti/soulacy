@@ -22,6 +22,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/soulacy/soulacy/pkg/skill"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 // Loader discovers and caches Agent Skills from the filesystem.
@@ -50,16 +52,16 @@ func New(workDir string, extraDirs []string, log *zap.Logger) *Loader {
 	// User-level (lowest priority)
 	if home != "" {
 		dirs = append(dirs,
-			filepath.Join(home, ".agents", "skills"),         // cross-client
-			filepath.Join(home, ".soulacy", "skills"),      // Soulacy-native
+			filepath.Join(home, ".agents", "skills"), // cross-client
+			workspaceSkillsDir(home),                 // Soulacy-native ("soulspace" aware)
 		)
 	}
 
 	// Project-level (overrides user-level)
 	if workDir != "" {
 		dirs = append(dirs,
-			filepath.Join(workDir, ".agents", "skills"),      // cross-client
-			filepath.Join(workDir, ".soulacy", "skills"),   // Soulacy-native
+			filepath.Join(workDir, ".agents", "skills"),  // cross-client
+			filepath.Join(workDir, ".soulacy", "skills"), // Soulacy-native
 		)
 	}
 
@@ -243,4 +245,13 @@ func xmlEscape(s string) string {
 	s = strings.ReplaceAll(s, `"`, "&quot;")
 	s = strings.ReplaceAll(s, "'", "&#39;")
 	return s
+}
+
+// workspaceSkillsDir resolves the workspace skills directory (soulspace
+// layout for new installs, flat ~/.soulacy/skills for legacy ones).
+func workspaceSkillsDir(home string) string {
+	if ws, err := config.ResolveWorkspace(); err == nil {
+		return ws.Skills
+	}
+	return filepath.Join(home, ".soulacy", "skills")
 }

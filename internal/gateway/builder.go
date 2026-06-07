@@ -24,6 +24,8 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/soulacy/soulacy/pkg/agent"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 // handleBuilderChat processes one conversational turn of the agent builder.
@@ -115,7 +117,11 @@ func (s *Server) buildToolCatalogPrompt() string {
 		}
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		scan(filepath.Join(home, ".soulacy", "tools"))
+		if wsPaths, werr := config.ResolveWorkspace(); werr == nil {
+			scan(wsPaths.Tools)
+		} else {
+			scan(filepath.Join(home, ".soulacy", "tools"))
+		}
 	}
 	for _, ad := range s.cfg.AgentDirs {
 		scan(filepath.Join(ad, "tools"))

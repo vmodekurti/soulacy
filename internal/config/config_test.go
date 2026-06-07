@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -29,19 +28,19 @@ memory:
 		t.Fatalf("resolved path = %q, want %q", resolved, cfgPath)
 	}
 
-	wantMemoryDir := filepath.Join(home, ".soulacy", "memory")
+	wantMemoryDir := filepath.Join(home, ".soulacy", "soulspace", "memory")
 	if cfg.Memory.Dir != wantMemoryDir {
 		t.Fatalf("memory.dir = %q, want %q", cfg.Memory.Dir, wantMemoryDir)
 	}
-	wantArchive := filepath.Join(home, ".soulacy", "archive.db")
+	wantArchive := filepath.Join(home, ".soulacy", "soulspace", "data", "archive.db")
 	if cfg.Memory.SQLitePath != wantArchive {
 		t.Fatalf("memory.sqlite_path = %q, want %q", cfg.Memory.SQLitePath, wantArchive)
 	}
-	wantKB := filepath.Join(home, ".soulacy", "knowledge.db")
+	wantKB := filepath.Join(home, ".soulacy", "soulspace", "data", "knowledge.db")
 	if cfg.Knowledge.DBPath != wantKB {
 		t.Fatalf("knowledge.db_path = %q, want %q", cfg.Knowledge.DBPath, wantKB)
 	}
-	if len(cfg.AgentDirs) != 1 || cfg.AgentDirs[0] != filepath.Join(home, ".soulacy", "agents") {
+	if len(cfg.AgentDirs) != 1 || cfg.AgentDirs[0] != filepath.Join(home, ".soulacy", "soulspace", "agents") {
 		t.Fatalf("agent_dirs = %#v", cfg.AgentDirs)
 	}
 	if cfg.Memory.MaxHistory != 7 {
@@ -64,8 +63,8 @@ func TestLoadNoConfigFileUsesDefaults(t *testing.T) {
 		t.Fatalf("Load with no config file: %v", err)
 	}
 
-	// resolvedPath should fall back to the canonical ~/.soulacy/config.yaml.
-	wantResolvedPath := filepath.Join(home, ".soulacy", "config.yaml")
+	// resolvedPath should fall back to the workspace config.yaml.
+	wantResolvedPath := filepath.Join(home, ".soulacy", "soulspace", "config.yaml")
 	if resolvedPath != wantResolvedPath {
 		t.Errorf("resolvedPath = %q, want %q", resolvedPath, wantResolvedPath)
 	}
@@ -128,11 +127,11 @@ func TestLoadNoConfigFileUsesDefaults(t *testing.T) {
 	if cfg.Memory.VectorDims != 768 {
 		t.Errorf("memory.vector_dims = %d, want 768", cfg.Memory.VectorDims)
 	}
-	wantMemoryDir := filepath.Join(home, ".soulacy", "memory")
+	wantMemoryDir := filepath.Join(home, ".soulacy", "soulspace", "memory")
 	if cfg.Memory.Dir != wantMemoryDir {
 		t.Errorf("memory.dir = %q, want %q", cfg.Memory.Dir, wantMemoryDir)
 	}
-	wantArchivePath := filepath.Join(home, ".soulacy", "archive.db")
+	wantArchivePath := filepath.Join(home, ".soulacy", "soulspace", "data", "archive.db")
 	if cfg.Memory.SQLitePath != wantArchivePath {
 		t.Errorf("memory.sqlite_path = %q, want %q", cfg.Memory.SQLitePath, wantArchivePath)
 	}
@@ -383,12 +382,23 @@ func TestDataDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DataDir: %v", err)
 	}
-	want := filepath.Join(home, ".soulacy")
+	want := filepath.Join(home, ".soulacy", "soulspace")
 	if dir != want {
-		t.Errorf("DataDir = %q, want %q", dir, want)
+		t.Errorf("DataDir = %q, want %q (fresh installs are soulspace)", dir, want)
 	}
-	if !strings.HasSuffix(dir, ".soulacy") {
-		t.Errorf("DataDir %q should end with .soulacy", dir)
+
+	// Legacy installation → flat ~/.soulacy.
+	home2 := t.TempDir()
+	t.Setenv("HOME", home2)
+	if err := os.MkdirAll(filepath.Join(home2, ".soulacy", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dir, err = DataDir()
+	if err != nil {
+		t.Fatalf("DataDir legacy: %v", err)
+	}
+	if dir != filepath.Join(home2, ".soulacy") {
+		t.Errorf("legacy DataDir = %q", dir)
 	}
 }
 
@@ -464,11 +474,13 @@ func TestEnsureDirsSkipsEmptyPaths(t *testing.T) {
 	}
 }
 
-// TestEnsureDirsCreatesHomeSkillsDir verifies the ~/.soulacy/skills directory
-// is created when HOME is set.
+// TestEnsureDirsCreatesHomeSkillsDir verifies the workspace skills directory
+// is created when HOME is set: fresh installs get the soulspace layout,
+// legacy installations keep ~/.soulacy/skills.
 func TestEnsureDirsCreatesHomeSkillsDir(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("SOULACY_WORKSPACE", "")
 
 	base := t.TempDir()
 	cfg := &Config{
@@ -480,10 +492,22 @@ func TestEnsureDirsCreatesHomeSkillsDir(t *testing.T) {
 	if err := EnsureDirs(cfg); err != nil {
 		t.Fatalf("EnsureDirs: %v", err)
 	}
-
-	skillsDir := filepath.Join(home, ".soulacy", "skills")
+	skillsDir := filepath.Join(home, ".soulacy", "soulspace", "skills")
 	if _, err := os.Stat(skillsDir); err != nil {
-		t.Errorf("EnsureDirs did not create skills dir %q: %v", skillsDir, err)
+		t.Errorf("EnsureDirs did not create soulspace skills dir %q: %v", skillsDir, err)
+	}
+
+	// Legacy installation → skills stay at ~/.soulacy/skills.
+	home2 := t.TempDir()
+	t.Setenv("HOME", home2)
+	if err := os.MkdirAll(filepath.Join(home2, ".soulacy", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureDirs(cfg); err != nil {
+		t.Fatalf("EnsureDirs legacy: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home2, ".soulacy", "skills")); err != nil {
+		t.Errorf("legacy skills dir missing: %v", err)
 	}
 }
 
