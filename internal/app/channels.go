@@ -6,6 +6,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"go.uber.org/zap"
@@ -78,6 +79,16 @@ func providerCfgMap(p config.ProviderConfig) map[string]any {
 		m["parallel_tool_calls"] = p.ParallelToolCalls
 	}
 	return m
+}
+
+// providerKeyFor returns the API key for an llm.providers entry, falling back
+// to the named environment variable — the same precedence the provider
+// factories apply. Used to wire reasoning loop backends (Story 16).
+func providerKeyFor(cfg *config.Config, providerID, envVar string) string {
+	if pc, ok := cfg.LLM.Providers[providerID]; ok && pc.APIKey != "" {
+		return pc.APIKey
+	}
+	return os.Getenv(envVar)
 }
 
 func adapterIDForLog(channel string, index int, agentID string) string {

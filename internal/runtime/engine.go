@@ -36,6 +36,7 @@ import (
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/internal/session"
 	"github.com/soulacy/soulacy/internal/storage"
@@ -194,6 +195,14 @@ type Engine struct {
 	// can inspect, retry, or purge them via the admin API. nil = no DLQ.
 	// Set via SetDLQStore after construction.
 	dlqStore deadLetterStore
+
+	// reasoningKeys carries cloud-provider API keys for reasoning loop
+	// backends (Story 16). Set via SetReasoningKeys at boot.
+	reasoningKeys reasoning.ProviderKeys
+	// reasoningBackendFactory, when non-nil, overrides how the reasoning
+	// LLM backend is built for an agent (tests / embedders). nil = derive
+	// from def.LLM.Provider via reasoning.DefaultBackendFor.
+	reasoningBackendFactory func(*agent.Definition) reasoning.LLMBackend
 }
 
 // PluginToolProvider is satisfied by *plugins.Loader. Defined locally to
@@ -1890,17 +1899,30 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// Prime the prefix cache for this Handle. Cleared on exit so a
 	// hot-reload between user messages picks up the new def's catalogs.
 	// (PRODUCTION_AUDIT → MED/Engine.)
+	sysPrefix := e.buildSystemPrefix(def)
 	sess.mu.Lock()
 	sess.History = append(sess.History, llm.ChatMessage{
 		Role: "user", Content: flattenParts(msg.Parts),
 	})
-	sess.cachedPrefix = e.buildSystemPrefix(def)
+	sess.cachedPrefix = sysPrefix
 	sess.mu.Unlock()
 	defer func() {
 		sess.mu.Lock()
 		sess.cachedPrefix = ""
 		sess.mu.Unlock()
 	}()
+
+	// Story 16 — pluggable reasoning loops: agents that declare a reasoning:
+	// block with a strategy run through the E15 reasoning Loop instead of the
+	// classic tool loop below. Agents without one are untouched — the ok=false
+	// branch falls straight through to the existing path.
+	if loopCfg, ok := reasoning.LoopConfigFromDefinition(def, sysPrefix); ok {
+		reply, rerr := e.handleWithReasoning(ctx, def, sess, msg, loopCfg)
+		if rerr == nil {
+			runOutcome = "success"
+		}
+		return reply, rerr
+	}
 
 	// Build context messages
 	chatMsgs := e.buildContext(def, sess, msg)
@@ -2154,6 +2176,18 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		})
 	}
 
+	reply = e.finalizeReply(ctx, def, sess, msg, finalContent)
+
+	runOutcome = "success" // flips the deferred AgentRunsTotal counter from "error"
+	return reply, nil
+}
+
+// finalizeReply is the shared tail of a successful run — classic loop and
+// reasoning loop (Story 16) both end here so the persistence contract stays
+// identical: append the assistant turn to in-memory session history, persist
+// to session memory, write the episodic brain record, build the reply,
+// emit message.out, and append both turns to the durable history store.
+func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess *Session, msg message.Message, finalContent string) message.Message {
 	// Append final assistant response to the in-memory session history
 	sess.mu.Lock()
 	sess.History = append(sess.History, llm.ChatMessage{
@@ -2180,7 +2214,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		_ = e.brainStore.Write(rec)
 	}
 
-	reply = message.Message{
+	reply := message.Message{
 		ID:        msg.ID, // correlate reply to request
 		SessionID: msg.SessionID,
 		AgentID:   msg.AgentID,
@@ -2213,8 +2247,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		}
 	}
 
-	runOutcome = "success" // flips the deferred AgentRunsTotal counter from "error"
-	return reply, nil
+	return reply
 }
 
 // finalSynthesis makes one LLM call with NO tools, forcing the model to produce

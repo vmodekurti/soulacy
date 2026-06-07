@@ -48,6 +48,7 @@ import (
 	"github.com/soulacy/soulacy/internal/queue/dlq"
 	"github.com/soulacy/soulacy/internal/ratelimit"
 	"github.com/soulacy/soulacy/internal/rbac"
+	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/internal/scheduler"
@@ -501,6 +502,14 @@ func (a *App) Run(parent context.Context) error {
 		cfg.Runtime.AllowSystemTools, vectorStore, pluginProvider,
 	)
 	engine.SetExecutor(pyExecutor)
+
+	// Story 16 — reasoning loop backends: cloud-provider keys come from the
+	// same llm.providers config the router uses (env var fallback matches the
+	// providers' own behaviour).
+	engine.SetReasoningKeys(reasoning.ProviderKeys{
+		AnthropicKey: providerKeyFor(cfg, "anthropic", "ANTHROPIC_API_KEY"),
+		OpenAIKey:    providerKeyFor(cfg, "openai", "OPENAI_API_KEY"),
+	})
 
 	// PRODUCTION_AUDIT → F1 (2026-05-27): host-enforced rlimits on every
 	// Python tool subprocess via the soulacy __exec-sandbox wrapper.

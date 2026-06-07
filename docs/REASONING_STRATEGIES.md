@@ -72,6 +72,27 @@ reasoning:
 `LoopConfigFromDefinition` carries the name through unchanged;
 `Loop.Run` resolves it via `registry.NewReasoningStrategy`.
 
+## Engine integration (Story 16)
+
+Declaring `reasoning.strategy` switches the agent's live execution path:
+`Engine.Handle` builds the Loop (backend derived from `llm.provider` via
+`DefaultBackendFor`, API keys from `llm.providers.*.api_key` with env-var
+fallback) and runs the task through it instead of the classic single-call
+tool loop. Agents without a `reasoning:` block are untouched.
+
+- **Tool dispatch:** loop tool calls bridge into the engine's own `runTool`
+  path — Python sandbox, audit log, confirmation gates, MCP/plugin
+  allowlists, and SSRF protection all apply exactly as in the classic loop.
+  The loop is offered the agent's full tool surface (declared Python tools +
+  built-ins + MCP + plugin + peer-agent tools).
+- **Observability:** the run emits `reasoning.start`, one `reasoning.step`
+  per think-act-observe cycle, and `reasoning.result` engine events
+  (rendered in the GUI activity feed and the chat thinking section);
+  `tool.call`/`tool.result` stream live from the bridge.
+- **Persistence:** the reply lands in session history, session memory, the
+  episodic brain record (RL-09 auto-default applies), and the durable
+  conversation history store — the same contract as the classic path.
+
 ## Fallback semantics
 
 - `auto` (or empty) → keyword heuristic picks `plan_execute` or `react`.
