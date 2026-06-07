@@ -198,5 +198,10 @@ func LoopConfigFromDefinition(def *agent.Definition, systemPrompt string) (LoopC
 		cfg.ToolNames = append(cfg.ToolNames, t.Name)
 	}
 
+	// Story E25: the "flow" strategy needs the agent's graph. Attached for
+	// any strategy — only "flow" reads it; nil when the workflow declares
+	// no nodes (the strategy then degrades gracefully).
+	cfg.Flow = def.Workflow.FlowSpec()
+
 	return cfg, true
 }

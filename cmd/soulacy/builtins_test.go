@@ -16,7 +16,7 @@ func TestAllBuiltinsRegistered(t *testing.T) {
 		"providers":     {"anthropic", "gemini", "google", "ollama", "openai"},
 		"queues":        {"external", "memory", "nats"},
 		"vectors":       {"external", "qdrant", "sqlite-vec"},
-		"reasoning":     {"plan_execute", "react"},
+		"reasoning":     {"flow", "plan_execute", "react"},
 		"pkgregistries": {"git", "http"},
 	}
 	got := map[string][]string{

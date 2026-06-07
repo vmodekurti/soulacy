@@ -36,11 +36,19 @@ func NewWorkflowExecutor(spec agent.WorkflowSpec, engine *Engine, store *Checkpo
 // Run executes the workflow for the given trigger message.
 // If resumeRunID is non-empty, execution starts from the first non-completed step.
 // Returns the output of the final step.
+//
+// When the spec declares nodes (Story E25 graph form), Run compiles and
+// walks the cyclic graph instead of the linear steps — same checkpoint
+// store, same resume semantics (visit-indexed checkpoint keys).
 func (w *WorkflowExecutor) Run(ctx context.Context, msg message.Message, resumeRunID string) (json.RawMessage, error) {
 	// 1. Determine run ID.
 	runID := resumeRunID
 	if runID == "" {
 		runID = uuid.New().String()
+	}
+
+	if len(w.spec.Nodes) > 0 {
+		return w.runFlow(ctx, msg, runID)
 	}
 
 	agentID := msg.AgentID

@@ -4,7 +4,11 @@
 // into a single deployable entity.
 package agent
 
-import "time"
+import (
+	"time"
+
+	"github.com/soulacy/soulacy/sdk/reasoning"
+)
 
 // TriggerKind describes how an agent is activated.
 type TriggerKind string
@@ -453,13 +457,13 @@ func (d *Definition) Clone() *Definition {
 		cp.NotifyOnFailure = &nof
 	}
 
-	// Workflow — shallow pointer copy. Steps slice and StepSpec strings are
-	// read-only after unmarshal so a shallow copy is safe.
+	// Workflow — shallow pointer copy. Steps/Nodes/Edges elements are
+	// read-only after unmarshal so element-shallow copies are safe.
 	if d.Workflow != nil {
-		wf := WorkflowSpec{
-			Steps: make([]StepSpec, len(d.Workflow.Steps)),
-		}
-		copy(wf.Steps, d.Workflow.Steps)
+		wf := *d.Workflow
+		wf.Steps = append([]StepSpec(nil), d.Workflow.Steps...)
+		wf.Nodes = append([]reasoning.FlowNode(nil), d.Workflow.Nodes...)
+		wf.Edges = append([]reasoning.FlowEdge(nil), d.Workflow.Edges...)
 		cp.Workflow = &wf
 	}
 
