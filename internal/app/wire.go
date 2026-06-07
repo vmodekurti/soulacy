@@ -42,6 +42,7 @@ import (
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/pluginmigrate"
 	"github.com/soulacy/soulacy/internal/plugins"
 	"github.com/soulacy/soulacy/internal/queue/dlq"
 	"github.com/soulacy/soulacy/internal/ratelimit"
@@ -59,6 +60,7 @@ import (
 	"github.com/soulacy/soulacy/internal/voice"
 	"github.com/soulacy/soulacy/internal/workboard"
 	"github.com/soulacy/soulacy/sdk/registry"
+	sdkstorage "github.com/soulacy/soulacy/sdk/storage"
 )
 
 // Run wires every subsystem and blocks until the gateway exits (parent ctx
@@ -134,6 +136,29 @@ func (a *App) Run(parent context.Context) error {
 		actionBackend = storagesqlite.NewActionLog(sqAL)
 		memBackend = storagesqlite.NewMemoryArchive(archive)
 		log.Info("storage backend: sqlite", zap.String("dir", logsDir))
+	}
+
+	// ── Plugin database migrations (Story E16) ───────────────────────────────
+	// Compiled-in plugins register schema steps via storage.RegisterMigration
+	// from init(); they apply here — the database boot phase — one
+	// transaction per step, into the DEDICATED plugin database (never the
+	// core stores). Namespace enforcement (plugin_<id>_* tables only) happens
+	// before any SQL executes; a broken plugin warns and skips, never aborts.
+	if pending := sdkstorage.RegisteredMigrations(); len(pending) > 0 {
+		pmPath := filepath.Join(home, ".soulacy", "plugins.db")
+		if pm, pmErr := pluginmigrate.Open(pmPath); pmErr != nil {
+			log.Warn("plugin database unavailable; plugin migrations skipped", zap.Error(pmErr))
+		} else {
+			defer pm.Close()
+			applied, merrs := pm.Apply(pending)
+			for _, e := range merrs {
+				log.Warn("plugin migration refused or failed", zap.Error(e))
+			}
+			if applied > 0 {
+				log.Info("plugin migrations applied",
+					zap.Int("count", applied), zap.String("path", pmPath))
+			}
+		}
 	}
 
 	// ── LLM Router ───────────────────────────────────────────────────────────
