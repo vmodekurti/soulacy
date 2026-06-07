@@ -19,6 +19,7 @@ package channeltest
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/soulacy/soulacy/sdk/channel"
 	"github.com/soulacy/soulacy/sdk/message"
@@ -61,6 +62,32 @@ func RunAdapterSuite(t *testing.T, newAdapter func() channel.Adapter) {
 		// No parts, no recipient: adapters must reject or no-op — never panic,
 		// and never require a live connection to decide.
 		_ = a.Send(ctx, message.Message{})
+	})
+
+	t.Run("Send_CancelledContext_FailsFast", func(t *testing.T) {
+		// Story 19a: Send must honour the caller's context. With a
+		// cancelled ctx and a non-empty message, the adapter must return
+		// promptly with an error — never swallow the ctx into a fresh
+		// Background() and fire the network call anyway.
+		a := newAdapter()
+		defer failOnPanic(t, "Send() with cancelled context")
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		done := make(chan error, 1)
+		go func() {
+			done <- a.Send(ctx, message.Message{
+				ThreadID: "1",
+				Parts:    message.Text("conformance ctx probe"),
+			})
+		}()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("conformance: Send(cancelled ctx) must return an error, got nil")
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("conformance: Send(cancelled ctx) did not return within 5s — caller context ignored")
+		}
 	})
 
 	t.Run("Stop_BeforeStart_NoPanic", func(t *testing.T) {

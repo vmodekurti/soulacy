@@ -266,3 +266,38 @@ func (s *Server) pluginGateMW() fiber.Handler {
 		return c.Next()
 	}
 }
+
+// wsPluginTokenAuth admits scoped plugin tokens on the WebSocket event
+// stream (Story 19c). Returns handled=false when the credential is not a
+// plugin token (user auth proceeds); otherwise the decision is final:
+// plugins need the events.subscribe capability (E5 grammar) — the event
+// feed carries prompts and tool I/O, so a bare valid token is NOT enough.
+// WebSocket clients that cannot set headers pass the token as ?api_key=.
+func (s *Server) wsPluginTokenAuth(c *fiber.Ctx) (bool, error) {
+	bearer := strings.TrimPrefix(c.Get("Authorization"), "Bearer ")
+	if bearer == "" {
+		bearer = c.Query("api_key")
+	}
+	id, ok := s.lookupPluginToken(bearer)
+	if !ok {
+		return false, nil
+	}
+	s.pluginMu.RLock()
+	enforcer := s.capsEnforcer
+	s.pluginMu.RUnlock()
+	if enforcer == nil {
+		return true, c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "plugin capabilities unavailable; event stream denied",
+		})
+	}
+	if d := enforcer.Check(caps.PluginPrincipal(id), caps.CapEventsSubscribe, ""); !d.Allowed {
+		return true, c.Status(fiber.StatusForbidden).JSON(fiber.Map{
+			"error": "plugin lacks the events.subscribe capability: " + d.Reason,
+		})
+	}
+	auth.SetClaims(c, &auth.Claims{
+		RegisteredClaims: jwt.RegisteredClaims{Subject: string(caps.PluginPrincipal(id))},
+		Kind:             "access",
+	})
+	return true, c.Next()
+}

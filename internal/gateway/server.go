@@ -427,9 +427,16 @@ func (s *Server) buildApp() *fiber.App {
 	// least want to expose. Auth is enforced via the same engine as the REST
 	// API; browser WebSocket connections that can't set headers may pass the
 	// credential as ?api_key= query param.
+	// Story 19c: scoped plugin tokens are accepted here too — a plugin whose
+	// manifest grants the events.subscribe capability (E5 grammar) may
+	// stream the event feed; plugin tokens WITHOUT that grant get 403.
+	// User credentials flow through the regular auth engine unchanged.
 	app.Use("/ws", func(c *fiber.Ctx) error {
 		if !fws.IsWebSocketUpgrade(c) {
 			return fiber.ErrUpgradeRequired
+		}
+		if handled, err := s.wsPluginTokenAuth(c); handled {
+			return err
 		}
 		return s.authHandler()(c)
 	})

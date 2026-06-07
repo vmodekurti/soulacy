@@ -94,3 +94,11 @@ entry, one cap, one allow + one deny test.
 Compatibility: capability names are append-only. Renaming or removing a
 capability breaks existing manifests and requires a manifest-schema bump
 (see `docs/EXTENSIBILITY.md` compatibility policy).
+
+## WebSocket event stream (Story 19c)
+
+`/ws/events` accepts scoped plugin tokens: a plugin whose manifest grants
+`events.subscribe` may connect with its `splg_` token (Authorization header
+or `?api_key=` for clients that cannot set headers). Tokens WITHOUT the
+grant get 403 — the feed carries prompts and tool I/O, so a bare valid
+token is never enough. User credentials authenticate exactly as before.
