@@ -17,7 +17,7 @@ auth:
   api_keys:
     enabled: true
     # Keys are stored hashed in the database.
-    # Create via POST /v1/admin/api-keys
+    # Create via POST /api/v1/admin/api-keys
 
   # RBAC roles
   roles:
@@ -40,18 +40,18 @@ Requests are authenticated in this order:
    Scoped keys stored in the database. Role is assigned at key creation time.
 
 3. **JWT** — `Authorization: Bearer eyJ...`  
-   Short-lived tokens issued by `POST /v1/auth/login`. Carry user identity, email, and role.
+   Short-lived tokens issued by `POST /api/v1/auth/token`. Carry user identity, email, and role.
 
 If none match, the request is rejected with `401 Unauthorized`.
 
 ## JWT
 
-Issue a JWT by calling the login endpoint with valid credentials:
+Issue a JWT by calling the token endpoint with your master API key:
 
 ```bash
-curl -X POST http://localhost:8080/v1/auth/login \
+curl -X POST http://localhost:18789/api/v1/auth/token \
   -H "Content-Type: application/json" \
-  -d '{"email": "user@example.com", "password": "..."}'
+  -d '{"api_key": "sy_your-server-key"}'
 ```
 
 JWTs expire after `jwt_expiry` (default 24h). Configure a strong secret:
@@ -66,7 +66,7 @@ Managed API keys (`sk_` prefix) are created via the admin API and stored as bcry
 
 ```bash
 # Create a key with operator role
-curl -X POST http://localhost:8080/v1/admin/api-keys \
+curl -X POST http://localhost:18789/api/v1/admin/api-keys \
   -H "Authorization: Bearer sy_your-server-key" \
   -H "Content-Type: application/json" \
   -d '{"name": "ci-bot", "role": "operator"}'
