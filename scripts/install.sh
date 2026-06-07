@@ -68,12 +68,60 @@ esac
 
 log "Detected: ${OS}/${ARCH}"
 
+# ── Self-contained toolchain ──────────────────────────────────────────────────
+# When Go or Node are missing we install them PRIVATELY under
+# ~/.soulacy/toolchain (official upstream tarballs) — nothing touches the
+# system package manager and nothing else on the machine changes.
+TOOLCHAIN="${HOME}/.soulacy/toolchain"
+GO_VERSION="1.25.0"
+NODE_VERSION="22.12.0"
+
+ensure_git() {
+  command -v git >/dev/null 2>&1 && return 0
+  if [ "$OS" = "darwin" ]; then
+    warn "git not found — triggering the Xcode Command Line Tools install."
+    xcode-select --install 2>/dev/null || true
+    err "Re-run this installer after the Command Line Tools finish installing."
+  fi
+  err "git is required. Install it (e.g. apt install git / dnf install git) and re-run."
+}
+
+ensure_go() {
+  if command -v go >/dev/null 2>&1; then return 0; fi
+  if [ -x "${TOOLCHAIN}/go/bin/go" ]; then
+    export PATH="${TOOLCHAIN}/go/bin:${PATH}"
+    return 0
+  fi
+  log "Go not found — installing Go ${GO_VERSION} to ${TOOLCHAIN} (private, no system changes)..."
+  mkdir -p "$TOOLCHAIN"
+  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.${OS}-${ARCH}.tar.gz" \
+    | tar -xz -C "$TOOLCHAIN"
+  export PATH="${TOOLCHAIN}/go/bin:${PATH}"
+  ok "Go $(go version | awk '{print $3}') ready"
+}
+
+ensure_node() {
+  if command -v npm >/dev/null 2>&1; then return 0; fi
+  # Node names x86_64 "x64", not "amd64".
+  local node_arch="$ARCH"
+  [ "$node_arch" = "amd64" ] && node_arch="x64"
+  local node_dir="${TOOLCHAIN}/node-v${NODE_VERSION}-${OS}-${node_arch}"
+  if [ ! -x "${node_dir}/bin/npm" ]; then
+    log "Node not found — installing Node ${NODE_VERSION} to ${TOOLCHAIN} (private, no system changes)..."
+    mkdir -p "$TOOLCHAIN"
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${OS}-${node_arch}.tar.gz" \
+      | tar -xz -C "$TOOLCHAIN"
+  fi
+  export PATH="${node_dir}/bin:${PATH}"
+  ok "Node $(node --version) ready"
+}
+
 # ── Source-build fallback (used when no release tarball exists) ──────────────
 build_from_source() {
-  log "Building from source (requires git, Go 1.22+, and node/npm for the GUI)..."
-  command -v git >/dev/null 2>&1 || err "git is required to build from source."
-  command -v go  >/dev/null 2>&1 || err "Go is required to build from source. Install from https://go.dev/dl/"
-  command -v npm >/dev/null 2>&1 || err "npm is required to build the GUI. Install Node from https://nodejs.org"
+  log "Building from source — missing dependencies are installed automatically."
+  ensure_git
+  ensure_go
+  ensure_node
   SRCDIR="${TMPDIR}/src"
   git clone --depth 1 "https://github.com/${REPO}.git" "$SRCDIR"
   (cd "$SRCDIR" && make all)   # GUI dist + soulacy + sy
@@ -164,14 +212,29 @@ else
   ok "Existing config preserved at ${DATA_DIR}/config.yaml"
 fi
 
-# ── Ollama check ──────────────────────────────────────────────────────────────
+# ── Ollama (default local LLM) ────────────────────────────────────────────────
 echo ""
 if command -v ollama >/dev/null 2>&1; then
   ok "Ollama is installed"
 else
   warn "Ollama not found. Soulacy defaults to Ollama for local LLM inference."
-  echo "     Install it from: https://ollama.com"
-  echo "     Then run: ollama pull llama3"
+  install_ollama="n"
+  if [ -t 0 ]; then
+    read -r -p "Install Ollama now? [Y/n] " install_ollama
+    install_ollama="${install_ollama:-Y}"
+  fi
+  if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
+    if [ "$OS" = "darwin" ] && command -v brew >/dev/null 2>&1; then
+      brew install ollama && ok "Ollama installed (brew)" || warn "Ollama install failed — get it from https://ollama.com"
+    else
+      curl -fsSL https://ollama.com/install.sh | sh && ok "Ollama installed" \
+        || warn "Ollama install failed — get it from https://ollama.com"
+    fi
+    command -v ollama >/dev/null 2>&1 && { log "Pulling llama3 (the default model)..."; ollama pull llama3 || warn "Pull failed — run 'ollama pull llama3' later."; }
+  else
+    echo "     Install later from: https://ollama.com  — then: ollama pull llama3"
+    echo "     (Or point Soulacy at OpenAI/Anthropic/Gemini in 'sy setup'.)"
+  fi
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────────────
