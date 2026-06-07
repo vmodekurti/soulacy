@@ -212,7 +212,7 @@ func TestListAllEntries(t *testing.T) {
 
 	for i, q := range []string{"q1", "q2", "q1"} {
 		_ = s.Push(ctx, DeadLetter{
-			ID: string(rune('a'+i)), Queue: q,
+			ID: string(rune('a' + i)), Queue: q,
 			Payload: []byte("x"), ErrorMsg: "e",
 		})
 	}
