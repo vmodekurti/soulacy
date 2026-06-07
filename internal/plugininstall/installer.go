@@ -63,6 +63,10 @@ type Preview struct {
 	// gateway after Stage when a safety pipeline is configured; nil when
 	// introspection didn't run.
 	Security *introspect.SecurityReport `json:"security,omitempty"`
+
+	// Migrations are the manifest-declared schema steps (Story 17) so the
+	// operator approves schema alongside permissions.
+	Migrations []plugin.MigrationEntry `json:"migrations,omitempty"`
 }
 
 // StagedDir returns the on-disk path of a staged plugin so callers (the E20
@@ -130,6 +134,7 @@ func (ins *Installer) Stage(ctx context.Context, source, checksum string) (Previ
 		ToolCount:   len(m.Tools),
 		HasGUI:      m.GUI != nil,
 		Fingerprint: Fingerprint(m.Permissions, m.Credentials),
+		Migrations:  m.Migrations,
 	}
 	for _, ch := range m.Channels {
 		pv.Channels = append(pv.Channels, ch.ID)

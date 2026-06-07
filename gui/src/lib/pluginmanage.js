@@ -61,6 +61,15 @@ export function securityFindingLines(report) {
   });
 }
 
+// migrationLines renders declared schema migrations (Story 17) so the
+// operator approves schema alongside permissions.
+export function migrationLines(migrations) {
+  return (migrations || []).map((m) => {
+    const sql = (m.up_sql || '').replace(/\s+/g, ' ').trim();
+    return `${m.name}: ${sql.length > 100 ? sql.slice(0, 100) + '…' : sql}`;
+  });
+}
+
 // riskSummary gives the approval dialog a one-line risk statement.
 export function riskSummary(preview) {
   const nPerm = preview?.permissions?.length || 0;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary, securityVerdict, securityFindingLines } from './pluginmanage.js';
+import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary, securityVerdict, securityFindingLines, migrationLines } from './pluginmanage.js';
 
 describe('sourceKind', () => {
   it('classifies sources', () => {
@@ -83,5 +83,19 @@ describe('securityFindingLines (E20)', () => {
   });
   it('empty report renders nothing', () => {
     expect(securityFindingLines({})).toEqual([]);
+  });
+});
+
+describe('migrationLines (Story 17)', () => {
+  it('formats name + collapsed sql with truncation', () => {
+    const lines = migrationLines([
+      { name: '001_items', up_sql: 'CREATE TABLE\n  plugin_x_items (id INTEGER)' },
+      { name: '002_big', up_sql: 'CREATE TABLE plugin_x_big (' + 'col TEXT, '.repeat(30) + 'z TEXT)' },
+    ]);
+    expect(lines[0]).toBe('001_items: CREATE TABLE plugin_x_items (id INTEGER)');
+    expect(lines[1].endsWith('…')).toBe(true);
+  });
+  it('empty input renders nothing', () => {
+    expect(migrationLines(undefined)).toEqual([]);
   });
 });

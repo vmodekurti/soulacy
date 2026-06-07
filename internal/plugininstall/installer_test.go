@@ -312,3 +312,37 @@ func fileSHA256(t *testing.T, path string) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
 }
+
+// Story 17: the approval preview shows manifest-declared migrations so the
+// operator approves schema alongside permissions.
+func TestStagePreviewShowsDeclaredMigrations(t *testing.T) {
+	root := t.TempDir()
+	ins, err := New(filepath.Join(root, "plugins"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := filepath.Join(root, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := `id: schema-plugin
+name: Schema Plugin
+migrations:
+  - name: 001_items
+    up_sql: CREATE TABLE plugin_schema_plugin_items (id INTEGER PRIMARY KEY)
+`
+	if err := os.WriteFile(filepath.Join(src, "plugin.yaml"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pv, err := ins.Stage(context.Background(), src, "")
+	if err != nil {
+		t.Fatalf("Stage: %v", err)
+	}
+	if len(pv.Migrations) != 1 || pv.Migrations[0].Name != "001_items" {
+		t.Errorf("preview migrations = %+v", pv.Migrations)
+	}
+	if !strings.Contains(pv.Migrations[0].UpSQL, "CREATE TABLE") {
+		t.Errorf("up_sql missing: %+v", pv.Migrations[0])
+	}
+}

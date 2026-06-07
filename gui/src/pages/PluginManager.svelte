@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
-  import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary, securityVerdict, securityFindingLines } from '../lib/pluginmanage.js'
+  import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary, securityVerdict, securityFindingLines, migrationLines } from '../lib/pluginmanage.js'
 
   let plugins  = []
   let loading  = true
@@ -209,6 +209,12 @@
         {#if preview.credentials?.length}
           <h3>Requested credentials</h3>
           <ul>{#each credentialLines(preview.credentials) as line}<li>{line}</li>{/each}</ul>
+        {/if}
+        {#if preview.migrations?.length}
+          <h3>Declared schema migrations</h3>
+          <ul class="sec-findings">
+            {#each migrationLines(preview.migrations) as line}<li>{line}</li>{/each}
+          </ul>
         {/if}
         {#if preview.channels?.length}
           <h3>Sidecar channels</h3>

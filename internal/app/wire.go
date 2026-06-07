@@ -249,6 +249,28 @@ func (a *App) Run(parent context.Context) error {
 		log.Info("plugins loaded", zap.Int("count", pluginLoader.Count()))
 	}
 
+	// Manifest-declared plugin migrations (Story 17): installed plugins
+	// declare schema in plugin.yaml; the loader already validated every
+	// step (namespace + statement rules), so apply through the same E16
+	// runner — dedicated plugins.db, transactional, checksummed,
+	// applied-once. A failing step skips that plugin's chain only.
+	if pending := plugins.ManifestMigrations(pluginLoader.All()); len(pending) > 0 {
+		pmPath := filepath.Join(home, ".soulacy", "plugins.db")
+		if pm, pmErr := pluginmigrate.Open(pmPath); pmErr != nil {
+			log.Warn("plugin database unavailable; manifest migrations skipped", zap.Error(pmErr))
+		} else {
+			applied, merrs := pm.Apply(pending)
+			for _, e := range merrs {
+				log.Warn("manifest migration refused or failed", zap.Error(e))
+			}
+			if applied > 0 {
+				log.Info("manifest-declared plugin migrations applied",
+					zap.Int("count", applied), zap.String("path", pmPath))
+			}
+			_ = pm.Close()
+		}
+	}
+
 	// ── Skill Loader ─────────────────────────────────────────────────────────
 	// Scans ~/.soulacy/skills/, ~/.agents/skills/, ./.agents/skills/, etc.
 	// Extra skill dirs come from config.skill_dirs and manifest-v2 plugins (E7).
