@@ -40,6 +40,13 @@ direction.** Natural follow-ups already flagged as pending in docs/code:
   Skills page ➕ Skill sources modal. docs/PACKAGE_REGISTRIES.md §skillssh.
   Try: `sy registry add https://www.skills.sh/` then
   `sy skill install anthropics/skills/skill-creator`.
+- **Docs site overhaul ✅** (06339e4, Vasu request): MkDocs Material site
+  rewritten UX-first — 61 pages, new Using Soulacy + Skills & Plugins
+  sections, every shipped feature covered, quickstart modernized,
+  internal docs excluded from publish, `mkdocs build --strict` clean.
+  Publishing: .github/workflows/docs.yml runs `mkdocs gh-deploy` on
+  pushes to MAIN — merge feature/integrated-roadmap (or run gh-deploy
+  manually) to go live.
 - **Reinstall script** (9cd9df2, Vasu request): ./reinstall-from-scratch.command
   — wipes ~/.soulacy WITH NO BACKUP (Vasu chose so explicitly; requires
   typing 'wipe'), rebuilds dist+binaries, first boot creates a fresh
