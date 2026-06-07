@@ -109,7 +109,8 @@ func (m *Manager) deny(c *fiber.Ctx, role, required string) error {
 // ---------------------------------------------------------------------------
 
 // HandleListGrants returns all per-agent grant rows.
-//   GET /api/v1/rbac/grants
+//
+//	GET /api/v1/rbac/grants
 func (m *Manager) HandleListGrants(c *fiber.Ctx) error {
 	grants, err := m.store.ListAgentGrants()
 	if err != nil {
@@ -122,7 +123,8 @@ func (m *Manager) HandleListGrants(c *fiber.Ctx) error {
 }
 
 // HandleListGrantsForRole returns per-agent grants for a single role.
-//   GET /api/v1/rbac/grants/:role
+//
+//	GET /api/v1/rbac/grants/:role
 func (m *Manager) HandleListGrantsForRole(c *fiber.Ctx) error {
 	role := c.Params("role")
 	if !IsKnownRole(role) {
@@ -141,9 +143,10 @@ func (m *Manager) HandleListGrantsForRole(c *fiber.Ctx) error {
 }
 
 // HandleSetAgentGrant upserts a per-agent grant.
-//   PUT /api/v1/rbac/grants/:role/:agent_id
 //
-//   Body: {"actions": ["read","chat"]}
+//	PUT /api/v1/rbac/grants/:role/:agent_id
+//
+//	Body: {"actions": ["read","chat"]}
 func (m *Manager) HandleSetAgentGrant(c *fiber.Ctx) error {
 	role := c.Params("role")
 	agentID := c.Params("agent_id")
@@ -169,7 +172,8 @@ func (m *Manager) HandleSetAgentGrant(c *fiber.Ctx) error {
 }
 
 // HandleDeleteAgentGrant removes a per-agent grant row.
-//   DELETE /api/v1/rbac/grants/:role/:agent_id
+//
+//	DELETE /api/v1/rbac/grants/:role/:agent_id
 func (m *Manager) HandleDeleteAgentGrant(c *fiber.Ctx) error {
 	role := c.Params("role")
 	agentID := c.Params("agent_id")
@@ -181,7 +185,8 @@ func (m *Manager) HandleDeleteAgentGrant(c *fiber.Ctx) error {
 
 // HandleListPolicy returns the static default policy for all roles.
 // Useful for GUI role editors.
-//   GET /api/v1/rbac/policy
+//
+//	GET /api/v1/rbac/policy
 func (m *Manager) HandleListPolicy(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"policy": defaultPolicy})
 }

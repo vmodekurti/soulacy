@@ -37,8 +37,8 @@ func (s *Server) handleListKnowledge(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{
-		"knowledge_bases": kbs,
-		"enabled":         true,
+		"knowledge_bases":            kbs,
+		"enabled":                    true,
 		"default_embedding_provider": s.cfg.Knowledge.EmbeddingProvider,
 		"default_embedding_model":    s.cfg.Knowledge.EmbeddingModel,
 	})

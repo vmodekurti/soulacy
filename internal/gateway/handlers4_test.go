@@ -168,10 +168,10 @@ func TestGatewayHandleListDLQ_WithStore(t *testing.T) {
 	s := newTestGateway(t, "secret")
 	store := newFakeMemDLQ()
 	_ = store.Push(context.Background(), dlq.DeadLetter{
-		ID:    "abc123",
-		Queue: "default",
-		ErrorMsg: "something failed",
-		Attempts: 3,
+		ID:        "abc123",
+		Queue:     "default",
+		ErrorMsg:  "something failed",
+		Attempts:  3,
 		CreatedAt: time.Now(),
 	})
 	s.SetDLQStore(store)
@@ -295,7 +295,7 @@ func (f *fakeHistoryStore) LoadForAgent(_ context.Context, agentID string, limit
 	return out, nil
 }
 func (f *fakeHistoryStore) Prune(_ context.Context, _ time.Duration) (int64, error) { return 0, nil }
-func (f *fakeHistoryStore) Close() error                                             { return nil }
+func (f *fakeHistoryStore) Close() error                                            { return nil }
 
 func TestGatewayHandleHistory_Happy(t *testing.T) {
 	s := newTestGateway(t, "secret")
