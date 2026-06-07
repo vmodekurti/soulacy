@@ -5,10 +5,10 @@
 ```bash
 docker run -d \
   --name soulacy \
-  -p 8080:8080 \
-  -v $(pwd)/config.yaml:/app/config.yaml \
-  -v $(pwd)/agents:/app/agents \
-  -v $(pwd)/data:/app/data \
+  -p 18789:18789 \
+  -v $(pwd)/config.yaml:/home/soulacy/.soulacy/config.yaml \
+  -v $(pwd)/agents:/home/soulacy/.soulacy/agents \
+  -v $(pwd)/memory:/home/soulacy/.soulacy/memory \
   ghcr.io/vmodekurti/soulacy:latest
 ```
 
@@ -26,19 +26,17 @@ services:
     image: ghcr.io/vmodekurti/soulacy:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "18789:18789"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./agents:/app/agents:ro
-      - soulacy_data:/app/data
-    environment:
-      - SOULACY__SERVER__PORT=8080
+      - ./config.yaml:/home/soulacy/.soulacy/config.yaml:ro
+      - ./agents:/home/soulacy/.soulacy/agents:ro
+      - soulacy_data:/home/soulacy/.soulacy/memory
 
 volumes:
   soulacy_data:
 ```
 
-### Full stack (Postgres + Redis + Jaeger)
+### Full stack (Postgres + Qdrant)
 
 ```yaml title="docker-compose.yml"
 version: "3.9"
@@ -48,19 +46,20 @@ services:
     image: ghcr.io/vmodekurti/soulacy:latest
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "18789:18789"
     volumes:
-      - ./config.yaml:/app/config.yaml:ro
-      - ./agents:/app/agents:ro
+      - soulacy_data:/home/soulacy/.soulacy
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      qdrant:
+        condition: service_started
     environment:
-      - SOULACY__STORAGE__TYPE=postgres
-      - SOULACY__STORAGE__POSTGRES__DSN=postgres://soulacy:secret@postgres:5432/soulacy?sslmode=disable
-      - SOULACY__STORAGE__REDIS__ADDR=redis:6379
+      - SOULACY_STORAGE_BACKEND=postgres
+      - SOULACY_STORAGE_POSTGRES_DSN=postgres://soulacy:secret@postgres:5432/soulacy?sslmode=disable
+      - SOULACY_VECTOR_BACKEND=qdrant
+      - SOULACY_VECTOR_URL=http://qdrant:6333
+      - SOULACY_VECTOR_COLLECTION=soulacy_memory
 
   postgres:
     image: postgres:16-alpine
@@ -77,35 +76,28 @@ services:
       timeout: 5s
       retries: 5
 
-  redis:
-    image: redis:7-alpine
+  qdrant:
+    image: qdrant/qdrant:latest
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    ports:
-      - "16686:16686"    # Jaeger UI
-      - "4318:4318"      # OTLP HTTP
+    volumes:
+      - qdrant_data:/qdrant/storage
 
 volumes:
+  soulacy_data:
   pg_data:
+  qdrant_data:
 ```
 
 ---
 
 ## Environment variable overrides
 
-All config values can be set via environment variables (useful for secrets in CI/CD):
+All config values can be set via environment variables (useful for secrets in CI/CD). Note that Soulacy uses single underscores (`_`) as separators:
 
 ```bash
-SOULACY__SERVER__API_KEY=sy_secret
-SOULACY__LLM__PROVIDERS__OPENAI__API_KEY=sk-...
-SOULACY__CHANNELS__TELEGRAM__TOKEN=1234:AAH...
+SOULACY_SERVER_API_KEY=sy_secret
+SOULACY_LLM_PROVIDERS_OPENAI_API_KEY=sk-...
+SOULACY_CHANNELS_TELEGRAM_TOKEN=1234:AAH...
 ```
 
 ---
@@ -113,7 +105,7 @@ SOULACY__CHANNELS__TELEGRAM__TOKEN=1234:AAH...
 ## Health check
 
 ```bash
-curl http://localhost:8080/v1/health
+curl http://localhost:18789/api/v1/health
 # {"status":"ok","version":"0.1.0"}
 ```
 
@@ -121,7 +113,7 @@ Docker healthcheck in Compose:
 
 ```yaml
 healthcheck:
-  test: ["CMD", "wget", "-qO-", "http://localhost:8080/v1/health"]
+  test: ["CMD", "curl", "-fs", "http://localhost:18789/api/v1/health"]
   interval: 30s
   timeout: 10s
   retries: 3
@@ -140,7 +132,7 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
 
     location / {
-        proxy_pass http://soulacy:8080;
+        proxy_pass http://soulacy:18789;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_read_timeout 120s;    # allow time for long LLM responses

@@ -80,7 +80,7 @@ Any config key can be overridden with an environment variable: prefix
 
 ```bash
 export SOULACY_SERVER_API_KEY="sy_..."     # server.api_key
-export SOULACY_SERVER_PORT=8080            # server.port
+export SOULACY_SERVER_PORT=18789            # server.port
 export SOULACY_LOG_LEVEL=debug             # log.level
 ```
 

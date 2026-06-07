@@ -535,12 +535,15 @@ func Load(cfgPath string) (*Config, string, error) {
 	if cfgPath != "" {
 		v.SetConfigFile(cfgPath)
 	} else {
-		// Search CWD first (project-level config wins for dev), then the
-		// workspace, then the legacy flat ~/.soulacy (harmless duplicate
-		// when the workspace IS legacy).
-		v.AddConfigPath(".")
+		// Search the WORKSPACE first — the installed config always wins —
+		// then the legacy flat ~/.soulacy, and only then the CWD. A stray
+		// project-level config.yaml in whatever directory the gateway was
+		// launched from must never shadow a real installation (it used to:
+		// a repo checkout's dev config silently hijacked fresh installs).
+		// Dev override: set SOULACY_CONFIG_PATH=./config.yaml explicitly.
 		v.AddConfigPath(ws.Root)
 		v.AddConfigPath(filepath.Join(home, ".soulacy"))
+		v.AddConfigPath(".")
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
 	}

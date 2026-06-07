@@ -44,7 +44,7 @@ chown -R soulacy:soulacy /var/lib/soulacy /etc/soulacy
 cat > /etc/soulacy/config.yaml << 'EOF'
 server:
   host: 127.0.0.1
-  port: 8080
+  port: 18789
   api_key: "sy_CHANGE_ME"
 
 llm:
@@ -54,11 +54,13 @@ llm:
       api_key: "sk-..."
 
 storage:
-  type: sqlite
-  path: /var/lib/soulacy/soulacy.db
+  backend: sqlite
 
-agents:
-  dir: /etc/soulacy/agents
+memory:
+  sqlite_path: /var/lib/soulacy/soulacy.db
+
+agent_dirs:
+  - /etc/soulacy/agents
 EOF
 
 chown soulacy:soulacy /etc/soulacy/config.yaml
@@ -121,7 +123,7 @@ apt update && apt install caddy
 
 ```caddyfile title="/etc/caddy/Caddyfile"
 yourdomain.com {
-    reverse_proxy localhost:8080 {
+    reverse_proxy localhost:18789 {
         header_up X-Real-IP {remote_host}
         flush_interval -1    # required for SSE streaming
     }
@@ -161,4 +163,4 @@ ufw allow 443/tcp   # HTTPS
 ufw enable
 ```
 
-Port 8080 should remain closed — Soulacy binds to `127.0.0.1` and traffic arrives via Caddy.
+Port 18789 should remain closed — Soulacy binds to `127.0.0.1` and traffic arrives via Caddy.
