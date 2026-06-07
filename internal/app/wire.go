@@ -63,6 +63,7 @@ import (
 	"github.com/soulacy/soulacy/internal/vector"
 	"github.com/soulacy/soulacy/internal/voice"
 	"github.com/soulacy/soulacy/internal/workboard"
+	"github.com/soulacy/soulacy/pkg/message"
 	"github.com/soulacy/soulacy/sdk/registry"
 	sdkstorage "github.com/soulacy/soulacy/sdk/storage"
 )
@@ -268,6 +269,22 @@ func (a *App) Run(parent context.Context) error {
 
 	// ── Event Hub (GUI real-time stream + action-log persistence) ─────────────
 	hub := gateway.NewEventHub(log, actionBackend)
+
+	// Plugin load diagnostics → Logs GUI (Story E22): every plugin the
+	// loader refused or skipped at boot becomes a visible error event, so a
+	// silently absent plugin is always explainable without shell access.
+	for _, d := range pluginLoader.Diagnostics() {
+		hub.Emit(message.Event{
+			Type: "error",
+			Payload: map[string]any{
+				"stage":  "plugin-load",
+				"dir":    d.Dir,
+				"error":  d.Reason,
+				"action": "plugin skipped — gateway continues without it",
+			},
+			Timestamp: time.Now().UTC(),
+		})
+	}
 
 	// ── Engine ───────────────────────────────────────────────────────────────
 	toolTimeout, _ := time.ParseDuration(cfg.Runtime.ToolTimeout)

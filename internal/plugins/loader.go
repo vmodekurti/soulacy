@@ -52,7 +52,25 @@ type LoadedPlugin struct {
 type Loader struct {
 	mu      sync.RWMutex
 	plugins []*LoadedPlugin
+	diags   []Diagnostic
 	log     *zap.Logger
+}
+
+// Diagnostic records one plugin that was refused or skipped during the
+// scan (Story E22). The host surfaces these in the Logs GUI so a silently
+// absent plugin is always explainable.
+type Diagnostic struct {
+	Dir    string `json:"dir"`
+	Reason string `json:"reason"`
+}
+
+// Diagnostics returns the load failures recorded by the last scan.
+func (l *Loader) Diagnostics() []Diagnostic {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]Diagnostic, len(l.diags))
+	copy(out, l.diags)
+	return out
 }
 
 // New creates a Loader and immediately scans the given directories.
@@ -87,6 +105,9 @@ func (l *Loader) scanDir(root string) error {
 				zap.String("dir", pluginDir),
 				zap.Error(err),
 			)
+			l.mu.Lock()
+			l.diags = append(l.diags, Diagnostic{Dir: pluginDir, Reason: err.Error()})
+			l.mu.Unlock()
 		}
 	}
 	return nil
@@ -121,6 +142,15 @@ func (l *Loader) loadPlugin(dir string) error {
 		l.log.Warn("plugins: plugin skipped by install state",
 			zap.String("id", m.ID), zap.String("reason", v.Reason))
 		return nil
+	}
+
+	// SDK-major gate (Story E22, extends the E7 schema gate): a plugin
+	// built against a newer SDK major must never load against this host's
+	// older contracts — refuse with an upgrade hint instead of failing
+	// subtly at the first incompatible call.
+	if m.SDKMajor > CurrentSDKMajor {
+		return fmt.Errorf("sdk_major %d is newer than this host supports (%d); upgrade soulacy or install a plugin version built for SDK v%d",
+			m.SDKMajor, CurrentSDKMajor, CurrentSDKMajor)
 	}
 
 	// Schema gate (Story E7). Unknown future schemas are skipped outright;
