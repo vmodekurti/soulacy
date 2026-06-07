@@ -73,3 +73,5 @@ examples/agents/
 /soulacy
 /sy
 soulacy-go-tmp-umask
+config.dev.yaml
+config.*.yaml
