@@ -1,8 +1,8 @@
 // Package memory implements Soulacy's multi-layer memory system.
 // Memory is organised into three tiers:
-//   1. Hot (file-based JSONL) — recent session history, fast reads, human-inspectable.
-//   2. Archive (SQLite) — long-term memory with full text search.
-//   3. Semantic (vector DB, optional) — embedding-based retrieval for large memory sets.
+//  1. Hot (file-based JSONL) — recent session history, fast reads, human-inspectable.
+//  2. Archive (SQLite) — long-term memory with full text search.
+//  3. Semantic (vector DB, optional) — embedding-based retrieval for large memory sets.
 package memory
 
 import (
@@ -15,29 +15,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	sdkmemory "github.com/soulacy/soulacy/sdk/memory"
 )
 
-// Scope determines which agents can access a memory entry.
-type Scope string
+// Scope determines which agents can access a memory entry. Canonical
+// definition lives in the versioned SDK (Story E9).
+type Scope = sdkmemory.Scope
 
 const (
-	ScopeSession Scope = "session" // only the current session
-	ScopeAgent   Scope = "agent"   // any session of the owning agent
-	ScopeGlobal  Scope = "global"  // all agents
+	ScopeSession = sdkmemory.ScopeSession // only the current session
+	ScopeAgent   = sdkmemory.ScopeAgent   // any session of the owning agent
+	ScopeGlobal  = sdkmemory.ScopeGlobal  // all agents
 )
 
-// Entry is a single unit of memory.
-type Entry struct {
-	ID        string            `json:"id"`
-	AgentID   string            `json:"agent_id"`
-	SessionID string            `json:"session_id"`
-	Scope     Scope             `json:"scope"`
-	Key       string            `json:"key,omitempty"` // optional structured key
-	Content   string            `json:"content"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
-	CreatedAt time.Time         `json:"created_at"`
-	ExpiresAt *time.Time        `json:"expires_at,omitempty"`
-}
+// Entry is a single unit of memory (SDK canonical type).
+type Entry = sdkmemory.Entry
 
 // Embedder is the interface VectorStore uses to turn text into a float vector.
 // Satisfied by *llm.OllamaEmbedder and *llm.OpenAIEmbedder.
@@ -311,8 +304,12 @@ func containsCI(s, substr string) bool {
 		match := true
 		for j := range subl {
 			a, b := sl[i+j], subl[j]
-			if a >= 'A' && a <= 'Z' { a += 32 }
-			if b >= 'A' && b <= 'Z' { b += 32 }
+			if a >= 'A' && a <= 'Z' {
+				a += 32
+			}
+			if b >= 'A' && b <= 'Z' {
+				b += 32
+			}
 			if a != b {
 				match = false
 				break
