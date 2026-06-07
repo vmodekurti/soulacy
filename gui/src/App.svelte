@@ -10,6 +10,7 @@
   import Knowledge  from './pages/Knowledge.svelte'
   import Channels   from './pages/Channels.svelte'
   import Workboard  from './pages/Workboard.svelte'
+  import Templates  from './pages/Templates.svelte'
   import Schedule   from './pages/Schedule.svelte'
   import Skills     from './pages/Skills.svelte'
   import Providers  from './pages/Providers.svelte'
@@ -34,6 +35,7 @@
     { id: 'builder',   icon: '✦', label: 'Build',       group: 'main'    },
     { id: 'flow',      icon: '⌘', label: 'Flow',        group: 'main'    },
     { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'    },
+    { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'    },
     { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'    },
     { id: 'memory',    icon: '🧠', label: 'Brain Mem',   group: 'main'    },
     { id: 'knowledge', icon: '📚', label: 'Knowledge',   group: 'main'    },
@@ -181,6 +183,8 @@
       <Flow />
     {:else if page === 'agents'}
       <Agents />
+    {:else if page === 'templates'}
+      <Templates />
     {:else if page === 'chat'}
       <Chat />
     {:else if page === 'memory'}
