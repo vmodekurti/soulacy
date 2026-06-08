@@ -132,3 +132,18 @@ func firstOr(list []string, fallback string) string {
 	}
 	return fallback
 }
+
+// concise trims an error to a short, user-safe one-liner for chat replies.
+func concise(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > 140 {
+		s = s[:140] + "…"
+	}
+	return s
+}
