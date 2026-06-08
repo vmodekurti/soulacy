@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "embed"
@@ -31,6 +32,9 @@ const baileysPackage = "@whiskeysockets/baileys"
 // with different content is overwritten — upgrades ship the new script
 // automatically.
 func EnsureSidecarScript(dir string) (string, error) {
+	if strings.TrimSpace(dir) == "" {
+		return "", fmt.Errorf("whatsapp_web: sidecar dir is empty — session_dir not resolved")
+	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("whatsapp_web: create sidecar dir: %w", err)
 	}

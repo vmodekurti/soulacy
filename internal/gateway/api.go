@@ -1098,10 +1098,13 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	chMap := getOrCreateMap(getOrCreateMap(raw, "channels"), "whatsapp_web")
 	chMap["enabled"] = true
 	chMap["agent_id"] = agentID
-	if strings.TrimSpace(fmt.Sprint(chMap["command"])) == "" {
+	// NOTE: cfgMapStr (not fmt.Sprint) — a missing key is nil and
+	// fmt.Sprint(nil) == "<nil>", which silently skipped every default on
+	// FRESH configs (the "mkdir : no such file or directory" pair failure).
+	if cfgMapStr(chMap, "command") == "" {
 		chMap["command"] = "node"
 	}
-	if strings.TrimSpace(fmt.Sprint(chMap["session_dir"])) == "" {
+	if cfgMapStr(chMap, "session_dir") == "" {
 		base := filepath.Dir(s.cfg.Memory.Dir)
 		if base == "." || base == "" {
 			base = filepath.Dir(s.cfgPath)
@@ -1112,7 +1115,10 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	// binaries, not just repo checkouts: materialise the embedded script
 	// into the session dir and npm-install the dependency next to it when
 	// the configured args are absent or point at a missing file.
-	sessionDirVal, _ := chMap["session_dir"].(string)
+	sessionDirVal := cfgMapStr(chMap, "session_dir")
+	if sessionDirVal == "" {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "whatsapp_web: session_dir could not be resolved"})
+	}
 	existingArgs := parseStringListValue(chMap["args"])
 	switch {
 	case len(existingArgs) == 0 || !pathExists(existingArgs[0]):
@@ -1133,15 +1139,15 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": berr.Error()})
 		}
 	}
-	if strings.TrimSpace(fmt.Sprint(chMap["account_id"])) == "" {
+	if cfgMapStr(chMap, "account_id") == "" {
 		chMap["account_id"] = "default"
 	}
-	if strings.TrimSpace(fmt.Sprint(chMap["bot_name"])) == "" {
+	if cfgMapStr(chMap, "bot_name") == "" {
 		chMap["bot_name"] = "WhatsApp Web"
 	}
 	if strings.TrimSpace(req.TriggerPhrase) != "" {
 		chMap["trigger_phrase"] = strings.TrimSpace(req.TriggerPhrase)
-	} else if strings.TrimSpace(fmt.Sprint(chMap["trigger_phrase"])) == "" {
+	} else if cfgMapStr(chMap, "trigger_phrase") == "" {
 		chMap["trigger_phrase"] = "!soulacy"
 	}
 	if req.IgnoreGroups != nil {
@@ -1185,6 +1191,14 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 func pathExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// cfgMapStr returns a trimmed string value from a raw config map. Missing
+// keys and non-string values yield "" (unlike fmt.Sprint, which renders nil
+// as "<nil>" and silently defeats empty-checks).
+func cfgMapStr(m map[string]any, key string) string {
+	s, _ := m[key].(string)
+	return strings.TrimSpace(s)
 }
 
 func parseStringListValue(raw any) []string {
