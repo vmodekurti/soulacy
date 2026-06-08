@@ -1191,4 +1191,3 @@ func listChannels() error {
 	w.Flush()
 	return nil
 }
-
