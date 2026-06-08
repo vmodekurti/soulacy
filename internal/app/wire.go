@@ -965,11 +965,19 @@ func (a *App) Run(parent context.Context) error {
 			// embedded sidecar into the session dir (the pair API installs
 			// the Baileys dependency next to it).
 			if agentID != "" {
-				if _, statErr := os.Stat(firstOr(args, "")); len(args) == 0 || statErr != nil {
+				_, statErr := os.Stat(firstOr(args, ""))
+				switch {
+				case len(args) == 0 || statErr != nil:
 					if sp, serr := wawebchan.EnsureSidecarScript(sessionDir); serr != nil {
 						log.Warn("whatsapp_web sidecar script unavailable", zap.Error(serr))
 					} else {
 						args = []string{sp}
+					}
+				case filepath.Base(args[0]) == wawebchan.SidecarScriptName:
+					// Managed script: re-sync so binary upgrades ship
+					// sidecar fixes even though the file already exists.
+					if _, serr := wawebchan.EnsureSidecarScript(filepath.Dir(args[0])); serr != nil {
+						log.Warn("whatsapp_web sidecar script refresh failed", zap.Error(serr))
 					}
 				}
 			}

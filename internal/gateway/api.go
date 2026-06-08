@@ -1113,12 +1113,20 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	// into the session dir and npm-install the dependency next to it when
 	// the configured args are absent or point at a missing file.
 	sessionDirVal, _ := chMap["session_dir"].(string)
-	if existingArgs := parseStringListValue(chMap["args"]); len(existingArgs) == 0 || !pathExists(existingArgs[0]) {
+	existingArgs := parseStringListValue(chMap["args"])
+	switch {
+	case len(existingArgs) == 0 || !pathExists(existingArgs[0]):
 		scriptPath, serr := wawebchan.EnsureSidecarScript(sessionDirVal)
 		if serr != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": serr.Error()})
 		}
 		chMap["args"] = []string{scriptPath}
+	case filepath.Base(existingArgs[0]) == wawebchan.SidecarScriptName:
+		// Managed script: re-sync its content so binary upgrades actually
+		// ship sidecar fixes (the file existing must not freeze it forever).
+		if _, serr := wawebchan.EnsureSidecarScript(filepath.Dir(existingArgs[0])); serr != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": serr.Error()})
+		}
 	}
 	if scriptArgs := parseStringListValue(chMap["args"]); len(scriptArgs) > 0 {
 		if berr := wawebchan.EnsureBaileys(c.Context(), filepath.Dir(scriptArgs[0])); berr != nil {
