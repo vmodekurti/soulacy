@@ -1071,8 +1071,25 @@ func (a *App) Run(parent context.Context) error {
 				reply, err := engine.Handle(mCtx, msg)
 				metrics.WorkerPoolActiveRuns.Dec()
 				if err != nil {
-					mCancel()
 					log.Error("engine error", zap.String("agent", msg.AgentID), zap.Error(err))
+					// Don't leave the user staring at silence: send a short
+					// error back to the originating chat so a failed run
+					// (e.g. LLM unreachable / model not pulled) is visible.
+					errReply := message.Message{
+						SessionID: msg.SessionID,
+						AgentID:   msg.AgentID,
+						Channel:   msg.Channel,
+						ThreadID:  msg.ThreadID,
+						UserID:    msg.UserID,
+						Role:      message.RoleAssistant,
+						Parts:     message.Text("⚠ Sorry — I couldn't complete that. (" + concise(err) + ") Check the agent's LLM provider is reachable; see the gateway Logs."),
+						CreatedAt: time.Now().UTC(),
+					}
+					if serr := chanReg.Send(mCtx, errReply); serr != nil {
+						log.Error("channel send error (error-reply)",
+							zap.String("channel", msg.Channel), zap.Error(serr))
+					}
+					mCancel()
 					continue
 				}
 				if err := chanReg.Send(mCtx, reply); err != nil {
