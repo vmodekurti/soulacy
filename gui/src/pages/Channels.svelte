@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import QRCode from 'qrcode'
   import { api } from '../lib/api.js'
+  import { guideFor, renderInline } from '../lib/channelguides.js'
 
   let channels = []
   let agents   = []
@@ -19,7 +20,10 @@
   let saving    = false
   let pairing   = false
   let advancedWhatsAppWeb = false
+  let guideOpen = false
   let qrDataUrl = ''
+
+  $: activeGuide = editing ? guideFor(editing.id) : null
   let lastQR    = ''
   const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -73,6 +77,8 @@
     editing = ch
     form = {}
     advancedWhatsAppWeb = false
+    // First-time setup gets the guide expanded; reconfiguration starts folded.
+    guideOpen = !ch.configured
     for (const f of ch.schema || []) {
       // For secrets that are already set, leave the box blank — blank means "keep".
       form[f.key] = f.secret && ch.settings?.[f.key] === '***' ? '' : (ch.settings?.[f.key] || '')
@@ -380,6 +386,28 @@
     <div class="modal">
       <h2>{chanIcon(editing.id)} Configure {editing.name}</h2>
 
+      {#if activeGuide}
+        <div class="guide" class:open={guideOpen}>
+          <button type="button" class="guide-toggle" on:click={() => guideOpen = !guideOpen}>
+            📖 Setup guide {guideOpen ? '▾' : '▸'}
+          </button>
+          {#if guideOpen}
+            <p class="guide-intro">{@html renderInline(activeGuide.intro)}</p>
+            <ol class="guide-steps">
+              {#each activeGuide.steps as step}
+                <li>{@html renderInline(step)}</li>
+              {/each}
+            </ol>
+            {#if activeGuide.test}
+              <p class="guide-test"><strong>Test it:</strong> {@html renderInline(activeGuide.test)}</p>
+            {/if}
+            {#if activeGuide.warning}
+              <p class="guide-warning">⚠ {@html renderInline(activeGuide.warning)}</p>
+            {/if}
+          {/if}
+        </div>
+      {/if}
+
       {#if editing.id === 'whatsapp_web'}
         <div class="pair-panel">
           <label class="field">
@@ -466,6 +494,9 @@
               <input type="text" bind:value={form[f.key]} placeholder={f.help || ''} />
             {/if}
               {#if f.help}<span class="field-help">{f.help}</span>{/if}
+              {#if activeGuide?.fields?.[f.key]}
+                <span class="field-help guide-hint">💡 {@html renderInline(activeGuide.fields[f.key])}</span>
+              {/if}
             </label>
           {/each}
         </div>
@@ -676,4 +707,28 @@
     .qr-preview { grid-template-columns: 1fr; justify-items: center; text-align: center; }
     .advanced-panel { grid-template-columns: 1fr; }
   }
+
+  /* Inline setup guides */
+  .guide {
+    background: #0e1020; border: 1px solid #2a2f4a; border-radius: 8px;
+    padding: .35rem .7rem; margin-bottom: .9rem;
+  }
+  .guide.open { padding-bottom: .7rem; }
+  .guide-toggle {
+    background: none; border: none; cursor: pointer;
+    color: #8b85ff; font-size: .85rem; font-weight: 600; padding: .25rem 0;
+  }
+  .guide-intro { color: #c8cadf; font-size: .82rem; line-height: 1.5; margin: .3rem 0 .5rem; }
+  .guide-steps { margin: 0 0 .5rem 1.1rem; padding: 0; }
+  .guide-steps li { color: #b0b5d8; font-size: .8rem; line-height: 1.55; margin-bottom: .3rem; }
+  .guide-steps code, .guide-intro code, .guide-test code, .guide-hint code {
+    background: rgba(108,99,255,.12); border-radius: 4px;
+    padding: .05rem .3rem; font-size: .92em; color: #ada8ff;
+  }
+  .guide-test { color: #4caf82; font-size: .78rem; line-height: 1.5; margin: .4rem 0 0; }
+  .guide-warning {
+    color: #f0a060; font-size: .78rem; line-height: 1.5; margin: .45rem 0 0;
+    border-left: 2px solid #f0a060; padding-left: .55rem;
+  }
+  .guide-hint { color: #7b82a8; }
 </style>
