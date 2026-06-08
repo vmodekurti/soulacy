@@ -583,6 +583,10 @@ func setHomeDefaults(v *viper.Viper, ws Paths) {
 	v.SetDefault("knowledge.db_path", ws.DB("knowledge"))
 	v.SetDefault("runtime.audit_dir", ws.Audit)
 	v.SetDefault("server.gui_static_dir", ws.GUI)
+	// Default to a workspace log file so the GUI Logs page works out of the
+	// box (it tails log.file; empty = stdout-only and the page stays empty).
+	// The logger still mirrors to stdout — this only ADDS the file sink.
+	v.SetDefault("log.file", filepath.Join(ws.Logs, "soulacy.log"))
 }
 
 // DataDir returns the workspace root: ~/.soulacy/soulspace for new

@@ -410,7 +410,7 @@ func (s *Server) handleGetLogs(c *fiber.Ctx) error {
 			return c.JSON(fiber.Map{
 				"lines":  []string{},
 				"source": logPath,
-				"note":   fmt.Sprintf("Log file not found: %s", logPath),
+				"note":   fmt.Sprintf("No logs yet — the file %s appears once the gateway writes its first entry.", logPath),
 			})
 		}
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
