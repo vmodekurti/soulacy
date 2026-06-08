@@ -39,6 +39,18 @@ func NewEngine(entries []Entry, log *zap.Logger) *Engine {
 	return &Engine{entries: sorted, log: log}
 }
 
+// DefaultRegistries are the sources implied when config.yaml declares no
+// registries: the public skills.sh directory (native integration — search
+// + slug installs like anthropics/skills/skill-creator work with zero
+// configuration) and a bare git provider for github.com/user/repo style
+// sources. Declaring ANY registries: block replaces these entirely.
+func DefaultRegistries() []config.RegistryConfig {
+	return []config.RegistryConfig{
+		{ID: "skills.sh", Type: "skillssh", BaseURL: DefaultSkillsShBase, Priority: 50},
+		{ID: "git", Type: "git", Priority: 100},
+	}
+}
+
 // FromConfig resolves each `registries:` entry through the SDK factory
 // registry (keyed by Type, default "http"). Unknown types and factory
 // errors are returned as warnings — the remaining registries still work.

@@ -209,11 +209,12 @@ func TestSkillDirName(t *testing.T) {
 	}
 }
 
-func TestRegistriesFromConfig_DefaultsToGit(t *testing.T) {
+func TestRegistriesFromConfig_NativeDefaults(t *testing.T) {
+	// Zero config = skills.sh directory + bare git, in that priority order.
 	eng := registriesFromConfig(nil, zap.NewNop())
 	ids := eng.Providers()
-	if len(ids) != 1 || ids[0] != "git" {
-		t.Errorf("default providers = %v, want [git]", ids)
+	if len(ids) != 2 || ids[0] != "skills.sh" || ids[1] != "git" {
+		t.Errorf("default providers = %v, want [skills.sh git]", ids)
 	}
 }
 

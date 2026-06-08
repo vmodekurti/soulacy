@@ -87,6 +87,7 @@ func builtinSystemAgent() *agent.Definition {
 		// or irreversible built-in tool. The SSE stream emits a tool_confirm
 		// event; the GUI shows an approve/deny dialog before proceeding.
 		ConfirmTools: []string{"shell_exec", "run_script", "write_file", "http_request", "download_file", "install_library"},
+		SystemTools:  true,
 		Memory: agent.MemoryPolicy{
 			ReadScopes:  []string{"session"},
 			WriteScopes: []string{"session"},

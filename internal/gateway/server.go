@@ -670,6 +670,7 @@ func (s *Server) buildApp() *fiber.App {
 
 	// Skill sources / package registries (Story E26: review URL → add source)
 	api.Get("/registries", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleListRegistries)
+	api.Get("/registries/search", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleSearchRegistries)
 	api.Post("/registries/probe", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleProbeRegistry)
 	api.Post("/registries", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleAddRegistry)
 

@@ -23,6 +23,9 @@
   let srcSuccess = ''
   let srcReport  = null   // pkgregistry.ProbeReport
   let sources    = []     // configured registries
+  let findQ      = ''
+  let findBusy   = false
+  let findResults = null  // packages from /registries/search
 
   async function load() {
     loading = true
@@ -125,6 +128,19 @@
     }
   }
 
+  async function findSkills() {
+    if (!findQ.trim()) return
+    findBusy = true; srcError = ''; findResults = null
+    try {
+      const res = await api.registries.search(findQ.trim())
+      findResults = res.packages || []
+    } catch (e) {
+      srcError = e.message
+    } finally {
+      findBusy = false
+    }
+  }
+
   const kindLabels = {
     skillssh: '📚 Skill directory (skills.sh-compatible)',
     http:     '📦 Soulacy package registry',
@@ -174,6 +190,36 @@
           </div>
         {:else}
           <p class="as-hint">No sources configured yet.</p>
+        {/if}
+
+        <div class="src-probe-row">
+          <input
+            class="as-input"
+            type="text"
+            aria-label="Search skills"
+            placeholder="Search skills across your sources (skills.sh built in)…"
+            bind:value={findQ}
+            disabled={findBusy}
+            on:keydown={(e) => e.key === 'Enter' && findSkills()}
+          />
+          <button class="btn-as" on:click={findSkills} disabled={findBusy || !findQ.trim()}>
+            {findBusy ? 'Searching…' : '🔎 Find skills'}
+          </button>
+        </div>
+        {#if findResults}
+          <div class="src-report">
+            {#if findResults.length === 0}
+              <p>No skills matched.</p>
+            {:else}
+              {#each findResults.slice(0, 10) as pkg}
+                <div class="find-row">
+                  <code>{pkg.slug}</code>
+                  {#if pkg.description}<span class="find-desc">{pkg.description}</span>{/if}
+                  <span class="find-install">install: <code>sy skill install {pkg.slug}</code></span>
+                </div>
+              {/each}
+            {/if}
+          </div>
         {/if}
 
         <p class="as-hint">
@@ -533,6 +579,14 @@
   .src-kind { font-weight: 600; margin-bottom: .3rem; }
   .src-audits { color: #4caf82; font-size: .78rem; }
   .src-samples { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+  .find-row {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem;
+    padding: .3rem 0; border-bottom: 1px solid #1c2038; font-size: .8rem;
+  }
+  .find-row > code { color: #8b85ff; }
+  .find-desc { color: #9aa0c0; flex: 1; min-width: 12rem; }
+  .find-install { color: #6b7294; font-size: .72rem; }
+  .find-install code { color: #4caf82; }
   .src-samples code {
     background: rgba(108,99,255,.12); border-radius: 4px;
     padding: .1rem .4rem; font-size: .72rem; color: #ada8ff;
