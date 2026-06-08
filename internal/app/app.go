@@ -18,6 +18,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"go.uber.org/zap"
@@ -115,7 +116,14 @@ func buildLogger(cfg config.LogConfig) (*zap.Logger, error) {
 	zcfg.Level = level
 
 	if cfg.File != "" {
-		zcfg.OutputPaths = append(zcfg.OutputPaths, cfg.File)
+		// The logger is built before EnsureDirs runs, so make sure the log
+		// directory exists; if we can't, fall back to stdout-only rather
+		// than failing startup.
+		if err := os.MkdirAll(filepath.Dir(cfg.File), 0o755); err == nil {
+			zcfg.OutputPaths = append(zcfg.OutputPaths, cfg.File)
+		} else {
+			fmt.Fprintf(os.Stderr, "⚠ log file dir unavailable (%v) — logging to stdout only\n", err)
+		}
 	}
 
 	return zcfg.Build(zap.WithCaller(true), zap.AddStacktrace(zap.ErrorLevel))
