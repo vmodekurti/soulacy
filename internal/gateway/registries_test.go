@@ -140,3 +140,20 @@ func TestAddRegistry_AppendsAndValidates(t *testing.T) {
 		t.Errorf("server block mutated: %v", disk["server"])
 	}
 }
+
+// Regression for the whatsapp_web pair handler on FRESH configs:
+// fmt.Sprint(nil) == "<nil>" defeated every empty-check, so defaults were
+// skipped and EnsureSidecarScript got an empty dir ("mkdir : no such file
+// or directory" in the GUI). cfgMapStr treats missing keys as empty.
+func TestCfgMapStr_NilSafety(t *testing.T) {
+	m := map[string]any{"set": " value ", "wrongtype": 42}
+	if got := cfgMapStr(m, "missing"); got != "" {
+		t.Errorf("missing key = %q, want empty", got)
+	}
+	if got := cfgMapStr(m, "wrongtype"); got != "" {
+		t.Errorf("non-string = %q, want empty", got)
+	}
+	if got := cfgMapStr(m, "set"); got != "value" {
+		t.Errorf("set = %q", got)
+	}
+}
