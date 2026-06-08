@@ -132,18 +132,28 @@ async function main() {
       }
     });
 
+    const bare = (jid) => jidNormalizedUser(String(jid || '')).split('@')[0];
+
     sock.ev.on('messages.upsert', ({ messages, type }) => {
-      if (type !== 'notify') return;
-      const selfJid = jidNormalizedUser(sock.user?.id || '');
+      if (type !== 'notify') {
+        process.stderr.write(`upsert type=${type} ignored (${(messages || []).length} msgs)\n`);
+        return;
+      }
+      // The "Message yourself" chat may be addressed by the phone jid
+      // (@s.whatsapp.net) OR the linked identity (@lid) — match either.
+      const me = [sock.user?.id, sock.user?.lid].filter(Boolean).map(bare);
       for (const msg of messages || []) {
         if (!msg.message) continue;
         if (msg.key?.fromMe) {
           // Own messages are ignored EXCEPT in the "Message yourself"
           // chat, which doubles as a private playground for the agent.
           // The agent's own replies (ids we sent) never re-trigger it.
-          const chat = jidNormalizedUser(msg.key?.remoteJid || '');
-          const isSelfChat = selfJid !== '' && chat === selfJid;
-          if (!isSelfChat || sentIds.has(msg.key?.id)) continue;
+          const chatBare = bare(msg.key?.remoteJid);
+          const isSelfChat = chatBare !== '' && me.includes(chatBare);
+          if (!isSelfChat || sentIds.has(msg.key?.id)) {
+            process.stderr.write(`skip fromMe: chat=${msg.key?.remoteJid} me=[${me.join(',')}] sentEcho=${sentIds.has(msg.key?.id)}\n`);
+            continue;
+          }
         }
         const text = textFromMessage(msg.message).trim();
         if (!text) continue;
