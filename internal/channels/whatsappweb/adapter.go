@@ -195,6 +195,9 @@ func (a *Adapter) handleMessage(ctx context.Context, ev sidecarEvent) {
 	if !ok {
 		return
 	}
+	// The message will run the agent — show "typing…" in the chat while
+	// the reply is generated (refreshed sidecar-side; cleared on send).
+	a.sendTyping(ev.ChatID, "composing")
 	username := firstNonEmpty(ev.SenderName, userID)
 	created := time.Now().UTC()
 	if ev.Timestamp > 0 {
@@ -319,7 +322,22 @@ type sidecarEvent struct {
 }
 
 type sidecarCommand struct {
-	Type string `json:"type"`
-	To   string `json:"to"`
-	Text string `json:"text"`
+	Type  string `json:"type"`
+	To    string `json:"to"`
+	Text  string `json:"text,omitempty"`
+	State string `json:"state,omitempty"` // typing: "composing" | "paused"
+}
+
+// sendTyping best-effort signals a presence state ("composing" while the
+// agent works, "paused" handled sidecar-side on reply). Failures are
+// ignored — typing indicators are cosmetic.
+func (a *Adapter) sendTyping(chatID, state string) {
+	a.mu.Lock()
+	stdin := a.stdin
+	a.mu.Unlock()
+	if stdin == nil || chatID == "" {
+		return
+	}
+	data, _ := json.Marshal(sidecarCommand{Type: "typing", To: chatID, State: state})
+	_, _ = stdin.Write(append(data, '\n'))
 }

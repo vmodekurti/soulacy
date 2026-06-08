@@ -178,6 +178,33 @@ async function main() {
 
   await connect();
 
+  // Typing indicators: WhatsApp expires "composing" after ~10s, so while
+  // the agent generates we refresh it every 8s until the reply is sent.
+  const typingTimers = new Map(); // jid → interval
+  function stopTyping(jid) {
+    const t = typingTimers.get(jid);
+    if (t) {
+      clearInterval(t);
+      typingTimers.delete(jid);
+    }
+  }
+  async function setTyping(jid, state) {
+    if (!jid) return;
+    stopTyping(jid);
+    try {
+      if (state === 'composing') {
+        await sock.sendPresenceUpdate('composing', jid);
+        typingTimers.set(jid, setInterval(() => {
+          sock.sendPresenceUpdate('composing', jid).catch(() => {});
+        }, 8000));
+      } else {
+        await sock.sendPresenceUpdate('paused', jid);
+      }
+    } catch {
+      // cosmetic — never let presence failures break messaging
+    }
+  }
+
   const rl = readline.createInterface({ input: process.stdin, crlfDelay: Infinity });
   rl.on('line', async (line) => {
     let cmd;
@@ -187,8 +214,13 @@ async function main() {
       emit({ type: 'error', detail: 'invalid command JSON' });
       return;
     }
+    if (cmd.type === 'typing') {
+      await setTyping(cmd.to, cmd.state || 'composing');
+      return;
+    }
     if (cmd.type !== 'send') return;
     try {
+      await setTyping(cmd.to, 'paused');
       const sent = await sock.sendMessage(cmd.to, { text: String(cmd.text || '') });
       rememberSent(sent?.key?.id);
     } catch (error) {
