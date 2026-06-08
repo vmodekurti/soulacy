@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -128,11 +129,10 @@ Quick start:
 func buildAgentCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "agent", Short: "Manage agents"}
 
-	// list
 	cmd.AddCommand(&cobra.Command{
 		Use: "list", Short: "List all agents",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return apiGet("/agents", "agents")
+			return listAgents()
 		},
 	})
 
@@ -245,7 +245,7 @@ func buildChannelCmd() *cobra.Command {
 	cmd.AddCommand(&cobra.Command{
 		Use: "list", Short: "List channel adapter status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return apiGet("/channels", "channels")
+			return listChannels()
 		},
 	})
 	cmd.AddCommand(&cobra.Command{
@@ -1101,3 +1101,94 @@ func workspaceSkills(home string) string {
 	}
 	return filepath.Join(home, ".soulacy", "skills")
 }
+
+func listAgents() error {
+	data, err := apiCall("GET", "/agents", nil)
+	if err != nil {
+		return err
+	}
+	if outputJSON {
+		fmt.Println(string(data))
+		return nil
+	}
+	var result struct {
+		Agents []map[string]any `json:"agents"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		fmt.Println(string(data))
+		return nil
+	}
+	agents := result.Agents
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tENABLED\tCHANNELS\tLLM")
+	for _, agent := range agents {
+		id := stringValue(agent, "id")
+		name := stringValue(agent, "name")
+		enabled := fmt.Sprintf("%v", agent["enabled"])
+
+		var channels []string
+		if chs, ok := agent["channels"].([]any); ok {
+			for _, ch := range chs {
+				channels = append(channels, fmt.Sprint(ch))
+			}
+		} else if chs, ok := agent["channels"].([]string); ok {
+			channels = chs
+		}
+		chStr := strings.Join(channels, ", ")
+		if chStr == "" {
+			chStr = "(none)"
+		}
+
+		llmStr := "(none)"
+		if llm, ok := agent["llm"].(map[string]any); ok {
+			prov := stringValue(llm, "provider")
+			model := stringValue(llm, "model")
+			if prov != "" || model != "" {
+				llmStr = fmt.Sprintf("%s/%s", prov, model)
+			}
+		}
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", id, name, enabled, chStr, llmStr)
+	}
+	w.Flush()
+	return nil
+}
+
+func listChannels() error {
+	data, err := apiCall("GET", "/channels", nil)
+	if err != nil {
+		return err
+	}
+	if outputJSON {
+		fmt.Println(string(data))
+		return nil
+	}
+
+	var result struct {
+		Channels []map[string]any `json:"channels"`
+	}
+	if err := json.Unmarshal(data, &result); err != nil {
+		fmt.Println(string(data))
+		return nil
+	}
+	channels := result.Channels
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tENABLED\tCONFIGURED\tCONNECTED\tDETAIL")
+	for _, ch := range channels {
+		id := stringValue(ch, "id")
+		name := stringValue(ch, "name")
+		enabled := fmt.Sprintf("%v", ch["enabled"])
+		configured := fmt.Sprintf("%v", ch["configured"])
+
+		status := mapValue(ch, "status")
+		connected := fmt.Sprintf("%v", boolValue(status, "connected"))
+		detail := stringValue(status, "detail")
+
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", id, name, enabled, configured, connected, detail)
+	}
+	w.Flush()
+	return nil
+}
+
