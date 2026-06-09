@@ -1765,6 +1765,16 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		return message.Message{}, fmt.Errorf("engine: system agent is only available on http channel")
 	}
 
+	// Router short-circuit. Kind=="router" agents have no LLM loop — they
+	// match the inbound text against def.Routes and forward to the first
+	// matching peer via the existing agent__<id> peer-call path. See
+	// docs/CHANNEL_DESIGN.md Q2. The peer's reply is returned verbatim.
+	// Defined as a method so router-specific logic (rule matching, trace
+	// events) lives alongside the dispatcher without bloating Handle.
+	if def.Kind == "router" {
+		return e.dispatchRouter(ctx, def, msg)
+	}
+
 	// Provider allowlist guard. Closes the "GUI dropdown fat-finger →
 	// paid-API hit" class of failure: an agent that declares
 	// `allowed_providers: [ollama]` can never dial out to Anthropic /
@@ -3247,6 +3257,133 @@ func (e *Engine) buildAgentCallSchemas(def *agent.Definition) []llm.ToolSchema {
 		})
 	}
 	return out
+}
+
+// dispatchRouter handles Kind=="router" agents — see docs/CHANNEL_DESIGN.md
+// Q2. The router has no LLM loop: it inspects the inbound text, picks the
+// first matching route, and dispatches to the named peer agent via the
+// existing peer-call path. The peer's reply becomes the router's reply.
+//
+// Matching:
+//   1. Routes are tried in declaration order; the first match wins.
+//   2. Each route has at most one effective match clause — Regex,
+//      Prefix, or any-of Contains. A route with NONE of those clauses
+//      is the "else" fallback (must be last if present).
+//   3. Match is case-insensitive for Prefix and Contains. Regex follows
+//      Go's regexp semantics (use `(?i)…` for case-insensitive patterns).
+//   4. If no route matches and no fallback exists, the router emits an
+//      error event and returns an empty reply.
+//
+// Authorization: the Target must be in the router's declared peer list
+// (def.Agents). runAgentCall enforces this independently, so a router
+// can't manufacture a forbidden Target via a bad config — but we also
+// pre-validate here to produce a clearer error event.
+//
+// Trace: emits a `router.match` event recording which route matched
+// (and what text triggered it) so misclassifications are debuggable.
+func (e *Engine) dispatchRouter(ctx context.Context, def *agent.Definition, msg message.Message) (message.Message, error) {
+	text := flattenParts(msg.Parts)
+	matchIdx, matched := pickRouterRoute(def.Routes, text)
+	if !matched {
+		errMsg := fmt.Sprintf("engine: router %q has no matching route for inbound text and no fallback configured", def.ID)
+		e.sink.Emit(message.Event{
+			Type: "error", AgentID: msg.AgentID, SessionID: msg.SessionID,
+			Payload: map[string]any{
+				"message":     errMsg,
+				"reason":      "router_no_match",
+				"text_prefix": truncate(text, 200),
+			},
+			Timestamp: time.Now().UTC(),
+		})
+		return message.Message{}, fmt.Errorf("%s", errMsg)
+	}
+	route := def.Routes[matchIdx]
+
+	e.sink.Emit(message.Event{
+		Type: "router.match", AgentID: msg.AgentID, SessionID: msg.SessionID,
+		Payload: map[string]any{
+			"router":      def.ID,
+			"target":      route.Target,
+			"match_index": matchIdx,
+			"match_kind":  routeMatchKind(route),
+		},
+		Timestamp: time.Now().UTC(),
+	})
+
+	// Reuse the existing peer-call path for the actual dispatch. This
+	// gives us — for free — the peer-list authorization check
+	// (runAgentCall.allowed) and the depth-limit guard.
+	args := map[string]any{"message": text}
+	peerReply, err := e.runAgentCall(ctx, def, AgentToolPrefix+route.Target, args)
+	if err != nil {
+		return message.Message{}, err
+	}
+
+	return message.Message{
+		ID:        msg.ID,
+		SessionID: msg.SessionID,
+		AgentID:   def.ID,
+		Channel:   msg.Channel,
+		ThreadID:  msg.ThreadID,
+		UserID:    msg.UserID,
+		Username:  msg.Username,
+		Role:      message.RoleAssistant,
+		Parts:     message.Text(peerReply),
+		CreatedAt: time.Now().UTC(),
+	}, nil
+}
+
+// pickRouterRoute returns the index of the first matching route, or
+// (-1, false) if no route matches and no fallback exists. A "fallback"
+// route is one with no Regex, no Prefix, and no Contains — pure else.
+// Pre-compiles regexes per call; cheap enough at typical route counts.
+// For agents with hundreds of routes this could be cached at load time,
+// but that's premature optimisation given typical router shapes (3-10
+// routes).
+func pickRouterRoute(routes []agent.RouterRoute, text string) (int, bool) {
+	lowText := strings.ToLower(text)
+	for i, r := range routes {
+		switch {
+		case r.Regex != "":
+			re, err := regexp.Compile(r.Regex)
+			if err != nil {
+				continue // skip malformed; runtime warning is too noisy here
+			}
+			if re.MatchString(text) {
+				return i, true
+			}
+		case r.Prefix != "":
+			if strings.HasPrefix(lowText, strings.ToLower(r.Prefix)) {
+				return i, true
+			}
+		case len(r.Contains) > 0:
+			for _, sub := range r.Contains {
+				if sub == "" {
+					continue
+				}
+				if strings.Contains(lowText, strings.ToLower(sub)) {
+					return i, true
+				}
+			}
+		default:
+			// No match clauses → this is the else fallback. Always wins.
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+func routeMatchKind(r agent.RouterRoute) string {
+	switch {
+	case r.Regex != "":
+		return "regex"
+	case r.Prefix != "":
+		return "prefix"
+	case len(r.Contains) > 0:
+		return "contains"
+	default:
+		return "fallback"
+	}
 }
 
 // runAgentCall is the dispatcher invoked when an LLM emits a tool call whose

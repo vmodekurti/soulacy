@@ -197,6 +197,24 @@ type Definition struct {
 	Tags        []string          `yaml:"tags,omitempty"    json:"tags,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty"  json:"labels,omitempty"`
 
+	// Kind opts the agent into a non-default execution shape. Empty (or
+	// "worker") = the standard LLM loop. "router" = the engine treats this
+	// agent as a dispatcher: at message entry, it matches the inbound text
+	// against `Routes` and forwards to the first matching peer via the
+	// existing agent__<id> peer-call path. No LLM is invoked at the
+	// router level. See docs/CHANNEL_DESIGN.md Q2.
+	//
+	// Backward compat: a SOUL.yaml without `kind:` is a worker — every
+	// pre-existing agent keeps its current semantics.
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+
+	// Routes is consulted only when Kind == "router". Routes are tried in
+	// order; the first match wins. A route with no match clauses (no
+	// Regex, no Prefix, no Contains) is the "else" fallback and MUST be
+	// last if present. If no route matches and no fallback exists, the
+	// router returns an empty reply with an error event.
+	Routes []RouterRoute `yaml:"routes,omitempty" json:"routes,omitempty"`
+
 	// --- Trigger ---
 	Trigger  TriggerKind `yaml:"trigger"             json:"trigger"`
 	Channels []string    `yaml:"channels,omitempty"  json:"channels,omitempty"`
@@ -344,6 +362,39 @@ type Definition struct {
 	// Populated at load time — excluded from API responses and YAML serialisation.
 	SourcePath string    `yaml:"-" json:"-"`
 	LoadedAt   time.Time `yaml:"-" json:"-"`
+}
+
+// RouterRoute is one rule in a Kind=="router" agent's Routes list. The
+// engine matches rules in declaration order; the first match wins.
+//
+// Match clauses (all optional, evaluated in order: Regex → Prefix →
+// Contains). A route with NO match clauses is the "else" fallback and
+// must appear last. Matching is case-insensitive for Prefix and
+// Contains; Regex is whatever Go's regexp package decides.
+//
+// Target is the peer agent ID to dispatch to. It MUST appear in the
+// router's `agents:` peer list (the existing engine guard at
+// runAgentCall enforces this independently — a router cannot manufacture
+// a Target outside its allowlist).
+//
+// See docs/CHANNEL_DESIGN.md Q2 for the rationale.
+type RouterRoute struct {
+	// Regex, if non-empty, is compiled once at load and matched against
+	// the inbound message text. Use `(?i)` inside the pattern for
+	// case-insensitive matching; Go's regexp doesn't have a top-level
+	// case-insensitive flag.
+	Regex string `yaml:"regex,omitempty" json:"regex,omitempty"`
+
+	// Prefix is a case-insensitive starts-with check. Useful for slash
+	// commands like "/research" or "!finance".
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// Contains is a case-insensitive any-of substring check. The route
+	// matches if the inbound text contains ANY of the listed substrings.
+	Contains []string `yaml:"contains,omitempty" json:"contains,omitempty"`
+
+	// Target is the peer agent ID to dispatch to on match. Required.
+	Target string `yaml:"target" json:"target"`
 }
 
 // NotifyOnFailure is the SOUL.yaml block that configures where a run's

@@ -27,36 +27,35 @@ The field is crowded with frameworks that assume you want to write Python and de
 
 ### Install
 
-### macOS — one line
+### One line — macOS & Linux
 
 ```bash
-brew install soulacy/tap/soulacy
+curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash
 ```
 
-Then start the gateway and open the dashboard:
+What it does, with zero questions asked:
+
+1. Clones the latest source (requires `git` and Go 1.22+).
+2. Builds `soulacy` (the gateway) and `sy` (the CLI).
+3. Installs both into `~/.local/bin` (no `sudo`).
+4. Done. Run `soulacy serve` — the gateway prints a one-time banner with the URL and a freshly-generated API key.
+
+Then open <http://127.0.0.1:18789>, paste the key, and you're in. The runtime workspace (`~/.soulacy/soulspace/`), config file, starter agent, and API key are all created automatically on first launch — you never have to touch a config file.
+
+Overrides:
 
 ```bash
-brew services start soulacy
-open http://localhost:18789
+SOULACY_PREFIX=/usr/local curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash   # system-wide (uses sudo)
+SOULACY_REF=v0.4.0       curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash   # pin a tag
 ```
 
-### macOS — from source
+### From a local checkout
 
 ```bash
-git clone https://github.com/soulacy/soulacy
+git clone https://github.com/vmodekurti/soulacy
 cd soulacy
-bash scripts/mac-install.sh
+./install.sh                  # same behavior; will offer LaunchAgent setup on macOS
 ```
-
-Builds the GUI, compiles the binaries, installs to `/usr/local/bin`, registers a LaunchAgent so it starts on login, and opens the browser.
-
-### Linux — one line
-
-```bash
-curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash
-```
-
-Downloads the pre-built binary for your platform, installs it, and registers a `systemd` service that starts on boot.
 
 ### Docker — full stack (Postgres + Qdrant + GUI)
 

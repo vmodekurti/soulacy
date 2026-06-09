@@ -82,10 +82,17 @@ func (p Paths) CredentialsDB() string {
 }
 
 // Dirs lists every directory of the layout (for EnsureDirs / migration).
+//
+// The mcp-servers entry was added 2026-06-08 to fix the `sy doctor`
+// warning that flagged a fresh install as misconfigured. The directory
+// houses bundled / locally-installed MCP server distributions; it must
+// exist (even empty) so the MCP page in the GUI can scan it without
+// erroring.
 func (p Paths) Dirs() []string {
 	return []string{
 		p.Agents, p.Skills, p.Plugins, p.Templates, p.Tools,
 		p.Memory, p.Data, p.Logs, p.Audit, p.Secrets, p.Registry,
+		filepath.Join(p.Root, "mcp-servers"),
 	}
 }
 
