@@ -35,18 +35,21 @@ curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh 
 
 What it does, with zero questions asked:
 
-1. Clones the latest source (requires `git` and Go 1.22+).
-2. Builds `soulacy` (the gateway) and `sy` (the CLI).
-3. Installs both into `~/.local/bin` (no `sudo`).
-4. Done. Run `soulacy serve` — the gateway prints a one-time banner with the URL and a freshly-generated API key.
+1. Clones the latest source (requires `git`, Go 1.22+, and `npm` for the GUI build).
+2. Builds the Svelte GUI and compiles `soulacy` (the gateway) + `sy` (the CLI).
+3. Installs both binaries into `~/.local/bin` (no `sudo`).
+4. Prints clear next steps + offers to launch the gateway on the spot.
 
-Then open <http://127.0.0.1:18789>, paste the key, and you're in. The runtime workspace (`~/.soulacy/soulspace/`), config file, starter agent, and API key are all created automatically on first launch — you never have to touch a config file.
+When you run `soulacy serve` (either right away or later), the gateway prints a one-time banner with the URL and a freshly-generated API key. Then open <http://127.0.0.1:18789>, paste the key, and you're in. The runtime workspace (`~/.soulacy/soulspace/`), config file, starter agent, and API key are all created automatically on first launch — you never have to touch a config file.
 
 Overrides:
 
 ```bash
-SOULACY_PREFIX=/usr/local curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash   # system-wide (uses sudo)
-SOULACY_REF=v0.4.0       curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash   # pin a tag
+# install from a branch / tag / sha
+SOULACY_REF=feature/integrated-roadmap curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/feature/integrated-roadmap/install.sh | bash
+
+# install system-wide (uses sudo)
+SOULACY_PREFIX=/usr/local curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash
 ```
 
 ### From a local checkout
