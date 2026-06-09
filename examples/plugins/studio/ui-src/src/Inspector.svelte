@@ -6,9 +6,21 @@
   //     draft via onChange so subsequent Test/Save use the edited values, and
   //     the canvas re-renders the START / SINK chips.
   export let node = null        // raw flow node | null
+  export let selectedEdge = null // { index, edge } when an edge is selected | null
   export let workflow = null    // the in-memory draft { trigger, channels, ... }
   export let channels = []      // [{ id, name }] from the catalog
   export let onChange = () => {} // (patch) => void; patch merged into workflow
+  // (index, patch) => void; patch merged into the draft edge at flow.edges[index].
+  export let onEdgeChange = () => {}
+
+  // The raw draft edges (for the "Edges" list shown when nothing is selected).
+  $: draftEdges = (workflow && workflow.flow && Array.isArray(workflow.flow.edges))
+    ? workflow.flow.edges : []
+  // Real (non-terminal) edges, paired with their true index in flow.edges so
+  // edits write back to the right slot.
+  $: editableEdges = draftEdges
+    .map((e, index) => ({ e, index }))
+    .filter(({ e }) => e && e.to && e.to !== 'end')
 
   const TRIGGER_TYPES = ['schedule', 'channel', 'webhook', 'manual']
   const CRON_HINTS = [
@@ -65,7 +77,23 @@
 <aside class="inspector" aria-label="Node inspector">
   <h2 class="insp-title">Inspector</h2>
 
-  {#if node}
+  {#if selectedEdge}
+    <!-- Selected edge: editable `if` predicate + read-only endpoints/ports. -->
+    <p class="insp-hint">Editing a connection. The predicate decides when this branch is taken; leave it empty for the fallback (“else”) leg.</p>
+    <dl class="fields">
+      <dt>from</dt><dd>{selectedEdge.edge.from || '—'}{#if selectedEdge.edge.fromPort} <span class="port">·{selectedEdge.edge.fromPort}</span>{/if}</dd>
+      <dt>to</dt><dd>{selectedEdge.edge.to || '—'}{#if selectedEdge.edge.toPort} <span class="port">·{selectedEdge.edge.toPort}</span>{/if}</dd>
+    </dl>
+    <label class="field-label" for="edge-if">if (predicate)</label>
+    <input
+      id="edge-if"
+      type="text"
+      placeholder="e.g. score > 0.5"
+      value={selectedEdge.edge.if || ''}
+      on:input={(e) => onEdgeChange(selectedEdge.index, { if: e.target.value })}
+    />
+    <p class="insp-hint">Writes back to the draft so Test / Save / Validate use this condition.</p>
+  {:else if node}
     <!-- Selected node: read-only fields (unchanged Wave 1 behaviour). -->
     <dl class="fields">
       <dt>id</dt><dd>{node.id}</dd>
@@ -75,6 +103,18 @@
       <dt>input</dt><dd>{fmt(node.input) || '—'}</dd>
       <dt>output</dt><dd>{fmt(node.output) || '—'}</dd>
     </dl>
+
+    {#if (node.inputs && node.inputs.length) || (node.outputs && node.outputs.length)}
+      <h3 class="sub">ports</h3>
+      <dl class="fields">
+        {#each (node.inputs || []) as p}
+          <dt>in</dt><dd>{p.label || p.name}{#if p.type} <span class="port">:{p.type}</span>{/if}</dd>
+        {/each}
+        {#each (node.outputs || []) as p}
+          <dt>out</dt><dd>{p.label || p.name}{#if p.type} <span class="port">:{p.type}</span>{/if}</dd>
+        {/each}
+      </dl>
+    {/if}
 
     <h3 class="sub">params</h3>
     {#if entries(node.params).length === 0}
@@ -152,6 +192,35 @@
                 />
                 <span>{ch.name || ch.id}</span>
               </label>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
+    <!-- Edges list: edit each branch/flow edge's `if` predicate without having
+         to click the edge on the canvas (also the fallback if edge-selection is
+         awkward in this xyflow build). -->
+    <section class="frame">
+      <h3 class="sub">Edges &amp; conditions</h3>
+      {#if !editableEdges.length}
+        <p class="insp-empty">No edges yet.</p>
+      {:else}
+        <ul class="edge-list">
+          {#each editableEdges as { e, index } (index)}
+            <li class="edge-row">
+              <div class="edge-ends">
+                <span class="edge-from">{e.from}{#if e.fromPort}<span class="port">·{e.fromPort}</span>{/if}</span>
+                <span class="edge-arrow">→</span>
+                <span class="edge-to">{e.to}{#if e.toPort}<span class="port">·{e.toPort}</span>{/if}</span>
+              </div>
+              <input
+                class="edge-if"
+                type="text"
+                placeholder="if predicate (empty = else)"
+                value={e.if || ''}
+                on:input={(ev) => onEdgeChange(index, { if: ev.target.value })}
+              />
             </li>
           {/each}
         </ul>
@@ -242,4 +311,29 @@
     border-radius: 6px;
     padding: 6px 8px;
   }
+  .port {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* Edges list */
+  .edge-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .edge-row {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+  }
+  .edge-ends {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text);
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .edge-arrow { color: var(--text-muted); }
+  .edge-if { width: 100%; }
 </style>

@@ -85,19 +85,31 @@ type Result struct {
 }
 
 // canonicalExample is the shape the model is instructed to emit. It is
-// embedded verbatim in the prompt so the model has a concrete target.
+// embedded verbatim in the prompt so the model has a concrete target. It is
+// deliberately a RICH, MULTI-NODE graph (Story M3): multiple tool AND agent
+// (peer) nodes, a branch node fanning out conditional edges, and typed ports
+// wired with from_port/to_port — so the model treats branching, peer-agent
+// handoff, and named ports as the norm, not the exception.
 const canonicalExample = `{
   "name": "Weekday HN Digest",
   "trigger": { "type": "schedule", "config": { "cron": "0 8 * * 1-5" } },
   "channels": ["telegram"],
   "flow": {
     "nodes": [
-      { "id": "fetch", "kind": "tool", "tool": "http_get", "input": "{\"url\":\"https://hacker-news.firebaseio.com/v0/topstories.json\"}", "output": "stories", "x": 0, "y": 0 },
-      { "id": "summarize", "kind": "agent", "agent": "summarizer", "input": "Summarize the top 5: {{.stories}}", "output": "summary", "x": 200, "y": 0 }
+      { "id": "fetch", "kind": "tool", "tool": "http_get", "input": "{\"url\":\"https://hacker-news.firebaseio.com/v0/topstories.json\"}", "output": "stories",
+        "outputs": [ { "name": "ok", "type": "json" } ], "x": 0, "y": 0 },
+      { "id": "triage", "kind": "branch",
+        "inputs":  [ { "name": "in" } ],
+        "outputs": [ { "name": "hot" }, { "name": "quiet" } ], "x": 200, "y": 0 },
+      { "id": "summarize", "kind": "agent", "agent": "summarizer", "input": "Summarize the top 5: {{.stories}}", "output": "summary", "x": 400, "y": -80 },
+      { "id": "notify", "kind": "agent", "agent": "notifier", "input": "Nothing notable today.", "output": "note", "x": 400, "y": 80 }
     ],
     "edges": [
-      { "from": "fetch", "to": "summarize" },
-      { "from": "summarize", "to": "end" }
+      { "from": "fetch", "to": "triage", "from_port": "ok", "to_port": "in" },
+      { "from": "triage", "to": "summarize", "from_port": "hot",   "if": "{{ gt (len .stories) 0 }}" },
+      { "from": "triage", "to": "notify",    "from_port": "quiet" },
+      { "from": "summarize", "to": "end" },
+      { "from": "notify", "to": "end" }
     ],
     "entry": "fetch"
   }
@@ -120,9 +132,12 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- trigger.type is one of: schedule, channel, webhook, manual.\n")
 	sb.WriteString("- For schedule triggers, put a cron expression in trigger.config.cron.\n")
 	sb.WriteString("- channels is a list of output channel names (e.g. \"telegram\", \"slack\", \"email\").\n")
-	sb.WriteString("- flow.nodes[].kind is one of: tool, agent, branch. tool nodes set \"tool\"; agent nodes set \"agent\".\n")
+	sb.WriteString("- flow.nodes[].kind is one of: tool, agent, branch. tool nodes set \"tool\"; agent nodes set \"agent\"; branch nodes set neither.\n")
 	sb.WriteString("- Every flow must have an entry node and edges that terminate at \"end\".\n")
-	sb.WriteString("- Prefer at least one tool node (to fetch/act) and one agent node (to reason/summarize).\n\n")
+	sb.WriteString("- Prefer at least one tool node (to fetch/act) and one agent node (to reason/summarize).\n")
+	sb.WriteString("- Build REAL multi-node graphs. Emit MULTIPLE tool and agent nodes when the intent has multiple steps; multiple agent (kind=agent) nodes are peers that hand off to each other.\n")
+	sb.WriteString("- Use a branch node (kind=branch, no tool/agent) whenever the work forks on a CONDITION. A branch node fans out 2+ edges; put a Go-template predicate in edge.if (over flow vars, e.g. \"{{ gt (len .stories) 0 }}\"). Edges from a node are tried IN ORDER; the first whose if is truthy wins, so leave the LAST/fallback edge's if empty.\n")
+	sb.WriteString("- When a node fans out to multiple targets, you MAY declare typed ports: set nodes[].outputs / inputs to lists of {\"name\":...,\"type\"?:...} and wire edges with from_port / to_port. A named from_port MUST be one of the From node's declared outputs; a named to_port MUST be one of the To node's declared inputs. Omit ports entirely for simple linear hops.\n\n")
 
 	if len(catalog.Agents) > 0 {
 		sb.WriteString("Available agents: ")
@@ -258,7 +273,16 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// trigger the model already set correctly.
 	normalizeTrigger(&draft, intent)
 
-	// The flow must compile — this is the hard contract.
+	// Deterministic graph normalization (Story M3): make the node kinds the
+	// model implied explicit, so the returned/persisted draft carries the same
+	// tool|agent|branch kind the engine will infer. This never changes graph
+	// SHAPE (nodes/edges/entry/ports stay as emitted) — it only fills a blank
+	// Kind from the node's Tool/Agent fields, mirroring CompileFlow.
+	normalizeFlow(&draft)
+
+	// The flow must compile — this is the hard contract. A model that emits a
+	// structurally invalid multi-node/branch/port graph is rejected here and
+	// NOT persisted; the caller sees a clear error.
 	if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
 		return Result{}, fmt.Errorf("studio: compiled flow is invalid: %w", err)
 	}
@@ -470,6 +494,33 @@ func inferHour(lc string) int {
 		i = j
 	}
 	return -1
+}
+
+// normalizeFlow makes the implied node kinds explicit (Story M3). For each
+// node whose Kind is blank it derives tool|agent|branch from the node's
+// Tool/Agent fields — the exact same inference reasoning.CompileFlow performs
+// — so the draft the compiler returns (and the one Studio later persists)
+// carries the kind the engine will execute. It is purely additive: it never
+// rewrites a Kind the model already set, never touches edges/ports/entry, and
+// never invents nodes. Branch and multi-agent graphs round-trip unchanged.
+func normalizeFlow(d *Draft) {
+	if d == nil {
+		return
+	}
+	for i := range d.Flow.Nodes {
+		n := &d.Flow.Nodes[i]
+		if strings.TrimSpace(n.Kind) != "" {
+			continue
+		}
+		switch {
+		case strings.TrimSpace(n.Tool) != "":
+			n.Kind = sdkr.FlowNodeTool
+		case strings.TrimSpace(n.Agent) != "":
+			n.Kind = sdkr.FlowNodeAgent
+		default:
+			n.Kind = sdkr.FlowNodeBranch
+		}
+	}
 }
 
 // analyze derives clarifying questions for missing essentials and notes

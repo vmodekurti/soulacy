@@ -660,6 +660,8 @@ func (s *Server) buildApp() *fiber.App {
 	// Studio plugin backend (M2): capability-tier consent plan + gated save.
 	api.Post("/studio/plan", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioPlan)
 	api.Post("/studio/save", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSave)
+	// Studio plugin backend (M3): canvas-time graph validation (read-only).
+	api.Post("/studio/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidate)
 
 	// E4: Capability Gap Detection
 	if s.builderRegistry != nil {

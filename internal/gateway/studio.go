@@ -102,6 +102,25 @@ func (s *Server) handleStudioTest(c *fiber.Ctx) error {
 	return c.JSON(res)
 }
 
+// studioValidateRequest is the POST /api/v1/studio/validate body. The canvas
+// posts the in-progress draft and gets back structured errors + warnings.
+type studioValidateRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioValidate implements POST /api/v1/studio/validate. It validates
+// the draft's flow graph (Story M3) and returns structured errors + soft
+// warnings the canvas surfaces while the user edits. The handler is thin —
+// all logic lives in studio.Validate, which NEVER fails on a bad graph (a bad
+// graph is reported as data), so this endpoint never 500s on workflow content.
+func (s *Server) handleStudioValidate(c *fiber.Ctx) error {
+	var req studioValidateRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+	}
+	return c.JSON(studio.Validate(req.Workflow))
+}
+
 // studioPlanRequest is the POST /api/v1/studio/plan body.
 type studioPlanRequest struct {
 	Workflow studio.Draft `json:"workflow"`

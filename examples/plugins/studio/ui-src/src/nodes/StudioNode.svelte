@@ -1,14 +1,50 @@
 <script>
   import { Handle, Position } from '@xyflow/svelte'
-  // A workflow step. Colour & kind chip keyed by node.kind (tool/agent/branch).
+  // A workflow step. Visual keyed by node.kind:
+  //   tool   -> teal card with default handles
+  //   agent  -> indigo "peer" card (double border, handoff affordance)
+  //   branch -> amber decision node (diamond accent)
+  // When the node declares inputs[]/outputs[] we render ONE handle per declared
+  // port (handle id = port name) stacked on the left/right; otherwise we fall
+  // back to a single default handle per side (legacy behaviour).
   export let data
   $: node = data.node
+  $: inputs = (data && data.inputs) || []
+  $: outputs = (data && data.outputs) || []
+  $: shape = (data && data.shape) || 'card'
+
+  // Evenly distribute N handles across the vertical edge of the node.
+  function offsetPct(i, n) {
+    return ((i + 1) / (n + 1)) * 100
+  }
 </script>
 
-<div class="studio-node" class:entry={data.isEntry} style="--node-accent: {data.color}">
-  <Handle type="target" position={Position.Left} />
+<div
+  class="studio-node shape-{shape}"
+  class:entry={data.isEntry}
+  class:invalid={data.invalid}
+  class:warn={data.warn}
+  style="--node-accent: {data.color}"
+>
+  <!-- ── Input handles (left) ── -->
+  {#if inputs.length}
+    {#each inputs as p, i}
+      <Handle
+        type="target"
+        position={Position.Left}
+        id={p.name}
+        style={`top:${offsetPct(i, inputs.length)}%`}
+      />
+      <span class="port-label in" style={`top:${offsetPct(i, inputs.length)}%`}>{p.label}{#if p.type}<em>:{p.type}</em>{/if}</span>
+    {/each}
+  {:else}
+    <Handle type="target" position={Position.Left} />
+  {/if}
+
   <div class="node-head">
     <span class="kind-chip">{data.kindLabel}</span>
+    {#if shape === 'decision'}<span class="decision-glyph" aria-hidden="true">◆</span>{/if}
+    {#if shape === 'peer'}<span class="peer-glyph" title="peer-agent handoff" aria-hidden="true">⇄</span>{/if}
     {#if data.isEntry}<span class="entry-chip">entry</span>{/if}
   </div>
   <div class="node-title" title={data.label}>{data.label}</div>
@@ -16,11 +52,26 @@
     <span class="node-id">{node.id}</span>
     {#if node.output}<span class="node-out">→ {node.output}</span>{/if}
   </div>
-  <Handle type="source" position={Position.Right} />
+
+  <!-- ── Output handles (right) ── -->
+  {#if outputs.length}
+    {#each outputs as p, i}
+      <Handle
+        type="source"
+        position={Position.Right}
+        id={p.name}
+        style={`top:${offsetPct(i, outputs.length)}%`}
+      />
+      <span class="port-label out" style={`top:${offsetPct(i, outputs.length)}%`}>{p.label}{#if p.type}<em>:{p.type}</em>{/if}</span>
+    {/each}
+  {:else}
+    <Handle type="source" position={Position.Right} />
+  {/if}
 </div>
 
 <style>
   .studio-node {
+    position: relative;
     min-width: 170px;
     max-width: 220px;
     background: var(--bg-elev-2, #1b2235);
@@ -31,9 +82,40 @@
     color: var(--text, #e6e9f2);
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35);
   }
+
+  /* Agent = peer handoff: doubled accent border + faint top-stripe so it reads
+     as a hand-off to another agent rather than a tool call. */
+  .studio-node.shape-peer {
+    border-style: double;
+    border-width: 1px 1px 1px 4px;
+    background:
+      linear-gradient(180deg, color-mix(in srgb, var(--node-accent) 16%, transparent), transparent 38%),
+      var(--bg-elev-2, #1b2235);
+  }
+
+  /* Branch = decision: clipped corners give a diamond-ish silhouette + the ◆
+     glyph in the head. */
+  .studio-node.shape-decision {
+    border-radius: 12px;
+    clip-path: polygon(8% 0, 92% 0, 100% 50%, 92% 100%, 8% 100%, 0 50%);
+    padding-left: 18px;
+    padding-right: 18px;
+    background:
+      linear-gradient(160deg, color-mix(in srgb, var(--node-accent) 14%, transparent), transparent 50%),
+      var(--bg-elev-2, #1b2235);
+  }
+
   .studio-node.entry {
     box-shadow: 0 0 0 2px var(--node-accent), 0 4px 16px rgba(0, 0, 0, 0.4);
   }
+  /* Validation rings (also driven by the node wrapper class for safety). */
+  .studio-node.invalid {
+    box-shadow: 0 0 0 2px var(--error, #ff6b81), 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+  .studio-node.warn {
+    box-shadow: 0 0 0 2px var(--warn, #f5a742), 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+
   .node-head {
     display: flex;
     align-items: center;
@@ -50,6 +132,8 @@
     border-radius: 999px;
     font-weight: 700;
   }
+  .decision-glyph { color: var(--node-accent); font-size: 12px; }
+  .peer-glyph { color: var(--node-accent); font-size: 13px; }
   .entry-chip {
     font-size: 10px;
     color: var(--node-accent);
@@ -77,4 +161,18 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* Per-port labels sit next to their handle. */
+  .port-label {
+    position: absolute;
+    transform: translateY(-50%);
+    font-size: 9px;
+    line-height: 1;
+    color: var(--text-muted, #8b93ab);
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .port-label em { font-style: normal; opacity: 0.7; }
+  .port-label.in { left: 10px; }
+  .port-label.out { right: 10px; text-align: right; }
 </style>

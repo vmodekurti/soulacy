@@ -20,6 +20,8 @@
  *   test     payload { workflow, input }  -> { trace, result }
  *   plan     payload { workflow }         -> { tier, reasons[], requiresConsent,
  *                                              consentItems[{kind,name,reason}] }   (M2)
+ *   validate payload { workflow }         -> { ok, errors[{nodeId?,edgeIndex?,message}],
+ *                                              warnings[{nodeId?,message}] }         (M3)
  *   save     payload { workflow, acceptPrivilegedExposure? }
  *              -> { agentId, enabled }
  *               | rejects Error with .requiresConsent + .consentItems (409 fallback)
@@ -101,6 +103,7 @@ export const bridge = {
   compile: (intent, answers) => bridgeRequest('compile', { intent, answers }),
   test: (workflow, input) => bridgeRequest('test', { workflow, input }),
   plan: (workflow) => bridgeRequest('plan', { workflow }),
+  validate: (workflow) => bridgeRequest('validate', { workflow }),
   save: (workflow, acceptPrivilegedExposure) =>
     bridgeRequest('save', { workflow, acceptPrivilegedExposure }),
 }

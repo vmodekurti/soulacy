@@ -220,6 +220,19 @@ export const api = {
         body: JSON.stringify({ workflow }),
       }),
     /**
+     * Validate a draft workflow (structure, ports, branch conditions).
+     * Non-blocking: callers debounce this after compile/edits to surface
+     * errors/warnings on the canvas.
+     * @returns {Promise<{ok:boolean,
+     *                     errors:{nodeId?,edgeIndex?,message}[],
+     *                     warnings:{nodeId?,message}[]}>}
+     */
+    validate: ({ workflow } = {}) =>
+      apiFetch('/studio/validate', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+    /**
      * Persist a workflow as a (disabled) agent. Pass acceptPrivilegedExposure
      * when plan reported requiresConsent. On a 409 consent fallback the thrown
      * error carries .body.requiresConsent + .body.consentItems.

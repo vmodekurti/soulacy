@@ -60,14 +60,48 @@
   const nodes = writable([])
   const edges = writable([])
   let selectedNode = null     // raw flow node for the inspector
+  let selectedEdge = null     // { index, edge } for the inspector
+
+  // ── Validation (M3) ───────────────────────────────────────────────────────
+  // Non-blocking: a debounced /studio/validate after compile and after any
+  // draft edit. Highlights offending nodes/edges and shows a status strip.
+  let validation = null       // { ok, errors[], warnings[] } | null
+  let validateTimer = null
 
   function rebuildGraph() {
     if (!workflow) {
       nodes.set([]); edges.set([]); return
     }
-    const flow = toFlow(workflow)
+    const flow = toFlow(workflow, validation)
     nodes.set(flow.nodes)
     edges.set(flow.edges)
+  }
+
+  // Debounced, best-effort validation. On any bridge error we degrade
+  // gracefully: clear the strip rather than block editing.
+  function scheduleValidate() {
+    if (validateTimer) clearTimeout(validateTimer)
+    if (!workflow) { validation = null; return }
+    validateTimer = setTimeout(runValidate, 350)
+  }
+
+  async function runValidate() {
+    if (!workflow) { validation = null; return }
+    const snapshot = workflow
+    try {
+      const res = await bridge.validate(snapshot)
+      // Ignore a stale response if the draft moved on under us.
+      if (snapshot !== workflow) return
+      validation = {
+        ok: res && res.ok !== false && !(res && res.errors && res.errors.length),
+        errors: (res && Array.isArray(res.errors)) ? res.errors : [],
+        warnings: (res && Array.isArray(res.warnings)) ? res.warnings : [],
+      }
+    } catch (_) {
+      // Bridge/host unavailable — stay silent and non-blocking.
+      validation = null
+    }
+    rebuildGraph()   // re-render with (or without) highlights
   }
 
   async function generate() {
@@ -105,8 +139,11 @@
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
     selectedNode = null
+    selectedEdge = null
     plan = null               // a fresh compile invalidates any prior plan/tier
+    validation = null         // clear stale highlights until re-validated
     rebuildGraph()
+    scheduleValidate()        // validate the fresh draft (debounced)
   }
 
   // ── Framing edits (trigger / output channels) ─────────────────────────────
@@ -124,13 +161,46 @@
     workflow = { ...workflow, ...patch }
     plan = null               // edits can change the tier; re-plan on next save
     rebuildGraph()
+    scheduleValidate()        // re-validate after a framing edit
+  }
+
+  // Merge a patch into a single draft edge (flow.edges[index]) and re-render.
+  // Used by the Inspector's `if` predicate field (selected edge or Edges list)
+  // so Test/Save/Validate pick up the edited condition.
+  function applyEdgePatch(index, patch) {
+    if (!workflow || !workflow.flow || !Array.isArray(workflow.flow.edges)) return
+    const edgesArr = workflow.flow.edges
+    if (index < 0 || index >= edgesArr.length) return
+    const nextEdges = edgesArr.map((e, i) => (i === index ? { ...e, ...patch } : e))
+    workflow = { ...workflow, flow: { ...workflow.flow, edges: nextEdges } }
+    // Keep the selected-edge mirror in sync so the field stays controlled.
+    if (selectedEdge && selectedEdge.index === index) {
+      selectedEdge = { index, edge: nextEdges[index] }
+    }
+    plan = null
+    rebuildGraph()
+    scheduleValidate()
   }
 
   function onNodeClick(event) {
     // SvelteFlow dispatches { node } in event.detail.
     const n = event?.detail?.node
+    selectedEdge = null
     if (!n || !n.data || !n.data.node) { selectedNode = null; return }
     selectedNode = n.data.node
+  }
+
+  // Edge click -> select it for `if`-predicate editing. The xyflow edge carries
+  // our data.index (ordinal in flow.edges) so we can read/write the right slot.
+  function onEdgeClick(event) {
+    const e = event?.detail?.edge
+    const idx = e && e.data && Number.isInteger(e.data.index) ? e.data.index : -1
+    if (idx < 0 || !workflow || !workflow.flow || !Array.isArray(workflow.flow.edges)) {
+      selectedEdge = null
+      return
+    }
+    selectedNode = null
+    selectedEdge = { index: idx, edge: workflow.flow.edges[idx] }
   }
 
   // ── Test ──────────────────────────────────────────────────────────────────
@@ -287,6 +357,35 @@
         </div>
       {/if}
 
+      <!-- Validation strip (M3): non-blocking ok / N errors / N warnings. -->
+      {#if workflow && validation}
+        {#if validation.ok && !validation.warnings.length}
+          <div class="strip strip-ok" title="Workflow validates">
+            <span class="strip-label">Valid</span>
+            <span>No issues found.</span>
+          </div>
+        {:else}
+          <div
+            class="strip {validation.errors.length ? 'strip-error' : 'strip-warn'}"
+            title="Validation issues"
+          >
+            <span class="strip-label">Validation</span>
+            {#if validation.errors.length}
+              <span class="v-count v-err">{validation.errors.length} error{validation.errors.length === 1 ? '' : 's'}</span>
+            {/if}
+            {#if validation.warnings.length}
+              <span class="v-count v-warn">{validation.warnings.length} warning{validation.warnings.length === 1 ? '' : 's'}</span>
+            {/if}
+            {#each validation.errors as err}
+              <span class="v-msg v-err" title={err.nodeId || (err.edgeIndex != null ? 'edge ' + err.edgeIndex : '')}>{err.message}</span>
+            {/each}
+            {#each validation.warnings as w}
+              <span class="v-msg v-warn" title={w.nodeId || ''}>{w.message}</span>
+            {/each}
+          </div>
+        {/if}
+      {/if}
+
       <div class="canvas">
         {#if compiling}
           <div class="canvas-state">Compiling…</div>
@@ -302,7 +401,8 @@
             {nodeTypes}
             fitView
             on:nodeclick={onNodeClick}
-            on:paneclick={() => (selectedNode = null)}
+            on:edgeclick={onEdgeClick}
+            on:paneclick={() => { selectedNode = null; selectedEdge = null }}
           >
             <Background />
             <Controls />
@@ -413,9 +513,11 @@
 
     <Inspector
       node={selectedNode}
+      {selectedEdge}
       {workflow}
       channels={channelOptions}
       onChange={applyFraming}
+      onEdgeChange={applyEdgePatch}
     />
   </main>
 
@@ -553,6 +655,28 @@
   }
   .strip-error { background: rgba(255, 107, 129, 0.12); color: var(--error); }
   .strip-ok { background: rgba(54, 211, 153, 0.12); color: var(--ok); }
+  .strip-warn { background: rgba(245, 167, 66, 0.12); color: var(--warn, #f5a742); }
+  .v-count {
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 0 8px;
+    font-size: 11px;
+  }
+  .v-count.v-err { background: rgba(255, 107, 129, 0.18); color: var(--error, #ff6b81); }
+  .v-count.v-warn { background: rgba(245, 167, 66, 0.18); color: var(--warn, #f5a742); }
+  .v-msg {
+    font-size: 11px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1px 8px;
+    max-width: 320px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .v-msg.v-err { border-color: var(--error, #ff6b81); }
+  .v-msg.v-warn { border-color: var(--warn, #f5a742); }
 
   /* Canvas */
   .canvas {
@@ -742,4 +866,54 @@
   .consent-name { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
   .consent-reason { display: block; margin-top: 3px; font-size: 12px; color: var(--text-muted); }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* ── Edge styling (M3) ──────────────────────────────────────────────────
+     xyflow renders edges in its own DOM, so we reach them with :global().
+     - .cond  : conditional branch (has an `if`) — accent stroke + readable label
+     - .else  : fallback leg out of a branch — dashed, muted
+     - .studio-invalid : an edge flagged by validation — red stroke */
+  :global(.svelte-flow__edge.studio-edge .svelte-flow__edge-path) {
+    stroke: var(--text-muted, #8b93ab);
+    stroke-width: 1.5;
+  }
+  :global(.svelte-flow__edge.studio-edge.cond .svelte-flow__edge-path) {
+    stroke: var(--accent, #6c63ff);
+    stroke-width: 2;
+  }
+  :global(.svelte-flow__edge.studio-edge.else .svelte-flow__edge-path) {
+    stroke: var(--text-muted, #8b93ab);
+    stroke-dasharray: 5 4;
+    opacity: 0.85;
+  }
+  :global(.svelte-flow__edge.studio-edge.studio-invalid .svelte-flow__edge-path) {
+    stroke: var(--error, #ff6b81) !important;
+    stroke-width: 2.5;
+  }
+  :global(.svelte-flow__edge.studio-edge.selected .svelte-flow__edge-path) {
+    stroke: var(--accent, #6c63ff);
+    stroke-width: 2.5;
+  }
+  /* Edge condition label pill (rendered as an HTML div by xyflow and portaled
+     into .svelte-flow__edgelabel-renderer, so it is NOT a descendant of the
+     edge element — we style it uniformly here; the predicate text vs the
+     literal "else" word, plus the stroke style above, carry the distinction). */
+  :global(.svelte-flow__edge-label) {
+    background: var(--bg-elev-2, #1b2235);
+    border: 1px solid var(--border, #262e44);
+    border-radius: 6px;
+    padding: 1px 6px;
+    font-size: 10px;
+    color: var(--text, #e6e9f2);
+    font-family: ui-monospace, monospace;
+  }
+
+  /* ── Node validation rings (driven by the node-wrapper class) ─────────── */
+  :global(.svelte-flow__node.studio-invalid) {
+    border-radius: 12px;
+    box-shadow: 0 0 0 2px var(--error, #ff6b81);
+  }
+  :global(.svelte-flow__node.studio-warn) {
+    border-radius: 12px;
+    box-shadow: 0 0 0 2px var(--warn, #f5a742);
+  }
 </style>

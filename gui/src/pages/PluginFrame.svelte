@@ -69,6 +69,11 @@
   //       data = POST /studio/plan body
   //              { tier, reasons[], requiresConsent,
   //                consentItems:[{ kind, name, reason }] }
+  //   'validate.request' -> 'validate.response'  (M3)
+  //       req  { workflow }
+  //       data = POST /studio/validate body
+  //              { ok, errors:[{ nodeId?, edgeIndex?, message }],
+  //                warnings:[{ nodeId?, message }] }
   //   'save.request'    -> 'save.response'      (M1 Wave 2 + M2)
   //       req  { workflow, acceptPrivilegedExposure? }
   //       data = POST /studio/save body { agentId, enabled }
@@ -115,6 +120,10 @@
       case 'plan.request':
         await handleStudioRequest(id, 'plan.response', () =>
           api.studio.plan({ workflow: msg.workflow }))
+        break
+      case 'validate.request':
+        await handleStudioRequest(id, 'validate.response', () =>
+          api.studio.validate({ workflow: msg.workflow }))
         break
       case 'save.request':
         await handleStudioRequest(id, 'save.response', () =>
