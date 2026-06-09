@@ -15,6 +15,18 @@ const (
 	FlowNodeBranch = "branch" // no action; exists to fan edges out
 )
 
+// FlowPort is a declared, named connection point on a node (Story S0.3).
+// All fields are optional and purely descriptive — a node with no declared
+// ports keeps today's single implicit input/output. Name identifies the
+// port for edge wiring (FlowEdge.FromPort / ToPort); Type is an optional
+// type hint (e.g. "string", "json") for tooling/validation; Label is an
+// optional human-readable display name for editors.
+type FlowPort struct {
+	Name  string `yaml:"name,omitempty" json:"name,omitempty"`
+	Type  string `yaml:"type,omitempty" json:"type,omitempty"`
+	Label string `yaml:"label,omitempty" json:"label,omitempty"`
+}
+
 // FlowNode is one vertex of the graph.
 type FlowNode struct {
 	// ID is unique within the flow; checkpoint keys derive from it.
@@ -36,6 +48,16 @@ type FlowNode struct {
 	X float64 `yaml:"x,omitempty" json:"x,omitempty"`
 	// Y is the visual layout Y coordinate.
 	Y float64 `yaml:"y,omitempty" json:"y,omitempty"`
+	// Inputs declares named typed input ports (Story S0.3). Optional:
+	// empty/nil = today's single implicit input port (unchanged behavior).
+	Inputs []FlowPort `yaml:"inputs,omitempty" json:"inputs,omitempty"`
+	// Outputs declares named typed output ports (Story S0.3). Optional:
+	// empty/nil = today's single implicit output port (unchanged behavior).
+	Outputs []FlowPort `yaml:"outputs,omitempty" json:"outputs,omitempty"`
+	// Params is optional typed per-node configuration (Story S0.3) carried
+	// alongside the node. nil = none. The flow runtime passes it through
+	// untouched; it does not affect Input templating or execution order.
+	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
 }
 
 // FlowEdge is one directed edge. Edges from a node are evaluated IN ORDER;
@@ -52,6 +74,14 @@ type FlowEdge struct {
 	// run (bounded cycles). Default 1 — cycles are bounded unless a back
 	// edge explicitly raises its budget.
 	MaxIterations int `yaml:"max_iterations,omitempty" json:"max_iterations,omitempty"`
+	// FromPort names a declared output port on the From node (Story S0.3).
+	// Optional: "" = the implicit single output port (current behavior).
+	// When set, it must match one of the From node's declared Outputs.
+	FromPort string `yaml:"from_port,omitempty" json:"from_port,omitempty"`
+	// ToPort names a declared input port on the To node (Story S0.3).
+	// Optional: "" = the implicit single input port (current behavior).
+	// When set, it must match one of the To node's declared Inputs.
+	ToPort string `yaml:"to_port,omitempty" json:"to_port,omitempty"`
 }
 
 // FlowSpec is the whole graph.

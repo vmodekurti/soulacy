@@ -1,0 +1,285 @@
+/* Studio plugin UI — M0 scaffold. Self-contained, no external fonts/CDNs
+ * (the iframe is sandboxed). Dark theme tuned to the Soulacy portal:
+ * deep navy background, accent #6c63ff. */
+
+:root {
+  --bg: #0c0f1a;
+  --bg-elev: #141927;
+  --bg-elev-2: #1b2235;
+  --border: #262e44;
+  --text: #e6e9f2;
+  --text-muted: #8b93ab;
+  --accent: #6c63ff;
+  --accent-dim: rgba(108, 99, 255, 0.18);
+  --ok: #36d399;
+  --warn: #f5c542;
+  --error: #ff6b81;
+  --radius: 10px;
+  --gap: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Top bar ─────────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: var(--gap);
+  padding: 12px 18px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.brand-mark {
+  font-size: 18px;
+}
+
+.brand-name {
+  color: var(--text);
+}
+
+.intent {
+  flex: 1 1 auto;
+}
+
+#intent-input {
+  width: 100%;
+  padding: 10px 14px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 14px;
+  outline: none;
+  cursor: not-allowed;
+}
+
+#intent-input::placeholder {
+  color: var(--text-muted);
+}
+
+.badge {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  color: var(--text);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.badge strong {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ── Body layout ─────────────────────────────────────────────────────────── */
+.body {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ── Palette (left) ──────────────────────────────────────────────────────── */
+.palette {
+  flex: 0 0 280px;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--border);
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.palette-title {
+  margin: 0 0 4px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+
+.palette-status {
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.palette-status.status-ok {
+  color: var(--ok);
+}
+
+.palette-status.status-warn {
+  color: var(--warn);
+}
+
+.palette-status.status-error {
+  color: var(--error);
+}
+
+.group {
+  margin-bottom: 18px;
+}
+
+.group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.group-icon {
+  font-size: 14px;
+}
+
+.group-count {
+  margin-left: auto;
+  min-width: 22px;
+  padding: 1px 8px;
+  text-align: center;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 10px;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: grab;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+}
+
+.item:hover {
+  border-color: var(--accent);
+  transform: translateX(2px);
+}
+
+.item:active {
+  cursor: grabbing;
+}
+
+.item-label {
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-word;
+}
+
+.item-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+
+.item-empty,
+.item-error {
+  cursor: default;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.item-empty:hover,
+.item-error:hover {
+  border-color: var(--border);
+  transform: none;
+}
+
+.item-error {
+  color: var(--error);
+  font-style: normal;
+}
+
+/* ── Canvas (center) ─────────────────────────────────────────────────────── */
+.canvas {
+  flex: 1 1 auto;
+  position: relative;
+  min-width: 0;
+  background: var(--bg);
+  background-image: radial-gradient(
+    circle,
+    rgba(108, 99, 255, 0.08) 1px,
+    transparent 1px
+  );
+  background-size: 24px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.canvas-placeholder {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 24px;
+  border: 2px dashed var(--border);
+  border-radius: 16px;
+  background: rgba(20, 25, 39, 0.6);
+}
+
+.canvas-glyph {
+  font-size: 40px;
+  color: var(--accent);
+  opacity: 0.7;
+}
+
+.canvas-msg {
+  margin: 12px 0 4px;
+  font-size: 15px;
+  color: var(--text);
+}
+
+.canvas-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-muted);
+}

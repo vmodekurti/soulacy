@@ -97,6 +97,15 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 				return nil, fmt.Errorf("flow: edge %d to unknown node %q", i, e.To)
 			}
 		}
+		// Typed ports (Story S0.3): empty FromPort/ToPort = implicit single
+		// port (unchanged). When a port is named it must exist among the
+		// referenced node's declared ports.
+		if e.FromPort != "" && !flowHasPort(nodes[e.From].Outputs, e.FromPort) {
+			return nil, fmt.Errorf("flow: edge %d from_port %q not declared on node %q outputs", i, e.FromPort, e.From)
+		}
+		if e.ToPort != "" && !flowEdgeTerminal(e.To) && !flowHasPort(nodes[e.To].Inputs, e.ToPort) {
+			return nil, fmt.Errorf("flow: edge %d to_port %q not declared on node %q inputs", i, e.ToPort, e.To)
+		}
 		out[e.From] = append(out[e.From], i)
 	}
 
@@ -112,6 +121,16 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 }
 
 func flowEdgeTerminal(to string) bool { return to == "" || to == "end" }
+
+// flowHasPort reports whether ports declares one named name (Story S0.3).
+func flowHasPort(ports []sdkr.FlowPort, name string) bool {
+	for _, p := range ports {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
+}
 
 // FlowRunNode executes one node's action with its rendered input and
 // returns the node's JSON result. Branch nodes are never passed to it.

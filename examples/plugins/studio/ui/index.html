@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self';" />
+  <title>Studio</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Top bar: intent input (visual-only, M1) + principal badge -->
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">🎬</span>
+        <span class="brand-name">Studio</span>
+      </div>
+      <div class="intent">
+        <input
+          id="intent-input"
+          type="text"
+          placeholder="Describe what you want…  (visual builder coming in M1)"
+          disabled
+          aria-label="Describe what you want (disabled, coming in M1)"
+        />
+      </div>
+      <div class="badge" id="principal-badge" title="Scoped plugin principal">
+        principal: <strong>plugin:studio</strong>
+      </div>
+    </header>
+
+    <main class="body">
+      <!-- Left: capability palette -->
+      <aside class="palette" aria-label="Capability palette">
+        <h2 class="palette-title">Palette</h2>
+        <div id="palette-status" class="palette-status" role="status">Loading capabilities…</div>
+
+        <section class="group" data-group="agents">
+          <h3 class="group-head">
+            <span class="group-icon" aria-hidden="true">🤖</span>
+            Agents
+            <span class="group-count" id="count-agents">–</span>
+          </h3>
+          <ul class="group-list" id="list-agents"></ul>
+        </section>
+
+        <section class="group" data-group="tools">
+          <h3 class="group-head">
+            <span class="group-icon" aria-hidden="true">🛠️</span>
+            Tools
+            <span class="group-count" id="count-tools">–</span>
+          </h3>
+          <ul class="group-list" id="list-tools"></ul>
+        </section>
+
+        <section class="group" data-group="providers">
+          <h3 class="group-head">
+            <span class="group-icon" aria-hidden="true">🧠</span>
+            Providers
+            <span class="group-count" id="count-providers">–</span>
+          </h3>
+          <ul class="group-list" id="list-providers"></ul>
+        </section>
+      </aside>
+
+      <!-- Center: canvas placeholder -->
+      <section class="canvas" aria-label="Canvas">
+        <div class="canvas-placeholder">
+          <div class="canvas-glyph" aria-hidden="true">⬚</div>
+          <p class="canvas-msg">Drag components here</p>
+          <p class="canvas-sub">Visual builder coming in M1</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
