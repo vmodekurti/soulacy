@@ -2410,7 +2410,12 @@ func (e *Engine) getOrCreateSession(sessionID, agentID string) *Session {
 // system prompts or many skills/KBs/peers, that was tens of KB of string
 // concatenation per turn × turns × agents.
 func (e *Engine) buildSystemPrefix(def *agent.Definition) string {
-	systemPrompt := def.SystemPrompt
+	// Phase 1 of the persona-blocks feature (docs/AGENT_DESIGN.md):
+	// identity / personality / non_negotiables get rendered BEFORE the
+	// operator's free-form system_prompt, with consistent framing across
+	// every agent. Skip cleanly when the fields are absent — a SOUL.yaml
+	// without these blocks behaves bit-for-bit like before.
+	systemPrompt := renderPersonaPrefix(def) + def.SystemPrompt
 
 	// RL-10: inject brain memory context before any other prompt additions.
 	// When brainStore is wired, memory is ON BY DEFAULT for any agent that
