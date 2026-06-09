@@ -46,7 +46,7 @@ const canonicalIntent = "Every weekday at 8am, fetch the top Hacker News stories
 
 func TestCompile_HappyPath(t *testing.T) {
 	llm := fakeLLM{out: canonicalDraftJSON}
-	res, err := Compile(context.Background(), llm, canonicalIntent, Catalog{})
+	res, err := Compile(context.Background(), llm, canonicalIntent, Catalog{}, nil)
 	if err != nil {
 		t.Fatalf("Compile returned error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestCompile_ClarifyMissingChannel(t *testing.T) {
 	noChannel := strings.Replace(canonicalDraftJSON, `"channels": ["telegram"],`, `"channels": [],`, 1)
 	llm := fakeLLM{out: noChannel}
 
-	res, err := Compile(context.Background(), llm, canonicalIntent, Catalog{})
+	res, err := Compile(context.Background(), llm, canonicalIntent, Catalog{}, nil)
 	if err != nil {
 		t.Fatalf("Compile returned error: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestCompile_ClarifyMissingScheduleTime(t *testing.T) {
 		`"trigger": { "type": "schedule", "config": {} },`, 1)
 	llm := fakeLLM{out: noCron}
 
-	res, err := Compile(context.Background(), llm, canonicalIntent, Catalog{})
+	res, err := Compile(context.Background(), llm, canonicalIntent, Catalog{}, nil)
 	if err != nil {
 		t.Fatalf("Compile returned error: %v", err)
 	}
@@ -186,14 +186,14 @@ func TestParseDraft_Malformed(t *testing.T) {
 
 func TestCompile_LLMError(t *testing.T) {
 	llm := fakeLLM{err: errors.New("boom")}
-	if _, err := Compile(context.Background(), llm, canonicalIntent, Catalog{}); err == nil {
+	if _, err := Compile(context.Background(), llm, canonicalIntent, Catalog{}, nil); err == nil {
 		t.Errorf("expected error when LLM fails")
 	}
 }
 
 func TestCompile_EmptyIntent(t *testing.T) {
 	llm := fakeLLM{out: canonicalDraftJSON}
-	if _, err := Compile(context.Background(), llm, "   ", Catalog{}); err == nil {
+	if _, err := Compile(context.Background(), llm, "   ", Catalog{}, nil); err == nil {
 		t.Errorf("expected error for empty intent")
 	}
 }
@@ -211,7 +211,7 @@ func TestCompile_InvalidFlowIsError(t *testing.T) {
       }
     }`
 	llm := fakeLLM{out: bad}
-	if _, err := Compile(context.Background(), llm, "do a thing", Catalog{}); err == nil {
+	if _, err := Compile(context.Background(), llm, "do a thing", Catalog{}, nil); err == nil {
 		t.Errorf("expected error for a flow that fails CompileFlow")
 	}
 }
@@ -221,7 +221,7 @@ func TestBuildPrompt_IncludesCatalogAndSchema(t *testing.T) {
 		Agents:    []string{"summarizer"},
 		Tools:     []string{"http_get"},
 		Providers: []string{"anthropic"},
-	})
+	}, nil)
 	for _, want := range []string{"summarizer", "http_get", "anthropic", "summarize my email", `"trigger"`, "schedule"} {
 		if !strings.Contains(p, want) {
 			t.Errorf("prompt missing %q", want)

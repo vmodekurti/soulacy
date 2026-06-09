@@ -121,6 +121,29 @@ error rows + a status banner).
   package can only be compiled where CGO + sqlite headers exist — confirm with
   `make all` on the Mac before pushing.
 
+## M1 Wave 2 status
+
+The full describe → graph → test → save loop is implemented.
+
+- **Visual builder (S1.2/S1.3):** the plugin UI is now a Svelte + Vite +
+  `@xyflow/svelte` app. Source in `examples/plugins/studio/ui-src/`
+  (`base: './'`, builds to `ui/`, built bundle committed; regenerate with
+  `cd ui-src && npm install && npm run build`). Renders the compiled draft on a
+  canvas (auto-layout when nodes lack x/y), a node inspector, a clarify-questions
+  panel that re-compiles with answers, a transparency strip for compiler notes,
+  and Test / Save actions.
+- **Bridge ops:** `PluginFrame.svelte` now relays four whitelisted ops
+  (`catalog`, `compile`, `test`, `save`) to the core endpoints with the user
+  session; `gui/src/lib/api.js` gained `api.studio.{compile,test,save}`.
+- **Endpoints (S1.4/S1.5):** `POST /studio/compile` gained optional `answers`
+  (clarify round-trip); `POST /studio/test` compiles + runs the draft through a
+  mock node runner returning a per-node trace + result (no real tools/LLM);
+  `POST /studio/save` converts the draft to a disabled `agent.Definition` and
+  persists it via the same `loader.Upsert` path as agent creation. New
+  `internal/studio` tests green (testrun end-to-end, draft→definition, answers).
+- **Verification gate (unchanged):** `internal/studio` + both vite builds are
+  green in-sandbox; the gateway's final compile is the `make all` check on the Mac.
+
 ## Vasu's open questions
 
 Plugin name (keep "Studio"?); intent compiler as agent vs skill; how "live" M1

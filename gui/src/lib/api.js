@@ -190,6 +190,29 @@ export const api = {
     ephemeral: () => apiFetch('/voice/ephemeral', { method: 'POST' }),
   },
 
+  // Studio visual builder (M1 Wave 2). Called by the host bridge in
+  // PluginFrame.svelte on behalf of the sandboxed Studio plugin iframe.
+  studio: {
+    /** Compile an intent (+ optional clarifying answers) into a draft workflow. */
+    compile: ({ intent, catalog, answers } = {}) =>
+      apiFetch('/studio/compile', {
+        method: 'POST',
+        body: JSON.stringify({ intent, catalog, answers }),
+      }),
+    /** Dry-run a workflow against a sample input; returns a per-node trace. */
+    test: ({ workflow, input } = {}) =>
+      apiFetch('/studio/test', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, input }),
+      }),
+    /** Persist a workflow as a (disabled) agent. */
+    save: ({ workflow } = {}) =>
+      apiFetch('/studio/save', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+  },
+
   knowledge: {
     list:   ()        => apiFetch('/knowledge'),
     create: (body)    => apiFetch('/knowledge', { method: 'POST', body: JSON.stringify(body) }),

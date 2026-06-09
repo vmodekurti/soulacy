@@ -655,6 +655,9 @@ func (s *Server) buildApp() *fiber.App {
 
 	// Studio plugin backend (Story S1.1): intent compiler.
 	api.Post("/studio/compile", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCompile)
+	// Studio plugin backend (Wave 2): dry-run test and save-as-disabled-agent.
+	api.Post("/studio/test", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTest)
+	api.Post("/studio/save", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSave)
 
 	// E4: Capability Gap Detection
 	if s.builderRegistry != nil {

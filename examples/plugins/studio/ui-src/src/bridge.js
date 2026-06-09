@@ -1,0 +1,93 @@
+/*
+ * Host-mediated RPC bridge client (Studio M1 Wave 2).
+ *
+ * The Studio UI runs inside a sandboxed iframe with NO same-origin, so its
+ * scoped plugin token is default-denied on gateway reads. Instead of fetching
+ * directly, every privileged op is relayed through the HOST frame
+ * (gui/src/pages/PluginFrame.svelte), which holds the user's authenticated
+ * session and answers only a fixed whitelist.
+ *
+ * postMessage contract (must match PluginFrame.svelte EXACTLY):
+ *   iframe -> host:  { source: 'studio', type: <op>.request, id, ...payload }
+ *   host -> iframe:  { source: 'studio-host', type: <op>.response, id,
+ *                      ok: true,  data: {...} }
+ *                  | { source: 'studio-host', type: <op>.response, id,
+ *                      ok: false, error: '<msg>' }
+ *
+ * Whitelisted ops:
+ *   catalog  -> { agents, tools, providers }                 (Wave 1)
+ *   compile  payload { intent, answers? } -> { workflow, questions, notes }
+ *   test     payload { workflow, input }  -> { trace, result }
+ *   save     payload { workflow }         -> { agentId, enabled }
+ */
+
+const HOST_TIMEOUT_MS = 8000
+
+function newId(op) {
+  return op + '-' + Date.now() + '-' + Math.random().toString(36).slice(2)
+}
+
+/**
+ * Send one request to the host and resolve with its `data` (or reject on
+ * error/timeout/absent host). Each call installs a one-shot, id-correlated,
+ * source-checked listener.
+ *
+ * @param {string} op       e.g. 'catalog', 'compile', 'test', 'save'
+ * @param {object} payload  extra fields merged into the request message
+ * @param {number} [timeoutMs]
+ */
+export function bridgeRequest(op, payload = {}, timeoutMs = HOST_TIMEOUT_MS) {
+  const reqType = op + '.request'
+  const resType = op + '.response'
+  const id = newId(op)
+
+  return new Promise((resolve, reject) => {
+    if (window.parent === window) {
+      reject(new Error('no host frame (Studio must run embedded in the portal)'))
+      return
+    }
+
+    let settled = false
+    let timer = null
+
+    function cleanup() {
+      window.removeEventListener('message', onMessage)
+      if (timer) clearTimeout(timer)
+    }
+
+    function onMessage(event) {
+      // Trust ONLY replies from our own host (the parent window) that match the
+      // protocol and our correlation id.
+      if (event.source !== window.parent) return
+      const msg = event.data
+      if (!msg || typeof msg !== 'object') return
+      if (msg.source !== 'studio-host' || msg.type !== resType) return
+      if (msg.id !== id) return
+      if (settled) return
+      settled = true
+      cleanup()
+      if (msg.ok) resolve(msg.data || {})
+      else reject(new Error(msg.error || (op + ' request failed')))
+    }
+
+    window.addEventListener('message', onMessage)
+
+    timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(new Error('host did not respond (' + op + ')'))
+    }, timeoutMs)
+
+    // Host verifies event.source === this iframe window, so targetOrigin '*'
+    // is safe (requests carry no secret).
+    window.parent.postMessage({ source: 'studio', type: reqType, id, ...payload }, '*')
+  })
+}
+
+export const bridge = {
+  catalog: () => bridgeRequest('catalog'),
+  compile: (intent, answers) => bridgeRequest('compile', { intent, answers }),
+  test: (workflow, input) => bridgeRequest('test', { workflow, input }),
+  save: (workflow) => bridgeRequest('save', { workflow }),
+}

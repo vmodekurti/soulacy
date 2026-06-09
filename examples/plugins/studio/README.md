@@ -1,11 +1,14 @@
-# Studio plugin (Story S0.1 — M0 scaffold)
+# Studio plugin (M1 Wave 2 — visual builder)
 
-Studio is a Soulacy plugin that mounts a UI page in the gateway web portal. This
-**M0 milestone is a scaffold**: it proves the plugin loads, a nav entry appears,
-the sandboxed iframe renders, the scoped plugin token is read from the URL
-fragment, and the page attempts to fetch the capability catalog from existing
-gateway endpoints. The full visual canvas (xyflow) lands in a later milestone —
-M0 is deliberately dependency-light: vanilla HTML/JS/CSS, **no build step**.
+Studio is a Soulacy plugin that mounts a UI page in the gateway web portal. The
+**M1 Wave 2 milestone replaces the M0 vanilla scaffold with a real visual
+builder** built on `@xyflow/svelte`. It wires the full loop: describe intent →
+compile → render a draft graph → inspect/clarify → test → save. The palette
+(agents/tools/providers with counts) from Wave 1 is preserved.
+
+Because the UI runs inside a sandboxed iframe (no same-origin, strict CSP, no
+CDN access), it is now a **built** Svelte app: source lives in `ui-src/`, and the
+committed static output in `ui/` is what the plugin ships and serves.
 
 ## Directory layout
 
@@ -13,11 +16,68 @@ M0 is deliberately dependency-light: vanilla HTML/JS/CSS, **no build step**.
 examples/plugins/studio/
 ├── plugin.yaml      # manifest_schema 2; id=studio; gui mount + permissions
 ├── README.md        # this file
-└── ui/              # static assets served at /plugins/studio/ui/
-    ├── index.html   # token-aware shell: topbar, palette, canvas placeholder
-    ├── app.js       # reads #token, fetches catalog, renders palette
-    └── styles.css   # self-contained dark theme (deep navy, accent #6c63ff)
+├── ui-src/          # BUILD SOURCE (Svelte + Vite + @xyflow/svelte) — not served
+│   ├── package.json # deps: @xyflow/svelte ^0.1.39, svelte ^4, vite ^5
+│   ├── vite.config.js  # base: './'  + outDir ../ui (strips crossorigin)
+│   ├── index.html   # CSP + #app mount
+│   └── src/
+│       ├── main.js        # bootstraps App into #app
+│       ├── app.css        # dark theme + xyflow dark-mode var overrides
+│       ├── bridge.js      # host-mediated RPC client (catalog/compile/test/save)
+│       ├── graph.js       # workflow → xyflow nodes/edges (+ auto-layout)
+│       ├── App.svelte     # top-level: topbar, canvas, panels, action bar
+│       ├── Palette.svelte # left capability palette (Wave 1 behavior)
+│       ├── Inspector.svelte  # right read-only node inspector
+│       └── nodes/         # StudioNode / TriggerNode / OutputNode
+└── ui/              # BUILT static assets served at /plugins/studio/ui/ (COMMITTED)
+    ├── index.html   # generated; references ./assets/* (relative)
+    └── assets/      # hashed index-*.js + style-*.css (self-contained)
 ```
+
+## Regenerating the built UI
+
+The `ui/` directory is generated from `ui-src/`. After changing any source,
+rebuild and commit the output:
+
+```sh
+cd examples/plugins/studio/ui-src
+npm install
+npm run build      # writes ../ui/index.html + ../ui/assets/* (emptyOutDir)
+```
+
+Key build settings (`ui-src/vite.config.js`):
+
+- `base: './'` — hashed assets resolve **relative** to the serving path
+  `/plugins/studio/ui/` (an absolute base would 404 inside the iframe).
+- `outDir: ../ui`, `emptyOutDir: true` — overwrites the served assets.
+- `cssCodeSplit: false` — one CSS file (cleaner under the CSP).
+- a `strip-crossorigin` plugin removes Vite's `crossorigin` attribute, which
+  would otherwise force a CORS check the opaque-origin sandbox fails.
+
+The bundle is fully self-contained: all JS/CSS is local, no runtime CDN fetches
+(`@xyflow/svelte` CSS is imported and bundled).
+
+## Host-mediated bridge (compile / test / save)
+
+The sandboxed iframe cannot reach the gateway directly (its scoped token is
+default-denied on these routes). Every privileged op is relayed through the host
+frame (`gui/src/pages/PluginFrame.svelte`), which holds the user's authed
+session and answers a fixed whitelist. Message schemas (must match on both
+sides):
+
+```
+iframe → host:  { source:'studio', type:'<op>.request', id, ...payload }
+host → iframe:  { source:'studio-host', type:'<op>.response', id, ok:true,  data }
+              | { source:'studio-host', type:'<op>.response', id, ok:false, error }
+
+catalog  payload {}                     → data { agents, tools, providers }
+compile  payload { intent, answers? }   → data { workflow, questions, notes }
+test     payload { workflow, input }     → data { trace, result }
+save     payload { workflow }            → data { agentId, enabled }
+```
+
+The host maps compile/test/save onto `POST /api/v1/studio/{compile,test,save}`
+via `api.studio.*` in `gui/src/lib/api.js`.
 
 ## How it loads
 
@@ -54,9 +114,10 @@ examples/plugins/studio/
 5. **Iframe + token.** The Svelte shell embeds the page in a sandboxed iframe
    (`sandbox="allow-scripts allow-forms"`, **no** `allow-same-origin`) and passes
    the token in the URL **fragment** as `#token=...` (`gui/src/lib/pluginui.js`).
-   `ui/app.js` reads `location.hash`, scrubs it, keeps the token in a JS variable
-   only (no localStorage/cookies — unavailable without same-origin), and sends it
-   as `Authorization: Bearer <token>` on API calls.
+   The built `ui/` app reads `location.hash` and scrubs it; with Wave 2 the
+   privileged catalog/compile/test/save reads no longer use the token directly —
+   they are relayed through the host bridge (see below), which holds the user's
+   session. The token remains available only for the legacy direct-fetch path.
 
 ## API endpoints the UI consumes
 

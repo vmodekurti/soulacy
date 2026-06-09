@@ -54,10 +54,19 @@
   //     { source: 'studio-host', type: '<reqType>.response', id, ok: true,  data: {...} }
   //     { source: 'studio-host', type: '<reqType>.response', id, ok: false, error: '<msg>' }
   //
-  // Implemented types (M1-A): 'catalog.request' -> 'catalog.response',
-  //   data = { agents: [...], tools: {...}, providers: {...} }.
-  // Future types (compile/test) slot into the switch below; nothing else is
-  // served until explicitly added here.
+  // Implemented types:
+  //   'catalog.request' -> 'catalog.response'
+  //       data = { agents: [...], tools: {...}, providers: {...} }   (M1-A)
+  //   'compile.request' -> 'compile.response'  (M1 Wave 2)
+  //       req  { intent, answers? }
+  //       data = POST /studio/compile body { workflow, questions, notes }
+  //   'test.request'    -> 'test.response'      (M1 Wave 2)
+  //       req  { workflow, input }
+  //       data = POST /studio/test body { trace, result }
+  //   'save.request'    -> 'save.response'      (M1 Wave 2)
+  //       req  { workflow }
+  //       data = POST /studio/save body { agentId, enabled }
+  // Nothing else is served until explicitly added to the whitelist below.
   //
   // Security:
   //   - Source check: we only act on messages whose event.source is THIS
@@ -87,10 +96,43 @@
       case 'catalog.request':
         await handleCatalogRequest(id)
         break
-      // Future: 'compile.request', 'test.request' — add cases here.
+      case 'compile.request':
+        await handleStudioRequest(id, 'compile.response', () =>
+          api.studio.compile({ intent: msg.intent, answers: msg.answers }))
+        break
+      case 'test.request':
+        await handleStudioRequest(id, 'test.response', () =>
+          api.studio.test({ workflow: msg.workflow, input: msg.input }))
+        break
+      case 'save.request':
+        await handleStudioRequest(id, 'save.response', () =>
+          api.studio.save({ workflow: msg.workflow }))
+        break
       default:
         // Unknown/unsupported type: ignore (never forward arbitrary requests).
         return
+    }
+  }
+
+  // Generic relay for the Studio compile/test/save ops: runs `call()` (which
+  // POSTs through the user's authed api client) and posts an id-correlated,
+  // ok/error-shaped reply back to THIS iframe — identical pattern to the
+  // catalog handler. The host stays the only thing that can reach the gateway;
+  // the iframe never holds a usable credential.
+  async function handleStudioRequest(id, responseType, call) {
+    const win = iframeEl && iframeEl.contentWindow
+    if (!win) return
+    try {
+      const data = await call()
+      win.postMessage(
+        { source: 'studio-host', type: responseType, id, ok: true, data },
+        REPLY_TARGET_ORIGIN,
+      )
+    } catch (e) {
+      win.postMessage(
+        { source: 'studio-host', type: responseType, id, ok: false, error: e?.message || 'request failed' },
+        REPLY_TARGET_ORIGIN,
+      )
     }
   }
 

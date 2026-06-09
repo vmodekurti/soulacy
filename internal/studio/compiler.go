@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 
 	reasoning "github.com/soulacy/soulacy/internal/reasoning"
@@ -38,6 +39,11 @@ type Catalog struct {
 type Request struct {
 	Intent  string  `json:"intent"`
 	Catalog Catalog `json:"catalog,omitempty"`
+	// Answers carries the user's responses to clarifying questions from a
+	// prior compile (question id -> answer). When present they are woven
+	// into the prompt so a re-compile incorporates them, closing the
+	// clarify round-trip. Optional.
+	Answers map[string]string `json:"answers,omitempty"`
 }
 
 // Trigger describes how the workflow starts.
@@ -99,8 +105,9 @@ const canonicalExample = `{
 
 // BuildPrompt builds the instruction the model must answer. It pins the
 // canonical Draft JSON shape and demands JSON-only output, optionally
-// grounding the model in the supplied catalog.
-func BuildPrompt(intent string, catalog Catalog) string {
+// grounding the model in the supplied catalog and weaving in any answers
+// the user gave to clarifying questions from a prior compile.
+func BuildPrompt(intent string, catalog Catalog, answers map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString("You are the Soulacy Studio intent compiler. ")
 	sb.WriteString("Turn the user's plain-language intent into a draft automation workflow.\n\n")
@@ -132,10 +139,36 @@ func BuildPrompt(intent string, catalog Catalog) string {
 		sb.WriteString(strings.Join(catalog.Providers, ", "))
 		sb.WriteString("\n")
 	}
+	if len(answers) > 0 {
+		sb.WriteString("\nThe user already answered these clarifying questions — honor them in the draft:\n")
+		for _, k := range sortedKeys(answers) {
+			v := strings.TrimSpace(answers[k])
+			if v == "" {
+				continue
+			}
+			sb.WriteString("- ")
+			sb.WriteString(k)
+			sb.WriteString(": ")
+			sb.WriteString(v)
+			sb.WriteString("\n")
+		}
+	}
+
 	sb.WriteString("\nIntent:\n")
 	sb.WriteString(intent)
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+// sortedKeys returns the map keys in deterministic (sorted) order so the
+// rendered prompt is stable across runs and unit-testable.
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // ParseDraft tolerantly extracts a Draft from raw model output: it strips
@@ -200,7 +233,7 @@ func (d Draft) spec() sdkr.FlowSpec {
 // draft, validate the flow, and derive clarifying questions + notes. Hybrid:
 // a structurally valid flow always yields a Result (draft + questions);
 // only an unparseable response or a flow that fails CompileFlow is an error.
-func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog) (Result, error) {
+func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answers map[string]string) (Result, error) {
 	if strings.TrimSpace(intent) == "" {
 		return Result{}, fmt.Errorf("studio: intent is required")
 	}
@@ -208,7 +241,7 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog) (Resu
 		return Result{}, fmt.Errorf("studio: no LLM configured")
 	}
 
-	prompt := BuildPrompt(intent, catalog)
+	prompt := BuildPrompt(intent, catalog, answers)
 	raw, err := llm.Complete(ctx, prompt)
 	if err != nil {
 		return Result{}, fmt.Errorf("studio: llm complete: %w", err)

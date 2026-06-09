@@ -73,9 +73,76 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "LLM router unavailable"})
 	}
 
-	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog)
+	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(res)
+}
+
+// studioTestRequest is the POST /api/v1/studio/test body.
+type studioTestRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+	Input    string       `json:"input"`
+}
+
+// handleStudioTest implements POST /api/v1/studio/test. It dry-runs the
+// draft workflow through studio.TestRun (a mock node runner — no real
+// tools/agents/LLM) and returns the per-node trace plus the final result.
+func (s *Server) handleStudioTest(c *fiber.Ctx) error {
+	var req studioTestRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+	}
+
+	res, err := studio.TestRun(c.Context(), req.Workflow, req.Input)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res)
+}
+
+// studioSaveRequest is the POST /api/v1/studio/save body.
+type studioSaveRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioSave implements POST /api/v1/studio/save. It converts the
+// draft into a DISABLED agent.Definition and persists it via the same
+// loader.Upsert path the create-agent handler uses, then returns the new
+// agent id. The agent is saved with Enabled=false so the operator reviews
+// and enables it explicitly.
+func (s *Server) handleStudioSave(c *fiber.Ctx) error {
+	var req studioSaveRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+	}
+
+	def, err := studio.ToAgentDefinition(req.Workflow)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if isProtectedSystemAgent(def.ID) {
+		return protectedSystemAgentResponse(c)
+	}
+
+	// Default LLM to the configured provider, mirroring handleCreateAgent.
+	if def.LLM.Provider == "" {
+		def.LLM.Provider = s.cfg.LLM.DefaultProvider
+	}
+	// Persist as a DISABLED agent — Studio saves are staged, not live.
+	def.Enabled = false
+
+	dir := ""
+	if len(s.cfg.AgentDirs) > 0 {
+		dir = s.cfg.AgentDirs[0]
+	}
+	if err := s.loader.Upsert(dir, &def); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
+		"agentId": def.ID,
+		"enabled": false,
+	})
 }
