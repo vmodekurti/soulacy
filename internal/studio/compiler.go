@@ -76,12 +76,29 @@ type Question struct {
 	Options []string `json:"options,omitempty"`
 }
 
-// Result is the compile response: a draft, clarifying questions, and
-// transparency notes about what was inferred and why.
+// Suggestion flags a capability a draft REFERENCES but that is not present
+// in the provided Catalog, so the UI can offer to install/discover it
+// (Stories S4.1/S4.3). Kind is one of tool|agent|skill|mcp; today the
+// compiler emits tool and agent suggestions (the only capability kinds a
+// flow node can reference). Installed reports whether the capability is in
+// the catalog: suggestMissing returns only Installed:false entries (the
+// actionable set), but the kind is part of the contract so the UI can route
+// "install tool" vs "discover agent" appropriately.
+type Suggestion struct {
+	Kind      string `json:"kind"`   // tool | agent | skill | mcp
+	Name      string `json:"name"`   // the referenced capability's name/id
+	Reason    string `json:"reason"` // human-readable why it's suggested
+	Installed bool   `json:"installed"`
+}
+
+// Result is the compile response: a draft, clarifying questions, transparency
+// notes about what was inferred and why, and suggestions for capabilities the
+// draft references but that aren't in the caller's catalog.
 type Result struct {
-	Workflow  Draft      `json:"workflow"`
-	Questions []Question `json:"questions"`
-	Notes     []string   `json:"notes"`
+	Workflow    Draft        `json:"workflow"`
+	Questions   []Question   `json:"questions"`
+	Notes       []string     `json:"notes"`
+	Suggestions []Suggestion `json:"suggestions"`
 }
 
 // canonicalExample is the shape the model is instructed to emit. It is
@@ -289,10 +306,128 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 
 	questions, notes := analyze(draft)
 	return Result{
-		Workflow:  draft,
-		Questions: questions,
-		Notes:     notes,
+		Workflow:    draft,
+		Questions:   questions,
+		Notes:       notes,
+		Suggestions: suggestMissing(draft, catalog),
 	}, nil
+}
+
+// suggestMissing inspects the (normalized) draft's flow and flags every tool
+// and peer-agent it REFERENCES that is absent from the provided catalog, so
+// the UI can offer to install/discover them (Stories S4.1/S4.3). It is a pure
+// function — deterministic, side-effect-free, and unit-testable — so Compile
+// can simply attach its output to the Result.
+//
+// Matching is tolerant: catalog entries and node references are compared after
+// trimming surrounding whitespace and case-folding (a draft that says
+// "HTTP_Fetch" matches a catalog "http_fetch"). The Catalog fields are plain
+// string lists today; the comparison stays robust if they later carry
+// decorated names.
+//
+// Design choice — actionable-only output: suggestMissing returns ONLY
+// Installed:false entries (capabilities the draft needs but the catalog lacks).
+// Present capabilities are intentionally omitted to keep the list a crisp
+// to-do list for the UI rather than a full inventory. Callers that DO want the
+// installed ones can use referencedCapabilities, which reports every
+// referenced capability with its installed flag.
+//
+// Empty-catalog guard: if the caller supplied NO catalog context (no tools and
+// no agents listed), suggestMissing returns nil. With nothing to compare
+// against we cannot know what is or isn't installed, and emitting suggestions
+// would be pure false positives. A caller wanting suggestions must pass the
+// catalog of what they actually have.
+func suggestMissing(draft Draft, cat Catalog) []Suggestion {
+	all := referencedCapabilities(draft, cat)
+	var out []Suggestion
+	for _, s := range all {
+		if !s.Installed {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// referencedCapabilities reports EVERY tool and peer-agent the draft's flow
+// references, each tagged with whether it is present in the catalog
+// (Installed). It is the shared core behind suggestMissing and is exported in
+// spirit (lowercase, package-internal) for callers that want the full picture
+// including already-installed capabilities. Like suggestMissing it honors the
+// empty-catalog guard: with no catalog context it returns nil rather than
+// guessing.
+//
+// References are de-duplicated and returned in deterministic order: all tools
+// (in first-seen flow order) followed by all agents.
+func referencedCapabilities(draft Draft, cat Catalog) []Suggestion {
+	// Empty-catalog guard: no context => no claims about install state.
+	if len(cat.Tools) == 0 && len(cat.Agents) == 0 {
+		return nil
+	}
+
+	toolSet := newNameSet(cat.Tools)
+	agentSet := newNameSet(cat.Agents)
+
+	var out []Suggestion
+	seenTool := map[string]bool{}
+	seenAgent := map[string]bool{}
+
+	// Tools first (first-seen flow order), then agents, for stable output.
+	for _, n := range draft.Flow.Nodes {
+		t := strings.TrimSpace(n.Tool)
+		if t == "" || seenTool[normalizeName(t)] {
+			continue
+		}
+		seenTool[normalizeName(t)] = true
+		installed := toolSet[normalizeName(t)]
+		out = append(out, Suggestion{
+			Kind:      "tool",
+			Name:      t,
+			Installed: installed,
+			Reason:    capabilityReason("tool", t, installed),
+		})
+	}
+	for _, n := range draft.Flow.Nodes {
+		a := strings.TrimSpace(n.Agent)
+		if a == "" || seenAgent[normalizeName(a)] {
+			continue
+		}
+		seenAgent[normalizeName(a)] = true
+		installed := agentSet[normalizeName(a)]
+		out = append(out, Suggestion{
+			Kind:      "agent",
+			Name:      a,
+			Installed: installed,
+			Reason:    capabilityReason("agent", a, installed),
+		})
+	}
+	return out
+}
+
+// capabilityReason renders a helpful, human-readable reason for a suggestion.
+func capabilityReason(kind, name string, installed bool) string {
+	if installed {
+		return fmt.Sprintf("workflow references %s %q which is already installed", kind, name)
+	}
+	return fmt.Sprintf("workflow references %s %q which isn't installed", kind, name)
+}
+
+// newNameSet builds a lookup set of normalized capability names from a catalog
+// list. Entries are case-folded and trimmed so matching is tolerant.
+func newNameSet(names []string) map[string]bool {
+	set := make(map[string]bool, len(names))
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		set[normalizeName(n)] = true
+	}
+	return set
+}
+
+// normalizeName canonicalizes a capability name for tolerant matching.
+func normalizeName(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
 }
 
 // normalizeTrigger applies modest, DETERMINISTIC trigger inference (Story

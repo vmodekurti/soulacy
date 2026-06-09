@@ -79,6 +79,18 @@
   //       data = POST /studio/save body { agentId, enabled }
   //       on 409 consent fallback the error reply also carries
   //       { requiresConsent, consentItems } alongside `error`.
+  //   'discover.request' -> 'discover.response'  (M4)
+  //       req  { query, kind? }
+  //       data = { results:[...] } — relays GET /registries/search?q=<query>
+  //              (the existing skill-source search; its packages are passed
+  //              through verbatim under `results`).
+  //   'install.request' -> 'install.response'    (M4)
+  //       req  { source, checksum?, name? }
+  //       data = the existing /plugins/install (stage) response
+  //              { staged, multiStep:true, preview, security?, note } —
+  //              staging carries its own review/consent; activation still
+  //              requires a separate Approve in the Plugins page. The reply is
+  //              honest about that ("staged" not "installed").
   // Nothing else is served until explicitly added to the whitelist below.
   //
   // Security:
@@ -131,6 +143,34 @@
             workflow: msg.workflow,
             acceptPrivilegedExposure: msg.acceptPrivilegedExposure,
           }))
+        break
+      case 'discover.request':
+        // Relay to the EXISTING skill-source search (GET /registries/search).
+        // Its packages are passed through verbatim under `results` so the
+        // Studio panel can render whatever the registry indexed.
+        await handleStudioRequest(id, 'discover.response', async () => {
+          const res = await api.registries.search(msg.query || '')
+          const results = (res && Array.isArray(res.packages)) ? res.packages : []
+          return { results, count: (res && res.count) || results.length }
+        })
+        break
+      case 'install.request':
+        // Relay to the EXISTING plugin install endpoint (POST /plugins/install).
+        // This STAGES the package — a real, review-bearing operation that does
+        // NOT activate anything on its own; the operator must still Approve it
+        // from the Plugins page. We report that honestly (multiStep:true) rather
+        // than faking completion, and never invent our own install logic.
+        await handleStudioRequest(id, 'install.response', async () => {
+          const res = await api.plugins.stage(msg.source, msg.checksum || '')
+          const preview = (res && res.preview) || null
+          return {
+            staged: preview && (preview.StagedID || preview.stagedID || preview.staged_id) || '',
+            multiStep: true,
+            preview,
+            security: preview && (preview.Security || preview.security) || null,
+            note: (res && res.note) || 'Staged for review — approve it in the Plugins page to activate.',
+          }
+        })
         break
       default:
         // Unknown/unsupported type: ignore (never forward arbitrary requests).

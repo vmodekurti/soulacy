@@ -56,6 +56,104 @@
   let notes = []
   let answers = {}            // { [questionId]: value }
 
+  // ── Missing-capability suggestions (M4) ───────────────────────────────────
+  // The compile response may carry `suggestions:[{kind,name,reason,installed}]`
+  // — capabilities the draft references that are NOT installed. They surface in
+  // a non-blocking "Needs setup" strip; each can be discovered + staged for
+  // install through the EXISTING registry-search / plugin-install endpoints.
+  let suggestions = []
+  // Per-suggestion UI state keyed by name:
+  //   { loading, error, results:[pkg], message, staged }
+  let discoverState = {}
+
+  function suggestionKey(s) {
+    return (s && s.name) || ''
+  }
+
+  // Find installable packages for one missing capability via the discover
+  // bridge op (relays GET /registries/search). Degrades gracefully on error.
+  async function findCapability(s) {
+    const key = suggestionKey(s)
+    if (!key) return
+    discoverState = { ...discoverState, [key]: { loading: true, error: '', results: [], message: '', staged: '' } }
+    try {
+      const data = await bridge.discover(key, s.kind)
+      const results = (data && Array.isArray(data.results)) ? data.results : []
+      discoverState = { ...discoverState, [key]: { loading: false, error: '', results, message: results.length ? '' : 'No matches found.', staged: '' } }
+    } catch (e) {
+      discoverState = { ...discoverState, [key]: { loading: false, error: e.message || 'discovery failed', results: [], message: '', staged: '' } }
+    }
+  }
+
+  // Stage an install for a chosen registry result via the install bridge op
+  // (relays POST /plugins/install). Staging is real + consent-bearing and does
+  // NOT activate the package — the operator must Approve it in the Plugins
+  // page. We surface that honestly, then re-fetch the catalog so the palette
+  // (and any now-installed suggestions) refresh.
+  async function installResult(s, pkg) {
+    const key = suggestionKey(s)
+    if (!key || !pkg) return
+    const source = pkg.source || pkg.slug || ''
+    const prev = discoverState[key] || {}
+    discoverState = { ...discoverState, [key]: { ...prev, loading: true, error: '', message: '' } }
+    try {
+      const data = await bridge.install({ source, checksum: pkg.checksum, name: pkg.slug || key })
+      const note = (data && data.note) || ''
+      const msg = data && data.multiStep
+        ? (data.staged
+            ? `Staged "${pkg.slug || key}" — approve it in the Plugins page to activate. ${note}`.trim()
+            : `Staged for review. ${note}`.trim())
+        : `Installed "${pkg.slug || key}".`
+      discoverState = { ...discoverState, [key]: { ...discoverState[key], loading: false, message: msg, staged: (data && data.staged) || '' } }
+      // Refresh the catalog so the palette + suggestions reflect the new state.
+      await loadCatalog()
+    } catch (e) {
+      discoverState = { ...discoverState, [key]: { ...discoverState[key], loading: false, error: e.message || 'install failed' } }
+    }
+  }
+
+  function pkgDesc(pkg) {
+    return (pkg && (pkg.description || (pkg.provider ? '' : ''))) || ''
+  }
+
+  // ── Browse registry (S4.3, light) ─────────────────────────────────────────
+  // A small Palette affordance that runs `discover` with the user's intent so
+  // they can explore + stage installable packages without a suggestion. Reuses
+  // the same install path (and catalog refresh) as the Needs-setup panel.
+  let browse = { open: false, loading: false, error: '', results: [], message: '' }
+
+  async function browseRegistry() {
+    const q = (intent || '').trim()
+    browse = { open: true, loading: true, error: '', results: [], message: '' }
+    try {
+      const data = await bridge.discover(q || 'skill')
+      const results = (data && Array.isArray(data.results)) ? data.results : []
+      browse = { open: true, loading: false, error: '', results, message: results.length ? '' : 'No matches found.' }
+    } catch (e) {
+      browse = { open: true, loading: false, error: e.message || 'discovery failed', results: [], message: '' }
+    }
+  }
+
+  async function installBrowse(pkg) {
+    if (!pkg) return
+    const source = pkg.source || pkg.slug || ''
+    browse = { ...browse, loading: true, error: '', message: '' }
+    try {
+      const data = await bridge.install({ source, checksum: pkg.checksum, name: pkg.slug })
+      const note = (data && data.note) || ''
+      browse = {
+        ...browse,
+        loading: false,
+        message: data && data.multiStep
+          ? `Staged "${pkg.slug}" — approve it in the Plugins page to activate. ${note}`.trim()
+          : `Installed "${pkg.slug}".`,
+      }
+      await loadCatalog()
+    } catch (e) {
+      browse = { ...browse, loading: false, error: e.message || 'install failed' }
+    }
+  }
+
   // xyflow stores (the component expects writable stores for nodes/edges).
   const nodes = writable([])
   const edges = writable([])
@@ -138,6 +236,12 @@
     workflow = (data && data.workflow) || null
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
+    // M4: surface missing-capability suggestions (non-blocking). Keep only the
+    // ones not yet installed; a fresh compile resets any in-flight discovery.
+    suggestions = (data && Array.isArray(data.suggestions))
+      ? data.suggestions.filter((s) => s && s.installed !== true)
+      : []
+    discoverState = {}
     selectedNode = null
     selectedEdge = null
     plan = null               // a fresh compile invalidates any prior plan/tier
@@ -342,6 +446,9 @@
       status={paletteStatus}
       statusKind={paletteStatusKind}
       error={paletteError}
+      onBrowse={browseRegistry}
+      {browse}
+      onInstall={installBrowse}
     />
 
     <!-- Center: canvas + transparency strips + panels -->
@@ -384,6 +491,67 @@
             {/each}
           </div>
         {/if}
+      {/if}
+
+      <!-- Needs-setup panel (M4): missing capabilities the draft references but
+           that are NOT installed. Non-blocking — the draft still renders/tests;
+           each item can be discovered + staged via the existing endpoints. -->
+      {#if suggestions.length}
+        <div class="needs-setup" aria-label="Missing capabilities">
+          <div class="ns-head">
+            <span class="strip-label">Needs setup</span>
+            <span class="ns-sub">These capabilities aren’t installed yet — the draft still works, but won’t run them until you add them.</span>
+          </div>
+          <ul class="ns-list">
+            {#each suggestions as s (s.name)}
+              <li class="ns-item">
+                <div class="ns-row">
+                  <span class="kind-chip kind-{s.kind || 'tool'}">{s.kind || 'tool'}</span>
+                  <span class="ns-name">{s.name}</span>
+                  {#if s.reason}<span class="ns-reason">{s.reason}</span>{/if}
+                  <button
+                    class="btn btn-sm"
+                    on:click={() => findCapability(s)}
+                    disabled={discoverState[s.name] && discoverState[s.name].loading}
+                  >
+                    {discoverState[s.name] && discoverState[s.name].loading ? 'Finding…' : 'Find'}
+                  </button>
+                </div>
+
+                {#if discoverState[s.name]}
+                  {#if discoverState[s.name].error}
+                    <div class="ns-msg ns-err">⚠ {discoverState[s.name].error}</div>
+                  {/if}
+                  {#if discoverState[s.name].message}
+                    <div class="ns-msg ns-ok">{discoverState[s.name].message}</div>
+                  {/if}
+                  {#if discoverState[s.name].results && discoverState[s.name].results.length}
+                    <ul class="ns-results">
+                      {#each discoverState[s.name].results as pkg}
+                        <li class="ns-result">
+                          <div class="nsr-main">
+                            <span class="nsr-name">{pkg.slug || pkg.name || '(package)'}</span>
+                            {#if pkg.provider}<span class="nsr-src">{pkg.provider}</span>{/if}
+                            {#if pkg.version}<span class="nsr-ver">{pkg.version}</span>{/if}
+                          </div>
+                          {#if pkgDesc(pkg)}<div class="nsr-desc">{pkgDesc(pkg)}</div>{/if}
+                          <button
+                            class="btn btn-sm primary"
+                            on:click={() => installResult(s, pkg)}
+                            disabled={discoverState[s.name] && discoverState[s.name].loading}
+                            title="Stage this package for install (review & approve in the Plugins page)"
+                          >
+                            Install
+                          </button>
+                        </li>
+                      {/each}
+                    </ul>
+                  {/if}
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
 
       <div class="canvas">
@@ -677,6 +845,68 @@
   }
   .v-msg.v-err { border-color: var(--error, #ff6b81); }
   .v-msg.v-warn { border-color: var(--warn, #f5a742); }
+
+  /* ── Needs-setup panel (M4: missing-capability suggestions) ───────────── */
+  .needs-setup {
+    flex: 0 0 auto;
+    padding: 10px 14px;
+    background: rgba(245, 167, 66, 0.08);
+    border-bottom: 1px solid var(--border);
+    max-height: 38vh;
+    overflow-y: auto;
+  }
+  .ns-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+  .ns-sub { font-size: 11px; color: var(--text-muted); }
+  .ns-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .ns-item {
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .ns-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .ns-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .ns-reason { font-size: 11px; color: var(--text-muted); flex: 1 1 auto; min-width: 0; }
+  .kind-chip {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border-radius: 999px;
+    padding: 1px 8px;
+    font-weight: 700;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    background: var(--bg-elev-2);
+  }
+  .kind-chip.kind-tool { color: var(--accent); border-color: var(--accent); }
+  .kind-chip.kind-agent { color: var(--ok, #36d399); border-color: var(--ok, #36d399); }
+  .btn-sm { padding: 4px 10px; font-size: 12px; }
+  .ns-msg { margin-top: 6px; font-size: 11px; }
+  .ns-msg.ns-err { color: var(--error, #ff6b81); }
+  .ns-msg.ns-ok { color: var(--ok, #36d399); }
+  .ns-results { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .ns-result {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 10px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .nsr-main { display: flex; align-items: baseline; gap: 8px; flex: 1 1 auto; min-width: 0; }
+  .nsr-name { font-size: 12px; font-weight: 600; color: var(--text); }
+  .nsr-src {
+    font-size: 10px;
+    color: var(--text-muted);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+  .nsr-ver { font-size: 10px; color: var(--text-muted); font-family: ui-monospace, monospace; }
+  .nsr-desc { flex: 1 1 100%; font-size: 11px; color: var(--text-muted); }
 
   /* Canvas */
   .canvas {

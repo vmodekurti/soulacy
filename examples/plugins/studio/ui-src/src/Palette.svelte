@@ -6,6 +6,11 @@
   export let status = ''      // human-readable load status
   export let statusKind = ''  // '' | 'ok' | 'warn' | 'error'
   export let error = ''       // hard error message (overrides lists)
+  // S4.3 (light): "Browse registry" affordance. The parent owns the discover /
+  // install state + handlers (reusing the same bridge ops as Needs-setup).
+  export let onBrowse = null  // () => void — runs discover with the intent
+  export let onInstall = null // (pkg) => void — stages an install
+  export let browse = { open: false, loading: false, error: '', results: [], message: '' }
 
   function agentItems(c) {
     const agents = (c && c.agents && c.agents.agents) || []
@@ -86,6 +91,46 @@
       </ul>
     </section>
   {/each}
+
+  {#if onBrowse}
+    <section class="group browse-group">
+      <button class="browse-btn" on:click={() => onBrowse()} disabled={browse && browse.loading}>
+        <span aria-hidden="true">🔎</span>
+        {browse && browse.loading ? 'Searching…' : 'Browse registry'}
+      </button>
+      {#if browse && browse.open}
+        {#if browse.error}
+          <div class="browse-msg browse-err">⚠ {browse.error}</div>
+        {/if}
+        {#if browse.message}
+          <div class="browse-msg browse-ok">{browse.message}</div>
+        {/if}
+        {#if browse.results && browse.results.length}
+          <ul class="browse-list">
+            {#each browse.results as pkg}
+              <li class="browse-item">
+                <div class="browse-main">
+                  <span class="browse-name">{pkg.slug || pkg.name || '(package)'}</span>
+                  {#if pkg.provider}<span class="browse-src">{pkg.provider}</span>{/if}
+                </div>
+                {#if pkg.description}<div class="browse-desc">{pkg.description}</div>{/if}
+                {#if onInstall}
+                  <button
+                    class="browse-install"
+                    on:click={() => onInstall(pkg)}
+                    disabled={browse.loading}
+                    title="Stage this package for install (review & approve in the Plugins page)"
+                  >
+                    Install
+                  </button>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+      {/if}
+    </section>
+  {/if}
 </aside>
 
 <style>
@@ -163,4 +208,57 @@
   }
   .item-empty:hover, .item-error:hover { border-color: var(--border); transform: none; }
   .item-error { color: var(--error); font-style: normal; }
+
+  /* Browse-registry affordance (S4.3) */
+  .browse-group { margin-top: 4px; }
+  .browse-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 10px;
+    background: var(--bg-elev-2);
+    border: 1px dashed var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .browse-btn:hover:not(:disabled) { border-color: var(--accent); }
+  .browse-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .browse-msg { margin-top: 8px; font-size: 11px; }
+  .browse-msg.browse-err { color: var(--error, #ff6b81); }
+  .browse-msg.browse-ok { color: var(--ok, #36d399); }
+  .browse-list { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .browse-item {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .browse-main { display: flex; align-items: baseline; gap: 6px; }
+  .browse-name { font-size: 12px; font-weight: 600; color: var(--text); word-break: break-word; }
+  .browse-src {
+    font-size: 10px;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+  .browse-desc { margin-top: 3px; font-size: 11px; color: var(--text-muted); word-break: break-word; }
+  .browse-install {
+    margin-top: 6px;
+    padding: 4px 10px;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 6px;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .browse-install:hover:not(:disabled) { filter: brightness(1.08); }
+  .browse-install:disabled { opacity: 0.5; cursor: not-allowed; }
 </style>

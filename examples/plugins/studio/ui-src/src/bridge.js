@@ -25,6 +25,13 @@
  *   save     payload { workflow, acceptPrivilegedExposure? }
  *              -> { agentId, enabled }
  *               | rejects Error with .requiresConsent + .consentItems (409 fallback)
+ *   discover payload { query, kind? } -> { results:[...], count }            (M4)
+ *              relays GET /registries/search; packages passed through verbatim.
+ *   install  payload { source, checksum?, name? }
+ *              -> { staged, multiStep:true, preview, security?, note }       (M4)
+ *              relays POST /plugins/install (stage). Staging is a real,
+ *              consent-bearing step; activation still needs an Approve in the
+ *              Plugins page. Reply is honest about that (multiStep:true).
  */
 
 const HOST_TIMEOUT_MS = 8000
@@ -106,4 +113,10 @@ export const bridge = {
   validate: (workflow) => bridgeRequest('validate', { workflow }),
   save: (workflow, acceptPrivilegedExposure) =>
     bridgeRequest('save', { workflow, acceptPrivilegedExposure }),
+  // M4: discover installable capabilities and stage an install. `install` may
+  // take a little longer (the host stages + runs a safety pass), so give it a
+  // wider timeout than the default catalog/compile ops.
+  discover: (query, kind) => bridgeRequest('discover', { query, kind }),
+  install: ({ source, checksum, name } = {}) =>
+    bridgeRequest('install', { source, checksum, name }, 30000),
 }

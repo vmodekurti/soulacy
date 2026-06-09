@@ -159,6 +159,9 @@ export const api = {
   // Skill sources / package registries (Story E26)
   registries: {
     list:   ()      => apiFetch('/registries'),
+    // Searches every configured (or default) skill source — natively including
+    // skills.sh. Returns { packages:[{slug,version,checksum,source,description,
+    // provider}], count }. Reused by Studio M4's `discover` bridge op.
     search: (q)     => apiFetch('/registries/search?q=' + encodeURIComponent(q)),
     probe: (url)   => apiFetch('/registries/probe', { method: 'POST', body: JSON.stringify({ url }) }),
     add:   (entry) => apiFetch('/registries', { method: 'POST', body: JSON.stringify(entry) }),
