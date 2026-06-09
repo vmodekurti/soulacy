@@ -260,9 +260,6 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 
 func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	id := c.Params("id")
-	if isProtectedSystemAgent(id) {
-		return protectedSystemAgentResponse(c)
-	}
 	existing := s.loader.Get(id)
 	if existing == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
@@ -277,6 +274,15 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	updates.LoadedAt = existing.LoadedAt
 
 	preserveHiddenAgentUpdateFields(&updates, existing)
+
+	if isProtectedSystemAgent(id) {
+		updates.Enabled = true
+		updates.SystemTools = true
+		updates.Channels = []string{"http"}
+		if len(updates.ConfirmTools) == 0 {
+			updates.ConfirmTools = existing.ConfirmTools
+		}
+	}
 
 	dir := ""
 	if len(s.cfg.AgentDirs) > 0 {
