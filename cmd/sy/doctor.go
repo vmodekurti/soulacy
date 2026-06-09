@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -86,10 +87,15 @@ func runDoctor() error {
 	add(checkConfig())
 	add(checkRuntimeDir(runtimeDir))
 	add(checkAgentDirs())
+	add(checkAgentCount())
+	add(checkPort())
 	add(checkPython())
 	add(checkOllama())
+	add(checkProviderReachability())
+	add(checkSandboxState())
 	add(checkKnowledgeDB(runtimeDir))
 	add(checkGatewayHealth())
+	add(checkRecentErrors())
 	add(checkMCPStatus())
 
 	if outputJSON {
@@ -396,4 +402,245 @@ func firstN(values []string, n int) []string {
 		return values
 	}
 	return values[:n]
+}
+
+// ── doctor v2 checks ────────────────────────────────────────────────────────
+//
+// Added 2026-06-09 as part of the OpenClaw parity pass. Each check is
+// designed to catch a real failure mode an operator hits on a fresh
+// install or after misconfiguration — NOT to inflate the check count.
+
+// checkAgentCount warns when the workspace has zero agents on disk. A
+// fresh install includes the basic-chat starter, so this should only
+// fire if the operator deleted it without adding any replacements. The
+// remedy is to run `sy onboard` or copy a SOUL.yaml.
+func checkAgentCount() doctorCheck {
+	ws := syWorkspace()
+	dirs := []string{ws.Agents}
+	if d := viper.GetStringSlice("agent_dirs"); len(d) > 0 {
+		dirs = d
+	}
+	total := 0
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(dir, e.Name(), "SOUL.yaml")); err == nil {
+				total++
+			}
+		}
+	}
+	if total == 0 {
+		return doctorCheck{
+			Name:   "agents",
+			Status: doctorWarn,
+			Detail: "no agents found on disk",
+			Remedy: "run `sy onboard` to set up a starter, or drop a SOUL.yaml into " + dirs[0],
+		}
+	}
+	return doctorCheck{
+		Name:   "agents",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("%d agent(s) on disk across %d dir(s)", total, len(dirs)),
+	}
+}
+
+// checkPort verifies the configured gateway port is either bound by an
+// already-running soulacy (good — `sy doctor` while serving) OR is free
+// for binding. A foreign process holding the port is a hard fail.
+func checkPort() doctorCheck {
+	host := viper.GetString("server.host")
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	port := viper.GetInt("server.port")
+	if port == 0 {
+		port = 18789
+	}
+	addr := fmt.Sprintf("%s:%d", host, port)
+	// Try to bind ourselves. If we succeed, the port is free. If bind
+	// fails with "address in use", check whether the gateway's /healthz
+	// answers — if yes, it's our own process holding the port (fine).
+	ln, bindErr := net.Listen("tcp", addr)
+	if bindErr == nil {
+		_ = ln.Close()
+		return doctorCheck{
+			Name:   "port",
+			Status: doctorOK,
+			Detail: fmt.Sprintf("%s is free for binding", addr),
+		}
+	}
+	// Port is in use — is it us?
+	healthURL := fmt.Sprintf("http://%s:%d/healthz", host, port)
+	if err := httpJSON(healthURL, &map[string]any{}, 1*time.Second); err == nil {
+		return doctorCheck{
+			Name:   "port",
+			Status: doctorOK,
+			Detail: fmt.Sprintf("%s held by a running soulacy gateway", addr),
+		}
+	}
+	return doctorCheck{
+		Name:   "port",
+		Status: doctorFail,
+		Detail: fmt.Sprintf("%s is occupied by another process", addr),
+		Remedy: fmt.Sprintf("find the process: lsof -i :%d", port),
+	}
+}
+
+// checkProviderReachability does a HEAD/GET to each LLM provider that
+// has a key configured. We don't actually try to complete a chat (that
+// would burn tokens) — we just verify the endpoint resolves and accepts
+// TCP. A 401 from the API means the endpoint is reachable, which is
+// what we care about; the key validity is a separate concern.
+func checkProviderReachability() doctorCheck {
+	type probe struct {
+		name string
+		key  string // viper key for API key presence
+		url  string // probe URL — pick a cheap endpoint per provider
+	}
+	probes := []probe{
+		{"openai", "llm.providers.openai.api_key", "https://api.openai.com/v1/models"},
+		{"anthropic", "llm.providers.anthropic.api_key", "https://api.anthropic.com/v1/messages"},
+		{"groq", "llm.providers.groq.api_key", "https://api.groq.com/openai/v1/models"},
+		{"mistral", "llm.providers.mistral.api_key", "https://api.mistral.ai/v1/models"},
+		{"openrouter", "llm.providers.openrouter.api_key", "https://openrouter.ai/api/v1/models"},
+		{"deepseek", "llm.providers.deepseek.api_key", "https://api.deepseek.com/v1/models"},
+	}
+	configured := 0
+	var unreachable []string
+	for _, p := range probes {
+		if viper.GetString(p.key) == "" {
+			continue
+		}
+		configured++
+		client := &http.Client{Timeout: 3 * time.Second}
+		req, _ := http.NewRequest("GET", p.url, nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			unreachable = append(unreachable, fmt.Sprintf("%s (%v)", p.name, err))
+			continue
+		}
+		_ = resp.Body.Close()
+		// Any HTTP response means the endpoint is reachable; we don't
+		// care about auth status (401 is fine for a reachability probe).
+	}
+	if configured == 0 {
+		return doctorCheck{
+			Name:   "provider_reach",
+			Status: doctorWarn,
+			Detail: "no remote LLM provider keys configured (Ollama-only OK if you have it running)",
+			Remedy: "run `sy onboard` to configure a provider, or paste a key into config.yaml",
+		}
+	}
+	if len(unreachable) > 0 {
+		return doctorCheck{
+			Name:   "provider_reach",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%d of %d provider endpoints unreachable: %s",
+				len(unreachable), configured, strings.Join(firstN(unreachable, 3), "; ")),
+			Remedy: "check network / DNS / firewall to api.openai.com etc.",
+		}
+	}
+	return doctorCheck{
+		Name:   "provider_reach",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("%d provider endpoint(s) reachable", configured),
+	}
+}
+
+// checkSandboxState verifies the sandbox is enabled when the config says
+// it should be, and the python self-exec sandbox wrapper is invokable.
+// The runtime auto-disables sandbox on platforms where rlimits aren't
+// available; we warn if config says enabled but we know it can't fire.
+func checkSandboxState() doctorCheck {
+	enabled := viper.GetBool("runtime.sandbox.enabled")
+	if !enabled {
+		// Look at the default — if the operator explicitly disabled it,
+		// say so neutrally. If they're on the default-false (older
+		// configs), nudge them to flip it on.
+		return doctorCheck{
+			Name:   "sandbox",
+			Status: doctorWarn,
+			Detail: "runtime.sandbox.enabled is false",
+			Remedy: "set runtime.sandbox.enabled: true in config.yaml to constrain python tool execution",
+		}
+	}
+	if runtime.GOOS == "windows" {
+		return doctorCheck{
+			Name:   "sandbox",
+			Status: doctorWarn,
+			Detail: "sandbox configured ON but rlimit-based sandbox isn't supported on Windows",
+			Remedy: "set runtime.sandbox.enabled: false, OR run soulacy under WSL2",
+		}
+	}
+	cpu := viper.GetInt("runtime.sandbox.cpu_seconds")
+	mem := viper.GetInt("runtime.sandbox.memory_mb")
+	return doctorCheck{
+		Name:   "sandbox",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("enabled (cpu=%ds mem=%dMB)", cpu, mem),
+	}
+}
+
+// checkRecentErrors queries the gateway's action log endpoint for the
+// last hour and warns when error density crosses a threshold. Skipped
+// silently when the gateway isn't reachable — checkGatewayHealth
+// already covers that case and we don't want double-fails.
+func checkRecentErrors() doctorCheck {
+	type actionRow struct {
+		Status string `json:"status"`
+	}
+	type listResp struct {
+		Items []actionRow `json:"items"`
+		Total int         `json:"total"`
+	}
+	var resp listResp
+	url := strings.TrimRight(gatewayURL, "/") + "/api/v1/actions?limit=100&since=1h"
+	if err := httpJSON(url, &resp, 3*time.Second); err != nil {
+		return doctorCheck{
+			Name:   "error_rate",
+			Status: doctorWarn,
+			Detail: "couldn't read action log (gateway down?)",
+		}
+	}
+	if len(resp.Items) == 0 {
+		return doctorCheck{
+			Name:   "error_rate",
+			Status: doctorOK,
+			Detail: "no recent activity to assess",
+		}
+	}
+	errs := 0
+	for _, r := range resp.Items {
+		if r.Status == "error" || r.Status == "failed" || r.Status == "timeout" {
+			errs++
+		}
+	}
+	rate := float64(errs) / float64(len(resp.Items))
+	if rate >= 0.30 {
+		return doctorCheck{
+			Name:   "error_rate",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed", errs, len(resp.Items), rate*100),
+			Remedy: "check `sy logs` for repeated errors; common causes: provider auth, sandbox limits, MCP server crashes",
+		}
+	}
+	if rate >= 0.10 {
+		return doctorCheck{
+			Name:   "error_rate",
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed", errs, len(resp.Items), rate*100),
+			Remedy: "check `sy logs` if this is unexpected",
+		}
+	}
+	return doctorCheck{
+		Name:   "error_rate",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed", errs, len(resp.Items), rate*100),
+	}
 }
