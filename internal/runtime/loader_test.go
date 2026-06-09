@@ -73,9 +73,18 @@ func TestLoader_ProtectedSystemCannotBeModifiedOrDeleted(t *testing.T) {
 	dir := t.TempDir()
 	l := NewLoader([]string{dir})
 
-	if err := l.Upsert(dir, &agent.Definition{ID: SystemAgentID, Channels: []string{"telegram"}}); err == nil {
-		t.Fatal("Upsert should reject the protected system agent")
+	// Upsert should succeed and allow modifying LLM settings / Prompt,
+	// but safety features (Channels = [http], Enabled = true, SystemTools = true) are enforced.
+	if err := l.Upsert(dir, &agent.Definition{
+		ID:          SystemAgentID,
+		Name:        "Modified System",
+		Channels:    []string{"telegram"}, // should be overridden to [http]
+		Enabled:     false,                // should be overridden to true
+		SystemTools: false,                // should be overridden to true
+	}); err != nil {
+		t.Fatalf("Upsert system agent should succeed, got error: %v", err)
 	}
+
 	if err := l.Delete(SystemAgentID); err == nil {
 		t.Fatal("Delete should reject the protected system agent")
 	}
@@ -84,25 +93,31 @@ func TestLoader_ProtectedSystemCannotBeModifiedOrDeleted(t *testing.T) {
 	if sys == nil {
 		t.Fatal("system agent should still be present")
 	}
-	if sys.SourcePath != builtinSourcePath {
-		t.Fatalf("system SourcePath = %q, want builtin sentinel", sys.SourcePath)
+	if sys.Name != "Modified System" {
+		t.Fatalf("system Name = %q, want modified name", sys.Name)
+	}
+	if !sys.Enabled {
+		t.Fatal("system agent should remain enabled")
+	}
+	if !sys.SystemTools {
+		t.Fatal("system agent should remain system tools enabled")
 	}
 	if len(sys.Channels) != 1 || sys.Channels[0] != "http" {
-		t.Fatalf("system channels = %v, want [http]", sys.Channels)
+		t.Fatalf("system channels = %v, want [http] enforced", sys.Channels)
 	}
 }
 
-func TestLoader_LoadAllIgnoresOnDiskSystemOverride(t *testing.T) {
+func TestLoader_LoadAllAppliesOnDiskSystemOverride(t *testing.T) {
 	dir := t.TempDir()
 	sysDir := filepath.Join(dir, SystemAgentID)
 	if err := os.MkdirAll(sysDir, 0755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(sysDir, "SOUL.yaml"), []byte(`id: system
-name: Hijacked System
+name: Custom System
 channels: [telegram]
 enabled: false
-system_prompt: do not load this
+system_prompt: customized prompt
 `), 0644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
@@ -116,14 +131,17 @@ system_prompt: do not load this
 	if sys == nil {
 		t.Fatal("system agent should still be present")
 	}
-	if sys.Name != "System" {
-		t.Fatalf("system name = %q, want built-in System", sys.Name)
+	if sys.Name != "Custom System" {
+		t.Fatalf("system name = %q, want customized name", sys.Name)
 	}
 	if !sys.Enabled {
 		t.Fatal("system agent should remain enabled")
 	}
-	if sys.SourcePath != builtinSourcePath {
-		t.Fatalf("system SourcePath = %q, want builtin sentinel", sys.SourcePath)
+	if sys.SystemPrompt != "customized prompt" {
+		t.Fatalf("system prompt = %q, want customized prompt", sys.SystemPrompt)
+	}
+	if sys.SourcePath == builtinSourcePath {
+		t.Fatal("system SourcePath should point to on-disk file, not builtin sentinel")
 	}
 	if len(sys.Channels) != 1 || sys.Channels[0] != "http" {
 		t.Fatalf("system channels = %v, want [http]", sys.Channels)

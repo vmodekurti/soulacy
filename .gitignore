@@ -63,7 +63,7 @@ reinstall.sh
 session*.command
 
 # ── Agent configs (installation-specific, never commit) ──────────────────────
-examples/agents/
+examples/agents/*
 
 # ── Legacy dir ────────────────────────────────────────────────────────────────
 .clawstack/
@@ -75,3 +75,7 @@ examples/agents/
 soulacy-go-tmp-umask
 config.dev.yaml
 config.*.yaml
+
+# Reference examples we DO ship with the repo (Phase 1 persona-blocks).
+!examples/agents/persona-demo/
+!examples/agents/persona-demo/**

@@ -59,6 +59,7 @@ type setupConfig struct {
 	LLMProvider  string
 	LLMModel     string
 	OllamaURL    string
+	OllamaAPIKey string
 	OpenAIKey    string
 	AnthropicKey string
 
@@ -289,6 +290,14 @@ func setupLLM(cfg *setupConfig) {
 		cfg.LLMModel = prompt("  Model name", "")
 	}
 	fmt.Println()
+
+	// Web Search Tool configuration
+	fmt.Printf("  %s The built-in web_search tool uses the Ollama Web Search API.\n", dim("Web Search"))
+	fmt.Printf("  %s It works with any LLM provider but requires an Ollama API key.\n", gray("Get a key at: https://ollama.com/settings/keys"))
+	if confirm("  Configure Ollama Web Search?", false) {
+		cfg.OllamaAPIKey = prompt("  Ollama API key", "")
+	}
+	fmt.Println()
 }
 
 func setupChannels(cfg *setupConfig) {
@@ -358,6 +367,12 @@ func writeConfig(cfg *setupConfig) error {
 	ollamaSection := fmt.Sprintf(`    ollama:
       base_url: "%s"
       model: "%s"`, cfg.OllamaURL, cfg.LLMModel)
+	if cfg.OllamaAPIKey != "" {
+		ollamaSection = fmt.Sprintf(`    ollama:
+      base_url: "%s"
+      model: "%s"
+      api_key: "%s"`, cfg.OllamaURL, cfg.LLMModel, cfg.OllamaAPIKey)
+	}
 
 	openaiSection := ""
 	if cfg.OpenAIKey != "" {
@@ -489,6 +504,9 @@ func printSummary(cfg *setupConfig) {
 		fmt.Printf("  %-20s %s\n", "API key", yellow("none (dev mode)"))
 	}
 	fmt.Printf("  %-20s %s / %s\n", "LLM", cfg.LLMProvider, cfg.LLMModel)
+	if cfg.OllamaAPIKey != "" {
+		fmt.Printf("  %-20s %s\n", "Ollama Web Search", bold("configured"))
+	}
 	fmt.Printf("  %-20s %s\n", "Python", cfg.PythonBin)
 	fmt.Printf("  %-20s %s\n", "Log level", cfg.LogLevel)
 	fmt.Printf("  %-20s %s\n", "Config file", cfg.ConfigPath)

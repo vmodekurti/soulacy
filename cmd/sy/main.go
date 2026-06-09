@@ -105,7 +105,8 @@ Quick start:
 
 	// Sub-commands
 	root.AddCommand(
-		buildSetupCmd(), // interactive setup wizard — show first
+		buildOnboardCmd(), // sy onboard — guided first-run wizard
+		buildSetupCmd(),   // sy setup — legacy from-scratch config writer
 		buildAgentCmd(),
 		buildChatCmd(),
 		buildChannelCmd(),
@@ -115,6 +116,7 @@ Quick start:
 		buildLogsCmd(),
 		buildServerCmd(),
 		buildDoctorCmd(),
+		buildDaemonCmd(),    // sy daemon — install/uninstall/status/logs as a background service
 		buildWorkspaceCmd(), // sy workspace — soulspace info + migration
 		buildPullCmd(),      // sy pull — agent marketplace
 		buildEvalCmd(),      // sy eval — evaluation framework
@@ -163,6 +165,7 @@ func buildAgentCmd() *cobra.Command {
 	createCmd.Flags().StringVarP(&createFile, "file", "f", "", "Path to SOUL.yaml")
 	cmd.AddCommand(createCmd)
 	cmd.AddCommand(buildAgentValidateCmd())
+	cmd.AddCommand(buildAgentTierCmd())
 
 	// enable / disable
 	cmd.AddCommand(&cobra.Command{
@@ -1191,4 +1194,3 @@ func listChannels() error {
 	w.Flush()
 	return nil
 }
-

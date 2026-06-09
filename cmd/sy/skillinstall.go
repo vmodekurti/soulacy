@@ -46,11 +46,13 @@ type remoteInstallOpts struct {
 }
 
 // registriesFromConfig builds the E19 engine from the `registries:` config
-// block. With no registries configured, a bare git provider still lets
-// `sy skill install github.com/user/skill` work out of the box.
+// block. With no registries configured, the native defaults apply: the
+// public skills.sh directory + a bare git provider — both
+// `sy skill install anthropics/skills/skill-creator` and
+// `sy skill install github.com/user/skill` work with zero configuration.
 func registriesFromConfig(entries []config.RegistryConfig, log *zap.Logger) *pkgregistry.Engine {
 	if len(entries) == 0 {
-		entries = []config.RegistryConfig{{ID: "git", Type: "git", Priority: 100}}
+		entries = pkgregistry.DefaultRegistries()
 	}
 	eng, errs := pkgregistry.FromConfig(entries, log)
 	for _, e := range errs {

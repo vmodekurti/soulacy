@@ -33,6 +33,7 @@ import (
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/templates"
+	"github.com/soulacy/soulacy/internal/tier"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 )
@@ -191,6 +192,30 @@ func (s *Server) handleGetAgent(c *fiber.Ctx) error {
 	return c.JSON(def)
 }
 
+// handleGetAgentTier returns the capability tier for an agent plus the
+// reasons that produced it. Companion to the `sy agent tier` CLI and a
+// future GUI badge — see docs/CHANNEL_DESIGN.md Q1 and the implementation
+// in internal/tier. The endpoint is RBAC-gated under agents:read so the
+// same audience that can view an agent can see its tier.
+//
+// Response shape:
+//
+//	{ "agent_id": "system", "tier": "privileged",
+//	  "reasons": ["system_tools: true (OS-level shell access)", ...] }
+func (s *Server) handleGetAgentTier(c *fiber.Ctx) error {
+	id := c.Params("id")
+	def := s.loader.Get(id)
+	if def == nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
+	}
+	exp := tier.Explain(def, s.loader.Get)
+	return c.JSON(fiber.Map{
+		"agent_id": def.ID,
+		"tier":     exp.Tier.String(),
+		"reasons":  exp.Reasons,
+	})
+}
+
 func (s *Server) handleValidateAgent(c *fiber.Ctx) error {
 	var def agent.Definition
 	if err := c.BodyParser(&def); err != nil {
@@ -235,9 +260,6 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 
 func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	id := c.Params("id")
-	if isProtectedSystemAgent(id) {
-		return protectedSystemAgentResponse(c)
-	}
 	existing := s.loader.Get(id)
 	if existing == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
@@ -252,6 +274,15 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	updates.LoadedAt = existing.LoadedAt
 
 	preserveHiddenAgentUpdateFields(&updates, existing)
+
+	if isProtectedSystemAgent(id) {
+		updates.Enabled = true
+		updates.SystemTools = true
+		updates.Channels = []string{"http"}
+		if len(updates.ConfirmTools) == 0 {
+			updates.ConfirmTools = existing.ConfirmTools
+		}
+	}
 
 	dir := ""
 	if len(s.cfg.AgentDirs) > 0 {
@@ -2404,7 +2435,7 @@ func (s *Server) handleListProviders(c *fiber.Ctx) error {
 	}
 	// Known provider IDs the GUI should always offer (even when not yet
 	// configured), so users can pick them from a dropdown to add credentials.
-	known := []string{"ollama", "openai", "anthropic", "google", "groq", "mistral", "openrouter"}
+	known := []string{"ollama", "openai", "anthropic", "google", "groq", "mistral", "openrouter", "deepseek", "together"}
 	return c.JSON(fiber.Map{
 		"providers":        providers,
 		"default_provider": s.cfg.LLM.DefaultProvider,

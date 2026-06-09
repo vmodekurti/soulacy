@@ -87,6 +87,7 @@ func builtinSystemAgent() *agent.Definition {
 		// or irreversible built-in tool. The SSE stream emits a tool_confirm
 		// event; the GUI shows an approve/deny dialog before proceeding.
 		ConfirmTools: []string{"shell_exec", "run_script", "write_file", "http_request", "download_file", "install_library"},
+		SystemTools:  true,
 		Memory: agent.MemoryPolicy{
 			ReadScopes:  []string{"session"},
 			WriteScopes: []string{"session"},
@@ -194,10 +195,16 @@ func (l *Loader) LoadAll() []error {
 				return nil
 			}
 			if def.ID == SystemAgentID {
-				l.log.Warn("ignoring on-disk override for protected system agent",
-					zap.String("path", path),
-					zap.String("agent_id", def.ID),
-				)
+				def.ID = SystemAgentID
+				def.Enabled = true
+				def.SystemTools = true
+				def.Channels = []string{"http"}
+				if len(def.ConfirmTools) == 0 {
+					def.ConfirmTools = []string{"shell_exec", "run_script", "write_file", "http_request", "download_file", "install_library"}
+				}
+				def.SourcePath = path
+				l.agents[SystemAgentID] = def
+				found[SystemAgentID] = true
 				return nil
 			}
 
@@ -218,7 +225,11 @@ func (l *Loader) LoadAll() []error {
 			continue // never prune built-ins
 		}
 		if !found[id] {
-			delete(l.agents, id)
+			if id == SystemAgentID {
+				l.agents[SystemAgentID] = builtinSystemAgent()
+			} else {
+				delete(l.agents, id)
+			}
 		}
 	}
 
@@ -267,6 +278,9 @@ func (l *Loader) parseFile(path string) (*agent.Definition, error) {
 // excluded from wildcard peer expansion so they don't appear as callable tools
 // unless an agent explicitly names them by ID.
 func (l *Loader) IsBuiltin(id string) bool {
+	if id == SystemAgentID {
+		return true
+	}
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	d, ok := l.agents[id]
@@ -310,7 +324,12 @@ func (l *Loader) Upsert(dir string, def *agent.Definition) error {
 		return fmt.Errorf("agent ID is required")
 	}
 	if def.ID == SystemAgentID {
-		return fmt.Errorf("agent %q is protected and cannot be modified", def.ID)
+		def.Enabled = true
+		def.SystemTools = true
+		def.Channels = []string{"http"}
+		if len(def.ConfirmTools) == 0 {
+			def.ConfirmTools = []string{"shell_exec", "run_script", "write_file", "http_request", "download_file", "install_library"}
+		}
 	}
 
 	oldPath := def.SourcePath // where this agent currently lives (empty for new agents)

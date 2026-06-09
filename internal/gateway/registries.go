@@ -17,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/pkgregistry"
 	"github.com/soulacy/soulacy/sdk/registry"
 )
@@ -47,6 +48,41 @@ func (s *Server) rawRegistries() ([]map[string]any, error) {
 	return out, nil
 }
 
+// configuredOrDefaultRegistries mirrors the CLI's behaviour: with no
+// registries: block, the native defaults (skills.sh + git) apply.
+func (s *Server) configuredOrDefaultRegistries() []config.RegistryConfig {
+	var regs []config.RegistryConfig
+	if s.cfgPath != "" {
+		if raw, err := s.rawRegistries(); err == nil {
+			for _, m := range raw {
+				regs = append(regs, config.RegistryConfig{
+					ID:      strAt(m, "id"),
+					Type:    strAt(m, "type"),
+					BaseURL: strAt(m, "base_url"),
+				})
+			}
+		}
+	}
+	if len(regs) == 0 {
+		return pkgregistry.DefaultRegistries()
+	}
+	return regs
+}
+
+// handleSearchRegistries searches every configured (or default) skill
+// source — natively including skills.sh — for the GUI's skill finder.
+func (s *Server) handleSearchRegistries(c *fiber.Ctx) error {
+	query := strings.TrimSpace(c.Query("q"))
+	if query == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "q query parameter is required"})
+	}
+	eng, _ := pkgregistry.FromConfig(s.configuredOrDefaultRegistries(), s.log)
+	ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
+	defer cancel()
+	pkgs := eng.Search(ctx, query)
+	return c.JSON(fiber.Map{"packages": pkgs, "count": len(pkgs)})
+}
+
 func (s *Server) handleListRegistries(c *fiber.Ctx) error {
 	if s.cfgPath == "" {
 		return c.JSON(fiber.Map{"registries": []registryView{}, "count": 0})
@@ -54,6 +90,14 @@ func (s *Server) handleListRegistries(c *fiber.Ctx) error {
 	entries, err := s.rawRegistries()
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if len(entries) == 0 {
+		// Surface the native defaults so the GUI shows what's active.
+		views := []registryView{}
+		for _, d := range pkgregistry.DefaultRegistries() {
+			views = append(views, registryView{ID: d.ID, Type: d.Type, BaseURL: d.BaseURL, Priority: d.Priority})
+		}
+		return c.JSON(fiber.Map{"registries": views, "count": len(views), "defaults": true})
 	}
 	views := make([]registryView, 0, len(entries))
 	for _, m := range entries {

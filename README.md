@@ -27,36 +27,38 @@ The field is crowded with frameworks that assume you want to write Python and de
 
 ### Install
 
-### macOS — one line
+### One line — macOS & Linux
 
 ```bash
-brew install soulacy/tap/soulacy
+curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash
 ```
 
-Then start the gateway and open the dashboard:
+What it does, with zero questions asked:
+
+1. Clones the latest source (requires `git`, Go 1.22+, and `npm` for the GUI build).
+2. Builds the Svelte GUI and compiles `soulacy` (the gateway) + `sy` (the CLI).
+3. Installs both binaries into `~/.local/bin` (no `sudo`).
+4. Prints clear next steps + offers to launch the gateway on the spot.
+
+When you run `soulacy serve` (either right away or later), the gateway prints a one-time banner with the URL and a freshly-generated API key. Then open <http://127.0.0.1:18789>, paste the key, and you're in. The runtime workspace (`~/.soulacy/soulspace/`), config file, starter agent, and API key are all created automatically on first launch — you never have to touch a config file.
+
+Overrides:
 
 ```bash
-brew services start soulacy
-open http://localhost:18789
+# install from a branch / tag / sha
+SOULACY_REF=feature/integrated-roadmap curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/feature/integrated-roadmap/install.sh | bash
+
+# install system-wide (uses sudo)
+SOULACY_PREFIX=/usr/local curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash
 ```
 
-### macOS — from source
+### From a local checkout
 
 ```bash
-git clone https://github.com/soulacy/soulacy
+git clone https://github.com/vmodekurti/soulacy
 cd soulacy
-bash scripts/mac-install.sh
+./install.sh                  # same behavior; will offer LaunchAgent setup on macOS
 ```
-
-Builds the GUI, compiles the binaries, installs to `/usr/local/bin`, registers a LaunchAgent so it starts on login, and opens the browser.
-
-### Linux — one line
-
-```bash
-curl -fsSL https://vmodekurti.github.io/soulacy/install.sh | bash
-```
-
-Downloads the pre-built binary for your platform, installs it, and registers a `systemd` service that starts on boot.
 
 ### Docker — full stack (Postgres + Qdrant + GUI)
 

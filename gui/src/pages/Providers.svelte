@@ -38,6 +38,7 @@
   let ollamaOptions = {}
   let ollamaOptionsJSON = ''
   let saving   = false
+  let customId = ''
 
   const KNOWN_BASES = {
     openai:      'https://api.openai.com/v1',
@@ -47,6 +48,9 @@
     groq:        'https://api.groq.com/openai/v1',
     mistral:     'https://api.mistral.ai/v1',
     openrouter:  'https://openrouter.ai/api/v1',
+    deepseek:    'https://api.deepseek.com',
+    together:    'https://api.together.xyz/v1',
+    grok:        'https://api.x.ai/v1',
   }
   const KNOWN_MODELS = {
     openai:      'gpt-4o-mini',
@@ -56,6 +60,9 @@
     groq:        'llama-3.3-70b-versatile',
     mistral:     'mistral-small-latest',
     openrouter:  'meta-llama/llama-3.3-70b-instruct:free',
+    deepseek:    'deepseek-chat',
+    together:    'meta-llama/Llama-3-70b-chat-hf',
+    grok:        'grok-2-1212',
   }
   const DEFAULT_OLLAMA_KEEP_ALIVE = '30m'
   const DEFAULT_OLLAMA_OPTIONS = { num_ctx: 4096, num_batch: 128 }
@@ -88,6 +95,7 @@
 
   function openAdd(id) {
     addId    = id || 'openai'
+    customId = (addId && !known.includes(addId)) ? addId : ''
     addKey   = ''
     addBase  = providers[addId]?.base_url || KNOWN_BASES[addId] || ''
     addModel = providers[addId]?.model    || KNOWN_MODELS[addId] || ''
@@ -115,29 +123,42 @@
     if (!addId) return
     saving = true; error = ''; notice = ''
     try {
+      let targetId = addId
+      if (addId === 'custom') {
+        if (!customId.trim()) {
+          throw new Error('Custom Provider ID is required')
+        }
+        targetId = customId.trim().toLowerCase()
+        if (!/^[a-z0-9-_]+$/.test(targetId)) {
+          throw new Error('Provider ID must be lowercase alphanumeric characters, dashes, or underscores.')
+        }
+        if (known.includes(targetId)) {
+          throw new Error(`"${targetId}" is a built-in provider. Please select it from the Provider dropdown list instead.`)
+        }
+      }
       const body = {
         base_url: addBase || undefined,
         api_key:  addKey  || undefined,
         model:    addModel || undefined,
       }
-      if (addId === 'ollama') {
+      if (targetId === 'ollama') {
         body.keep_alive = addKeepAlive
         body.options = buildOllamaOptions()
       }
       body.prompt_caching = addPromptCaching
-      if (addId === 'google') {
+      if (targetId === 'google') {
         body.thinking_budget = addThinkingBudget
         body.safety_level = addSafetyLevel
       }
-      if (addId === 'anthropic') {
+      if (targetId === 'anthropic') {
         body.extended_thinking = addExtendedThinking
         if (addExtendedThinking) body.thinking_budget = addAnthropicThinkingBudget
       }
-      if (addId !== 'ollama' && addId !== 'google' && addId !== 'anthropic') {
+      if (targetId !== 'ollama' && targetId !== 'google' && targetId !== 'anthropic') {
         if (addOrganization) body.organization = addOrganization
         if (addParallelToolCalls !== null) body.parallel_tool_calls = addParallelToolCalls
       }
-      const res = await api.providers.setCredentials(addId, body)
+      const res = await api.providers.setCredentials(targetId, body)
       notice = res.message || 'Saved.'
       restartNeeded = true
       showAdd = false
@@ -255,7 +276,8 @@
 
   const PROVIDER_ICONS = {
     ollama: '🦙', openai: '🤖', anthropic: '🔮', openrouter: '🌐',
-    groq: '⚡', mistral: '💨', google: '🔵',
+    groq: '⚡', mistral: '💨', google: '🔵', deepseek: '🐳',
+    together: '🤝', grok: '👁️',
   }
   function providerIcon(id = '') { return PROVIDER_ICONS[id.toLowerCase()] || '⚙️' }
 
@@ -428,15 +450,43 @@
       <h2>{providers[addId] ? 'Edit' : 'Add'} provider</h2>
       <div class="modal-field">
         <span class="field-label">Provider</span>
-        <select bind:value={addId} on:change={() => openAdd(addId)}>
+        <select bind:value={addId} on:change={() => {
+          if (addId === 'custom') {
+            customId = ''
+            addBase = ''
+            addModel = ''
+            addKey = ''
+            addPromptCaching = false
+            addOrganization = ''
+            addParallelToolCalls = null
+          } else {
+            openAdd(addId)
+          }
+        }}>
           {#each (known.length ? known : ['openai','anthropic','google','ollama']) as id}
             <option value={id}>{providerIcon(id)} {id}</option>
           {/each}
+          {#each Object.keys(providers).filter(id => !known.includes(id)) as id}
+            <option value={id}>{providerIcon(id)} {id} (custom)</option>
+          {/each}
+          <option value="custom">➕ Custom OpenAI-compatible...</option>
         </select>
       </div>
+      {#if addId === 'custom' || (addId && !known.includes(addId))}
+        <div class="modal-field">
+          <span class="field-label">Custom Provider ID <span class="req" style="color: #f06060">*</span></span>
+          <input
+            type="text"
+            bind:value={customId}
+            placeholder="e.g. deepseek, together, local-vllm"
+            disabled={addId !== 'custom'}
+          />
+          <span class="help">Use lowercase letters, numbers, and dashes. This is the ID you'll use in agent config (e.g. <code>llm.providers.deepseek</code>).</span>
+        </div>
+      {/if}
       <div class="modal-field">
         <span class="field-label">Base URL <span class="opt">(optional)</span></span>
-        <input type="text" bind:value={addBase} placeholder={KNOWN_BASES[addId] || ''} />
+        <input type="text" bind:value={addBase} placeholder={KNOWN_BASES[addId] || 'https://api.example.com/v1'} />
       </div>
       <div class="modal-field">
         <span class="field-label">API key</span>
@@ -444,7 +494,7 @@
       </div>
       <div class="modal-field">
         <span class="field-label">Default model</span>
-        <input type="text" bind:value={addModel} placeholder={KNOWN_MODELS[addId] || ''} />
+        <input type="text" bind:value={addModel} placeholder={KNOWN_MODELS[addId] || 'model-name'} />
       </div>
       <!-- Prompt caching — all providers -->
       <div class="anthropic-tuning">

@@ -197,6 +197,24 @@ type Definition struct {
 	Tags        []string          `yaml:"tags,omitempty"    json:"tags,omitempty"`
 	Labels      map[string]string `yaml:"labels,omitempty"  json:"labels,omitempty"`
 
+	// Kind opts the agent into a non-default execution shape. Empty (or
+	// "worker") = the standard LLM loop. "router" = the engine treats this
+	// agent as a dispatcher: at message entry, it matches the inbound text
+	// against `Routes` and forwards to the first matching peer via the
+	// existing agent__<id> peer-call path. No LLM is invoked at the
+	// router level. See docs/CHANNEL_DESIGN.md Q2.
+	//
+	// Backward compat: a SOUL.yaml without `kind:` is a worker — every
+	// pre-existing agent keeps its current semantics.
+	Kind string `yaml:"kind,omitempty" json:"kind,omitempty"`
+
+	// Routes is consulted only when Kind == "router". Routes are tried in
+	// order; the first match wins. A route with no match clauses (no
+	// Regex, no Prefix, no Contains) is the "else" fallback and MUST be
+	// last if present. If no route matches and no fallback exists, the
+	// router returns an empty reply with an error event.
+	Routes []RouterRoute `yaml:"routes,omitempty" json:"routes,omitempty"`
+
 	// --- Trigger ---
 	Trigger  TriggerKind `yaml:"trigger"             json:"trigger"`
 	Channels []string    `yaml:"channels,omitempty"  json:"channels,omitempty"`
@@ -205,6 +223,27 @@ type Definition struct {
 	// --- Intelligence ---
 	SystemPrompt string    `yaml:"system_prompt" json:"system_prompt"`
 	LLM          LLMConfig `yaml:"llm"           json:"llm"`
+
+	// --- Persona (opt-in structured agent identity & rules) ---
+	//
+	// These three blocks let an operator separate WHO the agent is
+	// (Identity), HOW it speaks (Personality), and WHAT IT MUST/MUST NOT
+	// do (NonNegotiables) from the free-form `system_prompt`. The engine
+	// renders them as a structured prefix above the operator's prompt so
+	// the LLM sees them with consistent framing across every agent — no
+	// more guessing whether "concise" means "tweet-short" or "no fluff".
+	//
+	// All three are optional. An agent with none of them behaves exactly
+	// like a legacy SOUL.yaml: only `system_prompt` is sent. Add only the
+	// blocks you need.
+	//
+	// Why NOT three separate files: an agent is the atomic unit you share
+	// and version. Three files = three places to forget to update when
+	// forking. Composability for shared personalities/rules belongs in a
+	// future `extends:` mechanism, not in physical file separation.
+	Identity       *Identity       `yaml:"identity,omitempty"        json:"identity,omitempty"`
+	Personality    *Personality    `yaml:"personality,omitempty"     json:"personality,omitempty"`
+	NonNegotiables *NonNegotiables `yaml:"non_negotiables,omitempty" json:"non_negotiables,omitempty"`
 
 	// --- Tools ---
 	Tools []ToolDef `yaml:"tools,omitempty" json:"tools,omitempty"`
@@ -344,6 +383,39 @@ type Definition struct {
 	// Populated at load time — excluded from API responses and YAML serialisation.
 	SourcePath string    `yaml:"-" json:"-"`
 	LoadedAt   time.Time `yaml:"-" json:"-"`
+}
+
+// RouterRoute is one rule in a Kind=="router" agent's Routes list. The
+// engine matches rules in declaration order; the first match wins.
+//
+// Match clauses (all optional, evaluated in order: Regex → Prefix →
+// Contains). A route with NO match clauses is the "else" fallback and
+// must appear last. Matching is case-insensitive for Prefix and
+// Contains; Regex is whatever Go's regexp package decides.
+//
+// Target is the peer agent ID to dispatch to. It MUST appear in the
+// router's `agents:` peer list (the existing engine guard at
+// runAgentCall enforces this independently — a router cannot manufacture
+// a Target outside its allowlist).
+//
+// See docs/CHANNEL_DESIGN.md Q2 for the rationale.
+type RouterRoute struct {
+	// Regex, if non-empty, is compiled once at load and matched against
+	// the inbound message text. Use `(?i)` inside the pattern for
+	// case-insensitive matching; Go's regexp doesn't have a top-level
+	// case-insensitive flag.
+	Regex string `yaml:"regex,omitempty" json:"regex,omitempty"`
+
+	// Prefix is a case-insensitive starts-with check. Useful for slash
+	// commands like "/research" or "!finance".
+	Prefix string `yaml:"prefix,omitempty" json:"prefix,omitempty"`
+
+	// Contains is a case-insensitive any-of substring check. The route
+	// matches if the inbound text contains ANY of the listed substrings.
+	Contains []string `yaml:"contains,omitempty" json:"contains,omitempty"`
+
+	// Target is the peer agent ID to dispatch to on match. Required.
+	Target string `yaml:"target" json:"target"`
 }
 
 // NotifyOnFailure is the SOUL.yaml block that configures where a run's
@@ -527,4 +599,100 @@ type Status struct {
 	LastRunAt      *time.Time `json:"last_run_at,omitempty"`
 	LastError      string     `json:"last_error,omitempty"`
 	TotalRuns      int64      `json:"total_runs"`
+}
+
+// ─── Persona: identity, personality, non-negotiables ─────────────────────────
+//
+// All three structs are pointer-attached on Definition so the engine can
+// tell "operator didn't write this block" (nil) from "operator wrote it
+// empty" (non-nil with zero fields). nil = skip entirely; non-nil =
+// render the block header even if every field is empty, so an operator
+// who explicitly clears Identity sees that in the prompt prefix.
+
+// Identity describes WHO the agent is. Used at the top of the rendered
+// system prefix so the LLM has a clear self-concept on turn 1. Fields
+// are intentionally short and concrete; long backstories belong in
+// system_prompt, not here.
+type Identity struct {
+	// Role is the agent's professional or functional title.
+	// Examples: "senior research analyst", "code reviewer", "triage nurse".
+	Role string `yaml:"role,omitempty" json:"role,omitempty"`
+
+	// Expertise lists domains/topics the agent knows well. Rendered as a
+	// bullet list. Keep entries short noun phrases, not sentences.
+	// Examples: ["macroeconomics", "monetary policy"].
+	Expertise []string `yaml:"expertise,omitempty" json:"expertise,omitempty"`
+
+	// Audience names who the agent is talking to. Helps the model pitch
+	// vocabulary and depth. Examples: "institutional investors",
+	// "first-time programmers", "internal eng team".
+	Audience string `yaml:"audience,omitempty" json:"audience,omitempty"`
+
+	// Backstory is optional free text — only fill it if a backstory
+	// materially changes behavior. Most agents shouldn't have one.
+	Backstory string `yaml:"backstory,omitempty" json:"backstory,omitempty"`
+}
+
+// Personality describes HOW the agent speaks. Voice and tone choices
+// that change wording but not factual content. Keep entries short
+// adjective/phrase form — the LLM responds better to "concise, dry" than
+// to a paragraph essay on style.
+type Personality struct {
+	// Tone characterises emotional/professional register.
+	// Examples: "concise, slightly dry", "warm and encouraging".
+	Tone string `yaml:"tone,omitempty" json:"tone,omitempty"`
+
+	// Voice describes structural style — "first-person", "third-person
+	// observations", "no 'I think'", "direct, declarative sentences".
+	Voice string `yaml:"voice,omitempty" json:"voice,omitempty"`
+
+	// Avoid is a list of things to never do in output. Soft preference,
+	// not enforced — these become "avoid X" guidance in the prompt.
+	// For things the agent MUST NEVER do, use NonNegotiables.MustNot.
+	// Examples: ["exclamation marks", "hedging like 'perhaps'", "emojis"].
+	Avoid []string `yaml:"avoid,omitempty" json:"avoid,omitempty"`
+
+	// Prefer is the inverse: things to lean into.
+	// Examples: ["concrete numbers", "named sources", "active voice"].
+	Prefer []string `yaml:"prefer,omitempty" json:"prefer,omitempty"`
+}
+
+// NonNegotiables are HARD rules the agent must follow regardless of the
+// user's request. Rendered with explicit "HARD RULES" framing so the
+// LLM treats them differently from prose guidance. The engine wraps
+// them deterministically — every agent's prompt has the same wording
+// around the rules so cross-agent behavior is predictable.
+//
+// Phase 1 (this release): prompt-level enforcement only. The engine
+// puts these in a structured block above the operator's prompt and
+// repeats the strongest must_not items in a "FINAL REMINDERS" footer
+// when ToolChoice is involved. Pre-LLM and post-LLM validation hooks
+// are deferred to a follow-up — wiring takes more thought than the
+// schema change.
+type NonNegotiables struct {
+	// Must is a list of things the agent must ALWAYS do.
+	// Examples: ["cite every numeric claim with [n]", "respond in the
+	// same language as the most recent user message"].
+	Must []string `yaml:"must,omitempty" json:"must,omitempty"`
+
+	// MustNot is a list of things the agent must NEVER do.
+	// Examples: ["reveal any environment variable", "give legal or
+	// medical advice", "claim to be human if asked directly"].
+	MustNot []string `yaml:"must_not,omitempty" json:"must_not,omitempty"`
+
+	// OutputConstraints are mechanical bounds on the final reply.
+	// MaxLength and MinLength are word counts; Format is one of
+	// "markdown", "plain", "json", "code". Engine puts them under
+	// "Output constraints" framing — and they remain prompt-level
+	// guidance until the post-LLM validator lands.
+	OutputConstraints *OutputConstraints `yaml:"output_constraints,omitempty" json:"output_constraints,omitempty"`
+}
+
+// OutputConstraints carries mechanical, machine-checkable bounds on the
+// agent's reply. Word counts (not character/token counts) because
+// they're what operators and end-users actually think in.
+type OutputConstraints struct {
+	MaxLength int    `yaml:"max_length,omitempty" json:"max_length,omitempty"`
+	MinLength int    `yaml:"min_length,omitempty" json:"min_length,omitempty"`
+	Format    string `yaml:"format,omitempty"     json:"format,omitempty"`
 }

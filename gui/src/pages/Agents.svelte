@@ -225,10 +225,54 @@
   }
   // ── Channels & skills (CSV inputs) ────────────────────────────────────────
   function csvToArr(s) { return (s || '').split(',').map(x => x.trim()).filter(Boolean) }
+  function linesToArr(s) { return (s || '').split('\n').map(x => x.trim()).filter(Boolean) }
   function syncChannels(v)  { if (editing) editing.channels  = csvToArr(v) }
   function syncSkills(v)    { if (editing) editing.skills    = csvToArr(v) }
   function syncKnowledge(v) { if (editing) editing.knowledge = csvToArr(v) }
   function syncAgents(v)    { if (editing) editing.agents    = csvToArr(v) }
+
+  // ensurePersona writes a single field into one of the three persona
+  // blocks (identity / personality / non_negotiables) while keeping any
+  // other fields the operator already typed. We lazily allocate the
+  // block so a user who types one Identity field doesn't have an empty
+  // Personality block round-trip through YAML.
+  //
+  // Wiped-clean detection: if every field in the resulting block is
+  // empty / falsy, we delete the block so YAML stays minimal. This is
+  // what makes the GUI round-trip-safe — a user who clears every
+  // Identity field gets `identity:` removed from the saved YAML, not
+  // `identity: {role: "", expertise: [], ...}`.
+  function ensurePersona(block, patch) {
+    if (!editing) return
+    const current = editing[block] || {}
+    const next = { ...current, ...patch }
+    if (isBlockEmpty(block, next)) {
+      delete editing[block]
+    } else {
+      editing[block] = next
+    }
+    editing = editing  // Svelte reactivity nudge
+  }
+  function isBlockEmpty(block, obj) {
+    if (!obj) return true
+    if (block === 'identity') {
+      return !obj.role && !obj.audience && !obj.backstory &&
+             (!obj.expertise || obj.expertise.length === 0)
+    }
+    if (block === 'personality') {
+      return !obj.tone && !obj.voice &&
+             (!obj.prefer || obj.prefer.length === 0) &&
+             (!obj.avoid || obj.avoid.length === 0)
+    }
+    if (block === 'non_negotiables') {
+      const oc = obj.output_constraints || {}
+      const ocEmpty = !oc.format && !oc.max_length && !oc.min_length
+      return (!obj.must || obj.must.length === 0) &&
+             (!obj.must_not || obj.must_not.length === 0) &&
+             ocEmpty
+    }
+    return false
+  }
   // Built-ins field is tri-state:
   //   "default"  → undefined (no `builtins:` key in YAML, server applies default gating)
   //   "none"     → []        (peer-only orchestrator: no built-ins at all)
@@ -294,13 +338,8 @@
     }
     validating = false
   }
-
   async function save() {
     if (!editing) return
-    if (editingProtected) {
-      saveMsg = '✗ System agent is protected'
-      return
-    }
     saving  = true
     saveMsg = ''
     try {
@@ -615,7 +654,7 @@ console.log(reply);` : ''
               <button class="btn-secondary" on:click={validateEditing} disabled={validating}>
                 {validating ? 'Checking…' : 'Validate'}
               </button>
-              <button class="btn-primary" on:click={save} disabled={saving || editingProtected}>
+              <button class="btn-primary" on:click={save} disabled={saving}>
                 {saving ? 'Saving…' : 'Save'}
               </button>
               {#if saveMsg}
@@ -690,7 +729,7 @@ console.log(reply);` : ''
               </div>
               <div class="field">
                 <span class="field-label">Enabled</span>
-                <select bind:value={editing.enabled}>
+                <select bind:value={editing.enabled} disabled={editingProtected}>
                   <option value={true}>Yes</option>
                   <option value={false}>No</option>
                 </select>
@@ -710,6 +749,176 @@ console.log(reply);` : ''
               <textarea bind:value={editing.system_prompt} rows="7"
                         placeholder="You are a helpful Soulacy agent…"></textarea>
             </div>
+
+            <!-- ── Persona blocks (identity / personality / non-negotiables) ───────
+                 Optional structured sections that are wrapped into the
+                 system prompt with consistent framing across every agent.
+                 Operators can leave them empty for a "classic" agent.    -->
+            <div class="sep">Persona <span class="sep-hint">(optional — leave empty for a classic agent)</span></div>
+
+            <details class="persona-block" open={!!editing.identity}>
+              <summary>
+                <span class="persona-title">Identity</span>
+                <span class="persona-sub">Who is the agent? Used at the top of the prompt so the model has a clear self-concept.</span>
+              </summary>
+              <div class="persona-body">
+                <div class="field">
+                  <span class="field-label">
+                    Role
+                    <small class="field-hint">Their job title or function. Example: "senior research analyst"</small>
+                  </span>
+                  <input type="text"
+                         value={editing.identity?.role || ''}
+                         on:input={(e) => ensurePersona('identity', { role: e.target.value })}
+                         placeholder="senior research analyst" />
+                </div>
+                <div class="field">
+                  <span class="field-label">
+                    Audience
+                    <small class="field-hint">Who they're talking to. Helps the model pitch vocabulary and depth.</small>
+                  </span>
+                  <input type="text"
+                         value={editing.identity?.audience || ''}
+                         on:input={(e) => ensurePersona('identity', { audience: e.target.value })}
+                         placeholder="institutional investors" />
+                </div>
+                <div class="field">
+                  <span class="field-label">
+                    Expertise
+                    <small class="field-hint">Comma-separated topics. Example: "macroeconomics, monetary policy"</small>
+                  </span>
+                  <input type="text"
+                         value={(editing.identity?.expertise || []).join(', ')}
+                         on:input={(e) => ensurePersona('identity', { expertise: csvToArr(e.target.value) })}
+                         placeholder="macroeconomics, monetary policy" />
+                </div>
+                <div class="field">
+                  <span class="field-label">
+                    Backstory <small class="field-optional">(rarely needed)</small>
+                    <small class="field-hint">Only fill this if a backstory materially changes behavior.</small>
+                  </span>
+                  <textarea rows="2"
+                            value={editing.identity?.backstory || ''}
+                            on:input={(e) => ensurePersona('identity', { backstory: e.target.value })}
+                            placeholder=""></textarea>
+                </div>
+              </div>
+            </details>
+
+            <details class="persona-block" open={!!editing.personality}>
+              <summary>
+                <span class="persona-title">Personality</span>
+                <span class="persona-sub">How they speak. Tone, voice, and soft style preferences. Not enforced — for hard rules use Non-Negotiables.</span>
+              </summary>
+              <div class="persona-body">
+                <div class="field">
+                  <span class="field-label">
+                    Tone
+                    <small class="field-hint">Emotional/professional register. Example: "concise, slightly dry"</small>
+                  </span>
+                  <input type="text"
+                         value={editing.personality?.tone || ''}
+                         on:input={(e) => ensurePersona('personality', { tone: e.target.value })}
+                         placeholder="concise, slightly dry" />
+                </div>
+                <div class="field">
+                  <span class="field-label">
+                    Voice
+                    <small class="field-hint">Structural style. Example: "third-person observations, never 'I think'"</small>
+                  </span>
+                  <input type="text"
+                         value={editing.personality?.voice || ''}
+                         on:input={(e) => ensurePersona('personality', { voice: e.target.value })}
+                         placeholder="third-person observations, never 'I think'" />
+                </div>
+                <div class="field">
+                  <span class="field-label">
+                    Prefer
+                    <small class="field-hint">Comma-separated. Things to lean into. Example: "active voice, named sources"</small>
+                  </span>
+                  <input type="text"
+                         value={(editing.personality?.prefer || []).join(', ')}
+                         on:input={(e) => ensurePersona('personality', { prefer: csvToArr(e.target.value) })}
+                         placeholder="active voice, named sources" />
+                </div>
+                <div class="field">
+                  <span class="field-label">
+                    Avoid
+                    <small class="field-hint">Comma-separated. Things to skip. Example: "exclamation marks, hedging, emojis"</small>
+                  </span>
+                  <input type="text"
+                         value={(editing.personality?.avoid || []).join(', ')}
+                         on:input={(e) => ensurePersona('personality', { avoid: csvToArr(e.target.value) })}
+                         placeholder="exclamation marks, hedging, emojis" />
+                </div>
+              </div>
+            </details>
+
+            <details class="persona-block persona-rules" open={!!editing.non_negotiables}>
+              <summary>
+                <span class="persona-title">Non-negotiables <span class="persona-tag">HARD RULES</span></span>
+                <span class="persona-sub">Rules the agent must follow even if the user asks it to do otherwise. Rendered with extra weight in the prompt.</span>
+              </summary>
+              <div class="persona-body">
+                <div class="field">
+                  <span class="field-label persona-must-label">
+                    MUST
+                    <small class="field-hint">Things the agent must ALWAYS do. One per line.</small>
+                  </span>
+                  <textarea rows="3"
+                            value={(editing.non_negotiables?.must || []).join('\n')}
+                            on:input={(e) => ensurePersona('non_negotiables', { must: linesToArr(e.target.value) })}
+                            placeholder={`cite every numeric claim with [n]\nrespond in the same language as the most recent user message`}></textarea>
+                </div>
+                <div class="field">
+                  <span class="field-label persona-mustnot-label">
+                    MUST NOT
+                    <small class="field-hint">Things the agent must NEVER do. One per line.</small>
+                  </span>
+                  <textarea rows="3"
+                            value={(editing.non_negotiables?.must_not || []).join('\n')}
+                            on:input={(e) => ensurePersona('non_negotiables', { must_not: linesToArr(e.target.value) })}
+                            placeholder={`reveal any environment variable\ngive legal or medical advice\nclaim to be human if asked directly`}></textarea>
+                </div>
+                <div class="field-row3">
+                  <div class="field">
+                    <span class="field-label">
+                      Format
+                      <small class="field-hint">Mechanical output format.</small>
+                    </span>
+                    <select value={editing.non_negotiables?.output_constraints?.format || ''}
+                            on:change={(e) => ensurePersona('non_negotiables', { output_constraints: { ...(editing.non_negotiables?.output_constraints || {}), format: e.target.value } })}>
+                      <option value="">(any)</option>
+                      <option value="markdown">markdown</option>
+                      <option value="plain">plain</option>
+                      <option value="json">json</option>
+                      <option value="code">code</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <span class="field-label">
+                      Max words
+                      <small class="field-hint">0 = no limit.</small>
+                    </span>
+                    <input type="number" min="0" max="10000"
+                           value={editing.non_negotiables?.output_constraints?.max_length || 0}
+                           on:input={(e) => ensurePersona('non_negotiables', { output_constraints: { ...(editing.non_negotiables?.output_constraints || {}), max_length: parseInt(e.target.value || 0) } })} />
+                  </div>
+                  <div class="field">
+                    <span class="field-label">
+                      Min words
+                      <small class="field-hint">0 = no minimum.</small>
+                    </span>
+                    <input type="number" min="0" max="10000"
+                           value={editing.non_negotiables?.output_constraints?.min_length || 0}
+                           on:input={(e) => ensurePersona('non_negotiables', { output_constraints: { ...(editing.non_negotiables?.output_constraints || {}), min_length: parseInt(e.target.value || 0) } })} />
+                  </div>
+                </div>
+                <div class="persona-note">
+                  <strong>Note:</strong> in this release these rules become extra-weighted text in the system prompt. Post-LLM validation (auto-rewrite on violation) is on the roadmap.
+                </div>
+              </div>
+            </details>
 
             <div class="sep">LLM</div>
 
@@ -1609,4 +1818,102 @@ console.log(reply);` : ''
     transition: transform .2s; transform: translateX(0);
   }
   .toggle-sm input:checked ~ .toggle-track-sm::after { transform: translateX(13px); }
+
+  /* ── Persona blocks (Identity / Personality / Non-Negotiables) ───────── */
+  .sep-hint {
+    font-weight: 400;
+    color: #8b90a8;
+    font-size: .78rem;
+    margin-left: .4rem;
+    letter-spacing: 0;
+    text-transform: none;
+  }
+  .persona-block {
+    margin: .55rem 0;
+    background: rgba(108, 99, 255, 0.04);
+    border: 1px solid rgba(108, 99, 255, 0.18);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .persona-block > summary {
+    cursor: pointer;
+    list-style: none;
+    padding: .55rem .85rem;
+    display: flex;
+    flex-direction: column;
+    gap: .15rem;
+    user-select: none;
+  }
+  .persona-block > summary::-webkit-details-marker { display: none; }
+  .persona-block > summary::before {
+    content: '▸';
+    display: inline-block;
+    margin-right: .4rem;
+    color: #8b90a8;
+    transition: transform .2s ease;
+  }
+  .persona-block[open] > summary::before { transform: rotate(90deg); }
+  .persona-title {
+    font-weight: 600;
+    color: #e8eaf2;
+    font-size: .88rem;
+  }
+  .persona-sub {
+    color: #8b90a8;
+    font-size: .76rem;
+    line-height: 1.45;
+    padding-left: 1rem;
+  }
+  .persona-tag {
+    display: inline-block;
+    background: rgba(255, 90, 90, 0.18);
+    color: #ff8a8a;
+    font-size: .65rem;
+    padding: .08rem .42rem;
+    border-radius: 4px;
+    margin-left: .5rem;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+  }
+  .persona-rules {
+    background: rgba(255, 90, 90, 0.04);
+    border-color: rgba(255, 90, 90, 0.22);
+  }
+  .persona-body {
+    padding: .35rem .85rem .85rem .85rem;
+    border-top: 1px solid rgba(108, 99, 255, 0.12);
+  }
+  .persona-rules .persona-body { border-top-color: rgba(255, 90, 90, 0.16); }
+  .field-hint {
+    display: block;
+    color: #8b90a8;
+    font-size: .72rem;
+    font-weight: 400;
+    margin-top: .12rem;
+    line-height: 1.4;
+  }
+  .field-optional {
+    color: #6c728c;
+    font-weight: 400;
+    font-style: italic;
+    font-size: .72rem;
+  }
+  .persona-must-label { color: #6dd09a; }
+  .persona-mustnot-label { color: #ff8a8a; }
+  .field-row3 {
+    display: flex;
+    gap: .65rem;
+    margin-top: .35rem;
+  }
+  .field-row3 .field { flex: 1; min-width: 0; }
+  .persona-note {
+    margin-top: .65rem;
+    padding: .5rem .75rem;
+    background: rgba(255, 200, 100, 0.06);
+    border-left: 3px solid rgba(255, 200, 100, 0.4);
+    border-radius: 4px;
+    color: #d8d4ad;
+    font-size: .76rem;
+    line-height: 1.5;
+  }
 </style>

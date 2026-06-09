@@ -141,6 +141,10 @@ func (a *Adapter) poll(ctx context.Context) {
 				continue
 			}
 
+			// Show "typing…" in the chat while the agent works (best
+			// effort — Telegram clears it after ~5s or when we reply).
+			go a.sendTyping(context.Background(), u.Message.Chat.ID)
+
 			msg := message.Message{
 				ID:        uuid.New().String(),
 				SessionID: fmt.Sprintf("%s-%d", a.id, u.Message.Chat.ID),
@@ -180,6 +184,21 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 		return fmt.Errorf("telegram: send: %w", err)
 	}
 	return a.sendText(ctx, mustParseInt64(msg.ThreadID), msg.Parts[0].Text)
+}
+
+// sendTyping fires a one-shot "typing" chat action. Telegram displays it
+// for ~5s; cosmetic, so errors are ignored.
+func (a *Adapter) sendTyping(ctx context.Context, chatID int64) {
+	payload, _ := json.Marshal(map[string]any{"chat_id": chatID, "action": "typing"})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		apiBase+a.token+"/sendChatAction", bytes.NewReader(payload))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if resp, err := a.client.Do(req); err == nil {
+		resp.Body.Close()
+	}
 }
 
 func (a *Adapter) sendText(ctx context.Context, chatID int64, text string) error {
