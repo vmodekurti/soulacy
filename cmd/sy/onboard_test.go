@@ -139,7 +139,7 @@ func TestMaskKey(t *testing.T) {
 		"abc":                     "•••",
 		"abcdefgh":                "••••••••",
 		"sy_1234567890abcdef":     "sy_••••••••••••cdef",
-		"sy_abcdefghijklmnopqrst": "sy_••••••••••••••••pqrst",
+		"sy_abcdefghijklmnopqrst": "sy_••••••••••••••••qrst",
 	}
 	for in, want := range cases {
 		if got := maskKey(in); got != want {
