@@ -135,7 +135,12 @@ func TestCompile_ClarifyMissingScheduleTime(t *testing.T) {
 		`"trigger": { "type": "schedule", "config": {} },`, 1)
 	llm := fakeLLM{out: noCron}
 
-	res, err := Compile(context.Background(), llm, canonicalIntent, Catalog{}, nil)
+	// Use an intent with no concrete cadence/time signal so deterministic
+	// trigger inference (S2.2) can't fill the cron — the schedule_time
+	// clarifying question must still be raised. (When the intent DOES imply
+	// a time, e.g. "every weekday at 8am", inference fills it instead; that
+	// path is covered by trigger_test.go.)
+	res, err := Compile(context.Background(), llm, "On a schedule, summarize the news for me.", Catalog{}, nil)
 	if err != nil {
 		t.Fatalf("Compile returned error: %v", err)
 	}

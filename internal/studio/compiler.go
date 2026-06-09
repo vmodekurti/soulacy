@@ -252,6 +252,12 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 		return Result{}, err
 	}
 
+	// Deterministic post-parse normalization: fill in an obvious trigger the
+	// model left blank or mis-typed when the intent's phrasing clearly
+	// implies one (S2.2). Modest and rule-based — it never overrides a
+	// trigger the model already set correctly.
+	normalizeTrigger(&draft, intent)
+
 	// The flow must compile — this is the hard contract.
 	if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
 		return Result{}, fmt.Errorf("studio: compiled flow is invalid: %w", err)
@@ -263,6 +269,207 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 		Questions: questions,
 		Notes:     notes,
 	}, nil
+}
+
+// normalizeTrigger applies modest, DETERMINISTIC trigger inference (Story
+// S2.2): it inspects the plain-language intent and fills or corrects the
+// draft's Trigger when the phrasing clearly implies a kind the model left
+// blank, mis-typed, or under-specified. It is intentionally conservative:
+//
+//   - It never changes a trigger the model already set to a recognized type
+//     UNLESS that trigger is a schedule missing its cron and the intent
+//     supplies an unambiguous cadence (then it fills trigger.config.cron).
+//   - Schedule phrasings ("every morning", "every weekday", "daily",
+//     "at 8am", "hourly", …) map to type=schedule with a sane cron.
+//   - Channel phrasings ("when someone messages", "on telegram", "reply
+//     to messages") map to type=channel.
+//   - Webhook phrasings ("webhook", "when X posts to", "on POST") map to
+//     type=webhook.
+//
+// Anything ambiguous is left untouched so analyze() can raise a clarifying
+// question. This is not NL parsing — it is a small keyword table.
+func normalizeTrigger(d *Draft, intent string) {
+	if d == nil {
+		return
+	}
+	lc := strings.ToLower(intent)
+	typ := strings.ToLower(strings.TrimSpace(d.Trigger.Type))
+	known := typ == "schedule" || typ == "channel" || typ == "webhook" || typ == "manual"
+
+	inferred := inferTriggerType(lc)
+
+	// Fill a missing/unrecognized type from the intent when we can.
+	if !known && inferred != "" {
+		d.Trigger.Type = inferred
+		typ = inferred
+		known = true
+	}
+
+	// For schedule triggers (whether the model set them or we just did),
+	// ensure a cron is present: derive one from the intent if the model
+	// left config.cron blank.
+	if typ == "schedule" {
+		cron, _ := d.Trigger.Config["cron"].(string)
+		if strings.TrimSpace(cron) == "" {
+			if c := inferCron(lc); c != "" {
+				if d.Trigger.Config == nil {
+					d.Trigger.Config = map[string]any{}
+				}
+				d.Trigger.Config["cron"] = c
+			}
+		}
+	}
+
+	// A still-empty/unknown type with no schedule/channel/webhook signal is
+	// left alone — analyze() asks the user. Avoid guessing "manual" here.
+	_ = known
+}
+
+// inferTriggerType returns the trigger type implied by the intent, or "" when
+// no clear signal is present. Schedule wins over channel/webhook when both
+// appear, because a cadence phrase ("every morning … on telegram") describes
+// WHEN it runs while the channel is the OUTPUT.
+func inferTriggerType(lc string) string {
+	scheduleCues := []string{
+		"every morning", "every weekday", "every day", "everyday",
+		"each morning", "each day", "daily", "weekly", "hourly",
+		"every hour", "every monday", "every week", "at 8am", "at 8 am",
+		"at noon", "at midnight", "schedule", "cron", "o'clock",
+	}
+	for _, cue := range scheduleCues {
+		if strings.Contains(lc, cue) {
+			return "schedule"
+		}
+	}
+	// Generic "every <time>" / "at <n>(am|pm)" cadence.
+	if hasAtClock(lc) {
+		return "schedule"
+	}
+
+	webhookCues := []string{"webhook", "on post", "posts to", "http callback", "incoming request"}
+	for _, cue := range webhookCues {
+		if strings.Contains(lc, cue) {
+			return "webhook"
+		}
+	}
+
+	channelCues := []string{
+		"when someone messages", "when someone sends", "on telegram",
+		"on slack", "on discord", "on whatsapp", "reply to messages",
+		"when a message", "when i message", "respond to messages",
+		"someone dms", "incoming message",
+	}
+	for _, cue := range channelCues {
+		if strings.Contains(lc, cue) {
+			return "channel"
+		}
+	}
+	return ""
+}
+
+// inferCron maps common cadence phrasings onto a cron expression. Returns ""
+// when the cadence is present-but-unspecified (e.g. bare "every day" with no
+// time) so the caller leaves cron blank and analyze() asks for the time.
+func inferCron(lc string) string {
+	hour := inferHour(lc)
+
+	switch {
+	case strings.Contains(lc, "every weekday") || strings.Contains(lc, "weekdays"):
+		if hour < 0 {
+			hour = 8
+		}
+		return cronExpr(hour, "1-5")
+	case strings.Contains(lc, "every morning") || strings.Contains(lc, "each morning"):
+		if hour < 0 {
+			hour = 8
+		}
+		return cronExpr(hour, "*")
+	case strings.Contains(lc, "hourly") || strings.Contains(lc, "every hour"):
+		return "0 * * * *"
+	case strings.Contains(lc, "daily") || strings.Contains(lc, "every day") ||
+		strings.Contains(lc, "everyday") || strings.Contains(lc, "each day"):
+		if hour < 0 {
+			return "" // cadence is clear, time is not — let analyze() ask.
+		}
+		return cronExpr(hour, "*")
+	case strings.Contains(lc, "at midnight"):
+		return cronExpr(0, "*")
+	case strings.Contains(lc, "at noon"):
+		return cronExpr(12, "*")
+	}
+
+	// Bare "at 8am" with no cadence word implies a daily schedule.
+	if hour >= 0 {
+		return cronExpr(hour, "*")
+	}
+	return ""
+}
+
+// cronExpr builds a "minute hour * * dow" cron at minute 0.
+func cronExpr(hour int, dow string) string {
+	return fmt.Sprintf("0 %d * * %s", hour, dow)
+}
+
+// hasAtClock reports whether the intent contains an "at <n>(am|pm)" or
+// "<n> o'clock" time signal.
+func hasAtClock(lc string) bool {
+	return inferHour(lc) >= 0
+}
+
+// inferHour extracts a 0-23 hour from phrasings like "at 8am", "at 8 am",
+// "8pm", "at noon", "at midnight". Returns -1 when no hour is found.
+func inferHour(lc string) int {
+	if strings.Contains(lc, "midnight") {
+		return 0
+	}
+	if strings.Contains(lc, "noon") {
+		return 12
+	}
+	// Scan for "<digits> am/pm" or "at <digits>".
+	for i := 0; i < len(lc); i++ {
+		if lc[i] < '0' || lc[i] > '9' {
+			continue
+		}
+		j := i
+		for j < len(lc) && lc[j] >= '0' && lc[j] <= '9' {
+			j++
+		}
+		n := 0
+		for k := i; k < j; k++ {
+			n = n*10 + int(lc[k]-'0')
+		}
+		rest := strings.TrimLeft(lc[j:], " ")
+		switch {
+		case strings.HasPrefix(rest, "am"):
+			if n >= 1 && n <= 12 {
+				if n == 12 {
+					n = 0
+				}
+				return n
+			}
+		case strings.HasPrefix(rest, "pm"):
+			if n >= 1 && n <= 12 {
+				if n != 12 {
+					n += 12
+				}
+				return n
+			}
+		case strings.HasPrefix(rest, "o'clock") || strings.HasPrefix(rest, "oclock"):
+			if n >= 0 && n <= 23 {
+				return n
+			}
+		}
+		// Plain 24h hour right after "at " (e.g. "at 14:00").
+		if i >= 3 && lc[i-3:i] == "at " && n >= 0 && n <= 23 {
+			// Only treat as hour if followed by ":" or end/space, to avoid
+			// matching quantities like "at 5 stories".
+			if j >= len(lc) || lc[j] == ':' {
+				return n
+			}
+		}
+		i = j
+	}
+	return -1
 }
 
 // analyze derives clarifying questions for missing essentials and notes

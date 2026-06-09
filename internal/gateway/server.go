@@ -657,6 +657,8 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/compile", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCompile)
 	// Studio plugin backend (Wave 2): dry-run test and save-as-disabled-agent.
 	api.Post("/studio/test", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTest)
+	// Studio plugin backend (M2): capability-tier consent plan + gated save.
+	api.Post("/studio/plan", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioPlan)
 	api.Post("/studio/save", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSave)
 
 	// E4: Capability Gap Detection

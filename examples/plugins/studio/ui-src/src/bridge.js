@@ -15,10 +15,14 @@
  *                      ok: false, error: '<msg>' }
  *
  * Whitelisted ops:
- *   catalog  -> { agents, tools, providers }                 (Wave 1)
+ *   catalog  -> { agents, tools, providers, channels }       (Wave 1 + M2)
  *   compile  payload { intent, answers? } -> { workflow, questions, notes }
  *   test     payload { workflow, input }  -> { trace, result }
- *   save     payload { workflow }         -> { agentId, enabled }
+ *   plan     payload { workflow }         -> { tier, reasons[], requiresConsent,
+ *                                              consentItems[{kind,name,reason}] }   (M2)
+ *   save     payload { workflow, acceptPrivilegedExposure? }
+ *              -> { agentId, enabled }
+ *               | rejects Error with .requiresConsent + .consentItems (409 fallback)
  */
 
 const HOST_TIMEOUT_MS = 8000
@@ -67,7 +71,14 @@ export function bridgeRequest(op, payload = {}, timeoutMs = HOST_TIMEOUT_MS) {
       settled = true
       cleanup()
       if (msg.ok) resolve(msg.data || {})
-      else reject(new Error(msg.error || (op + ' request failed')))
+      else {
+        // Surface structured fields (e.g. the consent 409 fallback) on the
+        // rejection so callers can react without re-parsing a string.
+        const err = new Error(msg.error || (op + ' request failed'))
+        if (msg.requiresConsent != null) err.requiresConsent = msg.requiresConsent
+        if (msg.consentItems != null) err.consentItems = msg.consentItems
+        reject(err)
+      }
     }
 
     window.addEventListener('message', onMessage)
@@ -89,5 +100,7 @@ export const bridge = {
   catalog: () => bridgeRequest('catalog'),
   compile: (intent, answers) => bridgeRequest('compile', { intent, answers }),
   test: (workflow, input) => bridgeRequest('test', { workflow, input }),
-  save: (workflow) => bridgeRequest('save', { workflow }),
+  plan: (workflow) => bridgeRequest('plan', { workflow }),
+  save: (workflow, acceptPrivilegedExposure) =>
+    bridgeRequest('save', { workflow, acceptPrivilegedExposure }),
 }

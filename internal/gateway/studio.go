@@ -102,9 +102,35 @@ func (s *Server) handleStudioTest(c *fiber.Ctx) error {
 	return c.JSON(res)
 }
 
-// studioSaveRequest is the POST /api/v1/studio/save body.
-type studioSaveRequest struct {
+// studioPlanRequest is the POST /api/v1/studio/plan body.
+type studioPlanRequest struct {
 	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioPlan implements POST /api/v1/studio/plan. It classifies the
+// agent the draft would become (capability tier) and reports whether saving
+// would create a Privileged channel exposure that needs the operator's
+// consent. Pure decision: nothing is persisted. The handler is thin — all
+// logic lives in studio.Plan so it stays unit-testable.
+func (s *Server) handleStudioPlan(c *fiber.Ctx) error {
+	var req studioPlanRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+	}
+
+	res, err := studio.Plan(req.Workflow)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res)
+}
+
+// studioSaveRequest is the POST /api/v1/studio/save body. AcceptPrivilegedExposure
+// is the operator's consent to expose a Privileged-tier workflow on a bound
+// channel; it is required (true) when studio.Plan reports requiresConsent.
+type studioSaveRequest struct {
+	Workflow                 studio.Draft `json:"workflow"`
+	AcceptPrivilegedExposure bool         `json:"acceptPrivilegedExposure"`
 }
 
 // handleStudioSave implements POST /api/v1/studio/save. It converts the
@@ -118,7 +144,22 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
 	}
 
-	def, err := studio.ToAgentDefinition(req.Workflow)
+	// Consent gate: classify the draft and refuse to persist a Privileged
+	// channel exposure unless the operator accepted it. The decision logic
+	// lives in studio.Plan so it is identical to what /studio/plan reported.
+	plan, err := studio.Plan(req.Workflow)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if plan.RequiresConsent && !req.AcceptPrivilegedExposure {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error":           "saving this workflow exposes a privileged-tier agent to a channel; explicit consent required",
+			"requiresConsent": true,
+			"consentItems":    plan.ConsentItems,
+		})
+	}
+
+	def, err := studio.ToAgentDefinition(req.Workflow, req.AcceptPrivilegedExposure)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}

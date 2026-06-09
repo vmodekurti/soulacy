@@ -16,7 +16,10 @@ export async function apiFetch(path, opts = {}) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     if (res.status === 401 || res.status === 403) authRequired.set(true)
-    throw Object.assign(new Error(body.error || res.statusText), { status: res.status })
+    // Preserve the full error body alongside the status so callers can read
+    // structured fields (e.g. Studio's 409 consent fallback carries
+    // requiresConsent + consentItems beyond the human `error` string).
+    throw Object.assign(new Error(body.error || res.statusText), { status: res.status, body })
   }
   // /health bypasses auth on the server, so a success there says nothing
   // about credentials — only clear the auth-required flag on authenticated paths.
@@ -205,11 +208,26 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ workflow, input }),
       }),
-    /** Persist a workflow as a (disabled) agent. */
-    save: ({ workflow } = {}) =>
-      apiFetch('/studio/save', {
+    /**
+     * Classify the workflow's capability tier and decide whether saving it
+     * would create a privileged channel exposure that needs consent.
+     * @returns {Promise<{tier, reasons:string[], requiresConsent:boolean,
+     *                     consentItems:{kind,name,reason}[]}>}
+     */
+    plan: ({ workflow } = {}) =>
+      apiFetch('/studio/plan', {
         method: 'POST',
         body: JSON.stringify({ workflow }),
+      }),
+    /**
+     * Persist a workflow as a (disabled) agent. Pass acceptPrivilegedExposure
+     * when plan reported requiresConsent. On a 409 consent fallback the thrown
+     * error carries .body.requiresConsent + .body.consentItems.
+     */
+    save: ({ workflow, acceptPrivilegedExposure } = {}) =>
+      apiFetch('/studio/save', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, acceptPrivilegedExposure: !!acceptPrivilegedExposure }),
       }),
   },
 

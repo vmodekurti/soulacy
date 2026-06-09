@@ -105,6 +105,24 @@
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
     selectedNode = null
+    plan = null               // a fresh compile invalidates any prior plan/tier
+    rebuildGraph()
+  }
+
+  // ── Framing edits (trigger / output channels) ─────────────────────────────
+  // Channels available to pick from (catalog payload is { channels: [...] }).
+  $: channelOptions = (catalog && catalog.channels && catalog.channels.channels)
+    ? catalog.channels.channels.map((ch) => ({ id: ch.id, name: ch.name || ch.id }))
+    : []
+
+  // Merge an Inspector patch (e.g. { trigger } or { channels }) into the
+  // in-memory draft so subsequent Test/Save use the edited values, then
+  // re-render the START/SINK framing on the canvas. A new object reference
+  // keeps Svelte reactivity firing.
+  function applyFraming(patch) {
+    if (!workflow) return
+    workflow = { ...workflow, ...patch }
+    plan = null               // edits can change the tier; re-plan on next save
     rebuildGraph()
   }
 
@@ -135,25 +153,82 @@
     }
   }
 
-  // ── Save ──────────────────────────────────────────────────────────────────
+  // ── Plan + Save (M2) ──────────────────────────────────────────────────────
   let saving = false
   let saveError = ''
   let saveMsg = ''
+  let plan = null              // last plan result { tier, reasons, requiresConsent, consentItems }
+  let consent = null          // { items:[{kind,name,reason}] } when the dialog is open
 
+  // Save click: PLAN first, then either save directly or raise the consent
+  // dialog. Every bridge op degrades gracefully — a bridge/host error just
+  // surfaces as saveError and never throws past here.
   async function save() {
-    if (!workflow || saving) return
+    if (!workflow || saving || consent) return
     saving = true
     saveError = ''
     saveMsg = ''
     try {
-      const res = await bridge.save(workflow)
-      const id = (res && res.agentId) || '(unknown)'
-      saveMsg = `Saved as disabled agent ${id} — enable it from the Agents page.`
+      const p = await bridge.plan(workflow)
+      plan = p || null
+      if (p && p.requiresConsent) {
+        openConsent(p.consentItems)
+        return        // wait for the operator's acknowledgement
+      }
+      await doSave(false)
     } catch (e) {
-      saveError = e.message || 'save failed'
+      saveError = e.message || 'plan failed'
     } finally {
       saving = false
     }
+  }
+
+  // Persist the draft. acceptPrivilegedExposure threads the operator's consent.
+  // Handles the 409 consent fallback (error carrying requiresConsent +
+  // consentItems) by opening the same dialog.
+  async function doSave(acceptPrivilegedExposure) {
+    saveError = ''
+    try {
+      const res = await bridge.save(workflow, acceptPrivilegedExposure)
+      const id = (res && res.agentId) || '(unknown)'
+      saveMsg = `Saved as disabled agent ${id} — enable it from the Agents page.`
+      consent = null
+    } catch (e) {
+      // 409 fallback: server demands consent even though plan didn't (or the
+      // draft changed). Show the dialog rather than a raw error.
+      if (e && e.requiresConsent && !acceptPrivilegedExposure) {
+        openConsent(e.consentItems)
+        return
+      }
+      saveError = e.message || 'save failed'
+      consent = null
+    }
+  }
+
+  function openConsent(items) {
+    consent = { items: Array.isArray(items) ? items : [] }
+  }
+
+  async function acknowledgeConsent() {
+    if (saving) return
+    saving = true
+    try {
+      await doSave(true)
+    } finally {
+      saving = false
+    }
+  }
+
+  function cancelConsent() {
+    consent = null
+    saving = false
+  }
+
+  function tierLabel(t) {
+    if (t === 'privileged') return 'privileged'
+    if (t === 'active') return 'active'
+    if (t === 'readonly') return 'read-only'
+    return t || ''
   }
 
   function fmt(v) {
@@ -258,7 +333,15 @@
           <button class="btn" on:click={runTest} disabled={testing}>
             {testing ? 'Testing…' : 'Test'}
           </button>
-          <button class="btn primary" on:click={save} disabled={saving}>
+          {#if plan && plan.tier}
+            <span
+              class="tier-chip tier-{plan.tier}"
+              title={(plan.reasons && plan.reasons.length) ? plan.reasons.join('; ') : 'capability tier'}
+            >
+              {tierLabel(plan.tier)}
+            </span>
+          {/if}
+          <button class="btn primary" on:click={save} disabled={saving || !!consent}>
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
@@ -328,8 +411,45 @@
       {/if}
     </section>
 
-    <Inspector node={selectedNode} />
+    <Inspector
+      node={selectedNode}
+      {workflow}
+      channels={channelOptions}
+      onChange={applyFraming}
+    />
   </main>
+
+  <!-- Consent dialog (M2): shown before saving a privileged, channel-bound
+       workflow, or on the server's 409 consent fallback. -->
+  {#if consent}
+    <div class="modal-backdrop" on:click|self={cancelConsent} role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="consent-title">
+        <h2 id="consent-title" class="modal-title">Privileged channel exposure</h2>
+        <p class="modal-body">
+          This workflow uses privileged tools (shell/file/install-class) and is bound to a
+          channel. Acknowledge to save it as a <strong>DISABLED</strong> agent.
+          Note: an operator must still grant channel exposure at deploy time
+          (<code>accept_privileged_exposure</code> in config) before it can run.
+        </p>
+        {#if consent.items.length}
+          <ul class="consent-items">
+            {#each consent.items as it}
+              <li>
+                <span class="consent-name">{it.name}</span>
+                {#if it.reason}<span class="consent-reason">{it.reason}</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="modal-actions">
+          <button class="btn" on:click={cancelConsent} disabled={saving}>Cancel</button>
+          <button class="btn primary" on:click={acknowledgeConsent} disabled={saving}>
+            {saving ? 'Saving…' : 'Acknowledge & save'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -559,4 +679,67 @@
   }
   .result { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; }
   .muted { color: var(--text-muted); font-size: 12px; }
+
+  /* Tier chip (subtle, readonly/active/privileged) near Save */
+  .tier-chip {
+    flex: 0 0 auto;
+    align-self: center;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: capitalize;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    background: var(--bg-elev-2);
+    cursor: default;
+  }
+  .tier-chip.tier-readonly { color: var(--ok, #36d399); border-color: var(--ok, #36d399); }
+  .tier-chip.tier-active { color: var(--accent); border-color: var(--accent); }
+  .tier-chip.tier-privileged {
+    color: var(--warn, #f5a742);
+    border-color: var(--warn, #f5a742);
+    background: rgba(245, 167, 66, 0.12);
+  }
+
+  /* Consent modal */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 11, 20, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+  .modal {
+    width: min(460px, 92vw);
+    max-height: 86vh;
+    overflow-y: auto;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  }
+  .modal-title { margin: 0 0 10px; font-size: 15px; color: var(--text); }
+  .modal-body { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+  .modal-body code {
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 4px;
+  }
+  .consent-items { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .consent-items li {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .consent-name { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
+  .consent-reason { display: block; margin-top: 3px; font-size: 12px; color: var(--text-muted); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 </style>

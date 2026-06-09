@@ -1,7 +1,8 @@
 <script>
   // Left capability palette. Preserves Wave 1 behavior: agents/tools/providers
-  // groups with counts, loaded via the host catalog bridge. Same raw API shapes.
-  export let catalog = null   // { agents, tools, providers } | null
+  // groups with counts, loaded via the host catalog bridge. M2 adds a Channels
+  // group (counts + names) from the same catalog payload.
+  export let catalog = null   // { agents, tools, providers, channels } | null
   export let status = ''      // human-readable load status
   export let statusKind = ''  // '' | 'ok' | 'warn' | 'error'
   export let error = ''       // hard error message (overrides lists)
@@ -33,14 +34,28 @@
     })
   }
 
+  function channelItems(c) {
+    // catalog.channels is the raw GET /channels payload: { channels: [...] }.
+    const list = (c && c.channels && c.channels.channels) || []
+    return list.map((ch) => {
+      const parts = []
+      if (ch.enabled) parts.push('enabled')
+      else parts.push('disabled')
+      if (ch.configured) parts.push('configured')
+      return { label: ch.name || ch.id || 'channel', sub: parts.join(' · ') }
+    })
+  }
+
   $: agents = error ? [] : agentItems(catalog)
   $: tools = error ? [] : toolItems(catalog)
   $: providers = error ? [] : providerItems(catalog)
+  $: channels = error ? [] : channelItems(catalog)
 
   const groups = [
     { key: 'agents', icon: '🤖', title: 'Agents', get: () => agents, empty: 'No agents' },
     { key: 'tools', icon: '🛠️', title: 'Tools', get: () => tools, empty: 'No tools' },
     { key: 'providers', icon: '🧠', title: 'Providers', get: () => providers, empty: 'No providers' },
+    { key: 'channels', icon: '📡', title: 'Channels', get: () => channels, empty: 'No channels' },
   ]
 </script>
 

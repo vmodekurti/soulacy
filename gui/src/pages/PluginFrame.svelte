@@ -56,16 +56,24 @@
   //
   // Implemented types:
   //   'catalog.request' -> 'catalog.response'
-  //       data = { agents: [...], tools: {...}, providers: {...} }   (M1-A)
+  //       data = { agents: [...], tools: {...}, providers: {...},
+  //                channels: {...} }                          (M1-A + M2)
   //   'compile.request' -> 'compile.response'  (M1 Wave 2)
   //       req  { intent, answers? }
   //       data = POST /studio/compile body { workflow, questions, notes }
   //   'test.request'    -> 'test.response'      (M1 Wave 2)
   //       req  { workflow, input }
   //       data = POST /studio/test body { trace, result }
-  //   'save.request'    -> 'save.response'      (M1 Wave 2)
+  //   'plan.request'    -> 'plan.response'      (M2)
   //       req  { workflow }
+  //       data = POST /studio/plan body
+  //              { tier, reasons[], requiresConsent,
+  //                consentItems:[{ kind, name, reason }] }
+  //   'save.request'    -> 'save.response'      (M1 Wave 2 + M2)
+  //       req  { workflow, acceptPrivilegedExposure? }
   //       data = POST /studio/save body { agentId, enabled }
+  //       on 409 consent fallback the error reply also carries
+  //       { requiresConsent, consentItems } alongside `error`.
   // Nothing else is served until explicitly added to the whitelist below.
   //
   // Security:
@@ -104,9 +112,16 @@
         await handleStudioRequest(id, 'test.response', () =>
           api.studio.test({ workflow: msg.workflow, input: msg.input }))
         break
+      case 'plan.request':
+        await handleStudioRequest(id, 'plan.response', () =>
+          api.studio.plan({ workflow: msg.workflow }))
+        break
       case 'save.request':
         await handleStudioRequest(id, 'save.response', () =>
-          api.studio.save({ workflow: msg.workflow }))
+          api.studio.save({
+            workflow: msg.workflow,
+            acceptPrivilegedExposure: msg.acceptPrivilegedExposure,
+          }))
         break
       default:
         // Unknown/unsupported type: ignore (never forward arbitrary requests).
@@ -129,26 +144,37 @@
         REPLY_TARGET_ORIGIN,
       )
     } catch (e) {
-      win.postMessage(
-        { source: 'studio-host', type: responseType, id, ok: false, error: e?.message || 'request failed' },
-        REPLY_TARGET_ORIGIN,
-      )
+      // Forward any structured error fields the api layer preserved (e.g.
+      // /studio/save's 409 consent fallback carries requiresConsent +
+      // consentItems on e.body). The iframe can then show the same consent
+      // dialog from the error path without a separate plan round-trip.
+      const reply = {
+        source: 'studio-host', type: responseType, id, ok: false,
+        error: e?.message || 'request failed',
+      }
+      const b = e && e.body
+      if (b && typeof b === 'object') {
+        if (b.requiresConsent != null) reply.requiresConsent = b.requiresConsent
+        if (b.consentItems != null) reply.consentItems = b.consentItems
+      }
+      win.postMessage(reply, REPLY_TARGET_ORIGIN)
     }
   }
 
-  // Fetch the read-only catalog (agents + tools + providers) using the user's
-  // authenticated api client and relay it to the iframe.
+  // Fetch the read-only catalog (agents + tools + providers + channels) using
+  // the user's authenticated api client and relay it to the iframe.
   async function handleCatalogRequest(id) {
     const win = iframeEl && iframeEl.contentWindow
     if (!win) return
     try {
-      const [agents, tools, providers] = await Promise.all([
+      const [agents, tools, providers, channels] = await Promise.all([
         api.agents.list(),
         api.tools.catalog(),
         api.providers.list(),
+        api.channels.list(),
       ])
       win.postMessage(
-        { source: 'studio-host', type: 'catalog.response', id, ok: true, data: { agents, tools, providers } },
+        { source: 'studio-host', type: 'catalog.response', id, ok: true, data: { agents, tools, providers, channels } },
         REPLY_TARGET_ORIGIN,
       )
     } catch (e) {

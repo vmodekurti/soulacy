@@ -107,7 +107,7 @@ func TestTestRun_InvalidFlow_Error(t *testing.T) {
 
 func TestToAgentDefinition_CarriesFieldsDisabled(t *testing.T) {
 	draft := canonicalDraft(t)
-	def, err := ToAgentDefinition(draft)
+	def, err := ToAgentDefinition(draft, false)
 	if err != nil {
 		t.Fatalf("ToAgentDefinition: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestToAgentDefinition_CarriesFieldsDisabled(t *testing.T) {
 }
 
 func TestToAgentDefinition_EmptyNameError(t *testing.T) {
-	if _, err := ToAgentDefinition(Draft{Name: "   "}); err == nil {
+	if _, err := ToAgentDefinition(Draft{Name: "   "}, false); err == nil {
 		t.Errorf("expected an error for an empty workflow name")
 	}
 }

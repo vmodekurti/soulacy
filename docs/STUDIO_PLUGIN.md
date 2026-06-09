@@ -144,6 +144,38 @@ The full describe → graph → test → save loop is implemented.
 - **Verification gate (unchanged):** `internal/studio` + both vite builds are
   green in-sandbox; the gateway's final compile is the `make all` check on the Mac.
 
+## M2 status — triggers/channels + capability-tier consent
+
+- **Editable triggers + channels (S2.1):** the catalog bridge now also relays
+  the channel list; the palette shows a Channels group; the inspector lets you
+  edit the trigger (type + cron, with hints) and the output channel(s), writing
+  back into the draft so Test/Save use the edits.
+- **Trigger inference (S2.2):** deterministic post-parse normalization fills a
+  sane trigger from common phrasings ("every weekday at 8am" → schedule + cron;
+  "when someone messages / on telegram" → channel; "webhook" → webhook) without
+  overriding a cron the model set.
+- **Capability-tier consent (S2.3):** `POST /studio/plan` classifies the draft's
+  resulting agent via `internal/tier` (the flow's tool/agent nodes are projected
+  onto the Definition so the classifier sees real capabilities) and returns
+  `{tier, reasons, requiresConsent, consentItems}`. `requiresConsent` = Privileged
+  **and** channel-bound. `POST /studio/save` refuses to persist such a draft
+  unless `acceptPrivilegedExposure` is set; the UI shows a consent dialog first.
+
+### Consent is a user acknowledgment, not an operator grant (by design)
+
+`internal/app/channels.go` is explicit that the authoritative
+`accept_privileged_exposure` flag **must** live on the operator's config.yaml
+channel binding — "the operator deploying an agent to a public channel is the one
+accepting the risk, not the agent author." So Studio does **not** write that flag
+or let the author pre-grant exposure. Studio's consent gate is a save-time
+acknowledgment that blocks creating a Privileged channel-bound workflow without an
+explicit click; it records the acknowledgment under a deliberately distinct label
+(`studio.privilege_acknowledged`, **not** the binding key) and saves the agent
+**disabled**. An operator still grants channel exposure at deploy time. If you'd
+prefer Studio consent to actually flow through to the binding, that's a one-line,
+security-relevant change in `channels.go` to review separately — intentionally
+left out here.
+
 ## Vasu's open questions
 
 Plugin name (keep "Studio"?); intent compiler as agent vs skill; how "live" M1
