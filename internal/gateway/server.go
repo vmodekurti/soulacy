@@ -653,6 +653,9 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/builder/deploy", s.rbacMW(rbac.ResourceBuilder, rbac.ActionWrite), s.handleBuilderDeploy)
 	api.Delete("/builder/session/:id", s.rbacMW(rbac.ResourceBuilder, rbac.ActionWrite), s.handleBuilderDeleteSession)
 
+	// Studio plugin backend (Story S1.1): intent compiler.
+	api.Post("/studio/compile", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCompile)
+
 	// E4: Capability Gap Detection
 	if s.builderRegistry != nil {
 		analyzer := builder.NewGapAnalyzer(s.builderRegistry)

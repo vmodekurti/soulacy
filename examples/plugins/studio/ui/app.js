@@ -1,14 +1,31 @@
 /*
- * Studio plugin UI — M0 scaffold (Story S0.1).
+ * Studio plugin UI — M1-A (Story S1.x).
  *
  * Runs inside a sandboxed iframe (sandbox="allow-scripts allow-forms", NO
  * allow-same-origin) embedded by the Soulacy Svelte shell. Because there is no
- * same-origin, cookies and localStorage are unavailable — the scoped plugin
- * token is delivered in the URL FRAGMENT as `#token=splg_...` and must live
- * only in a JS variable for the lifetime of the page.
+ * same-origin, cookies and localStorage are unavailable, and — importantly —
+ * the scoped plugin token is DEFAULT-DENIED by the capability system on the
+ * catalog reads (/api/v1/agents, /tool-catalog, /providers). Direct fetches
+ * therefore 403.
  *
- * The token authenticates this page as the `plugin:studio` principal. It is
- * sent as `Authorization: Bearer <token>` on every API call.
+ * Instead of broadening plugin permissions, we use a HOST-MEDIATED RPC bridge:
+ * the host frame (PluginFrame.svelte), which holds the user's authenticated
+ * session, performs those reads for us and relays the result over postMessage.
+ *
+ * postMessage contract (must match PluginFrame.svelte exactly):
+ *   iframe -> host:  { source: 'studio',      type: 'catalog.request',  id }
+ *   host -> iframe:  { source: 'studio-host', type: 'catalog.response', id,
+ *                      ok: true,  data: { agents, tools, providers } }
+ *                  | { source: 'studio-host', type: 'catalog.response', id,
+ *                      ok: false, error: '<msg>' }
+ *
+ * The `data` payload mirrors the raw API shapes:
+ *   data.agents    = GET /api/v1/agents       → { agents: [...], count }
+ *   data.tools     = GET /api/v1/tool-catalog → { python_tools, mcp_tools, builtins }
+ *   data.providers = GET /api/v1/providers    → { providers: {...}, default_provider }
+ *
+ * The token is still delivered in the URL fragment and kept only in a closure
+ * variable; it is used solely for the (optional) direct-fetch fallback below.
  */
 (function () {
   'use strict';
@@ -20,7 +37,6 @@
   function readToken() {
     var hash = window.location.hash || '';
     if (hash.charAt(0) === '#') hash = hash.slice(1);
-    // hash may be `token=...` or `a=b&token=...`
     var token = '';
     hash.split('&').forEach(function (pair) {
       var eq = pair.indexOf('=');
@@ -34,32 +50,12 @@
 
   var TOKEN = readToken();
 
-  // Strip the token from the visible URL fragment (best-effort; ignored if the
-  // sandbox forbids history access).
   try {
     if (window.location.hash) {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
     }
   } catch (_) {
     /* sandbox may block history; harmless */
-  }
-
-  // ---------------------------------------------------------------------------
-  // API helper. All capability endpoints live under /api/v1 and require the
-  // Bearer token. Returns parsed JSON or throws an Error with a useful message.
-  // ---------------------------------------------------------------------------
-  function api(path) {
-    var headers = { Accept: 'application/json' };
-    if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
-    return fetch(path, { headers: headers, credentials: 'omit' }).then(function (res) {
-      if (!res.ok) {
-        // 403 is the expected outcome today: the gateway plugin route gate
-        // (pluginRoutePolicy) does not yet admit plugin tokens to these reads.
-        var hint = res.status === 403 ? ' (plugin token not yet permitted on this route)' : '';
-        throw new Error('HTTP ' + res.status + hint);
-      }
-      return res.json();
-    });
   }
 
   // ---------------------------------------------------------------------------
@@ -123,120 +119,191 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Loaders — one per capability endpoint. Each maps the host response shape
-  // (verified against internal/gateway handlers) into palette rows.
+  // Renderers — map each raw API response shape into palette rows. Shared by
+  // both the host-bridge path and the direct-fetch fallback.
   // ---------------------------------------------------------------------------
 
-  // GET /api/v1/agents → { agents: [{ name, description, ... }], count }
-  function loadAgents() {
-    return api('/api/v1/agents').then(
-      function (data) {
-        var agents = (data && data.agents) || [];
-        var items = agents.map(function (a) {
-          return { label: a.name || a.id || 'agent', sub: a.description || '' };
-        });
-        setCount('count-agents', items.length);
-        renderList('list-agents', items, { emptyText: 'No agents' });
-        return items.length;
-      },
-      function (err) {
-        setCount('count-agents', 0);
-        renderList('list-agents', null, { error: err.message });
-        throw err;
-      }
-    );
+  // { agents: [{ name, description, ... }], count }
+  function renderAgents(data) {
+    var agents = (data && data.agents) || [];
+    var items = agents.map(function (a) {
+      return { label: a.name || a.id || 'agent', sub: a.description || '' };
+    });
+    setCount('count-agents', items.length);
+    renderList('list-agents', items, { emptyText: 'No agents' });
+    return items.length;
   }
 
-  // GET /api/v1/tool-catalog → { python_tools:[{name,path,description}],
-  //   mcp_tools:[{full_name,name,server,description}], builtins:[{name,description}] }
-  function loadTools() {
-    return api('/api/v1/tool-catalog').then(
-      function (data) {
-        var py = (data && data.python_tools) || [];
-        var mcp = (data && data.mcp_tools) || [];
-        var builtins = (data && data.builtins) || [];
-        var items = [];
-        builtins.forEach(function (t) {
-          items.push({ label: t.name, sub: 'builtin' });
-        });
-        py.forEach(function (t) {
-          items.push({ label: t.name, sub: 'python' });
-        });
-        mcp.forEach(function (t) {
-          items.push({ label: t.name || t.full_name, sub: 'mcp · ' + (t.server || '') });
-        });
-        setCount('count-tools', items.length);
-        renderList('list-tools', items, { emptyText: 'No tools' });
-        return items.length;
-      },
-      function (err) {
-        setCount('count-tools', 0);
-        renderList('list-tools', null, { error: err.message });
-        throw err;
-      }
-    );
+  // { python_tools:[{name,...}], mcp_tools:[{name,full_name,server,...}],
+  //   builtins:[{name,...}] }
+  function renderTools(data) {
+    var py = (data && data.python_tools) || [];
+    var mcp = (data && data.mcp_tools) || [];
+    var builtins = (data && data.builtins) || [];
+    var items = [];
+    builtins.forEach(function (t) {
+      items.push({ label: t.name, sub: 'builtin' });
+    });
+    py.forEach(function (t) {
+      items.push({ label: t.name, sub: 'python' });
+    });
+    mcp.forEach(function (t) {
+      items.push({ label: t.name || t.full_name, sub: 'mcp · ' + (t.server || '') });
+    });
+    setCount('count-tools', items.length);
+    renderList('list-tools', items, { emptyText: 'No tools' });
+    return items.length;
   }
 
-  // GET /api/v1/providers → { providers: { <name>: {model, registered, ...} },
-  //   default_provider, known: [...], registered: [...] }
-  function loadProviders() {
-    return api('/api/v1/providers').then(
-      function (data) {
-        var providers = (data && data.providers) || {};
-        var def = (data && data.default_provider) || '';
-        var items = Object.keys(providers).map(function (name) {
-          var p = providers[name] || {};
-          var parts = [];
-          if (p.model) parts.push(p.model);
-          if (name === def) parts.push('default');
-          return { label: name, sub: parts.join(' · ') };
-        });
-        setCount('count-providers', items.length);
-        renderList('list-providers', items, { emptyText: 'No providers' });
-        return items.length;
-      },
-      function (err) {
-        setCount('count-providers', 0);
-        renderList('list-providers', null, { error: err.message });
-        throw err;
-      }
-    );
+  // { providers: { <name>: {model, ...} }, default_provider }
+  function renderProviders(data) {
+    var providers = (data && data.providers) || {};
+    var def = (data && data.default_provider) || '';
+    var items = Object.keys(providers).map(function (name) {
+      var p = providers[name] || {};
+      var parts = [];
+      if (p.model) parts.push(p.model);
+      if (name === def) parts.push('default');
+      return { label: name, sub: parts.join(' · ') };
+    });
+    setCount('count-providers', items.length);
+    renderList('list-providers', items, { emptyText: 'No providers' });
+    return items.length;
   }
 
-  // ---------------------------------------------------------------------------
-  // Boot.
-  // ---------------------------------------------------------------------------
-  function boot() {
+  function renderError(message) {
+    setCount('count-agents', 0);
+    setCount('count-tools', 0);
+    setCount('count-providers', 0);
+    renderList('list-agents', null, { error: message });
+    renderList('list-tools', null, { error: message });
+    renderList('list-providers', null, { error: message });
+  }
+
+  function applyCatalog(data) {
+    renderAgents(data && data.agents);
+    renderTools(data && data.tools);
+    renderProviders(data && data.providers);
+  }
+
+  function setStatus(text, cls) {
     var status = $('palette-status');
+    if (!status) return;
+    status.textContent = text;
+    if (cls) status.classList.add(cls);
+  }
 
-    if (!TOKEN) {
-      if (status) {
-        status.textContent = 'No plugin token in URL fragment — open Studio from the portal nav.';
-        status.classList.add('status-error');
+  // ---------------------------------------------------------------------------
+  // Host-mediated RPC bridge (primary path).
+  // ---------------------------------------------------------------------------
+  var REQUEST_ID = 'catalog-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+  var HOST_TIMEOUT_MS = 4000;
+
+  function requestCatalogViaHost() {
+    return new Promise(function (resolve, reject) {
+      if (window.parent === window) {
+        reject(new Error('no host frame'));
+        return;
       }
-      return;
-    }
 
-    // Fire all three reads; settle independently so one 403 doesn't blank the
-    // others.
-    Promise.allSettled([loadAgents(), loadTools(), loadProviders()]).then(function (results) {
-      if (!status) return;
-      var ok = results.filter(function (r) {
-        return r.status === 'fulfilled';
-      }).length;
+      var settled = false;
+      var timer = null;
+
+      function cleanup() {
+        window.removeEventListener('message', onMessage);
+        if (timer) clearTimeout(timer);
+      }
+
+      function onMessage(event) {
+        // Only trust replies from our own host (the parent window) that match
+        // our protocol and correlation id. The host has the user's session;
+        // the parent is the only window we asked.
+        if (event.source !== window.parent) return;
+        var msg = event.data;
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.source !== 'studio-host' || msg.type !== 'catalog.response') return;
+        if (msg.id !== REQUEST_ID) return;
+
+        if (settled) return;
+        settled = true;
+        cleanup();
+
+        if (msg.ok) {
+          resolve(msg.data || {});
+        } else {
+          reject(new Error(msg.error || 'host catalog request failed'));
+        }
+      }
+
+      window.addEventListener('message', onMessage);
+
+      timer = setTimeout(function () {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error('host did not respond'));
+      }, HOST_TIMEOUT_MS);
+
+      // Ask the host. The host verifies event.source === our iframe window, so
+      // targetOrigin '*' is safe here (request carries no secret).
+      window.parent.postMessage(
+        { source: 'studio', type: 'catalog.request', id: REQUEST_ID },
+        '*',
+      );
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Direct-fetch fallback. Only used if the host bridge is absent/unresponsive
+  // (e.g. opened standalone). Expected to 403 under the plugin token today, so
+  // it renders a single quiet status rather than noisy per-row errors.
+  // ---------------------------------------------------------------------------
+  function fetchJson(path) {
+    var headers = { Accept: 'application/json' };
+    if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
+    return fetch(path, { headers: headers, credentials: 'omit' }).then(function (res) {
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return res.json();
+    });
+  }
+
+  function loadViaDirectFetch() {
+    return Promise.allSettled([
+      fetchJson('/api/v1/agents').then(renderAgents),
+      fetchJson('/api/v1/tool-catalog').then(renderTools),
+      fetchJson('/api/v1/providers').then(renderProviders),
+    ]).then(function (results) {
+      var ok = results.filter(function (r) { return r.status === 'fulfilled'; }).length;
       if (ok === results.length) {
-        status.textContent = 'Capabilities loaded.';
-        status.classList.add('status-ok');
+        setStatus('Capabilities loaded (direct).', 'status-ok');
       } else if (ok === 0) {
-        status.textContent =
-          'Capability reads denied (HTTP 403). The gateway plugin gate does not ' +
-          'yet permit plugin tokens on these routes — see README.';
-        status.classList.add('status-error');
+        renderError('Unavailable');
+        setStatus('Capability reads unavailable — host bridge did not respond.', 'status-error');
       } else {
-        status.textContent = 'Loaded ' + ok + ' of ' + results.length + ' capability groups.';
-        status.classList.add('status-warn');
+        setStatus('Loaded ' + ok + ' of ' + results.length + ' capability groups (direct).', 'status-warn');
       }
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot. Prefer the host bridge; fall back to direct fetch on timeout/absence.
+  // ---------------------------------------------------------------------------
+  function boot() {
+    setStatus('Loading capabilities…');
+
+    requestCatalogViaHost().then(
+      function (data) {
+        applyCatalog(data);
+        setStatus('Capabilities loaded.', 'status-ok');
+      },
+      function (hostErr) {
+        // Host bridge unavailable — try the direct path as a graceful fallback.
+        loadViaDirectFetch().catch(function () {
+          renderError('Unavailable');
+          setStatus('Could not load capabilities: ' + hostErr.message, 'status-error');
+        });
+      },
+    );
   }
 
   if (document.readyState === 'loading') {

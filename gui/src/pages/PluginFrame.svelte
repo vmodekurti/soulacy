@@ -4,6 +4,7 @@
   // capabilities — never the user's API key) and embeds the static mount in
   // a sandboxed iframe. The token travels in the URL fragment, readable by
   // the plugin via location.hash but never sent to the server.
+  import { onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
   import { iframeSrc, IFRAME_SANDBOX } from '../lib/pluginui.js'
 
@@ -14,6 +15,7 @@
   let src = ''
   let error = ''
   let loading = true
+  let iframeEl              // bound <iframe> element; identifies the trusted source
 
   $: pluginId, load()
 
@@ -31,6 +33,92 @@
       loading = false
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // Host-mediated RPC bridge (Studio M1-A).
+  //
+  // The plugin UI runs in a sandbox WITHOUT allow-same-origin, so its own
+  // scoped plugin token is DEFAULT-DENIED by the capability system on reads
+  // like /agents, /tool-catalog and /providers. Rather than broaden plugin
+  // permissions, the HOST frame — which already holds the user's authenticated
+  // `api` session — performs those reads on the iframe's behalf and relays the
+  // result back over postMessage. The host stays in full control: it only ever
+  // answers a fixed whitelist of request types and never forwards arbitrary
+  // calls.
+  //
+  // postMessage contract
+  // --------------------
+  //   iframe -> host (request):
+  //     { source: 'studio', type: <whitelisted>, id: <string> }
+  //   host -> iframe (response):
+  //     { source: 'studio-host', type: '<reqType>.response', id, ok: true,  data: {...} }
+  //     { source: 'studio-host', type: '<reqType>.response', id, ok: false, error: '<msg>' }
+  //
+  // Implemented types (M1-A): 'catalog.request' -> 'catalog.response',
+  //   data = { agents: [...], tools: {...}, providers: {...} }.
+  // Future types (compile/test) slot into the switch below; nothing else is
+  // served until explicitly added here.
+  //
+  // Security:
+  //   - Source check: we only act on messages whose event.source is THIS
+  //     iframe's contentWindow. The sandbox has an opaque ("null") origin, so
+  //     event.origin is not a usable allowlist key — identity of the source
+  //     window is the trustworthy signal and we verify it strictly.
+  //   - Type whitelist: a switch over known request types; unknown types are
+  //     ignored (no default passthrough).
+  //   - Reply targetOrigin: because the iframe's origin is opaque ("null"),
+  //     a specific origin string can never match it, so postMessage would drop
+  //     the reply. We therefore reply with targetOrigin '*'. This is safe here:
+  //     the message carries only the read-only public catalog the user can
+  //     already see, and the destination window is fixed (iframeEl's
+  //     contentWindow), not a navigable/cross-origin target.
+  const REPLY_TARGET_ORIGIN = '*'
+
+  async function handleBridgeMessage(event) {
+    // Only trust messages originating from THIS plugin iframe's window.
+    if (!iframeEl || event.source !== iframeEl.contentWindow) return
+
+    const msg = event.data
+    if (!msg || typeof msg !== 'object' || msg.source !== 'studio') return
+    const { type, id } = msg
+    if (typeof type !== 'string') return
+
+    switch (type) {
+      case 'catalog.request':
+        await handleCatalogRequest(id)
+        break
+      // Future: 'compile.request', 'test.request' — add cases here.
+      default:
+        // Unknown/unsupported type: ignore (never forward arbitrary requests).
+        return
+    }
+  }
+
+  // Fetch the read-only catalog (agents + tools + providers) using the user's
+  // authenticated api client and relay it to the iframe.
+  async function handleCatalogRequest(id) {
+    const win = iframeEl && iframeEl.contentWindow
+    if (!win) return
+    try {
+      const [agents, tools, providers] = await Promise.all([
+        api.agents.list(),
+        api.tools.catalog(),
+        api.providers.list(),
+      ])
+      win.postMessage(
+        { source: 'studio-host', type: 'catalog.response', id, ok: true, data: { agents, tools, providers } },
+        REPLY_TARGET_ORIGIN,
+      )
+    } catch (e) {
+      win.postMessage(
+        { source: 'studio-host', type: 'catalog.response', id, ok: false, error: e?.message || 'catalog fetch failed' },
+        REPLY_TARGET_ORIGIN,
+      )
+    }
+  }
+
+  window.addEventListener('message', handleBridgeMessage)
+  onDestroy(() => window.removeEventListener('message', handleBridgeMessage))
 </script>
 
 <div class="page plugin-page">
@@ -47,6 +135,7 @@
     <div class="state error">⚠ {error}</div>
   {:else}
     <iframe
+      bind:this={iframeEl}
       title={label || pluginId}
       {src}
       sandbox={IFRAME_SANDBOX}

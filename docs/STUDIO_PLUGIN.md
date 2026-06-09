@@ -103,6 +103,24 @@ error rows + a status banner).
   gitignored `config.dev.yaml` (same convention as `agent_dirs: examples/agents`);
   for a real install, copy `studio/` into `~/.soulacy/soulspace/plugins/`.
 
+## M1 Wave 1 status (in progress)
+
+- **Host-RPC bridge + live palette (S1.0/S0.2):** `gui/src/pages/PluginFrame.svelte`
+  now fetches the catalog with the user session and relays it to the sandboxed
+  Studio iframe via a whitelisted `postMessage` bridge (`catalog.request` →
+  `catalog.response`, id-correlated, source-checked). `examples/plugins/studio/ui/app.js`
+  renders the real palette from it (graceful direct-fetch fallback). No plugin-token
+  permission change. gui vite build green.
+- **Intent compiler + compile endpoint (S1.1):** new `internal/studio` package
+  (BuildPrompt / ParseDraft / Compile behind a narrow `LLM` interface) and
+  `POST /api/v1/studio/compile` (`internal/gateway/studio.go`, registered in
+  `server.go`, reuses `rbac.ResourceAgents`+`ActionWrite`, adapts `llmRouter`).
+  Hybrid: returns a draft workflow AND clarifying questions. 10 unit tests green
+  (pinned to the canonical HN-digest example), gofmt/vet clean.
+- **Verification gate:** `internal/studio` is fully verified in-sandbox; the gateway
+  package can only be compiled where CGO + sqlite headers exist — confirm with
+  `make all` on the Mac before pushing.
+
 ## Vasu's open questions
 
 Plugin name (keep "Studio"?); intent compiler as agent vs skill; how "live" M1
