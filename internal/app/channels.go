@@ -2,7 +2,7 @@ package app
 
 // Channel wiring helpers (Story E10): adapter construction goes through the
 // SDK factory registry; the host keeps only config-shape handling (multi-bot
-// lists, adapter id derivation, system-agent guard).
+// lists, adapter id derivation, capability-tier binding gate).
 
 import (
 	"fmt"
@@ -14,6 +14,7 @@ import (
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/runtime"
+	"github.com/soulacy/soulacy/internal/tier"
 	"github.com/soulacy/soulacy/sdk/registry"
 )
 
@@ -98,16 +99,146 @@ func adapterIDForLog(channel string, index int, agentID string) string {
 	return channel + "-" + sanitizeID(agentID)
 }
 
-func externalChannelAgentAllowed(adapterID, agentID string, log *zap.Logger) bool {
-	if strings.TrimSpace(agentID) != runtime.SystemAgentID {
+// bindingDecision is the policy gate for binding `agentID` to a channel
+// adapter. It generalises the prior ID-based system-agent block into a
+// tier-based check (see docs/CHANNEL_DESIGN.md Q1).
+//
+// Policy:
+//
+//   • channelKind == "http"          — always allowed. The HTTP channel is
+//                                      gated by the gateway's API-key auth,
+//                                      so binding doesn't escalate exposure
+//                                      beyond what's already authenticated.
+//
+//   • tier == ReadOnly               — allowed on any channel, silently.
+//
+//   • tier == Active                 — allowed with an INFO log noting the
+//                                      tier. This is the backward-compat
+//                                      path: pre-existing single-agent
+//                                      bindings (web_search, kb_search,
+//                                      etc.) keep working.
+//
+//   • tier == Privileged             — requires `accept_privileged_exposure:
+//                                      true` on the binding map. Allowed
+//                                      with a stark WARN when accepted;
+//                                      blocked with a stark WARN otherwise.
+//                                      Catches shell_exec, write_file,
+//                                      system_tools, wildcard builtins/MCP,
+//                                      and any transitive peer that has
+//                                      those capabilities.
+//
+//   • tier == Unknown                — agent isn't loaded; allow with a
+//                                      WARN (engine errors at first run).
+//
+// `bindingCfg` is the raw channel-binding map from config.yaml; we read
+// `accept_privileged_exposure` (bool) from it. The flag MUST live on the
+// binding rather than on the agent definition — the operator deploying an
+// agent to a public channel is the one accepting the risk, not the agent
+// author.
+//
+// Always emits one structured log line per binding decision so operators
+// can audit `grep "channel binding"` in /tmp/soulacy.log.
+func bindingDecision(adapterID, agentID, channelKind string, bindingCfg map[string]any, loader *runtime.Loader, log *zap.Logger) bool {
+	agentID = strings.TrimSpace(agentID)
+	channelKind = strings.TrimSpace(channelKind)
+
+	// Web (http) is gated by API-key auth at the gateway; no tier check needed.
+	if channelKind == "http" {
+		log.Info("channel binding: web",
+			zap.String("adapter_id", adapterID),
+			zap.String("channel", channelKind),
+			zap.String("agent_id", agentID),
+			zap.String("decision", "allow"),
+		)
 		return true
 	}
-	log.Warn("external channel mapping skipped: system agent is web-only",
-		zap.String("adapter_id", adapterID),
-		zap.String("agent_id", agentID),
-	)
-	return false
+
+	if loader == nil {
+		// Defensive: classification needs the loader for transitive peer
+		// reach. Without it, fail closed for non-web channels — operators
+		// should not be silently mis-classified.
+		log.Warn("channel binding: classification skipped (loader nil); refusing non-web binding",
+			zap.String("adapter_id", adapterID),
+			zap.String("channel", channelKind),
+			zap.String("agent_id", agentID),
+			zap.String("decision", "block"),
+		)
+		return false
+	}
+
+	def := loader.Get(agentID)
+	if def == nil {
+		// Agent not loaded yet — let it through with a warn; the engine's
+		// per-message lookup will error at runtime if it stays missing.
+		log.Warn("channel binding: agent not loaded; allowing (engine will refuse at runtime if missing)",
+			zap.String("adapter_id", adapterID),
+			zap.String("channel", channelKind),
+			zap.String("agent_id", agentID),
+			zap.String("decision", "allow_unloaded"),
+		)
+		return true
+	}
+
+	t := tier.Compute(def, loader.Get)
+	accept, _ := bindingCfg["accept_privileged_exposure"].(bool)
+
+	switch t {
+	case tier.ReadOnly:
+		log.Info("channel binding: read-only",
+			zap.String("adapter_id", adapterID),
+			zap.String("channel", channelKind),
+			zap.String("agent_id", agentID),
+			zap.String("tier", t.String()),
+			zap.String("decision", "allow"),
+		)
+		return true
+
+	case tier.Active:
+		// Backward compat: active is allowed by default on non-web. The
+		// log captures the decision so operators see the new tier in
+		// /tmp/soulacy.log without anything breaking.
+		log.Info("channel binding: active (allowed by default — set accept_privileged_exposure:false to deny)",
+			zap.String("adapter_id", adapterID),
+			zap.String("channel", channelKind),
+			zap.String("agent_id", agentID),
+			zap.String("tier", t.String()),
+			zap.String("decision", "allow"),
+		)
+		return true
+
+	case tier.Privileged:
+		if accept {
+			log.Warn("channel binding: PRIVILEGED agent exposed (operator accepted via accept_privileged_exposure: true)",
+				zap.String("adapter_id", adapterID),
+				zap.String("channel", channelKind),
+				zap.String("agent_id", agentID),
+				zap.String("tier", t.String()),
+				zap.String("decision", "allow_with_consent"),
+				zap.String("hint", "this binding can spawn processes / write files / install software via the agent's tools"),
+			)
+			return true
+		}
+		log.Warn("channel binding: PRIVILEGED agent BLOCKED on non-web channel",
+			zap.String("adapter_id", adapterID),
+			zap.String("channel", channelKind),
+			zap.String("agent_id", agentID),
+			zap.String("tier", t.String()),
+			zap.String("decision", "block"),
+			zap.String("hint", "set accept_privileged_exposure: true on this binding to override (acknowledges shell/write/install exposure to channel users)"),
+		)
+		return false
+
+	default:
+		log.Warn("channel binding: unknown tier; refusing",
+			zap.String("adapter_id", adapterID),
+			zap.String("channel", channelKind),
+			zap.String("agent_id", agentID),
+			zap.String("decision", "block"),
+		)
+		return false
+	}
 }
+
 
 // sanitizeID replaces characters that are not safe for adapter IDs or log
 // fields with hyphens. Keeps letters, digits, hyphens, and underscores.

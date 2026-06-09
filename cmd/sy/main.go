@@ -163,6 +163,7 @@ func buildAgentCmd() *cobra.Command {
 	createCmd.Flags().StringVarP(&createFile, "file", "f", "", "Path to SOUL.yaml")
 	cmd.AddCommand(createCmd)
 	cmd.AddCommand(buildAgentValidateCmd())
+	cmd.AddCommand(buildAgentTierCmd())
 
 	// enable / disable
 	cmd.AddCommand(&cobra.Command{

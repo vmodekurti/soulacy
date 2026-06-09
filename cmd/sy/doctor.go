@@ -143,11 +143,22 @@ func checkRuntimeDir(runtimeDir string) doctorCheck {
 func checkAgentDirs() doctorCheck {
 	dirs := viper.GetStringSlice("agent_dirs")
 	if len(dirs) == 0 {
+		// Same fallback as cmd/sy/agent_tier.go::loadAgentsFromDisk —
+		// `sy` doesn't run config.Load(), so viper has no agent_dirs
+		// even on installs where the gateway uses the workspace default
+		// at ~/.soulacy/soulspace/agents. Going through ResolveWorkspace
+		// gives doctor the SAME path the gateway resolves.
+		ws, err := config.ResolveWorkspace()
+		if err == nil && ws.Agents != "" {
+			dirs = []string{ws.Agents}
+		}
+	}
+	if len(dirs) == 0 {
 		return doctorCheck{
 			Name:   "agent_dirs",
 			Status: doctorWarn,
-			Detail: "no agent_dirs configured",
-			Remedy: "set agent_dirs in ~/.soulacy/config.yaml",
+			Detail: "no agent_dirs configured and workspace resolution failed",
+			Remedy: "set agent_dirs in your config.yaml, or set $SOULACY_WORKSPACE",
 		}
 	}
 	var issues []string

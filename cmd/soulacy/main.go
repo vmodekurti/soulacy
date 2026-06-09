@@ -91,9 +91,43 @@ func run() error {
 		return fmt.Errorf("ensure dirs: %w", err)
 	}
 
+	// "Dumb install" first-run bootstrap. If config.yaml doesn't exist,
+	// write a default with a generated API key. If it exists but has no
+	// key on a loopback bind, generate one and patch just that field
+	// (preserves comments + operator edits). No-op on subsequent runs.
+	bootstrap, err := config.EnsureBootstrap(cfg, cfgPath)
+	if err != nil {
+		return fmt.Errorf("first-run bootstrap: %w", err)
+	}
+	if bootstrap.Action != config.BootstrapNoop {
+		printFirstRunBanner(bootstrap, cfg.Server.Host, cfg.Server.Port)
+	}
+
 	a, err := app.New(cfg, app.WithConfigPath(cfgPath))
 	if err != nil {
 		return err
 	}
 	return a.Run(context.Background())
+}
+
+// printFirstRunBanner shows the operator their freshly-bootstrapped
+// install once. After this run, config.yaml exists and the banner
+// never fires again. Goes to stderr so it surfaces in service-manager
+// logs regardless of stdout redirection.
+func printFirstRunBanner(b config.BootstrapResult, host string, port int) {
+	url := fmt.Sprintf("http://%s:%d", host, port)
+	what := "Bootstrapped configuration"
+	if b.Action == config.BootstrapGeneratedKey {
+		what = "Generated API key (config file kept)"
+	}
+	fmt.Fprintf(os.Stderr,
+		"\n┌─ Soulacy first-run ────────────────────────────────────────────┐\n"+
+			"│ %-62s │\n"+
+			"│ Config:  %-53s │\n"+
+			"│ URL:     %-53s │\n"+
+			"│ API key: %-53s │\n"+
+			"│ This banner appears once. Save the key — it gates every API. │\n"+
+			"└────────────────────────────────────────────────────────────────┘\n\n",
+		what, b.ConfigPath, url, b.APIKey,
+	)
 }

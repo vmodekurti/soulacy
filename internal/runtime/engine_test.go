@@ -1064,3 +1064,74 @@ func TestHandleExecutesSystemTool(t *testing.T) {
 		t.Fatalf("second request missing tool result 'hello': %#v", reqs[1].Messages)
 	}
 }
+
+// TestPickRouterRoute is the rule-engine unit test for the new
+// kind: router agent type (docs/CHANNEL_DESIGN.md Q2). dispatchRouter
+// itself is intentionally not unit-tested here because it integrates
+// with runAgentCall → Handle → LLM, which would require either a heavy
+// mock stack or live network calls. The matching logic lives in
+// pickRouterRoute, which IS pure and table-test-friendly.
+//
+// Cases cover:
+//   • prefix match (case-insensitive)
+//   • contains any-of (case-insensitive)
+//   • regex with explicit (?i) flag
+//   • declaration order — earlier match wins even if later route also matches
+//   • fallback route (no match clauses) catches everything else
+//   • no-match-no-fallback returns (-1, false) so the dispatcher errors
+//     cleanly instead of silently misrouting
+func TestPickRouterRoute(t *testing.T) {
+	routes := []agent.RouterRoute{
+		{Prefix: "/research", Target: "research-agent"},
+		{Contains: []string{"latest", "news", "today"}, Target: "research-agent"},
+		{Regex: `(?i)compare\s+\w+\s+vs\s+\w+`, Target: "decision-agent"},
+		{Contains: []string{"strategy", "roadmap"}, Target: "strategy-agent"},
+		{Target: "writing-agent"}, // fallback
+	}
+	cases := []struct {
+		name        string
+		text        string
+		wantIdx     int
+		wantMatched bool
+	}{
+		{"prefix slash command", "/research what is sora 2", 0, true},
+		{"prefix case-insensitive", "/RESEARCH apollo", 0, true},
+		{"contains first hit", "give me the latest on llama 4", 1, true},
+		{"contains case-insensitive", "today's news from openai", 1, true},
+		// Go's regexp \w matches [0-9A-Za-z_] only — no hyphens. A test
+		// string like "GPT-5" would split mid-word and miss the route,
+		// so use hyphen-free names to exercise the regex rule itself.
+		{"regex match", "compare apples vs oranges", 2, true},
+		{"contains middle entry", "write the 2027 roadmap", 3, true},
+		{"fallback catches plain prose", "tell me a joke about kubernetes", 4, true},
+		{"earlier wins over later (prefix wins over fallback)", "/research everything", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			idx, matched := pickRouterRoute(routes, tc.text)
+			if matched != tc.wantMatched {
+				t.Errorf("matched=%v want=%v", matched, tc.wantMatched)
+			}
+			if idx != tc.wantIdx {
+				t.Errorf("idx=%d want=%d (route %+v)", idx, tc.wantIdx, routes[idx])
+			}
+		})
+	}
+
+	// No fallback → empty match space returns (-1, false).
+	noFallback := []agent.RouterRoute{
+		{Prefix: "/admin", Target: "admin-agent"},
+	}
+	if idx, matched := pickRouterRoute(noFallback, "hello there"); matched || idx != -1 {
+		t.Errorf("no-match-no-fallback: got (%d, %v); want (-1, false)", idx, matched)
+	}
+
+	// Malformed regex should not crash; route is silently skipped.
+	bad := []agent.RouterRoute{
+		{Regex: "(broken", Target: "noop"},
+		{Target: "fallback-agent"},
+	}
+	if idx, _ := pickRouterRoute(bad, "anything"); idx != 1 {
+		t.Errorf("malformed regex should be skipped; got idx=%d (want 1=fallback)", idx)
+	}
+}

@@ -771,7 +771,7 @@ func (a *App) Run(parent context.Context) error {
 						if token == "" {
 							continue
 						}
-						if !externalChannelAgentAllowed(adapterIDForLog("telegram", i, agentID), agentID, log) {
+						if !bindingDecision(adapterIDForLog("telegram", i, agentID), agentID, "telegram", botMap, loader, log) {
 							continue
 						}
 						// Primary bot keeps the canonical "telegram" ID for backwards
@@ -797,7 +797,7 @@ func (a *App) Run(parent context.Context) error {
 				token, _ := tgCfg["token"].(string)
 				agentID, _ := tgCfg["agent_id"].(string)
 				if token != "" {
-					if externalChannelAgentAllowed("telegram", agentID, log) {
+					if bindingDecision("telegram", agentID, "telegram", tgCfg, loader, log) {
 						if tg, cerr := buildChannel("telegram", "telegram", tgCfg, log); cerr != nil {
 							log.Warn("telegram channel skipped", zap.Error(cerr))
 						} else {
@@ -826,7 +826,7 @@ func (a *App) Run(parent context.Context) error {
 						if token == "" {
 							continue
 						}
-						if !externalChannelAgentAllowed(adapterIDForLog("discord", i, agentID), agentID, log) {
+						if !bindingDecision(adapterIDForLog("discord", i, agentID), agentID, "discord", botMap, loader, log) {
 							continue
 						}
 						adapterID := "discord"
@@ -849,7 +849,7 @@ func (a *App) Run(parent context.Context) error {
 				token, _ := dsCfg["token"].(string)
 				agentID, _ := dsCfg["agent_id"].(string)
 				if token != "" {
-					if externalChannelAgentAllowed("discord", agentID, log) {
+					if bindingDecision("discord", agentID, "discord", dsCfg, loader, log) {
 						if ds, cerr := buildChannel("discord", "discord", dsCfg, log); cerr != nil {
 							log.Warn("discord channel skipped", zap.Error(cerr))
 						} else {
@@ -879,7 +879,7 @@ func (a *App) Run(parent context.Context) error {
 						if botToken == "" || appToken == "" {
 							continue
 						}
-						if !externalChannelAgentAllowed(adapterIDForLog("slack", i, agentID), agentID, log) {
+						if !bindingDecision(adapterIDForLog("slack", i, agentID), agentID, "slack", botMap, loader, log) {
 							continue
 						}
 						adapterID := "slack"
@@ -903,7 +903,7 @@ func (a *App) Run(parent context.Context) error {
 				appToken, _ := slCfg["app_token"].(string)
 				agentID, _ := slCfg["agent_id"].(string)
 				if botToken != "" && appToken != "" {
-					if externalChannelAgentAllowed("slack", agentID, log) {
+					if bindingDecision("slack", agentID, "slack", slCfg, loader, log) {
 						if sl, cerr := buildChannel("slack", "slack", slCfg, log); cerr != nil {
 							log.Warn("slack channel skipped", zap.Error(cerr))
 						} else {
@@ -928,7 +928,7 @@ func (a *App) Run(parent context.Context) error {
 			verifyToken, _ := waCfg["verify_token"].(string)
 			agentID, _ := waCfg["agent_id"].(string)
 			if phoneNumberID != "" && accessToken != "" && verifyToken != "" {
-				if externalChannelAgentAllowed("whatsapp", agentID, log) {
+				if bindingDecision("whatsapp", agentID, "whatsapp", waCfg, loader, log) {
 					if wa, cerr := buildChannel("whatsapp", "", waCfg, log); cerr != nil {
 						log.Warn("whatsapp channel skipped", zap.Error(cerr))
 					} else {
@@ -982,7 +982,7 @@ func (a *App) Run(parent context.Context) error {
 				}
 			}
 			if len(args) > 0 && agentID != "" {
-				if externalChannelAgentAllowed("whatsapp_web", agentID, log) {
+				if bindingDecision("whatsapp_web", agentID, "whatsapp_web", waWebCfg, loader, log) {
 					waWeb := wawebchan.New("whatsapp_web", command, args, sessionDir, agentID, accountID, activation, log)
 					chanReg.Register(waWeb)
 					log.Warn("experimental WhatsApp Web channel enabled",
@@ -1009,7 +1009,7 @@ func (a *App) Run(parent context.Context) error {
 			continue
 		}
 		agentID, _ := chCfg["agent_id"].(string)
-		if !externalChannelAgentAllowed(chID, agentID, log) {
+		if !bindingDecision(chID, agentID, chID, chCfg, loader, log) {
 			continue
 		}
 		a, cerr := buildChannel(chID, chID, chCfg, log)
