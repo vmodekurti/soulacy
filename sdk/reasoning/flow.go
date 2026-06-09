@@ -32,6 +32,10 @@ type FlowNode struct {
 	Output string `yaml:"output,omitempty" json:"output,omitempty"`
 	// OnError is retry | skip | abort (default abort).
 	OnError string `yaml:"on_error,omitempty" json:"on_error,omitempty"`
+	// X is the visual layout X coordinate.
+	X float64 `yaml:"x,omitempty" json:"x,omitempty"`
+	// Y is the visual layout Y coordinate.
+	Y float64 `yaml:"y,omitempty" json:"y,omitempty"`
 }
 
 // FlowEdge is one directed edge. Edges from a node are evaluated IN ORDER;
