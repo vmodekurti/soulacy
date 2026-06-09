@@ -453,6 +453,13 @@ func checkAgentCount() doctorCheck {
 // checkPort verifies the configured gateway port is either bound by an
 // already-running soulacy (good — `sy doctor` while serving) OR is free
 // for binding. A foreign process holding the port is a hard fail.
+//
+// Bug fix 2026-06-09: previously hit `/healthz` (which 404s; the real
+// endpoint is `/api/v1/health` under the API prefix) and used `httpJSON`
+// (no auth, requires JSON decode). The 404 from the wrong path made
+// every running-gateway-on-port-18789 look like "another process".
+// Fixed: reuse `gatewayJSON("/health", ...)` — same code path as
+// checkGatewayHealth, so the two checks now agree.
 func checkPort() doctorCheck {
 	host := viper.GetString("server.host")
 	if host == "" {
@@ -463,9 +470,7 @@ func checkPort() doctorCheck {
 		port = 18789
 	}
 	addr := fmt.Sprintf("%s:%d", host, port)
-	// Try to bind ourselves. If we succeed, the port is free. If bind
-	// fails with "address in use", check whether the gateway's /healthz
-	// answers — if yes, it's our own process holding the port (fine).
+
 	ln, bindErr := net.Listen("tcp", addr)
 	if bindErr == nil {
 		_ = ln.Close()
@@ -475,9 +480,10 @@ func checkPort() doctorCheck {
 			Detail: fmt.Sprintf("%s is free for binding", addr),
 		}
 	}
-	// Port is in use — is it us?
-	healthURL := fmt.Sprintf("http://%s:%d/healthz", host, port)
-	if err := httpJSON(healthURL, &map[string]any{}, 1*time.Second); err == nil {
+	// Port is in use — ask the same /api/v1/health endpoint that
+	// checkGatewayHealth uses. If it responds, the port is held by our
+	// gateway (with auth, via gatewayJSON which adds the API key).
+	if err := gatewayJSON("/health", &map[string]any{}, 2*time.Second); err == nil {
 		return doctorCheck{
 			Name:   "port",
 			Status: doctorOK,
@@ -587,46 +593,104 @@ func checkSandboxState() doctorCheck {
 	}
 }
 
-// checkRecentErrors queries the gateway's action log endpoint for the
-// last hour and warns when error density crosses a threshold. Skipped
-// silently when the gateway isn't reachable — checkGatewayHealth
-// already covers that case and we don't want double-fails.
+// checkRecentErrors samples recent actions across up to N agents and
+// warns when the aggregate error rate crosses a threshold. Skipped
+// cleanly when there's no API key (the endpoint needs auth).
+//
+// Bug fix history:
+//
+//   2026-06-09 (first pass): the check originally hit /api/v1/actions
+//   directly without auth. That endpoint required the API key, so a
+//   401 came out as a misleading "gateway down?".
+//
+//   2026-06-09 (second pass — this code): there's NO global
+//   /api/v1/actions endpoint at all. Actions are per-agent under
+//   /api/v1/agents/:id/actions. The path I was hitting just routed to
+//   the SPA fallback and served the GUI HTML, which is why the JSON
+//   decode failed with "invalid character '<'". Fixed by listing
+//   agents via /api/v1/agents, then sampling actions from each.
 func checkRecentErrors() doctorCheck {
 	type actionRow struct {
 		Status string `json:"status"`
 	}
-	type listResp struct {
+	type actionsResp struct {
 		Items []actionRow `json:"items"`
-		Total int         `json:"total"`
 	}
-	var resp listResp
-	url := strings.TrimRight(gatewayURL, "/") + "/api/v1/actions?limit=100&since=1h"
-	if err := httpJSON(url, &resp, 3*time.Second); err != nil {
+	type agentRow struct {
+		ID string `json:"id"`
+	}
+	type agentsListResp struct {
+		Agents []agentRow `json:"agents"`
+	}
+
+	// Skip cleanly when there's no API key configured — the endpoint
+	// needs auth, and we don't want a misleading "gateway down" for an
+	// operator who simply hasn't passed --api-key.
+	if apiKey == "" && viper.GetString("server.api_key") == "" {
 		return doctorCheck{
 			Name:   "error_rate",
 			Status: doctorWarn,
-			Detail: "couldn't read action log (gateway down?)",
+			Detail: "skipped: no API key configured (pass --api-key or set server.api_key)",
 		}
 	}
-	if len(resp.Items) == 0 {
+
+	// Get the live agent list. We sample up to 5 agents to bound cost —
+	// a workspace with hundreds of agents shouldn't pay for a doctor
+	// check.
+	var agentsResp agentsListResp
+	if err := gatewayJSON("/agents", &agentsResp, 3*time.Second); err != nil {
+		return doctorCheck{
+			Name:   "error_rate",
+			Status: doctorWarn,
+			Detail: "couldn't list agents: " + err.Error(),
+		}
+	}
+	if len(agentsResp.Agents) == 0 {
 		return doctorCheck{
 			Name:   "error_rate",
 			Status: doctorOK,
-			Detail: "no recent activity to assess",
+			Detail: "no agents loaded — nothing to assess",
 		}
 	}
-	errs := 0
-	for _, r := range resp.Items {
-		if r.Status == "error" || r.Status == "failed" || r.Status == "timeout" {
-			errs++
+	sampleSize := len(agentsResp.Agents)
+	if sampleSize > 5 {
+		sampleSize = 5
+	}
+
+	// Aggregate recent actions across the sampled agents. We don't
+	// filter by time at the API level because the per-agent actions
+	// endpoint doesn't expose a `since` parameter — we just take the
+	// most recent N per agent and treat that as the rolling sample.
+	var (
+		total int
+		errs  int
+	)
+	for _, ag := range agentsResp.Agents[:sampleSize] {
+		var resp actionsResp
+		path := fmt.Sprintf("/agents/%s/actions?limit=50", ag.ID)
+		if err := gatewayJSON(path, &resp, 3*time.Second); err != nil {
+			continue // tolerate per-agent failures — doctor should not be flaky
+		}
+		for _, r := range resp.Items {
+			total++
+			if r.Status == "error" || r.Status == "failed" || r.Status == "timeout" {
+				errs++
+			}
 		}
 	}
-	rate := float64(errs) / float64(len(resp.Items))
+	if total == 0 {
+		return doctorCheck{
+			Name:   "error_rate",
+			Status: doctorOK,
+			Detail: fmt.Sprintf("no recent activity across %d agent(s) to assess", sampleSize),
+		}
+	}
+	rate := float64(errs) / float64(total)
 	if rate >= 0.30 {
 		return doctorCheck{
 			Name:   "error_rate",
 			Status: doctorFail,
-			Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed", errs, len(resp.Items), rate*100),
+			Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed across %d agent(s)", errs, total, rate*100, sampleSize),
 			Remedy: "check `sy logs` for repeated errors; common causes: provider auth, sandbox limits, MCP server crashes",
 		}
 	}
@@ -634,13 +698,13 @@ func checkRecentErrors() doctorCheck {
 		return doctorCheck{
 			Name:   "error_rate",
 			Status: doctorWarn,
-			Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed", errs, len(resp.Items), rate*100),
+			Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed across %d agent(s)", errs, total, rate*100, sampleSize),
 			Remedy: "check `sy logs` if this is unexpected",
 		}
 	}
 	return doctorCheck{
 		Name:   "error_rate",
 		Status: doctorOK,
-		Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed", errs, len(resp.Items), rate*100),
+		Detail: fmt.Sprintf("%d/%d (%.0f%%) recent actions failed across %d agent(s)", errs, total, rate*100, sampleSize),
 	}
 }

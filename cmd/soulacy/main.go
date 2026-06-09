@@ -29,6 +29,22 @@ func main() {
 		sandbox.RunSandboxedAndExit(os.Args)
 	}
 
+	// Help / version handling (2026-06-09). Previously `soulacy --help`
+	// fell through to `run()` and tried to start the gateway, which made
+	// for surprising "address already in use" errors when an operator
+	// just wanted to read usage. Handle these before any subcommand
+	// dispatch so they always work, no matter the workspace state.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--help", "-h", "help":
+			printSoulacyUsage()
+			return
+		case "--version", "-v", "version":
+			fmt.Println(config.Version)
+			return
+		}
+	}
+
 	// `soulacy build` — flavored-binary build tool (Story E12, promoted to
 	// a subcommand in Story 19b). Runs before config load: building a
 	// custom distribution must not require a working gateway config.
@@ -54,6 +70,34 @@ func main() {
 		fmt.Fprintf(os.Stderr, "soulacy: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// printSoulacyUsage prints the gateway binary's top-level usage. Kept
+// here (not in a separate file) because the surface is tiny: this is a
+// long-running daemon, not a multi-subcommand CLI like `sy`.
+func printSoulacyUsage() {
+	fmt.Printf(`soulacy — Soulacy gateway server.
+
+USAGE
+  soulacy                     start the gateway (same as 'soulacy serve')
+  soulacy serve               start the gateway explicitly
+  soulacy build [flags]       build a custom-flavored binary with extra drivers
+  soulacy registry [args]     run the reference package registry
+  soulacy --help              show this message
+  soulacy --version           print the version string
+
+CONFIG
+  Reads SOULACY_CONFIG_PATH or the workspace config.yaml.
+  On a virgin install, generates a config + API key automatically and
+  prints them once in a boxed banner on stderr.
+
+CLI COMPANION
+  Use the 'sy' command for everything an operator does after install:
+  agents, channels, chat, doctor, daemon, onboard, etc.
+
+VERSION
+  %s
+`, config.Version)
 }
 
 // runBuild parses `soulacy build` flags and delegates to internal/buildtool.
