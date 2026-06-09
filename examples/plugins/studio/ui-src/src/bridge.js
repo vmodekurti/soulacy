@@ -36,6 +36,12 @@
  *              relays POST /plugins/install (stage). Staging is a real,
  *              consent-bearing step; activation still needs an Approve in the
  *              Plugins page. Reply is honest about that (multiStep:true).
+ *   templates   ()                       -> { templates:[{id,name,description,workflow}] }  (M6)
+ *   draftSave   payload { name, workflow } -> { id }                          (M6)
+ *   draftsList  ()                       -> { drafts:[{id,name,updated}] }    (M6)
+ *   draftLoad   payload { id }           -> { id, name, workflow }            (M6)
+ *   draftDelete payload { id }           -> { ok:true }                       (M6)
+ *   refine      payload { workflow, nodeId, instruction } -> { workflow }     (M6)
  */
 
 const HOST_TIMEOUT_MS = 8000
@@ -132,4 +138,13 @@ export const bridge = {
   discover: (query, kind) => bridgeRequest('discover', { query, kind }),
   install: ({ source, checksum, name } = {}) =>
     bridgeRequest('install', { source, checksum, name }, 30000),
+  // M6: templates, draft library, per-node refine. `refine` may take a moment
+  // (the host runs an LLM pass) so it gets a wider timeout than the default.
+  templates: () => bridgeRequest('templates'),
+  draftSave: (name, workflow) => bridgeRequest('draftSave', { name, workflow }),
+  draftsList: () => bridgeRequest('draftsList'),
+  draftLoad: (id) => bridgeRequest('draftLoad', { id }),
+  draftDelete: (id) => bridgeRequest('draftDelete', { id }),
+  refine: (workflow, nodeId, instruction) =>
+    bridgeRequest('refine', { workflow, nodeId, instruction }, 30000),
 }

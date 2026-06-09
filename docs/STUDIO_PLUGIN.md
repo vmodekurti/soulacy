@@ -176,6 +176,36 @@ prefer Studio consent to actually flow through to the binding, that's a one-line
 security-relevant change in `channels.go` to review separately — intentionally
 left out here.
 
+## M3–M6 status (complete)
+
+- **M3 — multi-agent, branching, typed handles:** the compiler emits multi-node
+  graphs with peer-agent nodes, branch nodes + conditional `edge.if`, and typed
+  ports; `POST /studio/validate` returns structured errors + soft warnings. The
+  canvas renders per-kind nodes, typed multi-handles, labeled branch/`else` edges,
+  inline `if`-condition editing, and debounced validate-on-edit highlighting.
+- **M4 — capability discovery:** `compile` returns `suggestions[]` for referenced
+  tools/agents missing from the catalog (empty-catalog guard = no false positives).
+  The UI shows a "Needs setup" panel; Find runs a `discover` op over the existing
+  `/registries/search`; Install relays to the existing `POST /plugins/install`
+  **stage** flow — surfaced honestly as multi-step (operator approves in the
+  Plugins page), never auto-activated.
+- **M5 — test depth:** `POST /studio/test` gains per-node mocks and assertions
+  (`contains`/`equals`/`exists` over a node or the final `result`), evaluated by a
+  pure function; `live` mode is guarded (never runs real tools/LLM from an unsaved
+  draft — directs you to save+enable and exercise via the channel). The UI adds a
+  mock editor, assertion editor with pass/fail, and a session-only run history with
+  view + replay (sandbox has no localStorage).
+- **M6 — templates, library, export, re-describe:** `GET /studio/templates`
+  (3 built-in starter drafts, all CompileFlow-valid); a file-backed draft library
+  under `<workspace>/studio/drafts` (`POST/GET/GET:id/DELETE` with a path-traversal
+  guard); client-side export/import of draft JSON; and `POST /studio/refine` to
+  re-describe a single node in plain language (LLM edit, re-validated). The UI adds
+  an empty-state template picker, Save/Open library modals, Export/Import, and a
+  per-node Refine input.
+
+All `internal/studio` logic is unit-tested and green in-sandbox; the gateway's
+final compile remains the `make all` check on the Mac.
+
 ## Vasu's open questions
 
 Plugin name (keep "Studio"?); intent compiler as agent vs skill; how "live" M1

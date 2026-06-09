@@ -12,6 +12,22 @@
   export let onChange = () => {} // (patch) => void; patch merged into workflow
   // (index, patch) => void; patch merged into the draft edge at flow.edges[index].
   export let onEdgeChange = () => {}
+  // M6 (S6.3): (nodeId, instruction) => void; asks the backend to refine the
+  // selected node and replace the current workflow with the returned one.
+  export let onRefine = () => {}
+  // { loading, error, message } — drives the refine spinner / error / done UI.
+  export let refineState = { loading: false, error: '', message: '' }
+
+  // Per-selected-node refine instruction (cleared when the selection changes).
+  let refineInstruction = ''
+  let lastNodeId = null
+  $: if (node && node.id !== lastNodeId) { lastNodeId = node.id; refineInstruction = '' }
+
+  function submitRefine() {
+    const instr = (refineInstruction || '').trim()
+    if (!node || !instr || refineState.loading) return
+    onRefine(node.id, instr)
+  }
 
   // The raw draft edges (for the "Edges" list shown when nothing is selected).
   $: draftEdges = (workflow && workflow.flow && Array.isArray(workflow.flow.edges))
@@ -126,6 +142,33 @@
         {/each}
       </dl>
     {/if}
+
+    <!-- M6 (S6.3): refine this node from a natural-language instruction. The
+         backend returns a NEW workflow that replaces the current one. -->
+    <section class="frame refine">
+      <h3 class="sub">Refine</h3>
+      <label class="field-label" for="refine-instr">describe a change</label>
+      <textarea
+        id="refine-instr"
+        class="refine-input"
+        rows="2"
+        placeholder="e.g. use the summarize tool instead, or add error handling"
+        bind:value={refineInstruction}
+        on:keydown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitRefine() } }}
+        disabled={refineState.loading}
+      ></textarea>
+      <button
+        class="btn-refine"
+        type="button"
+        on:click={submitRefine}
+        disabled={refineState.loading || !refineInstruction.trim()}
+      >
+        {#if refineState.loading}<span class="spinner" aria-hidden="true"></span> Refining…{:else}Apply{/if}
+      </button>
+      {#if refineState.error}<p class="refine-msg refine-err">⚠ {refineState.error}</p>{/if}
+      {#if refineState.message && !refineState.loading}<p class="refine-msg refine-ok">✓ {refineState.message}</p>{/if}
+      <p class="insp-hint">Replaces the workflow with the refined version, then re-validates.</p>
+    </section>
   {:else if workflow}
     <!-- No node selected: edit the workflow framing (trigger + output). -->
     <p class="insp-hint">Editing how this workflow starts and where it sends output. Select a node to inspect it.</p>
@@ -316,6 +359,53 @@
     font-size: 11px;
     color: var(--text-muted);
   }
+
+  /* M6: refine block */
+  .refine textarea.refine-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 7px 10px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text);
+    font-size: 13px;
+    resize: vertical;
+    outline: none;
+    font-family: inherit;
+  }
+  .refine textarea.refine-input:focus { border-color: var(--accent); }
+  .btn-refine {
+    margin-top: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+  .btn-refine:hover:not(:disabled) { filter: brightness(1.08); }
+  .btn-refine:disabled { opacity: 0.5; cursor: not-allowed; }
+  .spinner {
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: #fff;
+    border-radius: 50%;
+    display: inline-block;
+    animation: insp-spin 0.7s linear infinite;
+  }
+  @keyframes insp-spin { to { transform: rotate(360deg); } }
+  .refine-msg { font-size: 12px; margin: 8px 0 0; }
+  .refine-err { color: var(--error, #ff6b81); }
+  .refine-ok { color: var(--ok, #36d399); }
 
   /* Edges list */
   .edge-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }

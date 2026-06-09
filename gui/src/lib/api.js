@@ -259,6 +259,48 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ workflow, acceptPrivilegedExposure: !!acceptPrivilegedExposure }),
       }),
+
+    // ── Studio M6: templates, draft library, per-node refine ────────────────
+    /**
+     * List starter templates a fresh draft can begin from.
+     * @returns {Promise<{templates:{id,name,description,workflow}[]}>}
+     */
+    templates: () => apiFetch('/studio/templates'),
+    /**
+     * Persist the current draft into the server-side draft library.
+     * @returns {Promise<{id}>}
+     */
+    draftSave: ({ name, workflow } = {}) =>
+      apiFetch('/studio/drafts', {
+        method: 'POST',
+        body: JSON.stringify({ name, workflow }),
+      }),
+    /**
+     * List saved drafts.
+     * @returns {Promise<{drafts:{id,name,updated}[]}>}
+     */
+    draftsList: () => apiFetch('/studio/drafts'),
+    /**
+     * Load one saved draft by id.
+     * @returns {Promise<{id,name,workflow}>}
+     */
+    draftLoad: (id) => apiFetch(`/studio/drafts/${encodeURIComponent(id)}`),
+    /**
+     * Delete one saved draft by id.
+     * @returns {Promise<{ok:true}>}
+     */
+    draftDelete: (id) =>
+      apiFetch(`/studio/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /**
+     * Ask the backend to refine one node of a workflow from a natural-language
+     * instruction, returning a NEW workflow.
+     * @returns {Promise<{workflow}>}
+     */
+    refine: ({ workflow, nodeId, instruction } = {}) =>
+      apiFetch('/studio/refine', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, nodeId, instruction }),
+      }),
   },
 
   knowledge: {

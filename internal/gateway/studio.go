@@ -15,9 +15,11 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/studio"
 )
@@ -223,4 +225,138 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 		"agentId": def.ID,
 		"enabled": false,
 	})
+}
+
+// --- Studio templates (Story S6.1) ---
+
+// handleStudioTemplates implements GET /api/v1/studio/templates. It returns the
+// built-in Studio starter Drafts the canvas offers as one-click starting
+// points. Read-only: nothing is persisted and no LLM is involved. Every
+// template.workflow is guaranteed (by studio.Templates + its tests) to pass
+// reasoning.CompileFlow, so a user who picks one lands on a valid graph.
+func (s *Server) handleStudioTemplates(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"templates": studio.Templates()})
+}
+
+// --- Studio draft library (Story S6.2) ---
+
+// studioDraftsDir derives the Studio drafts directory from the resolved
+// workspace: <workspace>/studio/drafts. The store (internal/studio) creates the
+// directory on first save, so this only needs to return the path. It is kept on
+// Server so every draft handler reaches the same location.
+func (s *Server) studioDraftsDir() (string, error) {
+	ws, err := config.ResolveWorkspace()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(ws.Root, "studio", "drafts"), nil
+}
+
+// studioSaveDraftRequest is the POST /api/v1/studio/drafts body.
+type studioSaveDraftRequest struct {
+	Name     string       `json:"name"`
+	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioSaveDraft implements POST /api/v1/studio/drafts. It persists the
+// draft as a JSON file under the Studio drafts dir and returns the new id. The
+// store derives a slug+short-hash id and overwrites on an identical re-save.
+func (s *Server) handleStudioSaveDraft(c *fiber.Ctx) error {
+	var req studioSaveDraftRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+	}
+	if req.Name == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
+	}
+	dir, err := s.studioDraftsDir()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	id, err := studio.SaveDraft(dir, req.Name, req.Workflow)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": id})
+}
+
+// handleStudioListDrafts implements GET /api/v1/studio/drafts. It returns the
+// metadata (id, name, updated) of every saved draft, most recent first.
+func (s *Server) handleStudioListDrafts(c *fiber.Ctx) error {
+	dir, err := s.studioDraftsDir()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	drafts, err := studio.ListDrafts(dir)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"drafts": drafts})
+}
+
+// handleStudioLoadDraft implements GET /api/v1/studio/drafts/:id. It returns
+// the full stored draft (id, name, workflow). The :id is validated against
+// path traversal inside studio.LoadDraft.
+func (s *Server) handleStudioLoadDraft(c *fiber.Ctx) error {
+	dir, err := s.studioDraftsDir()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	sd, err := studio.LoadDraft(dir, c.Params("id"))
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"id": sd.ID, "name": sd.Name, "workflow": sd.Workflow})
+}
+
+// handleStudioDeleteDraft implements DELETE /api/v1/studio/drafts/:id. The :id
+// is validated against path traversal inside studio.DeleteDraft.
+func (s *Server) handleStudioDeleteDraft(c *fiber.Ctx) error {
+	dir, err := s.studioDraftsDir()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if err := studio.DeleteDraft(dir, c.Params("id")); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// --- Studio per-node re-describe (Story S6.3) ---
+
+// studioRefineRequest is the POST /api/v1/studio/refine body: the current
+// workflow, the target node id, and a plain-language instruction.
+type studioRefineRequest struct {
+	Workflow    studio.Draft `json:"workflow"`
+	NodeID      string       `json:"nodeId"`
+	Instruction string       `json:"instruction"`
+}
+
+// handleStudioRefine implements POST /api/v1/studio/refine. It applies a
+// plain-language change to one node via studio.Refine (reusing the gateway's
+// LLM router) and returns the full updated workflow. studio.Refine validates
+// the result via reasoning.CompileFlow and never returns a broken draft, so an
+// invalid model output surfaces as a clear error rather than a bad workflow.
+func (s *Server) handleStudioRefine(c *fiber.Ctx) error {
+	var req studioRefineRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+	}
+	if req.NodeID == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "nodeId is required"})
+	}
+	if req.Instruction == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "instruction is required"})
+	}
+
+	model := s.studioLLM()
+	if model == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "LLM router unavailable"})
+	}
+
+	updated, err := studio.Refine(c.Context(), model, req.Workflow, req.NodeID, req.Instruction)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"workflow": updated})
 }

@@ -250,6 +250,28 @@
     scheduleValidate()        // validate the fresh draft (debounced)
   }
 
+  // ── M6: set the current draft directly (templates / draft-load / import) ───
+  // Shared by every path that swaps in a complete workflow WITHOUT a compile
+  // round-trip. Mirrors the post-compile reset so the canvas, inspector,
+  // plan/tier and validation all refresh consistently.
+  function setWorkflow(wf, { name } = {}) {
+    workflow = wf || null
+    if (workflow && name && !workflow.name) workflow = { ...workflow, name }
+    questions = []
+    notes = []
+    suggestions = []
+    discoverState = {}
+    selectedNode = null
+    selectedEdge = null
+    plan = null
+    validation = null
+    saveMsg = ''
+    saveError = ''
+    refineState = { loading: false, error: '', message: '' }
+    rebuildGraph()
+    scheduleValidate()
+  }
+
   // ── Framing edits (trigger / output channels) ─────────────────────────────
   // Channels available to pick from (catalog payload is { channels: [...] }).
   $: channelOptions = (catalog && catalog.channels && catalog.channels.channels)
@@ -583,6 +605,221 @@
 
   const kinds = ['tool', 'agent', 'branch']
 
+  // ── M6: Templates + empty-state picker (S6.1) ─────────────────────────────
+  // No localStorage in the sandbox, so "is there a current draft?" is simply
+  // `workflow != null`. On a fresh open (no draft) we show a template picker;
+  // a top-bar "Templates" button reopens it any time. Choosing one loads its
+  // workflow as the current draft.
+  let templatePicker = { open: false, loading: false, error: '', items: [] }
+
+  async function openTemplates() {
+    templatePicker = { open: true, loading: true, error: '', items: [] }
+    try {
+      const data = await bridge.templates()
+      const items = (data && Array.isArray(data.templates)) ? data.templates : []
+      templatePicker = { open: true, loading: false, error: '', items }
+    } catch (e) {
+      templatePicker = { open: true, loading: false, error: e.message || 'could not load templates', items: [] }
+    }
+  }
+
+  function closeTemplates() {
+    templatePicker = { ...templatePicker, open: false }
+  }
+
+  function chooseTemplate(t) {
+    if (!t || !t.workflow) return
+    setWorkflow(t.workflow, { name: t.name })
+    closeTemplates()
+  }
+
+  // ── M6: Draft library — Save / Open / Load / Delete (S6.2) ────────────────
+  let savingDraft = false
+  let library = { open: false, loading: false, error: '', drafts: [], busyId: '' }
+
+  async function saveDraft() {
+    if (!workflow || savingDraft) return
+    const suggested = (workflow.name || '').trim() || 'My workflow'
+    let name
+    try {
+      name = window.prompt('Save draft as:', suggested)
+    } catch (_) {
+      name = suggested        // sandbox could block prompt — fall back silently
+    }
+    if (name == null) return   // cancelled
+    name = (name || '').trim() || suggested
+    savingDraft = true
+    saveError = ''
+    saveMsg = ''
+    try {
+      const res = await bridge.draftSave(name, workflow)
+      const id = (res && res.id) || ''
+      // Keep the draft's name in sync so subsequent saves/export reuse it.
+      if (name && workflow.name !== name) {
+        workflow = { ...workflow, name }
+        rebuildGraph()
+      }
+      toast(`Saved draft “${name}”${id ? ' (' + id + ')' : ''}.`)
+    } catch (e) {
+      saveError = e.message || 'could not save draft'
+    } finally {
+      savingDraft = false
+    }
+  }
+
+  async function openLibrary() {
+    library = { open: true, loading: true, error: '', drafts: [], busyId: '' }
+    try {
+      const data = await bridge.draftsList()
+      const drafts = (data && Array.isArray(data.drafts)) ? data.drafts : []
+      library = { open: true, loading: false, error: '', drafts, busyId: '' }
+    } catch (e) {
+      library = { open: true, loading: false, error: e.message || 'could not list drafts', drafts: [], busyId: '' }
+    }
+  }
+
+  function closeLibrary() {
+    library = { ...library, open: false }
+  }
+
+  async function loadDraft(d) {
+    if (!d || !d.id || library.busyId) return
+    library = { ...library, busyId: d.id, error: '' }
+    try {
+      const data = await bridge.draftLoad(d.id)
+      const wf = (data && data.workflow) || null
+      if (!wf) throw new Error('draft has no workflow')
+      setWorkflow(wf, { name: (data && data.name) || d.name })
+      closeLibrary()
+    } catch (e) {
+      library = { ...library, busyId: '', error: e.message || 'could not load draft' }
+    }
+  }
+
+  async function deleteDraft(d) {
+    if (!d || !d.id || library.busyId) return
+    library = { ...library, busyId: d.id, error: '' }
+    try {
+      await bridge.draftDelete(d.id)
+      const drafts = library.drafts.filter((x) => x.id !== d.id)
+      library = { ...library, busyId: '', drafts }
+    } catch (e) {
+      library = { ...library, busyId: '', error: e.message || 'could not delete draft' }
+    }
+  }
+
+  function draftWhen(d) {
+    const u = d && d.updated
+    if (!u) return ''
+    const t = typeof u === 'number' ? u : Date.parse(u)
+    if (Number.isNaN(t)) return String(u)
+    return new Date(t).toLocaleString()
+  }
+
+  // ── M6: Export / Import (S6.4) — client-side, no backend ──────────────────
+  let importError = ''
+  let fileInputEl                    // bound hidden <input type=file>
+
+  function safeFileName(base) {
+    const s = (base || 'workflow').trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+    return (s || 'workflow') + '.studio.json'
+  }
+
+  function exportDraft() {
+    if (!workflow) return
+    try {
+      const json = JSON.stringify(workflow, null, 2)
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = safeFileName(workflow.name)
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      // Revoke after the click has a chance to start the download.
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      toast('Exported draft.')
+    } catch (e) {
+      saveError = e.message || 'export failed'
+    }
+  }
+
+  function triggerImport() {
+    importError = ''
+    if (fileInputEl) fileInputEl.click()
+  }
+
+  function onImportFile(event) {
+    const file = event && event.target && event.target.files && event.target.files[0]
+    // Reset the input so picking the same file again re-fires change.
+    if (event && event.target) event.target.value = ''
+    if (!file) return
+    importError = ''
+    const reader = new FileReader()
+    reader.onerror = () => { importError = 'Could not read the file.' }
+    reader.onload = () => {
+      let parsed
+      try {
+        parsed = JSON.parse(String(reader.result || ''))
+      } catch (e) {
+        importError = 'Not valid JSON: ' + (e.message || 'parse error')
+        return
+      }
+      // Accept either a bare workflow or an export envelope.
+      const wf = (parsed && parsed.flow) ? parsed : (parsed && parsed.workflow) ? parsed.workflow : null
+      if (!wf || typeof wf !== 'object' || !wf.flow) {
+        importError = 'That file does not look like a Studio workflow.'
+        return
+      }
+      setWorkflow(wf, { name: wf.name })
+      toast('Imported draft.')
+    }
+    reader.readAsText(file)
+  }
+
+  // ── M6: Per-node refine (S6.3) ────────────────────────────────────────────
+  // Lives in the Inspector when a node is selected. Sends { workflow, nodeId,
+  // instruction } to the host's refine op and REPLACES the current workflow
+  // with the returned one, then re-validates. Spinner + graceful errors.
+  let refineState = { loading: false, error: '', message: '' }
+
+  async function refineNode(nodeId, instruction) {
+    const instr = (instruction || '').trim()
+    if (!workflow || !nodeId || !instr || refineState.loading) return
+    refineState = { loading: true, error: '', message: '' }
+    try {
+      const data = await bridge.refine(workflow, nodeId, instr)
+      const wf = (data && data.workflow) || null
+      if (!wf || typeof wf !== 'object') throw new Error('refine returned no workflow')
+      // Keep the node selected (by id) across the swap if it still exists.
+      const keepId = nodeId
+      const prevName = workflow.name
+      workflow = (wf.name || !prevName) ? wf : { ...wf, name: prevName }
+      plan = null
+      validation = null
+      // Re-resolve the selected node from the new workflow if it survived.
+      const nextNodes = (workflow.flow && Array.isArray(workflow.flow.nodes)) ? workflow.flow.nodes : []
+      const stillThere = nextNodes.find((n) => n.id === keepId)
+      selectedNode = stillThere || null
+      selectedEdge = null
+      rebuildGraph()
+      scheduleValidate()
+      refineState = { loading: false, error: '', message: 'Applied.' }
+    } catch (e) {
+      refineState = { loading: false, error: e.message || 'refine failed', message: '' }
+    }
+  }
+
+  // ── M6: lightweight toast (session-only; the sandbox has no storage) ──────
+  let toastMsg = ''
+  let toastTimer = null
+  function toast(msg) {
+    toastMsg = msg
+    if (toastTimer) clearTimeout(toastTimer)
+    toastTimer = setTimeout(() => { toastMsg = '' }, 3500)
+  }
+
   onMount(loadCatalog)
 </script>
 
@@ -605,10 +842,39 @@
     <button class="btn primary" on:click={generate} disabled={compiling || !intent.trim()}>
       {compiling ? 'Generating…' : 'Generate'}
     </button>
+
+    <!-- M6: draft management toolbar -->
+    <div class="toolbar" role="group" aria-label="Draft management">
+      <button class="btn" type="button" on:click={openTemplates} title="Start from a template">Templates</button>
+      <button class="btn" type="button" on:click={openLibrary} title="Open a saved draft">Open</button>
+      <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} title="Save the current draft to the library">
+        {savingDraft ? 'Saving…' : 'Save draft'}
+      </button>
+      <button class="btn" type="button" on:click={exportDraft} disabled={!workflow} title="Download the current draft as a .studio.json file">Export</button>
+      <button class="btn" type="button" on:click={triggerImport} title="Load a .studio.json file from disk">Import</button>
+      <input
+        bind:this={fileInputEl}
+        class="hidden-file"
+        type="file"
+        accept=".json,application/json"
+        on:change={onImportFile}
+        aria-hidden="true"
+        tabindex="-1"
+      />
+    </div>
+
     <div class="badge" title="Scoped plugin principal">
       principal: <strong>plugin:studio</strong>
     </div>
   </header>
+
+  <!-- M6: import error + toast strips -->
+  {#if importError}
+    <div class="strip strip-error">⚠ {importError}</div>
+  {/if}
+  {#if toastMsg}
+    <div class="strip strip-ok toast-strip">✓ {toastMsg}</div>
+  {/if}
 
   <main class="body">
     <Palette
@@ -731,6 +997,8 @@
           <div class="canvas-state empty">
             <div class="glyph" aria-hidden="true">⬚</div>
             <p>Describe what you want above, then press Generate.</p>
+            <p class="empty-or">— or —</p>
+            <button class="btn primary" type="button" on:click={openTemplates}>Start from a template</button>
           </div>
         {:else}
           <SvelteFlow
@@ -1032,8 +1300,78 @@
       channels={channelOptions}
       onChange={applyFraming}
       onEdgeChange={applyEdgePatch}
+      onRefine={refineNode}
+      {refineState}
     />
   </main>
+
+  <!-- ── M6: Template picker (S6.1) ──────────────────────────────────────── -->
+  {#if templatePicker.open}
+    <div class="modal-backdrop" on:click|self={closeTemplates} role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="tmpl-title">
+        <h2 id="tmpl-title" class="modal-title">Start from a template</h2>
+        <p class="modal-body">Pick a starting point — it loads as your current draft, ready to edit, test and save.</p>
+        {#if templatePicker.loading}
+          <p class="muted">Loading templates…</p>
+        {:else if templatePicker.error}
+          <div class="strip strip-error">⚠ {templatePicker.error}</div>
+        {:else if !templatePicker.items.length}
+          <p class="muted">No templates available.</p>
+        {:else}
+          <ul class="picker-list">
+            {#each templatePicker.items as t (t.id)}
+              <li class="picker-item">
+                <button class="picker-main" type="button" on:click={() => chooseTemplate(t)} title="Load this template">
+                  <span class="picker-name">{t.name || t.id}</span>
+                  {#if t.description}<span class="picker-desc">{t.description}</span>{/if}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="modal-actions">
+          <button class="btn" type="button" on:click={closeTemplates}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- ── M6: Draft library (S6.2) ────────────────────────────────────────── -->
+  {#if library.open}
+    <div class="modal-backdrop" on:click|self={closeLibrary} role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="lib-title">
+        <h2 id="lib-title" class="modal-title">Open a draft</h2>
+        {#if library.error}<div class="strip strip-error">⚠ {library.error}</div>{/if}
+        {#if library.loading}
+          <p class="muted">Loading drafts…</p>
+        {:else if !library.drafts.length}
+          <p class="muted">No saved drafts yet. Use “Save draft” to create one.</p>
+        {:else}
+          <ul class="picker-list">
+            {#each library.drafts as d (d.id)}
+              <li class="picker-item lib-item">
+                <button class="picker-main" type="button" on:click={() => loadDraft(d)} disabled={!!library.busyId} title="Load this draft">
+                  <span class="picker-name">{d.name || d.id}</span>
+                  {#if draftWhen(d)}<span class="picker-desc">updated {draftWhen(d)}</span>{/if}
+                </button>
+                <div class="lib-actions">
+                  <button class="btn btn-sm" type="button" on:click={() => loadDraft(d)} disabled={!!library.busyId}>
+                    {library.busyId === d.id ? '…' : 'Load'}
+                  </button>
+                  <button class="btn btn-sm" type="button" on:click={() => deleteDraft(d)} disabled={!!library.busyId} title="Delete this draft">
+                    Delete
+                  </button>
+                </div>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+        <div class="modal-actions">
+          <button class="btn" type="button" on:click={closeLibrary}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
 
   <!-- Consent dialog (M2): shown before saving a privileged, channel-bound
        workflow, or on the server's 409 consent fallback. -->
@@ -1133,6 +1471,53 @@
   }
   .btn.primary:hover:not(:disabled) { filter: brightness(1.08); }
   .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* M6: draft-management toolbar */
+  .toolbar { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+  .hidden-file {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+  }
+  .toast-strip { animation: fadein 0.15s ease; }
+  @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+
+  /* M6: empty-state template affordance */
+  .empty-or { font-size: 12px; color: var(--text-muted); margin: 4px 0; }
+
+  /* M6: picker / library lists in modals */
+  .picker-list { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .picker-item {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0;
+    overflow: hidden;
+  }
+  .picker-main {
+    width: 100%;
+    text-align: left;
+    background: none;
+    border: none;
+    color: inherit;
+    cursor: pointer;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .picker-main:hover:not(:disabled) { background: var(--bg-elev); }
+  .picker-main:disabled { cursor: default; opacity: 0.6; }
+  .picker-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .picker-desc { font-size: 12px; color: var(--text-muted); }
+  .lib-item { display: flex; align-items: center; }
+  .lib-item .picker-main { flex: 1 1 auto; }
+  .lib-actions { display: flex; gap: 6px; padding: 0 10px; flex: 0 0 auto; }
 
   /* Body layout */
   .body { display: flex; flex: 1 1 auto; min-height: 0; }

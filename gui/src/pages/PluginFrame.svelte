@@ -95,6 +95,22 @@
   //              staging carries its own review/consent; activation still
   //              requires a separate Approve in the Plugins page. The reply is
   //              honest about that ("staged" not "installed").
+  //   'templates.request' -> 'templates.response'  (M6)
+  //       data = GET /studio/templates -> { templates:[{id,name,description,workflow}] }
+  //   'draftSave.request' -> 'draftSave.response'   (M6)
+  //       req  { name, workflow }
+  //       data = POST /studio/drafts -> { id }
+  //   'draftsList.request' -> 'draftsList.response' (M6)
+  //       data = GET /studio/drafts -> { drafts:[{id,name,updated}] }
+  //   'draftLoad.request' -> 'draftLoad.response'   (M6)
+  //       req  { id }
+  //       data = GET /studio/drafts/:id -> { id,name,workflow }
+  //   'draftDelete.request' -> 'draftDelete.response'  (M6)
+  //       req  { id }
+  //       data = DELETE /studio/drafts/:id -> { ok:true }
+  //   'refine.request' -> 'refine.response'         (M6)
+  //       req  { workflow, nodeId, instruction }
+  //       data = POST /studio/refine -> { workflow }
   // Nothing else is served until explicitly added to the whitelist below.
   //
   // Security:
@@ -184,6 +200,40 @@
             note: (res && res.note) || 'Staged for review — approve it in the Plugins page to activate.',
           }
         })
+        break
+      case 'templates.request':
+        // M6: starter templates for the empty-state / "Templates" picker.
+        await handleStudioRequest(id, 'templates.response', () =>
+          api.studio.templates())
+        break
+      case 'draftSave.request':
+        // M6: persist the current draft into the server-side draft library.
+        await handleStudioRequest(id, 'draftSave.response', () =>
+          api.studio.draftSave({ name: msg.name, workflow: msg.workflow }))
+        break
+      case 'draftsList.request':
+        // M6: list saved drafts for the Open panel.
+        await handleStudioRequest(id, 'draftsList.response', () =>
+          api.studio.draftsList())
+        break
+      case 'draftLoad.request':
+        // M6: load one saved draft by id.
+        await handleStudioRequest(id, 'draftLoad.response', () =>
+          api.studio.draftLoad(msg.id))
+        break
+      case 'draftDelete.request':
+        // M6: delete one saved draft by id.
+        await handleStudioRequest(id, 'draftDelete.response', () =>
+          api.studio.draftDelete(msg.id))
+        break
+      case 'refine.request':
+        // M6: per-node natural-language refine -> a new workflow.
+        await handleStudioRequest(id, 'refine.response', () =>
+          api.studio.refine({
+            workflow: msg.workflow,
+            nodeId: msg.nodeId,
+            instruction: msg.instruction,
+          }))
         break
       default:
         // Unknown/unsupported type: ignore (never forward arbitrary requests).

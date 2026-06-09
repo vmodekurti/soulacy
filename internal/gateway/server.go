@@ -662,6 +662,15 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/save", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSave)
 	// Studio plugin backend (M3): canvas-time graph validation (read-only).
 	api.Post("/studio/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidate)
+	// Studio plugin backend (M6): starter templates (read-only).
+	api.Get("/studio/templates", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioTemplates)
+	// Studio plugin backend (M6): user draft library (save/list/load/delete).
+	api.Post("/studio/drafts", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSaveDraft)
+	api.Get("/studio/drafts", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioListDrafts)
+	api.Get("/studio/drafts/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioLoadDraft)
+	api.Delete("/studio/drafts/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionDelete), s.handleStudioDeleteDraft)
+	// Studio plugin backend (M6): per-node re-describe.
+	api.Post("/studio/refine", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioRefine)
 
 	// E4: Capability Gap Detection
 	if s.builderRegistry != nil {
