@@ -58,7 +58,7 @@ func canonicalDraft(t *testing.T) Draft {
 
 func TestTestRun_CanonicalDraft_EndToEnd(t *testing.T) {
 	draft := canonicalDraft(t)
-	res, err := TestRun(context.Background(), draft, "go")
+	res, err := TestRun(context.Background(), draft, "go", nil)
 	if err != nil {
 		t.Fatalf("TestRun returned error: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestTestRun_InvalidFlow_Error(t *testing.T) {
 			Entry: "ghost", // entry node does not exist
 		},
 	}
-	if _, err := TestRun(context.Background(), bad, "x"); err == nil {
+	if _, err := TestRun(context.Background(), bad, "x", nil); err == nil {
 		t.Errorf("expected an error for an invalid flow")
 	}
 }

@@ -17,7 +17,11 @@
  * Whitelisted ops:
  *   catalog  -> { agents, tools, providers, channels }       (Wave 1 + M2)
  *   compile  payload { intent, answers? } -> { workflow, questions, notes }
- *   test     payload { workflow, input }  -> { trace, result }
+ *   test     payload { workflow, input, mocks?:{<nodeId>:<output>},
+ *                      assertions?:[{target,op,value}], mode?:"dry" }
+ *              -> { trace:[{nodeId,kind,input,output,mocked?}], result,
+ *                   assertions:[{target,op,value,pass,detail}], passed,
+ *                   mode, warnings? }                                 (M5)
  *   plan     payload { workflow }         -> { tier, reasons[], requiresConsent,
  *                                              consentItems[{kind,name,reason}] }   (M2)
  *   validate payload { workflow }         -> { ok, errors[{nodeId?,edgeIndex?,message}],
@@ -108,7 +112,16 @@ export function bridgeRequest(op, payload = {}, timeoutMs = HOST_TIMEOUT_MS) {
 export const bridge = {
   catalog: () => bridgeRequest('catalog'),
   compile: (intent, answers) => bridgeRequest('compile', { intent, answers }),
-  test: (workflow, input) => bridgeRequest('test', { workflow, input }),
+  // M5: a test bench. `opts` may carry { mocks, assertions, mode }; only
+  // present fields are sent so the backend defaults the rest.
+  test: (workflow, input, opts = {}) =>
+    bridgeRequest('test', {
+      workflow,
+      input,
+      ...(opts.mocks ? { mocks: opts.mocks } : {}),
+      ...(opts.assertions ? { assertions: opts.assertions } : {}),
+      ...(opts.mode ? { mode: opts.mode } : {}),
+    }),
   plan: (workflow) => bridgeRequest('plan', { workflow }),
   validate: (workflow) => bridgeRequest('validate', { workflow }),
   save: (workflow, acceptPrivilegedExposure) =>

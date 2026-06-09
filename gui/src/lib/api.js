@@ -205,11 +205,25 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ intent, catalog, answers }),
       }),
-    /** Dry-run a workflow against a sample input; returns a per-node trace. */
-    test: ({ workflow, input } = {}) =>
+    /**
+     * Exercise a workflow against a sample input as a test bench (M5).
+     * Optional `mocks` ({<nodeId>:<output>}) override individual node outputs,
+     * `assertions` ([{target,op,value}]) are evaluated against the trace/result,
+     * and `mode` ("dry"|"live") selects the run mode (live is gated server-side).
+     * @returns {Promise<{trace:{nodeId,kind,input,output,mocked?}[], result,
+     *                     assertions:{target,op,value,pass,detail}[], passed,
+     *                     mode, warnings?}>}
+     */
+    test: ({ workflow, input, mocks, assertions, mode } = {}) =>
       apiFetch('/studio/test', {
         method: 'POST',
-        body: JSON.stringify({ workflow, input }),
+        body: JSON.stringify({
+          workflow,
+          input,
+          ...(mocks ? { mocks } : {}),
+          ...(assertions ? { assertions } : {}),
+          ...(mode ? { mode } : {}),
+        }),
       }),
     /**
      * Classify the workflow's capability tier and decide whether saving it

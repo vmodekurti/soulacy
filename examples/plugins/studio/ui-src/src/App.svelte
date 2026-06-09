@@ -307,24 +307,194 @@
     selectedEdge = { index: idx, edge: workflow.flow.edges[idx] }
   }
 
-  // ── Test ──────────────────────────────────────────────────────────────────
+  // ── Test bench (M5) ─────────────────────────────────────────────────────
+  // A real test bench: sample input + mode (dry/live), per-node output MOCKS,
+  // ASSERTIONS, a per-node trace with mocked badges, assertion pass/fail, an
+  // overall banner, and an IN-MEMORY run history with replay. The iframe is
+  // sandboxed without same-origin (no localStorage), so EVERY bit of this state
+  // lives in component memory only and is lost on reload — surfaced to the user.
   let testing = false
   let testError = ''
-  let testResult = null       // { trace:[{nodeId,kind,input,output}], result }
+  let testResult = null       // { trace, result, assertions, passed, mode, warnings }
   let sampleInput = 'hello'
+  let testMode = 'dry'        // 'dry' (default) | 'live' (rendered DISABLED)
+
+  // Per-node mock editor state, keyed by node id: { text } (raw JSON the user
+  // typed). Parsed lazily at run time; parse errors surface per-node via
+  // mockErrors and the invalid mock is NOT sent.
+  let mockText = {}           // { [nodeId]: string }
+  let mockErrors = {}         // { [nodeId]: string }
+  let showMocks = false       // collapsed by default to keep the panel tidy
+
+  // Assertions editor: rows of { target, op, value }. target is a node id or
+  // the literal "result"; op ∈ contains|equals|exists.
+  let assertions = []         // [{ target, op, value }]
+
+  // In-memory run history (last ~10). Each entry keeps the full request +
+  // response so it can be re-viewed or replayed exactly. Session-only.
+  const HISTORY_MAX = 10
+  let history = []            // [{ ts, inputSummary, passed, assertionCount, request, response }]
+  let activeHistoryId = null  // ts of the entry currently shown (null = latest live run)
+
+  // Draft nodes available as mock / assertion targets. Derived from the
+  // in-memory workflow so edits keep them in sync.
+  $: draftNodes = (workflow && workflow.flow && Array.isArray(workflow.flow.nodes))
+    ? workflow.flow.nodes
+    : []
+  // Targets for an assertion dropdown: every node id plus the literal "result".
+  $: assertionTargets = [...draftNodes.map((n) => n.id), 'result']
+
+  // ── Mocks ─────────────────────────────────────────────────────────────────
+  function setMockText(nodeId, value) {
+    mockText = { ...mockText, [nodeId]: value }
+    // Re-validate this one as the user types; clear stale errors when emptied.
+    const trimmed = (value || '').trim()
+    if (!trimmed) {
+      const { [nodeId]: _drop, ...rest } = mockErrors
+      mockErrors = rest
+      return
+    }
+    try {
+      JSON.parse(trimmed)
+      const { [nodeId]: _drop, ...rest } = mockErrors
+      mockErrors = rest
+    } catch (e) {
+      mockErrors = { ...mockErrors, [nodeId]: 'Invalid JSON: ' + (e.message || 'parse error') }
+    }
+  }
+
+  // Collect non-empty, VALID mocks into { <nodeId>: <parsedOutput> }. Invalid
+  // JSON is skipped (and flagged) so we never send a malformed override.
+  function collectMocks() {
+    const out = {}
+    for (const n of draftNodes) {
+      const raw = (mockText[n.id] || '').trim()
+      if (!raw) continue
+      try {
+        out[n.id] = JSON.parse(raw)
+      } catch (_) { /* skipped — flagged in mockErrors */ }
+    }
+    return out
+  }
+
+  function hasMockErrors() {
+    return Object.keys(mockErrors).length > 0
+  }
+
+  // ── Assertions ──────────────────────────────────────────────────────────
+  function addAssertion() {
+    const target = assertionTargets[assertionTargets.length - 1] || 'result'
+    assertions = [...assertions, { target, op: 'contains', value: '' }]
+  }
+
+  function removeAssertion(i) {
+    assertions = assertions.filter((_, idx) => idx !== i)
+  }
+
+  function updateAssertion(i, patch) {
+    assertions = assertions.map((a, idx) => (idx === i ? { ...a, ...patch } : a))
+  }
+
+  // Build the assertion payload — drop empty rows; "exists" needs no value.
+  function collectAssertions() {
+    return assertions
+      .filter((a) => a && a.target && a.op)
+      .map((a) => ({
+        target: a.target,
+        op: a.op,
+        value: a.op === 'exists' ? undefined : a.value,
+      }))
+  }
+
+  // ── Run ───────────────────────────────────────────────────────────────────
+  function inputSummary(input) {
+    const s = (input == null ? '' : String(input))
+    return s.length > 48 ? s.slice(0, 48) + '…' : s
+  }
+
+  function pushHistory(request, response) {
+    const ts = Date.now()
+    const entry = {
+      ts,
+      inputSummary: inputSummary(request.input),
+      passed: response && response.passed === true,
+      assertionCount: (request.assertions && request.assertions.length) || 0,
+      request,
+      response,
+    }
+    history = [entry, ...history].slice(0, HISTORY_MAX)
+    activeHistoryId = ts
+    return entry
+  }
 
   async function runTest() {
     if (!workflow || testing) return
     testing = true
     testError = ''
     testResult = null
+    if (hasMockErrors()) {
+      // Don't send invalid JSON — collectMocks already skips them, but warn so
+      // the user knows a mock was ignored rather than silently dropped.
+      testError = 'Some mocks have invalid JSON and were skipped. Fix them or clear the field.'
+    }
+    // Snapshot the exact request so history/replay re-send it verbatim.
+    const mocks = collectMocks()
+    const asserts = collectAssertions()
+    const request = {
+      workflow,
+      input: sampleInput,
+      mode: testMode,
+      ...(Object.keys(mocks).length ? { mocks } : {}),
+      ...(asserts.length ? { assertions: asserts } : {}),
+    }
     try {
-      testResult = await bridge.test(workflow, sampleInput)
+      const res = await bridge.test(request.workflow, request.input, {
+        mocks: request.mocks,
+        assertions: request.assertions,
+        mode: request.mode,
+      })
+      testResult = res || null
+      pushHistory(request, testResult)
     } catch (e) {
       testError = e.message || 'test failed'
     } finally {
       testing = false
     }
+  }
+
+  // Re-send a history entry's EXACT request (workflow snapshot + input + mocks
+  // + assertions + mode) and prepend the fresh result. Non-blocking on error.
+  async function replayHistory(entry) {
+    if (!entry || !entry.request || testing) return
+    testing = true
+    testError = ''
+    const request = entry.request
+    try {
+      const res = await bridge.test(request.workflow, request.input, {
+        mocks: request.mocks,
+        assertions: request.assertions,
+        mode: request.mode,
+      })
+      testResult = res || null
+      pushHistory(request, testResult)
+    } catch (e) {
+      testError = e.message || 'replay failed'
+    } finally {
+      testing = false
+    }
+  }
+
+  // View a stored run again without re-sending it.
+  function viewHistory(entry) {
+    if (!entry) return
+    testResult = entry.response
+    testError = ''
+    activeHistoryId = entry.ts
+  }
+
+  function clearHistory() {
+    history = []
+    activeHistoryId = null
   }
 
   // ── Plan + Save (M2) ──────────────────────────────────────────────────────
@@ -598,6 +768,22 @@
             placeholder="sample input"
             aria-label="Sample test input"
           />
+          <!-- Mode toggle: Dry run (default) + Live (disabled for unsaved draft) -->
+          <div class="mode-toggle" role="group" aria-label="Run mode">
+            <button
+              class="mode-btn"
+              class:active={testMode === 'dry'}
+              on:click={() => (testMode = 'dry')}
+              type="button"
+            >Dry run</button>
+            <button
+              class="mode-btn"
+              disabled
+              title="Live runs aren’t available for an unsaved draft — save & enable the agent and exercise it via its channel."
+              aria-label="Live runs aren’t available for an unsaved draft — save & enable the agent and exercise it via its channel."
+              type="button"
+            >Live</button>
+          </div>
           <button class="btn" on:click={runTest} disabled={testing}>
             {testing ? 'Testing…' : 'Test'}
           </button>
@@ -616,6 +802,99 @@
 
         {#if saveMsg}<div class="strip strip-ok">✓ {saveMsg}</div>{/if}
         {#if saveError}<div class="strip strip-error">⚠ {saveError}</div>{/if}
+
+        <!-- ── Test bench editors: Mocks + Assertions (M5) ──────────────── -->
+        <div class="panel bench">
+          <!-- Mocks (S5.3): per-node output overrides -->
+          <div class="bench-section">
+            <button class="bench-head" type="button" on:click={() => (showMocks = !showMocks)}>
+              <span class="caret">{showMocks ? '▾' : '▸'}</span>
+              <h3 class="panel-title">Mocks</h3>
+              <span class="bench-sub">Override a node’s output with JSON to test downstream logic.</span>
+            </button>
+            {#if showMocks}
+              {#if draftNodes.length}
+                <ul class="mock-list">
+                  {#each draftNodes as n (n.id)}
+                    <li class="mock-item">
+                      <div class="mock-head">
+                        <span class="mock-id">{n.id}</span>
+                        {#if n.kind}<span class="step-kind">{n.kind}</span>{/if}
+                        {#if n.tool || n.agent}<span class="mock-sub">{n.tool || n.agent}</span>{/if}
+                      </div>
+                      <textarea
+                        class="mock-input"
+                        class:invalid={mockErrors[n.id]}
+                        rows="2"
+                        placeholder={'JSON output to mock for ' + n.id + ' (leave empty to run for real)'}
+                        value={mockText[n.id] || ''}
+                        on:input={(e) => setMockText(n.id, e.target.value)}
+                        aria-label={'Mock output for ' + n.id}
+                      ></textarea>
+                      {#if mockErrors[n.id]}
+                        <div class="mock-err">⚠ {mockErrors[n.id]}</div>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="muted">No nodes to mock yet.</p>
+              {/if}
+            {/if}
+          </div>
+
+          <!-- Assertions (S5.2) -->
+          <div class="bench-section">
+            <div class="bench-head static">
+              <h3 class="panel-title">Assertions</h3>
+              <span class="bench-sub">Check a node’s output or the final result after a run.</span>
+              <button class="btn btn-sm" type="button" on:click={addAssertion}>+ Add</button>
+            </div>
+            {#if assertions.length}
+              <ul class="assert-list">
+                {#each assertions as a, i}
+                  <li class="assert-row">
+                    <select
+                      class="assert-target"
+                      value={a.target}
+                      on:change={(e) => updateAssertion(i, { target: e.target.value })}
+                      aria-label="Assertion target"
+                    >
+                      {#each assertionTargets as t}
+                        <option value={t}>{t}</option>
+                      {/each}
+                    </select>
+                    <select
+                      class="assert-op"
+                      value={a.op}
+                      on:change={(e) => updateAssertion(i, { op: e.target.value })}
+                      aria-label="Assertion operator"
+                    >
+                      <option value="contains">contains</option>
+                      <option value="equals">equals</option>
+                      <option value="exists">exists</option>
+                    </select>
+                    {#if a.op !== 'exists'}
+                      <input
+                        class="assert-value"
+                        type="text"
+                        value={a.value}
+                        on:input={(e) => updateAssertion(i, { value: e.target.value })}
+                        placeholder="expected value"
+                        aria-label="Assertion value"
+                      />
+                    {:else}
+                      <span class="assert-value muted">(no value)</span>
+                    {/if}
+                    <button class="btn btn-sm" type="button" on:click={() => removeAssertion(i)} aria-label="Remove assertion">✕</button>
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="muted">No assertions — add one to verify outputs.</p>
+            {/if}
+          </div>
+        </div>
 
         <!-- Clarify panel -->
         {#if questions.length}
@@ -648,6 +927,24 @@
         {/if}
         {#if testResult}
           <div class="panel test">
+            <!-- Overall pass/fail banner (only when assertions ran) -->
+            {#if testResult.assertions && testResult.assertions.length}
+              <div class="overall {testResult.passed ? 'overall-pass' : 'overall-fail'}">
+                <span class="overall-badge">{testResult.passed ? '✓ PASSED' : '✕ FAILED'}</span>
+                <span class="overall-sub">
+                  {testResult.assertions.filter((a) => a.pass).length}/{testResult.assertions.length} assertions passed
+                </span>
+                {#if testResult.mode}<span class="mode-chip">{testResult.mode}</span>{/if}
+              </div>
+            {/if}
+
+            <!-- Backend warnings (e.g. a live run on an unsaved draft) -->
+            {#if testResult.warnings && testResult.warnings.length}
+              {#each testResult.warnings as w}
+                <div class="strip strip-warn bench-warn">⚠ {typeof w === 'string' ? w : (w.message || fmt(w))}</div>
+              {/each}
+            {/if}
+
             <h3 class="panel-title">Test trace</h3>
             {#if testResult.trace && testResult.trace.length}
               <ol class="trace">
@@ -658,6 +955,7 @@
                       <div class="step-head">
                         <strong>{step.nodeId}</strong>
                         {#if step.kind}<span class="step-kind">{step.kind}</span>{/if}
+                        {#if step.mocked}<span class="mock-badge" title="Output was mocked, node was not run">mocked</span>{/if}
                       </div>
                       <div class="step-io">
                         <span class="io-label">in</span><pre>{fmt(step.input)}</pre>
@@ -674,6 +972,54 @@
               <span class="io-label">result</span>
               <pre>{fmt(testResult.result)}</pre>
             </div>
+
+            <!-- Assertion results (S5.2) -->
+            {#if testResult.assertions && testResult.assertions.length}
+              <div class="assert-results">
+                <h3 class="panel-title">Assertions</h3>
+                <ul class="ar-list">
+                  {#each testResult.assertions as a}
+                    <li class="ar-row {a.pass ? 'ar-pass' : 'ar-fail'}">
+                      <span class="ar-badge">{a.pass ? '✓' : '✕'}</span>
+                      <span class="ar-expr">
+                        <code>{a.target}</code> <em>{a.op}</em>
+                        {#if a.op !== 'exists'}<code>{fmt(a.value)}</code>{/if}
+                      </span>
+                      {#if a.detail}<span class="ar-detail">{a.detail}</span>{/if}
+                    </li>
+                  {/each}
+                </ul>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- ── Run history (S5.4): last ~10 runs, IN MEMORY only ──────────── -->
+        {#if history.length}
+          <div class="panel history">
+            <div class="hist-head">
+              <h3 class="panel-title">Run history</h3>
+              <span class="hist-note">Session-only — cleared on reload (no storage in the sandbox).</span>
+              <button class="btn btn-sm" type="button" on:click={clearHistory}>Clear</button>
+            </div>
+            <ul class="hist-list">
+              {#each history as h (h.ts)}
+                <li class="hist-item" class:active={activeHistoryId === h.ts}>
+                  <button class="hist-main" type="button" on:click={() => viewHistory(h)} title="View this run again">
+                    <span class="hist-badge {h.passed ? 'hist-pass' : (h.assertionCount ? 'hist-fail' : 'hist-neutral')}">
+                      {h.assertionCount ? (h.passed ? 'pass' : 'fail') : 'run'}
+                    </span>
+                    <span class="hist-time">{new Date(h.ts).toLocaleTimeString()}</span>
+                    <span class="hist-input">“{h.inputSummary}”</span>
+                    {#if h.assertionCount}<span class="hist-meta">{h.assertionCount} assertion{h.assertionCount === 1 ? '' : 's'}</span>{/if}
+                    {#if h.request.mocks}<span class="hist-meta">mocked</span>{/if}
+                  </button>
+                  <button class="btn btn-sm" type="button" on:click={() => replayHistory(h)} disabled={testing} title="Re-send this exact request">
+                    Replay
+                  </button>
+                </li>
+              {/each}
+            </ul>
           </div>
         {/if}
       {/if}
@@ -1033,6 +1379,209 @@
   }
   .result { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; }
   .muted { color: var(--text-muted); font-size: 12px; }
+
+  /* ── Mode toggle (dry / live) ─────────────────────────────────────────── */
+  .mode-toggle {
+    flex: 0 0 auto;
+    display: inline-flex;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .mode-btn {
+    padding: 8px 12px;
+    background: var(--bg-elev-2);
+    border: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .mode-btn + .mode-btn { border-left: 1px solid var(--border); }
+  .mode-btn.active { background: var(--accent); color: #fff; }
+  .mode-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+  /* ── Test bench editors (mocks + assertions) ──────────────────────────── */
+  .bench { display: flex; flex-direction: column; gap: 14px; }
+  .bench-section { display: flex; flex-direction: column; gap: 8px; }
+  .bench-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+  }
+  .bench-head.static { cursor: default; }
+  .bench-head .panel-title { margin: 0; }
+  .caret { color: var(--accent); font-size: 11px; }
+  .bench-sub { font-size: 11px; color: var(--text-muted); flex: 1 1 auto; }
+
+  .mock-list, .assert-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .mock-item {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 8px;
+  }
+  .mock-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .mock-id { font-size: 12px; font-weight: 600; font-family: ui-monospace, monospace; color: var(--text); }
+  .mock-sub { font-size: 11px; color: var(--text-muted); }
+  .mock-input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 6px 8px;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+    resize: vertical;
+    outline: none;
+  }
+  .mock-input:focus { border-color: var(--accent); }
+  .mock-input.invalid { border-color: var(--error, #ff6b81); }
+  .mock-err { margin-top: 4px; font-size: 11px; color: var(--error, #ff6b81); }
+
+  .assert-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .assert-target, .assert-op, .assert-value {
+    padding: 6px 8px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+  }
+  .assert-target { flex: 1 1 120px; min-width: 100px; }
+  .assert-op { flex: 0 0 auto; }
+  .assert-value { flex: 2 1 140px; min-width: 100px; }
+  .assert-value.muted { border-style: dashed; align-self: center; }
+  .assert-target:focus, .assert-op:focus, .assert-value:focus { border-color: var(--accent); }
+
+  /* Mocked trace badge */
+  .mock-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 0 6px;
+    color: var(--warn, #f5a742);
+    border: 1px solid var(--warn, #f5a742);
+    background: rgba(245, 167, 66, 0.12);
+  }
+
+  /* Overall pass/fail banner */
+  .overall {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-radius: 8px;
+    padding: 8px 12px;
+    margin-bottom: 12px;
+  }
+  .overall-pass { background: rgba(54, 211, 153, 0.12); border: 1px solid var(--ok, #36d399); }
+  .overall-fail { background: rgba(255, 107, 129, 0.12); border: 1px solid var(--error, #ff6b81); }
+  .overall-badge { font-weight: 700; font-size: 13px; }
+  .overall-pass .overall-badge { color: var(--ok, #36d399); }
+  .overall-fail .overall-badge { color: var(--error, #ff6b81); }
+  .overall-sub { font-size: 12px; color: var(--text-muted); }
+  .mode-chip {
+    margin-left: auto;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    color: var(--text-muted);
+  }
+  .bench-warn { border-radius: 6px; margin-bottom: 8px; border-bottom: none; }
+
+  /* Assertion results */
+  .assert-results { margin-top: 12px; }
+  .ar-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .ar-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 8px;
+  }
+  .ar-row.ar-pass { border-color: var(--ok, #36d399); }
+  .ar-row.ar-fail { border-color: var(--error, #ff6b81); }
+  .ar-badge { font-weight: 700; font-size: 13px; }
+  .ar-pass .ar-badge { color: var(--ok, #36d399); }
+  .ar-fail .ar-badge { color: var(--error, #ff6b81); }
+  .ar-expr { font-size: 12px; }
+  .ar-expr code {
+    font-family: ui-monospace, monospace;
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 5px;
+  }
+  .ar-expr em { color: var(--text-muted); font-style: normal; }
+  .ar-detail { font-size: 11px; color: var(--text-muted); flex: 1 1 100%; }
+
+  /* ── Run history ──────────────────────────────────────────────────────── */
+  .hist-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .hist-head .panel-title { margin: 0; }
+  .hist-note { font-size: 11px; color: var(--text-muted); flex: 1 1 auto; }
+  .hist-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .hist-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px 8px;
+  }
+  .hist-item.active { border-color: var(--accent); }
+  .hist-main {
+    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    background: none;
+    border: none;
+    padding: 4px 0;
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+    min-width: 0;
+  }
+  .hist-badge {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 1px 8px;
+    border: 1px solid var(--border);
+  }
+  .hist-pass { color: var(--ok, #36d399); border-color: var(--ok, #36d399); }
+  .hist-fail { color: var(--error, #ff6b81); border-color: var(--error, #ff6b81); }
+  .hist-neutral { color: var(--text-muted); }
+  .hist-time { font-size: 11px; color: var(--text-muted); font-family: ui-monospace, monospace; }
+  .hist-input { font-size: 12px; color: var(--text); }
+  .hist-meta { font-size: 10px; color: var(--text-muted); }
 
   /* Tier chip (subtle, readonly/active/privileged) near Save */
   .tier-chip {

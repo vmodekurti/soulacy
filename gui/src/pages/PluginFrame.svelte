@@ -61,9 +61,13 @@
   //   'compile.request' -> 'compile.response'  (M1 Wave 2)
   //       req  { intent, answers? }
   //       data = POST /studio/compile body { workflow, questions, notes }
-  //   'test.request'    -> 'test.response'      (M1 Wave 2)
-  //       req  { workflow, input }
-  //       data = POST /studio/test body { trace, result }
+  //   'test.request'    -> 'test.response'      (M1 Wave 2 + M5)
+  //       req  { workflow, input, mocks?:{<nodeId>:<output>},
+  //              assertions?:[{target,op,value}], mode?:"dry" }
+  //       data = POST /studio/test body
+  //              { trace:[{nodeId,kind,input,output,mocked?}], result,
+  //                assertions:[{target,op,value,pass,detail}], passed,
+  //                mode, warnings? }
   //   'plan.request'    -> 'plan.response'      (M2)
   //       req  { workflow }
   //       data = POST /studio/plan body
@@ -126,8 +130,17 @@
           api.studio.compile({ intent: msg.intent, answers: msg.answers }))
         break
       case 'test.request':
+        // M5: the test bench passes richer input — optional per-node `mocks`,
+        // `assertions`, and a `mode` ("dry"/"live"). We forward them verbatim;
+        // unset fields are simply omitted and the backend defaults them.
         await handleStudioRequest(id, 'test.response', () =>
-          api.studio.test({ workflow: msg.workflow, input: msg.input }))
+          api.studio.test({
+            workflow: msg.workflow,
+            input: msg.input,
+            mocks: msg.mocks,
+            assertions: msg.assertions,
+            mode: msg.mode,
+          }))
         break
       case 'plan.request':
         await handleStudioRequest(id, 'plan.response', () =>

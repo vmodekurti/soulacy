@@ -14,6 +14,7 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -80,22 +81,39 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	return c.JSON(res)
 }
 
-// studioTestRequest is the POST /api/v1/studio/test body.
+// studioTestRequest is the POST /api/v1/studio/test body. Mocks, Assertions,
+// and Mode are optional (M5, Stories S5.2/S5.3): existing {workflow,input}
+// callers keep working unchanged.
+//
+//	{ workflow, input,
+//	  mocks?:      {<nodeId>: <output>},
+//	  assertions?: [{target, op, value}],
+//	  mode?:       "dry" }
 type studioTestRequest struct {
-	Workflow studio.Draft `json:"workflow"`
-	Input    string       `json:"input"`
+	Workflow   studio.Draft               `json:"workflow"`
+	Input      string                     `json:"input"`
+	Mocks      map[string]json.RawMessage `json:"mocks,omitempty"`
+	Assertions []studio.Assertion         `json:"assertions,omitempty"`
+	Mode       string                     `json:"mode,omitempty"`
 }
 
 // handleStudioTest implements POST /api/v1/studio/test. It dry-runs the
 // draft workflow through studio.TestRun (a mock node runner — no real
-// tools/agents/LLM) and returns the per-node trace plus the final result.
+// tools/agents/LLM) and returns the per-node trace, the final result, the
+// evaluated assertions, an aggregate passed flag, the echoed mode, and any
+// warnings. Per-node mock overrides and assertions are optional.
 func (s *Server) handleStudioTest(c *fiber.Ctx) error {
 	var req studioTestRequest
 	if err := c.BodyParser(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
 	}
 
-	res, err := studio.TestRun(c.Context(), req.Workflow, req.Input)
+	opts := &studio.TestOptions{
+		Mocks:      req.Mocks,
+		Assertions: req.Assertions,
+		Mode:       req.Mode,
+	}
+	res, err := studio.TestRun(c.Context(), req.Workflow, req.Input, opts)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 	}
