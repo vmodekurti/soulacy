@@ -64,10 +64,13 @@ fi
 
 # ── 2. Build ────────────────────────────────────────────────────────────────
 hdr "Step 2: Build"
-command -v go >/dev/null 2>&1 || err "Go 1.22+ is required to build from source. Install from https://go.dev/dl/"
-GO_VERSION="$(go version | awk '{print $3}' | sed 's/go//')"
-echo "  Go: $GO_VERSION"
-( cd "$SRC_DIR" && make build ) || err "build failed — see output above"
+command -v go  >/dev/null 2>&1 || err "Go 1.22+ is required. Install from https://go.dev/dl/"
+command -v npm >/dev/null 2>&1 || err "npm is required to build the embedded GUI. Install Node.js from https://nodejs.org"
+echo "  Go:  $(go version | awk '{print $3}' | sed 's/go//')"
+echo "  npm: $(npm --version)"
+# `make all` = gui (Svelte build → internal/webui/dist/) + build (Go binaries).
+# We need `gui` first because cmd/soulacy embeds dist/ via //go:embed all:dist.
+( cd "$SRC_DIR" && make all ) || err "build failed -- see output above"
 [ -x "$SRC_DIR/bin/soulacy" ] || err "expected $SRC_DIR/bin/soulacy after build"
 [ -x "$SRC_DIR/bin/sy" ]      || err "expected $SRC_DIR/bin/sy after build"
 ok "Built bin/soulacy + bin/sy"
@@ -126,11 +129,50 @@ if [ "${SOULACY_NO_AUTOSTART:-0}" != "1" ] && [ "$(uname -s)" = "Darwin" ] && [ 
     fi
 fi
 
-# ── Summary ─────────────────────────────────────────────────────────────────
-printf "\n${BOLD}  Done.${NC}\n  ────────────────────────────────────────\n"
-printf "  Next step:    %s serve\n" "$BIN_DIR/soulacy"
-printf "                (or just \`soulacy serve\` once %s is on PATH)\n" "$BIN_DIR"
+# ── Summary + guided next steps ─────────────────────────────────────────────
+ON_PATH=0
+echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR" && ON_PATH=1
+
 printf "\n"
-printf "  First launch prints a one-time banner with the URL + API key.\n"
-printf "  After that, open    http://127.0.0.1:18789\n"
-printf "  CLI commands:       sy --help   /   sy doctor   /   sy agent ls\n\n"
+printf "${GREEN}╔════════════════════════════════════════════════════════════════╗${NC}\n"
+printf "${GREEN}║${NC}  ${BOLD}Soulacy installed.${NC}                                              ${GREEN}║${NC}\n"
+printf "${GREEN}║${NC}  soulacy → %-52s ${GREEN}║${NC}\n" "$BIN_DIR/soulacy"
+printf "${GREEN}║${NC}  sy      → %-52s ${GREEN}║${NC}\n" "$BIN_DIR/sy"
+printf "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}\n\n"
+
+printf "${BOLD}Next steps${NC}\n"
+printf "──────────\n"
+STEP=1
+if [ "$ON_PATH" -eq 0 ]; then
+    printf "  ${BOLD}%d.${NC} Add the install dir to PATH for this shell:\n" "$STEP"
+    printf "       ${YELLOW}export PATH=\"%s:\$PATH\"${NC}\n" "$BIN_DIR"
+    printf "     And for future shells, append the same line to ~/.zshrc or ~/.bashrc.\n\n"
+    STEP=$((STEP+1))
+fi
+printf "  ${BOLD}%d.${NC} Start the gateway. On first run it will:\n" "$STEP"
+printf "     • Create ~/.soulacy/soulspace/ with sane defaults\n"
+printf "     • Generate an API key (printed once on stderr -- save it)\n"
+printf "     • Bind to http://127.0.0.1:18789\n"
+printf "     ${YELLOW}soulacy serve${NC}\n\n"
+STEP=$((STEP+1))
+printf "  ${BOLD}%d.${NC} Open the dashboard, paste the key from the banner:\n" "$STEP"
+printf "     ${YELLOW}http://127.0.0.1:18789${NC}\n\n"
+STEP=$((STEP+1))
+printf "  ${BOLD}%d.${NC} Try the CLI:\n" "$STEP"
+printf "     ${YELLOW}sy doctor${NC}            -- check the workspace\n"
+printf "     ${YELLOW}sy agent ls${NC}          -- list installed agents\n"
+printf "     ${YELLOW}sy --help${NC}            -- everything else\n\n"
+
+# Offer to launch right now (only when stdin is a tty -- piped curl|bash skips).
+if [ -t 0 ]; then
+    printf "──────────\n"
+    read -r -p "Launch the gateway now? [Y/n]: " LAUNCH
+    LAUNCH="${LAUNCH:-Y}"
+    if [[ "$LAUNCH" =~ ^[Yy]$ ]]; then
+        printf "\nStarting ${BOLD}soulacy serve${NC} ... (Ctrl-C to stop)\n\n"
+        export PATH="$BIN_DIR:$PATH"
+        exec "$BIN_DIR/soulacy" serve
+    fi
+else
+    printf "Run ${BOLD}soulacy serve${NC} now to start. The banner with your API key prints on first launch.\n\n"
+fi
