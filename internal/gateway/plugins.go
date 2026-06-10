@@ -73,6 +73,14 @@ func (s *Server) handlePluginUIAsset(c *fiber.Ctx) error {
 	if !ok {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "unknown plugin"})
 	}
+	// The plugin UI runs in a sandboxed iframe WITHOUT allow-same-origin, so its
+	// document origin is opaque ("null"). A `<script type="module">` is fetched
+	// with CORS; from a null origin the browser will download the file (200) but
+	// then REFUSE TO EXECUTE it unless the response is CORS-readable. These are
+	// public, static plugin assets (code, not data), so allow any origin to read
+	// them. Without this, the iframe stays stuck on "Loading plugin UI…".
+	c.Set("Access-Control-Allow-Origin", "*")
+	c.Set("Cross-Origin-Resource-Policy", "cross-origin")
 	rel := c.Params("*")
 	if decoded, err := url.PathUnescape(rel); err == nil {
 		rel = decoded
