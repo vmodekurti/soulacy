@@ -67,13 +67,10 @@ func structuredDescriptors(cfg *config.Config) []Descriptor {
 		}
 	}
 
-	// Gateway auth key.
-	out = append(out, Descriptor{
-		Name:        "server.api_key",
-		Category:    CategoryServer,
-		EnvVar:      "SOULACY_SERVER_API_KEY",
-		Description: "Gateway API key",
-	})
+	// NOTE: the gateway's own auth key (server.api_key) is deliberately NOT
+	// vault-managed. It is the bootstrap credential the CLI must read from
+	// config/env *before* the vault is reachable; migrating it into the vault
+	// would lock the CLI out. It stays in config.yaml / SOULACY_SERVER_API_KEY.
 	return out
 }
 
@@ -126,11 +123,7 @@ func (m *Manager) Overlay(ctx context.Context, cfg *config.Config) int {
 		}
 	}
 
-	// Server api_key.
-	if v, ok := m.Get(ctx, "server.api_key"); ok && v != "" {
-		cfg.Server.APIKey = v
-		n++
-	}
+	// server.api_key is intentionally NOT overlaid — see structuredDescriptors.
 	return n
 }
 
@@ -155,8 +148,7 @@ func secretValuesInConfig(cfg *config.Config) map[string]string {
 			}
 		}
 	}
-	if strings.TrimSpace(cfg.Server.APIKey) != "" {
-		vals["server.api_key"] = cfg.Server.APIKey
-	}
+	// server.api_key is intentionally excluded — it stays in config/env as the
+	// CLI/gateway bootstrap credential (see structuredDescriptors).
 	return vals
 }

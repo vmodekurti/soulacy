@@ -129,8 +129,8 @@ func TestOverlay(t *testing.T) {
 
 	cfg := sampleConfig()
 	n := m.Overlay(ctx, cfg)
-	if n != 3 {
-		t.Fatalf("overlaid %d, want 3", n)
+	if n != 2 {
+		t.Fatalf("overlaid %d, want 2 (server.api_key is not vault-managed)", n)
 	}
 	if cfg.LLM.Providers["anthropic"].APIKey != "vault-anthropic" {
 		t.Error("anthropic not overlaid")
@@ -138,8 +138,9 @@ func TestOverlay(t *testing.T) {
 	if cfg.Channels["slack"]["bot_token"] != "vault-bot" {
 		t.Error("slack bot_token not overlaid")
 	}
-	if cfg.Server.APIKey != "vault-gw" {
-		t.Error("server key not overlaid")
+	// server.api_key must NOT be overlaid — it stays the config bootstrap key.
+	if cfg.Server.APIKey != "gateway-plain" {
+		t.Errorf("server key should be untouched, got %q", cfg.Server.APIKey)
 	}
 }
 
@@ -197,18 +198,22 @@ channels:
 	if n == 0 {
 		t.Fatal("expected migrations")
 	}
-	// Values now in vault.
-	if v, ok := m.Get(ctx, "server.api_key"); !ok || v != "gateway-plain" {
-		t.Errorf("server key not in vault: %q", v)
-	}
+	// Migrated provider/channel values now in vault.
 	if v, ok := m.Get(ctx, "llm.providers.anthropic.api_key"); !ok || v != "sk-ant-plain" {
 		t.Errorf("anthropic not in vault: %q", v)
 	}
-	// File blanked but comments + structure preserved.
+	// server.api_key must NOT be migrated — it stays the bootstrap key.
+	if _, ok := m.Get(ctx, "server.api_key"); ok {
+		t.Error("server.api_key should NOT be migrated into the vault")
+	}
+	// File: migrated secrets blanked; gateway key + comments + structure kept.
 	out, _ := os.ReadFile(cfgPath)
 	s := string(out)
-	if strings.Contains(s, "gateway-plain") || strings.Contains(s, "sk-ant-plain") || strings.Contains(s, "xoxb-plain") {
-		t.Errorf("plaintext secret still in file:\n%s", s)
+	if strings.Contains(s, "sk-ant-plain") || strings.Contains(s, "xoxb-plain") {
+		t.Errorf("migrated secret still in file:\n%s", s)
+	}
+	if !strings.Contains(s, `api_key: "gateway-plain"`) {
+		t.Errorf("gateway api_key must remain in config:\n%s", s)
 	}
 	if !strings.Contains(s, "# rotate me") {
 		t.Error("comment not preserved")
@@ -216,32 +221,25 @@ channels:
 	if !strings.Contains(s, `host: "127.0.0.1"`) {
 		t.Error("non-secret value altered")
 	}
-	// In-memory cfg blanked then can be restored by Overlay.
-	if cfg.Server.APIKey != "" {
-		t.Error("in-memory server key should be blanked after migrate")
-	}
-	m.Overlay(ctx, cfg)
-	if cfg.Server.APIKey != "gateway-plain" {
-		t.Error("overlay should restore from vault")
-	}
 }
 
-func TestRedactSecretLines(t *testing.T) {
+func TestRedactSecretValues(t *testing.T) {
 	in := `  api_key: "secret123"
+  api_key: "gateway-keep"
   base_url: "http://x"  # keep
   bot_token: xoxb-abc # inline comment
   model: "llama3"
-  password: ''
 `
-	out, n := RedactSecretLines(in)
+	moved := map[string]bool{"secret123": true, "xoxb-abc": true}
+	out, n := RedactSecretValues(in, moved)
 	if n != 2 {
 		t.Fatalf("changed %d, want 2", n)
 	}
 	if strings.Contains(out, "secret123") || strings.Contains(out, "xoxb-abc") {
-		t.Errorf("secrets remain:\n%s", out)
+		t.Errorf("migrated secrets remain:\n%s", out)
 	}
-	if !strings.Contains(out, `base_url: "http://x"  # keep`) {
-		t.Error("non-secret line altered")
+	if !strings.Contains(out, `api_key: "gateway-keep"`) {
+		t.Errorf("unmigrated api_key must be kept:\n%s", out)
 	}
 	if !strings.Contains(out, "# inline comment") {
 		t.Error("inline comment dropped")

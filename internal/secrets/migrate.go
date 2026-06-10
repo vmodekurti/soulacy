@@ -25,6 +25,7 @@ func (m *Manager) Migrate(ctx context.Context, cfg *config.Config, cfgPath strin
 	}
 
 	migrated := 0
+	movedValues := map[string]bool{}
 	for name, val := range vals {
 		// Don't clobber a vault value the operator already set explicitly.
 		if _, exists := m.Get(ctx, name); exists {
@@ -33,50 +34,57 @@ func (m *Manager) Migrate(ctx context.Context, cfg *config.Config, cfgPath strin
 		if err := m.Set(ctx, name, val); err != nil {
 			return migrated, err
 		}
+		movedValues[val] = true
 		migrated++
 	}
 
-	// Blank the values in the file (preserve keys, indentation, comments).
-	if cfgPath != "" {
+	// Blank ONLY the values we actually moved to the vault (preserve keys,
+	// indentation, comments — and never touch values we didn't migrate, such
+	// as the gateway's own server.api_key).
+	if cfgPath != "" && len(movedValues) > 0 {
 		if body, err := os.ReadFile(cfgPath); err == nil {
-			if red, n := RedactSecretLines(string(body)); n > 0 {
+			if red, n := RedactSecretValues(string(body), movedValues); n > 0 {
 				_ = os.WriteFile(cfgPath, []byte(red), 0o600)
 			}
 		}
 	}
 
 	// Blank in memory; Overlay restores live values from the vault.
-	blankConfigSecrets(cfg)
+	blankConfigSecrets(cfg, movedValues)
 	return migrated, nil
 }
 
-// blankConfigSecrets clears secret string fields in the in-memory config.
-func blankConfigSecrets(cfg *config.Config) {
+// blankConfigSecrets clears the in-memory copies of the secret string fields
+// whose values were migrated into the vault. Only values in moved are cleared,
+// so unmigrated secrets (e.g. server.api_key) are left intact. Overlay then
+// restores live values from the vault.
+func blankConfigSecrets(cfg *config.Config, moved map[string]bool) {
 	if cfg == nil {
 		return
 	}
 	for id, pc := range cfg.LLM.Providers {
-		if pc.APIKey != "" {
+		if pc.APIKey != "" && moved[pc.APIKey] {
 			pc.APIKey = ""
 			cfg.LLM.Providers[id] = pc
 		}
 	}
 	for _, settings := range cfg.Channels {
 		for _, k := range channelTokenKeys {
-			if _, ok := settings[k]; ok {
-				settings[k] = ""
+			if raw, ok := settings[k]; ok {
+				if s, ok := raw.(string); ok && moved[s] {
+					settings[k] = ""
+				}
 			}
 		}
 	}
-	cfg.Server.APIKey = ""
 }
 
-// RedactSecretLines blanks the value of any YAML line whose key is a known
-// secret key (api_key, bot_token, app_token, token, signing_secret, …),
-// preserving indentation, the key, and any trailing comment. Lines that are
-// already empty or commented out are left untouched. Returns the redacted body
-// and the number of lines changed.
-func RedactSecretLines(body string) (string, int) {
+// RedactSecretValues blanks the value of any YAML line whose key is a known
+// secret key AND whose current value is one we migrated into the vault
+// (present in moved). Indentation, the key, and any trailing comment are
+// preserved; values we did not migrate (e.g. the gateway's own api_key) are
+// untouched. Returns the redacted body and the number of lines changed.
+func RedactSecretValues(body string, moved map[string]bool) (string, int) {
 	secretKeys := map[string]bool{}
 	for _, k := range channelTokenKeys {
 		secretKeys[k] = true
@@ -99,16 +107,16 @@ func RedactSecretLines(body string) (string, int) {
 		}
 		rest := line[colon+1:]
 
-		// Separate a trailing comment (only if preceded by whitespace) so we
-		// keep it. A '#' inside a quoted value is unusual for keys; keep simple.
 		comment := ""
 		if hash := strings.Index(rest, " #"); hash >= 0 {
 			comment = rest[hash:]
 			rest = rest[:hash]
 		}
 		valueTrimmed := strings.TrimSpace(rest)
-		if valueTrimmed == "" || valueTrimmed == `""` || valueTrimmed == "''" {
-			continue // already blank
+		// Strip surrounding quotes to compare against the raw migrated value.
+		unquoted := strings.Trim(valueTrimmed, `"'`)
+		if unquoted == "" || !moved[unquoted] {
+			continue
 		}
 
 		indent := line[:len(line)-len(strings.TrimLeft(line, " \t"))]
