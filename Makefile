@@ -3,7 +3,7 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui plugin-ui install clean test lint dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui plugin-ui install clean test lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 \
@@ -64,6 +64,12 @@ sdk-install-release:
 dev:
 	@which air > /dev/null 2>&1 || go install github.com/cosmtrek/air@latest
 	air -c .air.toml
+
+## Build everything and serve with the repo dev config (config.dev.yaml).
+## One-liner to see the portal incl. the Studio plugin during development.
+run-dev: all
+	@echo "→ Serving with ./config.dev.yaml — open http://127.0.0.1:18789"
+	SOULACY_CONFIG_PATH=./config.dev.yaml ./bin/soulacy serve
 
 ## Run tests
 test:

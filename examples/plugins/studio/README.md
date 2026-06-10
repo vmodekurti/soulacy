@@ -89,19 +89,15 @@ via `api.studio.*` in `gui/src/lib/api.js`.
    each configured dir **one level deep** — each immediate subdirectory holding a
    `plugin.yaml` is one plugin (`internal/plugins/loader.go`).
 
-2. **Where it's installed.** By default `plugin_dirs` resolves to
-   `<workspace>/plugins` (`~/.soulacy/soulspace/plugins`). To make Studio
-   discoverable from a repo checkout running under `config.dev.yaml`, that file
-   now lists this folder:
-
-   ```yaml
-   plugin_dirs:
-       - examples/plugins
-   ```
-
-   (paths are resolved relative to the gateway's working directory, the same way
-   `agent_dirs: examples/agents` already works in `config.dev.yaml`). For a real
-   installation, copy `examples/plugins/studio/` into `~/.soulacy/soulspace/plugins/studio/`.
+2. **Where it's installed — automatic, zero config.** Studio is embedded in the
+   gateway binary (`embed.go`) and seeded on first run: `cmd/soulacy` calls
+   `studioplugin.Seed(cfg.PluginDirs[0])`, which writes `studio/` into the default
+   `<workspace>/plugins` (`~/.soulacy/soulspace/plugins`) if it isn't already there
+   (absent-only — never clobbers a user copy). No `.soulacy-install.json` is
+   written, so it loads **unmanaged → no approval step**, and appears in the portal
+   on first run. A repo checkout running under `config.dev.yaml` also loads it
+   directly via `plugin_dirs: [examples/plugins]`. `make run-dev` builds + serves
+   with that dev config.
 
 3. **Manifest validation.** `manifest_schema: 2` triggers full v2 validation
    (`internal/plugins/manifest2.go`): the `gui.static` directory must exist and

@@ -99,9 +99,7 @@ error rows + a status banner).
 - **Plugin scaffold + UI shell (S0.1):** `examples/plugins/studio/` — v2 manifest,
   token-aware sandboxed-iframe UI (vanilla JS, no build) that renders a palette /
   canvas placeholder / intent input and fetches the catalog (currently 403,
-  handled gracefully). Loads in dev via `plugin_dirs: [examples/plugins]` in the
-  gitignored `config.dev.yaml` (same convention as `agent_dirs: examples/agents`);
-  for a real install, copy `studio/` into `~/.soulacy/soulspace/plugins/`.
+  handled gracefully).
 
 ## M1 Wave 1 status (in progress)
 
@@ -205,6 +203,25 @@ left out here.
 
 All `internal/studio` logic is unit-tested and green in-sandbox; the gateway's
 final compile remains the `make all` check on the Mac.
+
+## Shipping — zero-config, default-on
+
+Studio is **bundled in the gateway binary** and seeded automatically, so a
+non-technical user gets it with no config, no copying, no `plugin_dirs`:
+
+- `examples/plugins/studio/embed.go` embeds the manifest + built `ui/` into the
+  binary (`//go:embed plugin.yaml README.md all:ui`).
+- On startup, after `config.EnsureBootstrap` ensures the workspace,
+  `cmd/soulacy` calls `studioplugin.Seed(cfg.PluginDirs[0])`, which writes
+  `studio/` into the default plugins dir (`~/.soulacy/soulspace/plugins`) **if it
+  isn't already there** (absent-only — never clobbers a user copy). No
+  `.soulacy-install.json` is written, so the plugin loads **unmanaged → no
+  approval step**. It appears in the portal's Plugins nav on first run.
+- Because of the embed, building the binary requires `ui/` to exist — `make all`
+  runs `plugin-ui` before the Go build, exactly like the GUI's `internal/webui/dist`.
+- Dev loop: `make run-dev` builds everything and serves with `config.dev.yaml`.
+- *Known follow-up:* seeding is absent-only, so a binary upgrade won't refresh an
+  already-seeded copy — add a version-aware re-seed when prebuilt releases land.
 
 ## Vasu's open questions
 
