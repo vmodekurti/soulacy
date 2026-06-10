@@ -1,0 +1,70 @@
+# Changelog
+
+All notable changes to this project are documented here. The format is based on
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project aims
+to follow [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+Post-audit hardening (see `improvements.md`). Work in progress on the
+`post-audit-fixes` branch.
+
+### Breaking changes
+
+- **Destructive system tools default to OFF (SEC-3).** `runtime.allow_system_tools`
+  now defaults to `false`. The OS-level built-ins are split into two partitions:
+  - **SAFE** (read-only, always available on the local http channel): `read_file`,
+    `list_dir`, `find_files`, `fetch_url`, `http_request`, `env_get`, `sys_info`.
+  - **SYSTEM** (privileged): `shell_exec`, `run_script`, `install_library`,
+    `write_file`, `download_file`. These are offered ONLY when BOTH the server
+    permit (`runtime.allow_system_tools: true`) AND a per-agent
+    `capabilities: [system]` declaration are present. The legacy
+    `system_tools: true` flag is honoured as an alias for the `system`
+    capability. Agents relying on shell/file-write access must now set both the
+    server flag and the capability. The gateway logs which agents hold the
+    `system` capability at startup.
+- **Environment allowlist for tool subprocesses (SEC-5).** Spawned Python tool
+  processes no longer inherit the gateway's full environment. They receive only
+  a base allowlist (`PATH`, `HOME`, `LANG`, `TMPDIR`) plus any variable names
+  declared in a per-agent `env: [...]` list. Gateway secrets such as
+  `ANTHROPIC_API_KEY` are no longer visible to tool code unless explicitly
+  allow-listed.
+
+### Planned breaking changes
+
+- **Auth hard-fails on non-localhost binds with an empty key (SEC-4).** Binding
+  to a non-localhost address without an API key will refuse to start unless
+  `--allow-unauthenticated` is passed.
+
+### Security / Dependencies (DEP-1)
+
+- Patch-upgraded Go dependencies: `gofiber/fiber/v2` 2.52.4 → 2.52.13,
+  `gorilla/websocket` 1.5.1 → 1.5.3, plus transitive bumps (`fasthttp` stack,
+  `klauspost/compress`, `mattn/*`). Build + full test suite green.
+- `npm audit` (gui): one **moderate** advisory remains — Svelte SSR XSS, fixed
+  only in Svelte 5. **Waived**: the gateway GUI is a client-rendered SPA that
+  does not use Svelte SSR, and migrating Svelte 4 → 5 (runes rewrite) is a
+  separate, out-of-scope effort. Revisit when the GUI moves to Svelte 5.
+- `govulncheck` is wired into CI (CI-4); it could not run in the offline build
+  sandbox (vuln DB unreachable), so the authoritative scan happens in CI.
+
+### Changed
+
+- Data-path write failures (session memory, brain memory, scheduler
+  registration, agent upsert) are now logged instead of silently discarded
+  (ARCH-1).
+- `buildSystemTools` extracted from `internal/runtime/engine.go` into
+  per-domain files (`engine_tools_shell.go`, `engine_tools_http.go`,
+  `engine_tools_files.go`, `engine_tools_misc.go`) — pure mechanical move,
+  no behaviour change (ARCH-2).
+
+### Documentation
+
+- Python SDK marked experimental and no longer advertised as published to PyPI;
+  added `sdk/python/README.md` (SDK-1).
+- Added `SECURITY.md`, `CONTRIBUTING.md`, and this changelog (DOC-3).
+
+### Fixed
+
+- Python SDK license metadata corrected from MIT to Apache-2.0 to match the
+  repository license (DOC-3).

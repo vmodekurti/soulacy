@@ -76,6 +76,7 @@ func TestGatewayHealthHandler_IncludesProviderList(t *testing.T) {
 // ── preserveHiddenAgentUpdateFields: SystemTools guard ────────────────────────
 
 func TestPreserveHiddenAgentUpdateFields_SystemToolsPreserved(t *testing.T) {
+	t.Parallel() // TEST-4: pure in-memory struct logic, no shared state.
 	existing := &agent.Definition{
 		ID:          "sys-agent",
 		SystemTools: true,
@@ -91,6 +92,7 @@ func TestPreserveHiddenAgentUpdateFields_SystemToolsPreserved(t *testing.T) {
 }
 
 func TestPreserveHiddenAgentUpdateFields_SystemToolsAlreadyTrue(t *testing.T) {
+	t.Parallel() // TEST-4: pure in-memory struct logic, no shared state.
 	existing := &agent.Definition{ID: "x", SystemTools: false}
 	updates := &agent.Definition{ID: "x", SystemTools: true}
 	preserveHiddenAgentUpdateFields(updates, existing)
@@ -101,6 +103,7 @@ func TestPreserveHiddenAgentUpdateFields_SystemToolsAlreadyTrue(t *testing.T) {
 }
 
 func TestPreserveHiddenAgentUpdateFields_NilSafety(t *testing.T) {
+	t.Parallel() // TEST-4: pure in-memory struct logic, no shared state.
 	// Must not panic with nil arguments.
 	preserveHiddenAgentUpdateFields(nil, nil)
 	preserveHiddenAgentUpdateFields(&agent.Definition{}, nil)
@@ -437,6 +440,11 @@ func TestGatewayHandleCreateAgent_NoAgentDirs(t *testing.T) {
 	s, _ := newTestGatewayWithLLM(t, "secret")
 	// Wipe agent dirs so dir="" path is exercised.
 	s.cfg.AgentDirs = nil
+	// TEST-4: the create handler falls back to a RELATIVE path ("<id>/SOUL.yaml")
+	// when no agent dir is configured. Chdir into a temp dir so that write lands
+	// in (and is cleaned up with) the temp dir instead of leaving a stray
+	// internal/gateway/nodir-agent/ fixture in the package tree.
+	t.Chdir(t.TempDir())
 
 	st, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/agents", "secret",
 		`{"id":"nodir-agent","name":"NoDirAgent","trigger":"channel","channels":["http"],"llm":{"provider":"test","model":"m"},"system_prompt":"hi","enabled":true}`)

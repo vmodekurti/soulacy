@@ -1,0 +1,24 @@
+# gitleaks configuration for soulacy
+# Extends the default ruleset and allowlists known placeholder values that
+# live in documentation / example files so they don't trip the secret scanner.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Allowlist example/placeholder secrets in committed sample files"
+
+# Files that only ever contain placeholder credentials.
+paths = [
+  '''\.env\.example$''',
+  '''(^|/)README(\.md)?$''',
+]
+
+# Placeholder/example token shapes used in .env.example and docs.
+regexes = [
+  '''sk-ant-\.\.\.''',
+  '''sk-\.\.\.''',
+  '''SOULACY_API_KEY=\s*$''',
+  '''(?i)POSTGRES_PASSWORD=soulacy''',
+  '''your[-_].*[-_](key|token|secret)''',
+]

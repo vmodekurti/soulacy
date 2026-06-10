@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/soulacy/soulacy/internal/executor"
+	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/pkg/message"
 )
 
@@ -74,6 +75,9 @@ func (e *Executor) Run(ctx context.Context, pyFile, funcName, inline string, arg
 
 	cmd := exec.CommandContext(ctx, e.pythonBin, "-c", script)
 	cmd.Stdin = bytes.NewReader(argsJSON)
+	// SEC-5: scrub the environment to the base allowlist so tool code spawned
+	// via this backend cannot read gateway secrets (ANTHROPIC_API_KEY, …).
+	cmd.Env = sandbox.FilteredEnviron(nil)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {

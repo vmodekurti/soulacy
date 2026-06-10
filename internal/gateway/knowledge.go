@@ -34,7 +34,7 @@ func (s *Server) handleListKnowledge(c *fiber.Ctx) error {
 	}
 	kbs, err := svc.Store.ListKBs()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{
 		"knowledge_bases":            kbs,
@@ -49,7 +49,7 @@ func (s *Server) handleListKnowledge(c *fiber.Ctx) error {
 func (s *Server) handleCreateKnowledge(c *fiber.Ctx) error {
 	svc := s.engine.Knowledge()
 	if svc == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "knowledge store disabled (set knowledge.db_path in config.yaml)"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "knowledge store disabled (set knowledge.db_path in config.yaml)")
 	}
 	var body struct {
 		Name              string `json:"name"`
@@ -60,11 +60,11 @@ func (s *Server) handleCreateKnowledge(c *fiber.Ctx) error {
 		ChunkOverlap      int    `json:"chunk_overlap"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	body.Name = strings.TrimSpace(body.Name)
 	if body.Name == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "name is required")
 	}
 	if body.EmbeddingProvider == "" {
 		body.EmbeddingProvider = s.cfg.Knowledge.EmbeddingProvider
@@ -106,7 +106,7 @@ func (s *Server) handleCreateKnowledge(c *fiber.Ctx) error {
 		ChunkOverlap:      body.ChunkOverlap,
 	})
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	s.log.Info("knowledge: kb created", zap.String("name", kb.Name), zap.Int("dim", kb.Dim))
 	return c.Status(fiber.StatusCreated).JSON(kb)
@@ -120,7 +120,7 @@ func (s *Server) handleDeleteKnowledge(c *fiber.Ctx) error {
 	}
 	name := c.Params("kb")
 	if err := svc.Store.DeleteKB(name); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("knowledge: kb deleted", zap.String("name", name))
 	return c.SendStatus(fiber.StatusNoContent)
@@ -134,14 +134,14 @@ func (s *Server) handleListKnowledgeDocuments(c *fiber.Ctx) error {
 	}
 	kb, err := svc.Store.GetKB(c.Params("kb"))
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if kb == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "kb not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "kb not found")
 	}
 	docs, err := svc.Store.ListDocuments(kb.ID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"kb": kb, "documents": docs})
 }
@@ -179,14 +179,14 @@ func (s *Server) handleListKnowledgeDocuments(c *fiber.Ctx) error {
 func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 	svc := s.engine.Knowledge()
 	if svc == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "knowledge store disabled"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "knowledge store disabled")
 	}
 	kb, err := svc.Store.GetKB(c.Params("kb"))
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if kb == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "kb not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "kb not found")
 	}
 
 	var (
@@ -201,16 +201,16 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 	case strings.HasPrefix(ctype, "multipart/form-data"):
 		fh, ferr := c.FormFile("file")
 		if ferr != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("multipart upload missing 'file': %v", ferr)})
+			return s.errMsg(c, fiber.StatusBadRequest, fmt.Sprintf("multipart upload missing 'file': %v", ferr))
 		}
 		f, oerr := fh.Open()
 		if oerr != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": oerr.Error()})
+			return s.errMsg(c, fiber.StatusBadRequest, oerr.Error())
 		}
 		raw, rerr := io.ReadAll(f)
 		f.Close()
 		if rerr != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": rerr.Error()})
+			return s.errMsg(c, fiber.StatusBadRequest, rerr.Error())
 		}
 		data = raw
 		title = c.FormValue("title")
@@ -230,10 +230,10 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 			Content  string `json:"content"`
 		}
 		if perr := c.BodyParser(&body); perr != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": perr.Error()})
+			return s.errMsg(c, fiber.StatusBadRequest, perr.Error())
 		}
 		if body.Content == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "content is required"})
+			return s.errMsg(c, fiber.StatusBadRequest, "content is required")
 		}
 		title = body.Title
 		source = body.Source
@@ -247,11 +247,11 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 
 	text, err := knowledge.ExtractText(mimeType, data)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("extract text: %v", err)})
+		return s.errMsg(c, fiber.StatusBadRequest, fmt.Sprintf("extract text: %v", err))
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "document produced no extractable text"})
+		return s.errMsg(c, fiber.StatusBadRequest, "document produced no extractable text")
 	}
 
 	embedder := svc.Embedders.Get(kb.EmbeddingProvider)
@@ -272,7 +272,7 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 	childTexts := knowledge.ChunkText(text, kb.ChunkSize, kb.ChunkOverlap)
 
 	if len(childTexts) == 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "no chunks produced (empty document?)"})
+		return s.errMsg(c, fiber.StatusBadRequest, "no chunks produced (empty document?)")
 	}
 
 	// Embed only child chunks in batches to avoid huge payloads on big files.
@@ -340,7 +340,7 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		ByteSize: int64(len(data)),
 	}, allChunks)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("knowledge: doc ingested",
 		zap.String("kb", kb.Name),
@@ -358,13 +358,13 @@ func (s *Server) handleDeleteKnowledgeDocument(c *fiber.Ctx) error {
 	}
 	kb, err := svc.Store.GetKB(c.Params("kb"))
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if kb == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "kb not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "kb not found")
 	}
 	if err := svc.Store.DeleteDocument(kb.ID, c.Params("doc")); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
 }
@@ -373,14 +373,14 @@ func (s *Server) handleDeleteKnowledgeDocument(c *fiber.Ctx) error {
 func (s *Server) handleSearchKnowledge(c *fiber.Ctx) error {
 	svc := s.engine.Knowledge()
 	if svc == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "knowledge store disabled"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "knowledge store disabled")
 	}
 	var body struct {
 		Query string `json:"query"`
 		TopK  int    `json:"top_k"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if body.TopK <= 0 {
 		body.TopK = 5
@@ -388,23 +388,23 @@ func (s *Server) handleSearchKnowledge(c *fiber.Ctx) error {
 	kbName := c.Params("kb")
 	kb, err := svc.Store.GetKB(kbName)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if kb == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "kb not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "kb not found")
 	}
 
 	embedder := svc.Embedders.Get(kb.EmbeddingProvider)
 	if embedder == nil {
-		return c.Status(fiber.StatusFailedDependency).JSON(fiber.Map{"error": "embedder not registered"})
+		return s.errMsg(c, fiber.StatusFailedDependency, "embedder not registered")
 	}
 	vecs, err := embedder.Embed(c.Context(), kb.EmbeddingModel, []string{body.Query})
 	if err != nil || len(vecs) == 0 {
-		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("embed query: %v", err)})
+		return s.errMsg(c, fiber.StatusBadGateway, fmt.Sprintf("embed query: %v", err))
 	}
 	hits, err := svc.Store.Search(kb, vecs[0], body.TopK)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"hits": hits})
 }

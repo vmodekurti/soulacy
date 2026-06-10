@@ -104,6 +104,63 @@ sy skill install github.com/user/my-skill --yes
     always aborts the install. This is by design — review the findings
     yourself before installing anything flagged critical.
 
+## Unverified installs: `--allow-unverified`
+
+A remote package is **verified** only when it carries an ed25519 signature
+*and* the registry that served it has a `signing_key` configured, so the CLI
+can check the signature against it during fetch. Anything else cannot be
+authenticated:
+
+- an **unsigned** package,
+- a registry with **no `signing_key`**, or
+- a **raw git source** (`github.com/user/repo`).
+
+By default, such installs are **blocked**:
+
+```text
+refusing to install "my-skill": its authenticity cannot be verified
+(registry "git" has no signing_key, or the package is unsigned / a raw git
+source). An attacker who controls the source or the network could ship
+malicious code. Re-run with --allow-unverified to install anyway, or
+configure a signing_key on the registry to enforce verification
+```
+
+To accept the risk and install anyway, pass `--allow-unverified`:
+
+```bash
+sy skill install github.com/user/my-skill --allow-unverified
+```
+
+The CLI then prints a loud warning and proceeds:
+
+```text
+⚠ WARNING: installing UNVERIFIED package my-skill@HEAD — authenticity could
+not be verified (--allow-unverified).
+```
+
+`--allow-unverified` only relaxes the authenticity gate. The safety
+introspection and the danger-verdict rule (above) still apply.
+
+### Setting up signing to avoid the friction
+
+To make installs verify automatically, configure a registry with the
+publisher's ed25519 **public** key as its `signing_key` (hex-encoded) in
+`config.yaml`:
+
+```yaml
+registries:
+  - id: my-registry
+    type: http
+    base_url: https://registry.example.com
+    priority: 10
+    signing_key: "3b6a27bc..."   # hex ed25519 public key
+```
+
+With a `signing_key` set, the registry refuses unsigned or tampered packages
+during fetch, and signed packages install with no `--allow-unverified` needed.
+Publishers sign the archive's sha256 checksum with the matching private key.
+See [Package Registries](registries.md) for the full registry configuration.
+
 ## Installing from the GUI
 
 The **Skills** page in the web GUI offers:
@@ -137,6 +194,11 @@ Skills are exposed to agents as an `available_skills` catalog; agents call
 - **`package "<slug>" has no SKILL.md at its root`** — the source is not a
   skill package. Plugins install through the Plugins GUI page instead; see
   [Plugins](plugins.md).
+- **`refusing to install … its authenticity cannot be verified`** — the
+  package is unsigned, the registry has no `signing_key`, or it's a raw git
+  source. Configure a `signing_key` on the registry to verify automatically,
+  or re-run with `--allow-unverified` to accept the risk. See
+  [Unverified installs](#unverified-installs-allow-unverified).
 - **`Gateway rescan failed … the skill loads on the next gateway restart`** —
   the install succeeded; only the hot-load was skipped because the gateway
   was unreachable.

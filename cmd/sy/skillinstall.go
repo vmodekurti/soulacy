@@ -33,6 +33,12 @@ type remoteInstallOpts struct {
 	// AssumeYes skips the consent prompt — EXCEPT when the safety verdict
 	// is "danger", which always requires an interactive yes.
 	AssumeYes bool
+	// AllowUnverified opts in to installing packages whose authenticity
+	// cannot be cryptographically verified: registries with no signing_key,
+	// unsigned packages from a signing registry, or raw git sources. Without
+	// it (the default) such installs are BLOCKED with SEC-7's friction error.
+	// It never relaxes the safety introspection or danger-verdict gates.
+	AllowUnverified bool
 	// Confirm asks the operator a yes/no question. nil = always deny
 	// (non-interactive without --yes).
 	Confirm func(prompt string) bool
@@ -43,6 +49,9 @@ type remoteInstallOpts struct {
 	// Pipeline runs the E20 checks. nil = a default pipeline (static scan +
 	// bounded dry-run; LLM audit reports "skipped" — the CLI has no router).
 	Pipeline *introspect.Pipeline
+	// Log records the loud WARN emitted when an unverified install proceeds
+	// under AllowUnverified. nil = a no-op logger.
+	Log *zap.Logger
 }
 
 // registriesFromConfig builds the E19 engine from the `registries:` config
@@ -90,6 +99,35 @@ func remoteSkillInstall(ctx context.Context, eng *pkgregistry.Engine, slug strin
 		fmt.Fprintf(out, "  signature: present but UNVERIFIED — set signing_key on registry %q to enforce verification\n", pkg.Provider)
 	default:
 		fmt.Fprintf(out, "  signature: none (unsigned package)\n")
+	}
+
+	// SEC-7: install friction for cryptographically UNVERIFIABLE packages.
+	// A package is "verified" only when it carries a signature AND the
+	// resolving registry enforces signatures with a configured signing_key.
+	// Everything else — an unsigned package, a registry with no signing_key,
+	// or a raw git URL — cannot be authenticated, so we refuse to install it
+	// unless the operator explicitly opts in with --allow-unverified.
+	verified := pkg.Signature != "" && eng.VerifiesSignatures(pkg.Provider)
+	if !verified {
+		if !opts.AllowUnverified {
+			return fmt.Errorf(
+				"refusing to install %q: its authenticity cannot be verified "+
+					"(registry %q has no signing_key, or the package is unsigned / a raw git source). "+
+					"An attacker who controls the source or the network could ship malicious code. "+
+					"Re-run with --allow-unverified to install anyway, or configure a signing_key on the registry to enforce verification",
+				pkg.Slug, pkg.Provider)
+		}
+		log := opts.Log
+		if log == nil {
+			log = zap.NewNop()
+		}
+		log.Warn("SEC-7: installing UNVERIFIED skill package — authenticity could not be cryptographically verified; proceeding only because --allow-unverified was set",
+			zap.String("slug", pkg.Slug),
+			zap.String("version", pkg.Version),
+			zap.String("provider", pkg.Provider),
+			zap.Bool("signed", pkg.Signature != ""),
+		)
+		fmt.Fprintf(out, "⚠ WARNING: installing UNVERIFIED package %s@%s — authenticity could not be verified (--allow-unverified).\n", pkg.Slug, pkg.Version)
 	}
 
 	// 2. Fetch into a staging dir — checksum verification happens inside the

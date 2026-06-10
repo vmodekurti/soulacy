@@ -23,9 +23,11 @@ import (
 	"crypto/subtle"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -103,6 +105,11 @@ type Server struct {
 	toolCatalogCache []pyToolView
 	toolCatalogAt    time.Time
 
+	// healthProbeInFlight ensures at most one knowledge-store health probe
+	// runs at a time. ListKBs is not context-aware, so without this a blocked
+	// store would spawn (and leak) one goroutine per /health request (PERF-5).
+	healthProbeInFlight atomic.Bool
+
 	// costStore is the optional per-agent token-cost store (Task #32).
 	// Wired via SetCostStore after construction. When nil, the /api/v1/costs
 	// handlers return 503.
@@ -172,6 +179,20 @@ func New(
 	}
 	s.app = s.buildApp()
 	return s
+}
+
+// errJSON writes a standard error envelope `{"error": err.Error()}` with the
+// given HTTP status. It is the single helper for the gateway's error responses
+// so the JSON shape stays consistent (contract tests pin this envelope).
+func (s *Server) errJSON(c *fiber.Ctx, status int, err error) error {
+	return c.Status(status).JSON(fiber.Map{"error": err.Error()})
+}
+
+// errMsg is errJSON for a plain string message. It produces the identical
+// envelope `{"error": msg}` so callers with literal messages don't need to
+// wrap them in errors.New.
+func (s *Server) errMsg(c *fiber.Ctx, status int, msg string) error {
+	return c.Status(status).JSON(fiber.Map{"error": msg})
 }
 
 // SetAuth wires an auth.Engine into the server. Must be called before the
@@ -765,30 +786,30 @@ func (s *Server) buildApp() *fiber.App {
 	// Credential rotation (type-assert to VersionedVault at request time)
 	api.Post("/credentials/:agentID/:key/rotate", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), func(c *fiber.Ctx) error {
 		if s.credVault == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "credential vault not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "credential vault not configured")
 		}
 		vv, ok := s.credVault.(credentials.VersionedVault)
 		if !ok {
-			return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{"error": "vault does not support rotation"})
+			return s.errMsg(c, fiber.StatusNotImplemented, "vault does not support rotation")
 		}
 		ver, err := vv.Rotate(c.Context(), c.Params("agentID"), c.Params("key"))
 		if err != nil {
 			s.log.Error("credential rotate failed", zap.Error(err))
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
 		}
 		return c.JSON(fiber.Map{"agent_id": c.Params("agentID"), "key": c.Params("key"), "new_version": ver})
 	})
 	api.Get("/credentials/:agentID/:key/versions", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.credVault == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "credential vault not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "credential vault not configured")
 		}
 		vv, ok := s.credVault.(credentials.VersionedVault)
 		if !ok {
-			return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{"error": "vault does not support versioning"})
+			return s.errMsg(c, fiber.StatusNotImplemented, "vault does not support versioning")
 		}
 		versions, err := vv.ListVersions(c.Context(), c.Params("agentID"), c.Params("key"))
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
 		}
 		return c.JSON(fiber.Map{"versions": versions})
 	})
@@ -796,25 +817,25 @@ func (s *Server) buildApp() *fiber.App {
 	// --- API Key Management (admin) ---
 	api.Post("/admin/api-keys", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), func(c *fiber.Ctx) error {
 		if s.apiKeyStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "api key store not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "api key store not configured")
 		}
 		return apikeys.NewAPI(s.apiKeyStore, s.log).HandleCreate(c)
 	})
 	api.Get("/admin/api-keys", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.apiKeyStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "api key store not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "api key store not configured")
 		}
 		return apikeys.NewAPI(s.apiKeyStore, s.log).HandleList(c)
 	})
 	api.Delete("/admin/api-keys/:id", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), func(c *fiber.Ctx) error {
 		if s.apiKeyStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "api key store not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "api key store not configured")
 		}
 		return apikeys.NewAPI(s.apiKeyStore, s.log).HandleRevoke(c)
 	})
 	api.Post("/admin/api-keys/validate", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.apiKeyStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "api key store not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "api key store not configured")
 		}
 		return apikeys.NewAPI(s.apiKeyStore, s.log).HandleValidate(c)
 	})
@@ -822,12 +843,12 @@ func (s *Server) buildApp() *fiber.App {
 	// --- Dead-Letter Queue (admin) ---
 	api.Get("/admin/dlq", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.dlqStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "dlq not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "dlq not configured")
 		}
 		queue := c.Query("queue", "")
 		items, err := s.dlqStore.List(c.Context(), queue)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
 		}
 		if items == nil {
 			items = []dlq.DeadLetter{}
@@ -836,26 +857,26 @@ func (s *Server) buildApp() *fiber.App {
 	})
 	api.Get("/admin/dlq/:id", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.dlqStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "dlq not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "dlq not configured")
 		}
 		item, err := s.dlqStore.Get(c.Context(), c.Params("id"))
 		if err != nil {
 			if err == dlq.ErrNotFound {
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+				return s.errMsg(c, fiber.StatusNotFound, "not found")
 			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
 		}
 		return c.JSON(item)
 	})
 	api.Delete("/admin/dlq/:id", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), func(c *fiber.Ctx) error {
 		if s.dlqStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "dlq not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "dlq not configured")
 		}
 		if err := s.dlqStore.Delete(c.Context(), c.Params("id")); err != nil {
 			if err == dlq.ErrNotFound {
-				return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+				return s.errMsg(c, fiber.StatusNotFound, "not found")
 			}
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
 		}
 		return c.JSON(fiber.Map{"status": "deleted", "id": c.Params("id")})
 	})
@@ -863,12 +884,12 @@ func (s *Server) buildApp() *fiber.App {
 	// --- Conversation History ---
 	api.Get("/history/:session_id", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.historyStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "history store not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "history store not configured")
 		}
 		limit := c.QueryInt("limit", 100)
 		entries, err := s.historyStore.Load(c.Context(), c.Params("session_id"), limit)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
 		}
 		if entries == nil {
 			entries = []session.ConversationEntry{}
@@ -877,12 +898,12 @@ func (s *Server) buildApp() *fiber.App {
 	})
 	api.Get("/history/agent/:agent_id", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.historyStore == nil {
-			return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "history store not configured"})
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "history store not configured")
 		}
 		limit := c.QueryInt("limit", 200)
 		entries, err := s.historyStore.LoadForAgent(c.Context(), c.Params("agent_id"), limit)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
 		}
 		if entries == nil {
 			entries = []session.ConversationEntry{}
@@ -935,12 +956,12 @@ func (s *Server) handleGetCosts(c *fiber.Ctx) error {
 	}
 	since, label, err := parseCostSince(c.Query("since", ""))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	rows, err := s.costStore.SumByAgent(c.Context(), since)
 	if err != nil {
 		s.log.Error("costs: SumByAgent failed", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return s.errMsg(c, fiber.StatusInternalServerError, "internal error")
 	}
 	agentFilter := c.Query("agent_id", "")
 	if agentFilter != "" {
@@ -972,16 +993,16 @@ func (s *Server) handleGetAgentCosts(c *fiber.Ctx) error {
 	}
 	agentID := c.Params("agent_id")
 	if agentID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "agent_id is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "agent_id is required")
 	}
 	since, _, err := parseCostSince(c.Query("since", ""))
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	sessions, err := s.costStore.SumBySession(c.Context(), agentID, since)
 	if err != nil {
 		s.log.Error("costs: SumBySession failed", zap.String("agent_id", agentID), zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return s.errMsg(c, fiber.StatusInternalServerError, "internal error")
 	}
 	if sessions == nil {
 		sessions = []costs.SessionCost{}
@@ -1044,7 +1065,7 @@ func (s *Server) legacyAuthMiddleware() fiber.Handler {
 			got = c.Query("api_key")
 		}
 		if !gwSecretEqual(got, s.cfg.Server.APIKey) {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid or missing API key"})
+			return s.errMsg(c, fiber.StatusUnauthorized, "invalid or missing API key")
 		}
 		return c.Next()
 	}
@@ -1061,8 +1082,49 @@ func gwSecretEqual(got, want string) bool {
 	return subtle.ConstantTimeCompare(gh[:], wh[:]) == 1
 }
 
+// isLoopbackHost reports whether the configured bind host only exposes the
+// gateway to the local machine. An empty host means "all interfaces" in Go's
+// net package, so it is treated as NON-loopback (unsafe) here.
+func isLoopbackHost(host string) bool {
+	switch strings.ToLower(strings.Trim(host, "[]")) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	if ip := net.ParseIP(strings.Trim(host, "[]")); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
+
+// checkAuthBindSafety enforces SEC-4: refuse to start an unauthenticated
+// gateway on a non-loopback address unless the operator has explicitly opted
+// in. Returns nil when the configuration is safe (or explicitly allowed).
+func checkAuthBindSafety(cfg *config.Config, authConfigured bool) error {
+	authDisabled := cfg.Server.APIKey == "" && !authConfigured
+	if !authDisabled {
+		return nil
+	}
+	if isLoopbackHost(cfg.Server.Host) {
+		return nil // local-only + no key: allowed (dev convenience)
+	}
+	if cfg.Server.AllowUnauthenticated {
+		return nil // operator explicitly accepted the risk
+	}
+	return fmt.Errorf(
+		"refusing to start: gateway bound to non-loopback host %q with no API key — "+
+			"this exposes an unauthenticated gateway to the network. "+
+			"Set server.api_key (generate one with `openssl rand -hex 32`), bind to 127.0.0.1, "+
+			"or pass --allow-unauthenticated to override",
+		cfg.Server.Host,
+	)
+}
+
 // Listen starts the server. Blocks until ctx is cancelled or an error occurs.
 func (s *Server) Listen(ctx context.Context) error {
+	if err := checkAuthBindSafety(s.cfg, s.authEngine != nil); err != nil {
+		return err
+	}
+
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 
 	// Start TLS if configured

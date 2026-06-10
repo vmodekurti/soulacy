@@ -65,20 +65,20 @@ func (s *Server) studioLLM() studio.LLM {
 func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	var req studio.Request
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 	if req.Intent == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "intent is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "intent is required")
 	}
 
 	model := s.studioLLM()
 	if model == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "LLM router unavailable"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
 	}
 
 	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(res)
 }
@@ -107,7 +107,7 @@ type studioTestRequest struct {
 func (s *Server) handleStudioTest(c *fiber.Ctx) error {
 	var req studioTestRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 
 	opts := &studio.TestOptions{
@@ -117,7 +117,7 @@ func (s *Server) handleStudioTest(c *fiber.Ctx) error {
 	}
 	res, err := studio.TestRun(c.Context(), req.Workflow, req.Input, opts)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.JSON(res)
 }
@@ -136,7 +136,7 @@ type studioValidateRequest struct {
 func (s *Server) handleStudioValidate(c *fiber.Ctx) error {
 	var req studioValidateRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 	return c.JSON(studio.Validate(req.Workflow))
 }
@@ -154,12 +154,12 @@ type studioPlanRequest struct {
 func (s *Server) handleStudioPlan(c *fiber.Ctx) error {
 	var req studioPlanRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 
 	res, err := studio.Plan(req.Workflow)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.JSON(res)
 }
@@ -180,7 +180,7 @@ type studioSaveRequest struct {
 func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	var req studioSaveRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 
 	// Consent gate: classify the draft and refuse to persist a Privileged
@@ -188,7 +188,7 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	// lives in studio.Plan so it is identical to what /studio/plan reported.
 	plan, err := studio.Plan(req.Workflow)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if plan.RequiresConsent && !req.AcceptPrivilegedExposure {
 		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
@@ -200,7 +200,7 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 
 	def, err := studio.ToAgentDefinition(req.Workflow, req.AcceptPrivilegedExposure)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if isProtectedSystemAgent(def.ID) {
 		return protectedSystemAgentResponse(c)
@@ -218,7 +218,7 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 		dir = s.cfg.AgentDirs[0]
 	}
 	if err := s.loader.Upsert(dir, &def); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
@@ -264,18 +264,18 @@ type studioSaveDraftRequest struct {
 func (s *Server) handleStudioSaveDraft(c *fiber.Ctx) error {
 	var req studioSaveDraftRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 	if req.Name == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "name is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "name is required")
 	}
 	dir, err := s.studioDraftsDir()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	id, err := studio.SaveDraft(dir, req.Name, req.Workflow)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"id": id})
 }
@@ -285,11 +285,11 @@ func (s *Server) handleStudioSaveDraft(c *fiber.Ctx) error {
 func (s *Server) handleStudioListDrafts(c *fiber.Ctx) error {
 	dir, err := s.studioDraftsDir()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	drafts, err := studio.ListDrafts(dir)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"drafts": drafts})
 }
@@ -300,11 +300,11 @@ func (s *Server) handleStudioListDrafts(c *fiber.Ctx) error {
 func (s *Server) handleStudioLoadDraft(c *fiber.Ctx) error {
 	dir, err := s.studioDraftsDir()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	sd, err := studio.LoadDraft(dir, c.Params("id"))
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 	return c.JSON(fiber.Map{"id": sd.ID, "name": sd.Name, "workflow": sd.Workflow})
 }
@@ -314,10 +314,10 @@ func (s *Server) handleStudioLoadDraft(c *fiber.Ctx) error {
 func (s *Server) handleStudioDeleteDraft(c *fiber.Ctx) error {
 	dir, err := s.studioDraftsDir()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if err := studio.DeleteDraft(dir, c.Params("id")); err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 	return c.JSON(fiber.Map{"ok": true})
 }
@@ -340,23 +340,23 @@ type studioRefineRequest struct {
 func (s *Server) handleStudioRefine(c *fiber.Ctx) error {
 	var req studioRefineRequest
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 	if req.NodeID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "nodeId is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "nodeId is required")
 	}
 	if req.Instruction == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "instruction is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "instruction is required")
 	}
 
 	model := s.studioLLM()
 	if model == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "LLM router unavailable"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
 	}
 
 	updated, err := studio.Refine(c.Context(), model, req.Workflow, req.NodeID, req.Instruction)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.JSON(fiber.Map{"workflow": updated})
 }

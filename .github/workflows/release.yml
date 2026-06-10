@@ -7,7 +7,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}   # ghcr.io/soulacy/soulacy
+  IMAGE_NAME: ${{ github.repository }}   # ghcr.io/vmodekurti/soulacy
 
 jobs:
   # ── Build Linux binaries (inside Docker for cgo cross-compile) ───────────────
@@ -74,7 +74,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.24"
+          go-version: "1.25"
           cache: true
 
       - name: Set up Node.js (for GUI build)
@@ -170,6 +170,8 @@ jobs:
     needs: [build-linux, build-darwin, docker]
     permissions:
       contents: write
+      # Required for cosign keyless (Sigstore) signing via the OIDC token.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
@@ -178,11 +180,70 @@ jobs:
         with:
           path: artifacts/
 
+      - name: Flatten artifacts
+        run: |
+          # download-artifact restores each upload into its own subdirectory
+          # (linux-amd64/, darwin-arm64/, ...). Move all tarballs up to
+          # artifacts/ so checksums + signatures reference plain filenames.
+          cd artifacts
+          find . -mindepth 2 -name "*.tar.gz" -exec mv -t . {} +
+          ls -la
+
       - name: Generate checksums
         run: |
           cd artifacts
-          find . -name "*.tar.gz" -exec sha256sum {} \; | sort > checksums.sha256
+          find . -maxdepth 1 -name "*.tar.gz" -printf '%f\n' \
+            | sort \
+            | xargs sha256sum > checksums.sha256
           cat checksums.sha256
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign checksums and artifacts (keyless / OIDC)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cd artifacts
+          # Keyless signing — no long-lived keys. cosign obtains a short-lived
+          # certificate from Fulcio bound to this workflow's OIDC identity and
+          # records the signature in the Rekor transparency log.
+          #
+          # Sign the checksums manifest (covers every tarball transitively).
+          cosign sign-blob \
+            --output-signature checksums.sha256.sig \
+            --output-certificate checksums.sha256.pem \
+            --bundle checksums.sha256.cosign.bundle \
+            checksums.sha256
+
+          # Also sign each tarball individually so consumers can verify a
+          # single download without the manifest.
+          for f in *.tar.gz; do
+            cosign sign-blob \
+              --output-signature "${f}.sig" \
+              --output-certificate "${f}.pem" \
+              --bundle "${f}.cosign.bundle" \
+              "${f}"
+          done
+          ls -la
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: artifacts/soulacy.sbom.spdx.json
+
+      - name: Sign SBOM (keyless / OIDC)
+        env:
+          COSIGN_YES: "true"
+        run: |
+          cd artifacts
+          cosign sign-blob \
+            --output-signature soulacy.sbom.spdx.json.sig \
+            --output-certificate soulacy.sbom.spdx.json.pem \
+            --bundle soulacy.sbom.spdx.json.cosign.bundle \
+            soulacy.sbom.spdx.json
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -193,26 +254,22 @@ jobs:
 
             ### Installation
 
-            **One-line Mac install** (from source):
+            **One-line install** (macOS & Linux — downloads this release's
+            binaries, falls back to building from source):
             ```bash
-            bash scripts/mac-install.sh
-            ```
-
-            **One-line Linux install**:
-            ```bash
-            curl -sSL https://github.com/soulacy/soulacy/releases/download/${{ github.ref_name }}/linux-install.sh | sudo bash
+            curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/${{ github.ref_name }}/install.sh | bash
             ```
 
             **Docker (full stack)**:
             ```bash
-            curl -o docker-compose.yml https://raw.githubusercontent.com/soulacy/soulacy/${{ github.ref_name }}/docker-compose.yml
+            curl -o docker-compose.yml https://raw.githubusercontent.com/vmodekurti/soulacy/${{ github.ref_name }}/docker-compose.yml
             docker compose up
             ```
 
             **Docker (SQLite only)**:
             ```bash
-            docker pull ghcr.io/soulacy/soulacy:${{ github.ref_name }}
-            docker run -p 18789:18789 -v ~/.soulacy:/home/soulacy/.soulacy ghcr.io/soulacy/soulacy:${{ github.ref_name }}
+            docker pull ghcr.io/vmodekurti/soulacy:${{ github.ref_name }}
+            docker run -p 18789:18789 -v ~/.soulacy:/home/soulacy/.soulacy ghcr.io/vmodekurti/soulacy:${{ github.ref_name }}
             ```
 
             ### Downloads
@@ -223,9 +280,38 @@ jobs:
             | Linux x86_64 | `soulacy_${{ github.ref_name }}_linux_amd64.tar.gz` |
             | Linux ARM64 | `soulacy_${{ github.ref_name }}_linux_arm64.tar.gz` |
 
-            See `checksums.sha256` to verify downloads.
+            ### Verifying downloads
+
+            Verify checksums:
+            ```bash
+            sha256sum -c checksums.sha256
+            ```
+
+            Verify signatures with [cosign](https://docs.sigstore.dev/)
+            (keyless — no public key needed):
+            ```bash
+            cosign verify-blob \
+              --certificate checksums.sha256.pem \
+              --signature checksums.sha256.sig \
+              --certificate-identity-regexp 'https://github.com/vmodekurti/soulacy/.github/workflows/release.yml@.*' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+              checksums.sha256
+            ```
+
+            An SBOM (`soulacy.sbom.spdx.json`) is attached and signed the
+            same way.
           files: |
-            artifacts/**/*.tar.gz
+            artifacts/*.tar.gz
             artifacts/checksums.sha256
+            artifacts/checksums.sha256.sig
+            artifacts/checksums.sha256.pem
+            artifacts/checksums.sha256.cosign.bundle
+            artifacts/*.tar.gz.sig
+            artifacts/*.tar.gz.pem
+            artifacts/*.tar.gz.cosign.bundle
+            artifacts/soulacy.sbom.spdx.json
+            artifacts/soulacy.sbom.spdx.json.sig
+            artifacts/soulacy.sbom.spdx.json.pem
+            artifacts/soulacy.sbom.spdx.json.cosign.bundle
           generate_release_notes: true
           fail_on_unmatched_files: false

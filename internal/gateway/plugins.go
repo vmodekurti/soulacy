@@ -71,7 +71,7 @@ func (s *Server) pluginMount(id string) (PluginUIMount, bool) {
 func (s *Server) handlePluginUIAsset(c *fiber.Ctx) error {
 	mount, ok := s.pluginMount(c.Params("pid"))
 	if !ok {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "unknown plugin"})
+		return s.errMsg(c, fiber.StatusNotFound, "unknown plugin")
 	}
 	// The plugin UI runs in a sandboxed iframe WITHOUT allow-same-origin, so its
 	// document origin is opaque ("null"). A `<script type="module">` is fetched
@@ -90,14 +90,14 @@ func (s *Server) handlePluginUIAsset(c *fiber.Ctx) error {
 	rel = filepath.Clean("/" + rel)
 	full := filepath.Join(mount.StaticDir, rel)
 	if full != mount.StaticDir && !strings.HasPrefix(full, mount.StaticDir+string(filepath.Separator)) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "not found")
 	}
 	if st, err := os.Stat(full); err != nil || st.IsDir() {
 		index := filepath.Join(full, "index.html")
 		if st2, err2 := os.Stat(index); err2 == nil && !st2.IsDir() {
 			return c.SendFile(index)
 		}
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "not found")
 	}
 	return c.SendFile(full)
 }
@@ -136,7 +136,7 @@ func (s *Server) handleListPluginUIs(c *fiber.Ctx) error {
 func (s *Server) handleIssuePluginToken(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if _, ok := s.pluginMount(id); !ok {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "unknown plugin"})
+		return s.errMsg(c, fiber.StatusNotFound, "unknown plugin")
 	}
 	s.pluginMu.Lock()
 	defer s.pluginMu.Unlock()
@@ -151,7 +151,7 @@ func (s *Server) handleIssuePluginToken(c *fiber.Ctx) error {
 	}
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "token generation failed"})
+		return s.errMsg(c, fiber.StatusInternalServerError, "token generation failed")
 	}
 	tok := "splg_" + hex.EncodeToString(buf)
 	s.pluginTokens[tok] = id

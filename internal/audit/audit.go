@@ -1,7 +1,12 @@
-// Package audit provides an append-only tool-call audit log.
-// Every built-in tool execution is recorded as a JSON line in
-// ~/.soulacy/audit/<YYYY-MM-DD>/<sessionID>.jsonl so operators
-// can reconstruct exactly what the agent did and when.
+// Package audit provides an OPTIONAL append-only tool-call audit log in JSONL
+// form. When enabled, every built-in tool execution is recorded as a JSON line
+// in <audit_dir>/<YYYY-MM-DD>/<sessionID>.jsonl.
+//
+// DOC-4: this JSONL log is debug/convenience output and is DISABLED BY DEFAULT
+// (runtime.audit_dir defaults to ""). It is NOT the authoritative record. The
+// authoritative incident-reconstruction record is the SQLite action log in
+// package internal/actionlog, which is always on. Treat these JSONL files as a
+// redundant, best-effort convenience tail — see docs/security/audit.md.
 package audit
 
 import (

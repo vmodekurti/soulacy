@@ -1,25 +1,50 @@
-// Package sandbox runs untrusted subprocesses (currently: user-supplied
-// Python tools) under host-enforced resource limits.
+// Package sandbox runs subprocesses (currently: user-supplied Python tools)
+// under host-enforced *resource limits*.
+//
+// SCOPE — what this package guarantees and, just as importantly, what it does
+// NOT. It is a resource-exhaustion guard, NOT a security boundary:
+//
+//   - DOES cap CPU (RLIMIT_CPU), virtual memory (RLIMIT_AS), open file
+//     descriptors (RLIMIT_NOFILE), and single-file write size (RLIMIT_FSIZE)
+//     via setrlimit(2) before execve. This stops a buggy tool from consuming
+//     unbounded CPU/RAM, leaking FDs, or filling the disk with one open().
+//   - Does NOT provide filesystem, network, process/namespace, seccomp, or
+//     credential isolation. The wrapped tool runs as the SAME OS user with the
+//     SAME privileges and environment as the gateway process — it can read and
+//     write any path the gateway can, open arbitrary network connections, and
+//     inherits the gateway's secrets.
+//
+// Caveats that further weaken even the resource caps:
+//
+//   - RLIMIT_AS is enforced strictly on Linux but only ADVISORILY on macOS
+//     (some mmap'd allocations can exceed it before the kernel notices).
+//   - A setrlimit failure is NON-FATAL: applyLimits' error is logged to stderr
+//     and the tool runs anyway (see RunSandboxedAndExit), so a tool may run
+//     with fewer limits than configured — or none.
+//   - On non-Unix platforms (currently: Windows) the wrapper is a no-op
+//     passthrough and applies no limits at all.
+//
+// Treat every Python tool as fully-privileged host code. For real isolation
+// (untrusted tools, multi-tenant), run the whole gateway inside a container or
+// VM. See docs/security/sandbox.md for the operator-facing version of this.
 //
 // PRODUCTION_AUDIT — F1 (2026-05-27): before this package, the engine
-// fork+exec'd python -c <script> directly. A buggy tool could consume
-// unbounded CPU, RAM, or file descriptors — same OS permissions as the
-// gateway process. The sandbox closes the obvious holes via syscall-level
-// rlimits enforced inside a hidden subcommand of the soulacy binary
-// itself ("__exec-sandbox"), which sets the limits and then execve's the
-// real command. No external sandboxer required — works as a single
-// static binary on every Unix host.
+// fork+exec'd python -c <script> directly with no caps at all. The sandbox
+// closes the resource-exhaustion holes via syscall-level rlimits enforced
+// inside a hidden subcommand of the soulacy binary itself ("__exec-sandbox"),
+// which sets the limits and then execve's the real command. No external
+// sandboxer required — works as a single static binary on every Unix host.
 //
-// On non-Unix platforms (currently: Windows), the wrapper is a no-op
-// passthrough. The build does NOT depend on this package at the platform
-// level — the public API is OS-agnostic; the syscall details live in
-// wrap_unix.go / wrap_other.go under build tags.
+// The build does NOT depend on this package at the platform level — the public
+// API is OS-agnostic; the syscall details live in wrap_unix.go / wrap_other.go
+// under build tags.
 package sandbox
 
 import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Limits captures the per-subprocess resource caps. Zero values mean
@@ -47,6 +72,13 @@ type Limits struct {
 	// command unchanged so the rest of the pipeline doesn't have to
 	// branch on whether sandboxing is on.
 	Enabled bool
+
+	// EnvAllow is the per-agent allowlist of EXTRA environment variable NAMES
+	// to pass through to the wrapped command, on top of BaseEnvAllowlist
+	// (SEC-5). Encoded as repeated --env=NAME flags by Wrap and re-applied in
+	// the sandbox child's execve so the tool process never inherits gateway
+	// secrets. Empty = only the base allowlist is passed.
+	EnvAllow []string
 }
 
 // DefaultLimits returns conservative caps suitable for typical agent
@@ -89,6 +121,15 @@ func Wrap(self string, l Limits, cmd []string) []string {
 	if l.FileSizeMB > 0 {
 		out = append(out, "--fsize="+strconv.Itoa(l.FileSizeMB))
 	}
+	for _, name := range l.EnvAllow {
+		name = strings.TrimSpace(name)
+		// Names carrying '=' or whitespace would corrupt flag parsing; skip
+		// them defensively (a var NAME never legitimately contains either).
+		if name == "" || strings.ContainsAny(name, "= \t") {
+			continue
+		}
+		out = append(out, "--env="+name)
+	}
 	out = append(out, "--")
 	out = append(out, cmd...)
 	return out
@@ -125,7 +166,7 @@ func RunSandboxedAndExit(argv []string) {
 		// engine from running a perfectly normal tool.
 		fmt.Fprintf(os.Stderr, "sandbox: warn: %v\n", err)
 	}
-	if err := execCommand(cmd); err != nil {
+	if err := execCommand(cmd, flags.EnvAllow); err != nil {
 		fmt.Fprintf(os.Stderr, "sandbox: exec %q: %v\n", cmd[0], err)
 		os.Exit(127)
 	}
@@ -166,6 +207,8 @@ func parseSandboxArgs(argv []string) (Limits, []string, error) {
 				return l, nil, fmt.Errorf("bad --fsize: %w", err)
 			}
 			l.FileSizeMB = v
+		case hasPrefix(a, "--env="):
+			l.EnvAllow = append(l.EnvAllow, a[len("--env="):])
 		default:
 			return l, nil, fmt.Errorf("unknown flag %q", a)
 		}

@@ -66,23 +66,52 @@ runtime:
 Use `allowed_tool_dirs` to prevent `python_file` entries from pointing at
 unexpected host paths.
 
-## System Tools
+## System Tools (SEC-3)
 
-System tools such as shell execution and host file access require a double
-opt-in:
+The OS-level built-ins are split into two partitions:
 
-1. `runtime.allow_system_tools: true` in `config.yaml`.
-2. `system_tools: true` in the agent's `SOUL.yaml`.
+- **SAFE** (read-only, always available on the local `http` channel):
+  `read_file`, `list_dir`, `find_files`, `fetch_url`, `http_request`,
+  `env_get`, `sys_info`. These require no special grant — an agent reachable
+  on the local web channel can use them (suppress them with `builtins: []`).
+- **SYSTEM** (privileged): `shell_exec`, `run_script`, `install_library`,
+  `write_file`, `download_file`. These can mutate the host or run arbitrary
+  code, so they require a **double opt-in**:
 
-Keep system tools disabled for agents reachable by shared or public channels.
-When system tools are necessary, add confirmations:
+  1. `runtime.allow_system_tools: true` in `config.yaml` (server permit;
+     **defaults to `false`** as of SEC-3).
+  2. `capabilities: [system]` in the agent's `SOUL.yaml`. The legacy
+     `system_tools: true` flag is honoured as an alias.
+
+Both gates must pass, and the request must arrive on the local `http` channel
+(bot channels never receive system tools). The gateway logs which agents hold
+the `system` capability at startup.
+
+Keep the `system` capability off for agents reachable by shared or public
+channels. When system tools are necessary, add confirmations:
 
 ```yaml
-system_tools: true
+capabilities: [system]   # (or legacy: system_tools: true)
 confirm_tools:
   - shell_exec
   - write_file
 ```
+
+### Tool environment allowlist (SEC-5)
+
+Python tool subprocesses no longer inherit the gateway's full environment.
+They receive only a base allowlist — `PATH`, `HOME`, `LANG`, `TMPDIR` — plus
+any variable **names** you declare per agent:
+
+```yaml
+env:
+  - GITHUB_TOKEN
+  - MY_SERVICE_URL
+```
+
+Gateway secrets (e.g. `ANTHROPIC_API_KEY`) are NOT visible to tool code unless
+explicitly listed. Values are read from the gateway's own environment at spawn
+time; names with no value are skipped.
 
 ## MCP and Built-in Allowlists
 

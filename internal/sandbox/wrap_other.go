@@ -19,7 +19,7 @@ func applyLimits(_ Limits) error { return nil }
 // pure Go (no syscall.Exec equivalent that releases the parent), so
 // the wrapper stays in the process tree — that's fine because nothing
 // downstream depends on the parent PID being the python process.
-func execCommand(cmd []string) error {
+func execCommand(cmd []string, envAllow []string) error {
 	if len(cmd) == 0 {
 		return fmt.Errorf("empty command")
 	}
@@ -27,7 +27,9 @@ func execCommand(cmd []string) error {
 	c.Stdin = os.Stdin
 	c.Stdout = os.Stdout
 	c.Stderr = os.Stderr
-	c.Env = os.Environ()
+	// SEC-5: scrub the environment to the base allowlist + agent-declared
+	// names rather than inheriting the gateway's full env (and its secrets).
+	c.Env = FilteredEnviron(envAllow)
 	if err := c.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
 			os.Exit(ee.ExitCode())
@@ -38,4 +40,4 @@ func execCommand(cmd []string) error {
 	return nil
 }
 
-func syscallEnviron() []string { return os.Environ() }
+func syscallEnviron() []string { return FilteredEnviron(nil) }

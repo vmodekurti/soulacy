@@ -6,9 +6,9 @@ Soulacy is a self-hosted AI agent runtime. Write an agent in a single YAML file,
 
 Think of it as Ollama — but for agents.
 
-[![CI](https://github.com/soulacy/soulacy/actions/workflows/ci.yml/badge.svg)](https://github.com/soulacy/soulacy/actions/workflows/ci.yml)
-[![Release](https://github.com/soulacy/soulacy/actions/workflows/release.yml/badge.svg)](https://github.com/soulacy/soulacy/releases/latest)
-[![Docker](https://ghcr.io/soulacy/soulacy)](https://ghcr.io/soulacy/soulacy)
+[![CI](https://github.com/vmodekurti/soulacy/actions/workflows/ci.yml/badge.svg)](https://github.com/vmodekurti/soulacy/actions/workflows/ci.yml)
+[![Release](https://github.com/vmodekurti/soulacy/actions/workflows/release.yml/badge.svg)](https://github.com/vmodekurti/soulacy/releases/latest)
+[![Docker](https://img.shields.io/badge/ghcr.io-vmodekurti%2Fsoulacy-blue?logo=docker)](https://github.com/vmodekurti/soulacy/pkgs/container/soulacy)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 ## Why Soulacy
@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh 
 
 What it does, with zero questions asked:
 
-1. Clones the latest source (requires `git`, Go 1.22+, and `npm` for the GUI build).
+1. Downloads the matching release tarball when one exists; otherwise builds from source (requires `git`, Go 1.25+, and `npm` for the GUI build).
 2. Builds the Svelte GUI and compiles `soulacy` (the gateway) + `sy` (the CLI).
 3. Installs both binaries into `~/.local/bin` (no `sudo`).
 4. Prints clear next steps + offers to launch the gateway on the spot.
@@ -63,8 +63,8 @@ cd soulacy
 ### Docker — full stack (Postgres + Qdrant + GUI)
 
 ```bash
-curl -O https://raw.githubusercontent.com/soulacy/soulacy/main/docker-compose.yml
-curl -O https://raw.githubusercontent.com/soulacy/soulacy/main/.env.example
+curl -O https://raw.githubusercontent.com/vmodekurti/soulacy/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/vmodekurti/soulacy/main/.env.example
 cp .env.example .env   # edit your LLM key and API key
 docker compose up
 ```
@@ -76,14 +76,18 @@ Open [http://localhost:18789](http://localhost:18789).
 ```bash
 docker run -p 18789:18789 \
   -v ~/.soulacy:/home/soulacy/.soulacy \
-  ghcr.io/soulacy/soulacy:latest
+  ghcr.io/vmodekurti/soulacy:latest
 ```
 
-### Python SDK
+### Python SDK (experimental)
 
-```bash
-pip install soulacy
-```
+> **Experimental, not yet published to PyPI.** The Python SDK lives in
+> [`sdk/python`](sdk/python) and currently has no test coverage. Install it
+> from source until a release is published:
+>
+> ```bash
+> pip install ./sdk/python
+> ```
 
 ---
 
@@ -130,7 +134,7 @@ llm:
 ```
 
 All fields can be overridden with environment variables: `SOULACY_<SECTION>_<KEY>`.  
-Full reference: [docs/configuration.md](docs/configuration.md)
+Full reference: [docs/configuration/index.md](docs/configuration/index.md)
 
 ---
 
@@ -195,7 +199,7 @@ That's it. No boilerplate, no decorators, no SDK imports. Drop the file in, and 
 ## Development
 
 ```bash
-git clone https://github.com/soulacy/soulacy
+git clone https://github.com/vmodekurti/soulacy
 cd soulacy
 make all          # builds GUI + Go binaries
 make install      # installs to /usr/local/bin

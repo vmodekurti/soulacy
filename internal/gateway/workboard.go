@@ -80,12 +80,12 @@ func wbTaskID(c *fiber.Ctx) (int64, bool) {
 func (s *Server) wbError(c *fiber.Ctx, err error) error {
 	switch {
 	case errors.Is(err, workboard.ErrInvalid):
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	case errors.Is(err, workboard.ErrNotFound):
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "task not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "task not found")
 	default:
 		s.log.Error("workboard: store error", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "internal error"})
+		return s.errMsg(c, fiber.StatusInternalServerError, "internal error")
 	}
 }
 
@@ -113,7 +113,7 @@ func (s *Server) handleWorkboardCreate(c *fiber.Ctx) error {
 	}
 	var body wbTaskBody
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid JSON body")
 	}
 	t := workboard.Task{}
 	if body.Title != nil {
@@ -139,7 +139,7 @@ func (s *Server) handleWorkboardCreate(c *fiber.Ctx) error {
 	}
 	due, _, err := parseDueAt(body.DueAt)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	t.DueAt = due
 	created, err := store.Create(c.Context(), t)
@@ -178,11 +178,11 @@ func (s *Server) handleWorkboardUpdate(c *fiber.Ctx) error {
 	}
 	var body wbTaskBody
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid JSON body")
 	}
 	due, clearDue, err := parseDueAt(body.DueAt)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	updated, err := store.Update(c.Context(), id, workboard.Update{
 		Title:       body.Title,
@@ -238,7 +238,7 @@ func (s *Server) handleWorkboardAddComment(c *fiber.Ctx) error {
 		Kind   string `json:"kind"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid JSON body")
 	}
 	comment, err := store.AddComment(c.Context(), id, workboard.Comment{
 		Author: body.Author, Body: body.Body, Kind: body.Kind,
@@ -257,7 +257,7 @@ func (s *Server) handleWorkboardDeleteComment(c *fiber.Ctx) error {
 	}
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "comment id must be an integer"})
+		return s.errMsg(c, fiber.StatusBadRequest, "comment id must be an integer")
 	}
 	if err := store.DeleteComment(c.Context(), id); err != nil {
 		return s.wbError(c, err)

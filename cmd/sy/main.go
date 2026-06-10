@@ -660,6 +660,7 @@ func buildSkillCmd() *cobra.Command {
 	// install — local directory (original behaviour) OR remote package slug
 	// resolved through the configured registries (Story E18).
 	var assumeYes bool
+	var allowUnverified bool
 	installCmd := &cobra.Command{
 		Use:   "install <path|slug>",
 		Short: "Install a skill from a local directory, a registry slug, or a git source",
@@ -672,17 +673,24 @@ Git source:       sy skill install github.com/user/my-skill
 Remote installs resolve through the registries: block in config.yaml
 (falling back to a bare git provider), run the safety introspection
 pipeline (static scan + sandboxed dry-run), display a consent prompt,
-and hot-load the skill through the gateway's /skills/rescan API.`,
+and hot-load the skill through the gateway's /skills/rescan API.
+
+Authenticity (SEC-7): installs from a registry with a configured
+signing_key verify the package's ed25519 signature before proceeding.
+Installs that cannot be verified — an unsigned package, a registry with
+no signing_key, or a raw git source — are BLOCKED unless you pass
+--allow-unverified to accept the risk explicitly.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Local directory keeps the original behaviour exactly.
 			if st, err := os.Stat(args[0]); err == nil && st.IsDir() {
 				return installSkill(args[0])
 			}
-			return runRemoteSkillInstall(cmd.Context(), args[0], assumeYes)
+			return runRemoteSkillInstall(cmd.Context(), args[0], assumeYes, allowUnverified)
 		},
 	}
 	installCmd.Flags().BoolVarP(&assumeYes, "yes", "y", false, "Skip the consent prompt (never bypasses a danger verdict)")
+	installCmd.Flags().BoolVar(&allowUnverified, "allow-unverified", false, "Allow installing packages whose authenticity cannot be cryptographically verified (unsigned, no signing_key, or raw git source)")
 	cmd.AddCommand(installCmd)
 
 	return cmd
@@ -691,20 +699,23 @@ and hot-load the skill through the gateway's /skills/rescan API.`,
 // runRemoteSkillInstall assembles the E18 flow from the CLI environment:
 // registries from the loaded viper config, consent on stdin, hot-load via
 // the gateway API.
-func runRemoteSkillInstall(ctx context.Context, slug string, assumeYes bool) error {
+func runRemoteSkillInstall(ctx context.Context, slug string, assumeYes, allowUnverified bool) error {
 	var regs []config.RegistryConfig
 	if err := viper.UnmarshalKey("registries", &regs); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: registries config unreadable: %v\n", err)
 	}
-	eng := registriesFromConfig(regs, zap.NewNop())
+	log := zap.NewNop()
+	eng := registriesFromConfig(regs, log)
 
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
 	return remoteSkillInstall(ctx, eng, slug, remoteInstallOpts{
-		SkillsDir: workspaceSkills(home),
-		AssumeYes: assumeYes,
+		SkillsDir:       workspaceSkills(home),
+		AssumeYes:       assumeYes,
+		AllowUnverified: allowUnverified,
+		Log:             log,
 		Confirm: func(prompt string) bool {
 			fmt.Print(prompt)
 			var answer string

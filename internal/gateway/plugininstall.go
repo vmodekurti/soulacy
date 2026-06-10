@@ -47,7 +47,7 @@ func (s *Server) handleListInstalledPlugins(c *fiber.Ctx) error {
 	}
 	list, err := ins.List()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if list == nil {
 		list = []plugininstall.Installed{}
@@ -72,7 +72,7 @@ func (s *Server) handleStagePlugin(c *fiber.Ctx) error {
 	}
 	pv, err := ins.Stage(c.Context(), body.Source, body.Checksum)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 
 	// E20 — safety introspection on the staged dir before anyone approves.
@@ -109,7 +109,7 @@ func (s *Server) handleApprovePlugin(c *fiber.Ctx) error {
 	_ = c.BodyParser(&body) // optional; metadata enrichment only
 	id, err := ins.Approve(c.Params("staged"), body.Source, body.Checksum)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.JSON(fiber.Map{"ok": true, "id": id, "note": restartNote})
 }
@@ -121,7 +121,7 @@ func (s *Server) handleDiscardStagedPlugin(c *fiber.Ctx) error {
 		return nil
 	}
 	if err := ins.Discard(c.Params("staged")); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"ok": true})
 }
@@ -134,7 +134,7 @@ func (s *Server) handleSetPluginEnabled(enabled bool) fiber.Handler {
 			return nil
 		}
 		if err := ins.SetEnabled(c.Params("id"), enabled); err != nil {
-			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusNotFound, err)
 		}
 		return c.JSON(fiber.Map{"ok": true, "enabled": enabled, "note": restartNote})
 	}
@@ -147,7 +147,7 @@ func (s *Server) handleReapprovePlugin(c *fiber.Ctx) error {
 		return nil
 	}
 	if err := ins.Reapprove(c.Params("id")); err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 	return c.JSON(fiber.Map{"ok": true, "note": restartNote})
 }
@@ -159,7 +159,7 @@ func (s *Server) handleRemovePlugin(c *fiber.Ctx) error {
 		return nil
 	}
 	if err := ins.Remove(c.Params("id")); err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 	return c.JSON(fiber.Map{"ok": true, "note": restartNote})
 }

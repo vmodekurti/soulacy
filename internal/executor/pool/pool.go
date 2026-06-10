@@ -40,6 +40,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/soulacy/soulacy/internal/executor"
+	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/pkg/message"
 )
 
@@ -179,6 +180,7 @@ type Pool struct {
 	mu        sync.Mutex
 	closed    bool
 	closeOnce sync.Once
+	closeCh   chan struct{} // closed by Close(); interrupts backoff sleeps
 }
 
 // New creates a Pool with `size` pre-forked Python workers.
@@ -195,6 +197,7 @@ func New(pythonBin string, size int) (*Pool, error) {
 		pythonBin: pythonBin,
 		size:      size,
 		workers:   make(chan *worker, size),
+		closeCh:   make(chan struct{}),
 	}
 	for i := 0; i < size; i++ {
 		w, err := p.spawnWorker()
@@ -216,6 +219,10 @@ func (p *Pool) spawnWorker() (*worker, error) {
 	// Pass the shim as a -c argument — no temp file required, no file-system
 	// race between writing and the interpreter opening it.
 	cmd := exec.Command(p.pythonBin, "-c", workerShim)
+	// SEC-5: workers must not inherit gateway secrets. Scrub to base allowlist.
+	// (Pool workers are agent-agnostic — per-agent env passthrough is applied
+	// on the engine's direct-exec path, not the shared worker pool.)
+	cmd.Env = sandbox.FilteredEnviron(nil)
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
@@ -351,7 +358,12 @@ func (p *Pool) replaceWorker() {
 				p.workers <- w
 				return
 			}
-			time.Sleep(time.Duration(attempt+1) * 500 * time.Millisecond)
+			// Interruptible backoff: bail immediately if the pool is closing.
+			select {
+			case <-p.closeCh:
+				return
+			case <-time.After(time.Duration(attempt+1) * 500 * time.Millisecond):
+			}
 		}
 	}()
 }
@@ -362,6 +374,7 @@ func (p *Pool) Close() error {
 		p.mu.Lock()
 		p.closed = true
 		p.mu.Unlock()
+		close(p.closeCh) // wake any in-flight replaceWorker backoff
 
 		// Drain and kill all idle workers.
 		for {

@@ -1,0 +1,233 @@
+// engine_tools_shell.go — SYSTEM-partition shell/process built-ins.
+//
+// ARCH-2: mechanically extracted from engine.go (no behaviour change). These
+// are the privileged "SYSTEM" tools (see privilegedSystemTools in engine.go):
+// shell_exec, run_script, install_library. Offered only via the SEC-3 double
+// opt-in (runtime.allow_system_tools + capabilities: [system]).
+package runtime
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// buildShellTools returns the shell-domain OS-level built-in tools. Extracted
+// from buildSystemTools (ARCH-2) — identical definitions, no behaviour change.
+func (e *Engine) buildShellTools() []BuiltinTool {
+	return []BuiltinTool{
+		{
+			Name:        "shell_exec",
+			Gate:        "",
+			Description: "Execute a shell command on the host OS and return stdout + stderr combined. Runs via /bin/sh -c so pipes, redirects, and shell built-ins work. Use for system administration, process management, git commands, and anything else you'd do in a terminal.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"command": map[string]any{
+						"type":        "string",
+						"description": "Shell command to execute (passed to /bin/sh -c)",
+					},
+					"working_dir": map[string]any{
+						"type":        "string",
+						"description": "Optional working directory (must be a valid absolute path on the host. Do NOT guess paths like /home/user. Omit this parameter entirely to run in the default home directory.)",
+					},
+					"timeout_seconds": map[string]any{
+						"type":        "integer",
+						"description": "Max seconds to wait (default 60, max 600)",
+					},
+				},
+				"required": []string{"command"},
+			},
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
+				command := strings.TrimSpace(argString(args, "command"))
+				if command == "" {
+					return "", fmt.Errorf("shell_exec: command is required")
+				}
+				workDir := argString(args, "working_dir")
+				homeDir, _ := os.UserHomeDir()
+				if workDir == "" {
+					workDir = homeDir
+				} else if workDir == "~" {
+					workDir = homeDir
+				} else if strings.HasPrefix(workDir, "~/") {
+					workDir = filepath.Join(homeDir, workDir[2:])
+				}
+				timeoutSecs := argInt(args, "timeout_seconds", 60)
+				if timeoutSecs <= 0 {
+					timeoutSecs = 60
+				}
+				if timeoutSecs > 600 {
+					timeoutSecs = 600
+				}
+				tctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(tctx, "/bin/sh", "-c", command)
+				cmd.Dir = workDir
+				var out bytes.Buffer
+				cmd.Stdout = &out
+				cmd.Stderr = &out
+				runErr := cmd.Run()
+				result := strings.TrimSpace(out.String())
+				if len(result) > 8000 {
+					result = result[:8000] + "\n[output truncated]"
+				}
+				if runErr != nil {
+					return fmt.Sprintf("exit_code: non-zero\n%s\nerror: %v", result, runErr), nil
+				}
+				return result, nil
+			},
+		},
+		{
+			Name:        "run_script",
+			Gate:        "",
+			Description: "Run a script file (Python, Bash, Node.js, Ruby, etc.) on the host. Interpreter is inferred from the file extension (.py→python3, .sh→bash, .js→node) or can be specified explicitly.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": map[string]any{
+						"type":        "string",
+						"description": "Path to the script (absolute or ~/)",
+					},
+					"args": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Command-line arguments to pass to the script",
+					},
+					"interpreter": map[string]any{
+						"type":        "string",
+						"description": "Override interpreter (e.g. 'python3', 'bash', 'node')",
+					},
+					"working_dir": map[string]any{
+						"type":        "string",
+						"description": "Working directory (defaults to script's directory)",
+					},
+				},
+				"required": []string{"path"},
+			},
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
+				path := argString(args, "path")
+				if strings.HasPrefix(path, "~/") {
+					if home, err := os.UserHomeDir(); err == nil {
+						path = filepath.Join(home, path[2:])
+					}
+				}
+				interp := argString(args, "interpreter")
+				if interp == "" {
+					switch strings.ToLower(filepath.Ext(path)) {
+					case ".py":
+						interp = "python3"
+					case ".sh":
+						interp = "bash"
+					case ".js":
+						interp = "node"
+					case ".rb":
+						interp = "ruby"
+					default:
+						interp = "bash"
+					}
+				}
+				argv := []string{interp, path}
+				for _, a := range argStringSlice(args, "args") {
+					argv = append(argv, a)
+				}
+				workDir := argString(args, "working_dir")
+				if workDir == "" {
+					workDir = filepath.Dir(path)
+				}
+				tctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
+				cmd.Dir = workDir
+				var out bytes.Buffer
+				cmd.Stdout = &out
+				cmd.Stderr = &out
+				runErr := cmd.Run()
+				result := strings.TrimSpace(out.String())
+				if len(result) > 8000 {
+					result = result[:8000] + "\n[output truncated]"
+				}
+				if runErr != nil {
+					return fmt.Sprintf("exit_code: non-zero\n%s\nerror: %v", result, runErr), nil
+				}
+				return result, nil
+			},
+		},
+		{
+			Name:        "install_library",
+			Gate:        "",
+			Description: "Install a library or package using pip (Python), npm (Node.js), brew (macOS), or apt (Linux). Returns installation output.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"package": map[string]any{
+						"type":        "string",
+						"description": "Package name (e.g. 'requests', 'lodash', 'pandas')",
+					},
+					"manager": map[string]any{
+						"type":        "string",
+						"enum":        []string{"pip", "pip3", "npm", "brew", "apt"},
+						"description": "Package manager (default: pip3)",
+					},
+					"version": map[string]any{
+						"type":        "string",
+						"description": "Specific version to install (e.g. '2.0.1')",
+					},
+					"global": map[string]any{
+						"type":        "boolean",
+						"description": "Install globally for npm (npm -g flag)",
+					},
+				},
+				"required": []string{"package"},
+			},
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
+				pkg := strings.TrimSpace(argString(args, "package"))
+				if pkg == "" {
+					return "", fmt.Errorf("install_library: package is required")
+				}
+				manager := argStringDefault(args, "manager", "pip3")
+				version := argString(args, "version")
+				if version != "" {
+					pkg = pkg + "==" + version
+				}
+				isGlobal := argBool(args, "global")
+				var argv []string
+				switch manager {
+				case "pip", "pip3":
+					argv = []string{manager, "install", pkg, "--break-system-packages", "--quiet"}
+				case "npm":
+					argv = []string{"npm", "install"}
+					if isGlobal {
+						argv = append(argv, "-g")
+					}
+					argv = append(argv, pkg)
+				case "brew":
+					argv = []string{"brew", "install", pkg}
+				case "apt":
+					argv = []string{"apt-get", "install", "-y", pkg}
+				default:
+					return "", fmt.Errorf("install_library: unsupported manager %q", manager)
+				}
+				tctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+				defer cancel()
+				cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
+				var out bytes.Buffer
+				cmd.Stdout = &out
+				cmd.Stderr = &out
+				runErr := cmd.Run()
+				result := strings.TrimSpace(out.String())
+				if len(result) > 4000 {
+					result = result[:4000] + "\n[output truncated]"
+				}
+				if runErr != nil {
+					return fmt.Sprintf("Installation failed:\n%s\nerror: %v", result, runErr), nil
+				}
+				return fmt.Sprintf("Successfully installed %s:\n%s", pkg, result), nil
+			},
+		},
+	}
+}

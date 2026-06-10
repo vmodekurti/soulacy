@@ -60,17 +60,31 @@ func (s *Server) handleHealth(c *fiber.Ctx) error {
 
 	// Knowledge store — quick listKBs call. Capped at 50ms.
 	if knowledge := s.engine.Knowledge(); knowledge != nil && knowledge.Store != nil {
-		done := make(chan error, 1)
-		go func() { _, err := knowledge.Store.ListKBs(); done <- err }()
-		select {
-		case err := <-done:
-			if err != nil {
-				deps["knowledge"] = "error: " + err.Error()
-			} else {
-				deps["knowledge"] = "ok"
+		// ListKBs is not context-aware, so we probe in a goroutine with a short
+		// timeout. The in-flight guard ensures repeated probes against a blocked
+		// store don't accumulate goroutines: if one is already running we report
+		// "checking" instead of spawning another (PERF-5).
+		if s.healthProbeInFlight.CompareAndSwap(false, true) {
+			done := make(chan error, 1)
+			go func() {
+				_, err := knowledge.Store.ListKBs()
+				s.healthProbeInFlight.Store(false)
+				done <- err
+			}()
+			ctx, cancel := context.WithTimeout(c.UserContext(), 50*time.Millisecond)
+			defer cancel()
+			select {
+			case err := <-done:
+				if err != nil {
+					deps["knowledge"] = "error: " + err.Error()
+				} else {
+					deps["knowledge"] = "ok"
+				}
+			case <-ctx.Done():
+				deps["knowledge"] = "timeout"
 			}
-		case <-time.After(50 * time.Millisecond):
-			deps["knowledge"] = "timeout"
+		} else {
+			deps["knowledge"] = "checking"
 		}
 	} else {
 		deps["knowledge"] = "disabled"
@@ -187,7 +201,7 @@ func (s *Server) handleListAgents(c *fiber.Ctx) error {
 func (s *Server) handleGetAgent(c *fiber.Ctx) error {
 	def := s.loader.Get(c.Params("id"))
 	if def == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
 	return c.JSON(def)
 }
@@ -206,7 +220,7 @@ func (s *Server) handleGetAgentTier(c *fiber.Ctx) error {
 	id := c.Params("id")
 	def := s.loader.Get(id)
 	if def == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
 	exp := tier.Explain(def, s.loader.Get)
 	return c.JSON(fiber.Map{
@@ -219,7 +233,7 @@ func (s *Server) handleGetAgentTier(c *fiber.Ctx) error {
 func (s *Server) handleValidateAgent(c *fiber.Ctx) error {
 	var def agent.Definition
 	if err := c.BodyParser(&def); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	report := agentvalidate.Definition(&def, "", s.agentValidationOptions(c.Context()), agentvalidate.Report{})
 	return c.JSON(report)
@@ -228,10 +242,10 @@ func (s *Server) handleValidateAgent(c *fiber.Ctx) error {
 func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 	var def agent.Definition
 	if err := c.BodyParser(&def); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if def.ID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "id is required")
 	}
 	if isProtectedSystemAgent(def.ID) {
 		return protectedSystemAgentResponse(c)
@@ -249,11 +263,13 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 		dir = s.cfg.AgentDirs[0]
 	}
 	if err := s.loader.Upsert(dir, &def); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Register with scheduler if applicable
-	_ = s.scheduler.RegisterAgent(&def)
+	if err := s.scheduler.RegisterAgent(&def); err != nil {
+		s.log.Warn("scheduler registration failed", zap.String("agent", def.ID), zap.Error(err))
+	}
 
 	return c.Status(fiber.StatusCreated).JSON(def)
 }
@@ -262,12 +278,12 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	id := c.Params("id")
 	existing := s.loader.Get(id)
 	if existing == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
 
 	var updates agent.Definition
 	if err := c.BodyParser(&updates); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	updates.ID = id // ID cannot be changed via update
 	updates.SourcePath = existing.SourcePath
@@ -289,12 +305,14 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 		dir = s.cfg.AgentDirs[0]
 	}
 	if err := s.loader.Upsert(dir, &updates); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Re-register schedule
 	s.scheduler.DeregisterAgent(id)
-	_ = s.scheduler.RegisterAgent(&updates)
+	if err := s.scheduler.RegisterAgent(&updates); err != nil {
+		s.log.Warn("scheduler re-registration failed", zap.String("agent", id), zap.Error(err))
+	}
 
 	return c.JSON(updates)
 }
@@ -355,7 +373,7 @@ func (s *Server) handleDeleteAgent(c *fiber.Ctx) error {
 	}
 	s.scheduler.DeregisterAgent(id)
 	if err := s.loader.Delete(id); err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 	return c.SendStatus(fiber.StatusNoContent)
 }
@@ -375,16 +393,20 @@ func (s *Server) setAgentEnabled(c *fiber.Ctx, enabled bool) error {
 	}
 	def := s.loader.Get(id)
 	if def == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
 	def.Enabled = enabled
 	dir := ""
 	if len(s.cfg.AgentDirs) > 0 {
 		dir = s.cfg.AgentDirs[0]
 	}
-	_ = s.loader.Upsert(dir, def)
+	if err := s.loader.Upsert(dir, def); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
 	if enabled {
-		_ = s.scheduler.RegisterAgent(def)
+		if err := s.scheduler.RegisterAgent(def); err != nil {
+			s.log.Warn("scheduler registration failed", zap.String("agent", id), zap.Error(err))
+		}
 	} else {
 		s.scheduler.DeregisterAgent(id)
 	}
@@ -400,7 +422,7 @@ func (s *Server) handleCloneAgent(c *fiber.Ctx) error {
 	}
 	src := s.loader.Get(id)
 	if src == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
 
 	// Value copy, then deep-copy the Schedule pointer so the clone and original
@@ -422,7 +444,7 @@ func (s *Server) handleCloneAgent(c *fiber.Ctx) error {
 		dir = s.cfg.AgentDirs[0]
 	}
 	if err := s.loader.Upsert(dir, &clone); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(clone)
 }
@@ -462,10 +484,10 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		} `json:"overrides"`
 	}
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if req.AgentID == "" || req.Text == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "agent_id and text are required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "agent_id and text are required")
 	}
 	if req.UserID == "" {
 		req.UserID = "api-user"
@@ -500,7 +522,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 
 	reply, err := s.engine.Handle(ctx, msg)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	replyText := ""
@@ -562,7 +584,7 @@ func (s *Server) handleChatStream(c *fiber.Ctx) error {
 	}
 	if c.Method() == "POST" {
 		if err := c.BodyParser(&req); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusBadRequest, err)
 		}
 	} else {
 		req.AgentID = c.Query("agent_id")
@@ -571,7 +593,7 @@ func (s *Server) handleChatStream(c *fiber.Ctx) error {
 		req.Text = c.Query("text")
 	}
 	if req.AgentID == "" || req.Text == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "agent_id and text are required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "agent_id and text are required")
 	}
 	if req.UserID == "" {
 		req.UserID = "api-user"
@@ -677,10 +699,10 @@ func (s *Server) handleToolConfirm(c *fiber.Ctx) error {
 		Approved bool   `json:"approved"`
 	}
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if req.CallID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "call_id is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "call_id is required")
 	}
 	if !s.engine.Broker().Resolve(req.CallID, req.Approved) {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -1007,10 +1029,10 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 	id := c.Params("id")
 	spec := channelSpecByID(id)
 	if spec == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "unknown channel: " + id})
+		return s.errMsg(c, fiber.StatusNotFound, "unknown channel: "+id)
 	}
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist channel settings"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist channel settings")
 	}
 
 	var req struct {
@@ -1019,7 +1041,7 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 		Bots     []map[string]any `json:"bots"`
 	}
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if channelReferencesProtectedSystem(id, req.Settings, req.Bots) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -1033,7 +1055,7 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 	// Apply to on-disk config.
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "read config: " + err.Error()})
+		return s.errMsg(c, fiber.StatusInternalServerError, "read config: "+err.Error())
 	}
 	channelsMap := getOrCreateMap(raw, "channels")
 	chMap := getOrCreateMap(channelsMap, id)
@@ -1070,7 +1092,7 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 		if len(req.Bots) == 0 {
 			delete(chMap, "bots")
 		} else if !channelSupportsBots(id) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": id + " does not support multiple bot mappings"})
+			return s.errMsg(c, fiber.StatusBadRequest, id+" does not support multiple bot mappings")
 		} else {
 			chMap["bots"] = normalizeChannelBots(*spec, req.Bots, existing["bots"])
 		}
@@ -1082,7 +1104,7 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 	}
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "write config: " + err.Error()})
+		return s.errMsg(c, fiber.StatusInternalServerError, "write config: "+err.Error())
 	}
 
 	// Mirror into the live in-memory config so the list reflects changes pre-restart.
@@ -1097,7 +1119,7 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 
 func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist WhatsApp Web settings"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist WhatsApp Web settings")
 	}
 	var req struct {
 		AgentID          string `json:"agent_id"`
@@ -1107,11 +1129,11 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 		AllowedSenderIDs string `json:"allowed_sender_ids"`
 	}
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	agentID := strings.TrimSpace(req.AgentID)
 	if agentID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "agent_id is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "agent_id is required")
 	}
 	if isProtectedSystemAgent(agentID) {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -1119,12 +1141,12 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 		})
 	}
 	if s.loader.Get(agentID) == nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "unknown agent: " + agentID})
+		return s.errMsg(c, fiber.StatusBadRequest, "unknown agent: "+agentID)
 	}
 
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "read config: " + err.Error()})
+		return s.errMsg(c, fiber.StatusInternalServerError, "read config: "+err.Error())
 	}
 	chMap := getOrCreateMap(getOrCreateMap(raw, "channels"), "whatsapp_web")
 	chMap["enabled"] = true
@@ -1148,26 +1170,26 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	// the configured args are absent or point at a missing file.
 	sessionDirVal := cfgMapStr(chMap, "session_dir")
 	if sessionDirVal == "" {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "whatsapp_web: session_dir could not be resolved"})
+		return s.errMsg(c, fiber.StatusInternalServerError, "whatsapp_web: session_dir could not be resolved")
 	}
 	existingArgs := parseStringListValue(chMap["args"])
 	switch {
 	case len(existingArgs) == 0 || !pathExists(existingArgs[0]):
 		scriptPath, serr := wawebchan.EnsureSidecarScript(sessionDirVal)
 		if serr != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": serr.Error()})
+			return s.errMsg(c, fiber.StatusInternalServerError, serr.Error())
 		}
 		chMap["args"] = []string{scriptPath}
 	case filepath.Base(existingArgs[0]) == wawebchan.SidecarScriptName:
 		// Managed script: re-sync its content so binary upgrades actually
 		// ship sidecar fixes (the file existing must not freeze it forever).
 		if _, serr := wawebchan.EnsureSidecarScript(filepath.Dir(existingArgs[0])); serr != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": serr.Error()})
+			return s.errMsg(c, fiber.StatusInternalServerError, serr.Error())
 		}
 	}
 	if scriptArgs := parseStringListValue(chMap["args"]); len(scriptArgs) > 0 {
 		if berr := wawebchan.EnsureBaileys(c.Context(), filepath.Dir(scriptArgs[0])); berr != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": berr.Error()})
+			return s.errMsg(c, fiber.StatusInternalServerError, berr.Error())
 		}
 	}
 	if cfgMapStr(chMap, "account_id") == "" {
@@ -1194,7 +1216,7 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	}
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "write config: " + err.Error()})
+		return s.errMsg(c, fiber.StatusInternalServerError, "write config: "+err.Error())
 	}
 	s.applyChannelToMemory("whatsapp_web", chMap)
 
@@ -1210,7 +1232,7 @@ func (s *Server) handleStartWhatsAppWebPairing(c *fiber.Ctx) error {
 	}
 	adapter := wawebchan.New("whatsapp_web", command, args, sessionDir, agentID, accountID, activation, s.log)
 	if err := s.channels.StartAdapter(context.Background(), adapter); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "start WhatsApp Web sidecar: " + err.Error()})
+		return s.errMsg(c, fiber.StatusInternalServerError, "start WhatsApp Web sidecar: "+err.Error())
 	}
 
 	return c.JSON(fiber.Map{
@@ -1306,22 +1328,22 @@ func (s *Server) setChannelEnabled(c *fiber.Ctx, enabled bool) error {
 	id := c.Params("id")
 	spec := channelSpecByID(id)
 	if spec == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "unknown channel: " + id})
+		return s.errMsg(c, fiber.StatusNotFound, "unknown channel: "+id)
 	}
 	if spec.Always {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": id + " is always enabled"})
+		return s.errMsg(c, fiber.StatusBadRequest, id+" is always enabled")
 	}
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist")
 	}
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	chMap := getOrCreateMap(getOrCreateMap(raw, "channels"), id)
 	chMap["enabled"] = enabled
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.applyChannelToMemory(id, chMap)
 	return c.JSON(fiber.Map{
@@ -1348,13 +1370,13 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	}
 	def := s.loader.Get(id)
 	if def == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "agent not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
 
 	// Block concurrent runs: if this agent is already executing (manual or
 	// scheduled), refuse rather than running it twice.
 	if !s.scheduler.TryStartRun(id) {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "agent is already running"})
+		return s.errMsg(c, fiber.StatusConflict, "agent is already running")
 	}
 	defer s.scheduler.FinishRun(id)
 
@@ -1395,7 +1417,7 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 			zap.Duration("elapsed", elapsed),
 			zap.Error(err),
 		)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	replyText := ""
@@ -1737,36 +1759,36 @@ func mcpBodyToServerConfig(body mcpServerBody) mcp.ServerConfig {
 // it immediately — no gateway restart required.
 func (s *Server) handleCreateMCPServer(c *fiber.Ctx) error {
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist")
 	}
 	var body mcpServerBody
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	id := strings.TrimSpace(body.ID)
 	if id == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "id is required")
 	}
 	if !validMCPID(id) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id may contain only letters, digits, '-' and '_'"})
+		return s.errMsg(c, fiber.StatusBadRequest, "id may contain only letters, digits, '-' and '_'")
 	}
 	if msg := validateMCPServer(body); msg != "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg})
+		return s.errMsg(c, fiber.StatusBadRequest, msg)
 	}
 
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	mcpMap := getOrCreateMap(raw, "mcp")
 	serversMap := getOrCreateMap(mcpMap, "servers")
 	if _, exists := serversMap[id]; exists {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": fmt.Sprintf("server %q already exists; use PATCH to edit", id)})
+		return s.errMsg(c, fiber.StatusConflict, fmt.Sprintf("server %q already exists; use PATCH to edit", id))
 	}
 	serversMap[id] = mcpServerToYAML(body)
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("mcp server created", zap.String("server", id))
 
@@ -1790,34 +1812,34 @@ func (s *Server) handleCreateMCPServer(c *fiber.Ctx) error {
 // config.yaml. The id in the URL is authoritative — body.id is ignored if set.
 func (s *Server) handleUpdateMCPServer(c *fiber.Ctx) error {
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist")
 	}
 	id := c.Params("id")
 	if id == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id path parameter is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "id path parameter is required")
 	}
 	var body mcpServerBody
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	body.ID = id // URL wins
 	if msg := validateMCPServer(body); msg != "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": msg})
+		return s.errMsg(c, fiber.StatusBadRequest, msg)
 	}
 
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	mcpMap := getOrCreateMap(raw, "mcp")
 	serversMap := getOrCreateMap(mcpMap, "servers")
 	if _, exists := serversMap[id]; !exists {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": fmt.Sprintf("server %q not found", id)})
+		return s.errMsg(c, fiber.StatusNotFound, fmt.Sprintf("server %q not found", id))
 	}
 	serversMap[id] = mcpServerToYAML(body)
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("mcp server updated", zap.String("server", id))
 
@@ -1840,16 +1862,16 @@ func (s *Server) handleUpdateMCPServer(c *fiber.Ctx) error {
 // handleDeleteMCPServer removes an MCP server from config.yaml.
 func (s *Server) handleDeleteMCPServer(c *fiber.Ctx) error {
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist")
 	}
 	id := c.Params("id")
 	if id == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "id is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "id is required")
 	}
 
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if mcpMap, ok := raw["mcp"].(map[string]any); ok {
 		if serversMap, ok := mcpMap["servers"].(map[string]any); ok {
@@ -1857,7 +1879,7 @@ func (s *Server) handleDeleteMCPServer(c *fiber.Ctx) error {
 		}
 	}
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("mcp server deleted", zap.String("server", id))
 
@@ -1881,7 +1903,7 @@ func (s *Server) handleDeleteMCPServer(c *fiber.Ctx) error {
 func (s *Server) handleTestMCPServer(c *fiber.Ctx) error {
 	var body mcpServerBody
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if msg := validateMCPServer(body); msg != "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "error": msg})
@@ -1996,10 +2018,10 @@ func (s *Server) handleProvisionGlama(c *fiber.Ctx) error {
 		Env      map[string]string `json:"env"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if strings.TrimSpace(body.GlamaURL) == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "glama_url is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "glama_url is required")
 	}
 
 	// Fetch the spec from Glama (4s timeout inside FetchGlamaServer).
@@ -2030,7 +2052,7 @@ func (s *Server) handleProvisionGlama(c *fiber.Ctx) error {
 	// All required env vars present — write to config.yaml.
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	mcpMap := getOrCreateMap(raw, "mcp")
 	serversMap := getOrCreateMap(mcpMap, "servers")
@@ -2051,7 +2073,7 @@ func (s *Server) handleProvisionGlama(c *fiber.Ctx) error {
 	serversMap[id] = mcpServerToYAML(serverCfg)
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("glama provision: server saved",
 		zap.String("server", id),
@@ -2148,10 +2170,10 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 		Preview    bool              `json:"preview"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if strings.TrimSpace(body.ServerName) == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "server_name is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "server_name is required")
 	}
 
 	spec, err := builder.FetchMCPRegistryServer(body.ServerName)
@@ -2203,7 +2225,7 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 	// Write to config.yaml.
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	mcpMap := getOrCreateMap(raw, "mcp")
 	serversMap := getOrCreateMap(mcpMap, "servers")
@@ -2211,12 +2233,12 @@ func (s *Server) handleProvisionMCPRegistry(c *fiber.Ctx) error {
 	id := spec.ID
 	serverBody, err := registrySpecToServerBody(id, spec, body.Env)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	serversMap[id] = mcpServerToYAML(serverBody)
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("mcp registry provision: server saved",
 		zap.String("server", id),
@@ -2341,7 +2363,7 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 	limit := c.QueryInt("limit", 500)
 	events, err := s.actions.Tail(id, limit)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Optional event-type filter — callers like the History panel only need a
@@ -2387,7 +2409,7 @@ func (s *Server) handleListMemory(c *fiber.Ctx) error {
 		entries, err = s.engine.MemoryList(agentID, 200)
 	}
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"entries": entries})
 }
@@ -2395,7 +2417,7 @@ func (s *Server) handleListMemory(c *fiber.Ctx) error {
 func (s *Server) handleDeleteMemorySession(c *fiber.Ctx) error {
 	sessionID := c.Params("session_id")
 	if err := s.engine.MemoryPurgeSession(sessionID); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"message": "session memory purged", "session_id": sessionID})
 }
@@ -2449,7 +2471,7 @@ func (s *Server) handleListProviders(c *fiber.Ctx) error {
 func (s *Server) handleListModels(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if s.llmRouter == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "LLM router unavailable"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
 	}
 	p := s.llmRouter.Provider(id)
 	if p == nil {
@@ -2463,7 +2485,7 @@ func (s *Server) handleListModels(c *fiber.Ctx) error {
 
 	models, err := p.Models(ctx)
 	if err != nil {
-		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadGateway, err)
 	}
 
 	selected := ""
@@ -2499,21 +2521,21 @@ func (s *Server) agentValidationOptions(ctx context.Context) agentvalidate.Optio
 func (s *Server) handleSetProviderModel(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist")
 	}
 	var req struct {
 		Model string `json:"model"`
 	}
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if req.Model == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "model is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "model is required")
 	}
 
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	llmMap := getOrCreateMap(raw, "llm")
 	provsMap := getOrCreateMap(llmMap, "providers")
@@ -2521,7 +2543,7 @@ func (s *Server) handleSetProviderModel(c *fiber.Ctx) error {
 	provMap["model"] = req.Model
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Mirror into live config.
@@ -2546,7 +2568,7 @@ func (s *Server) handleSetProviderModel(c *fiber.Ctx) error {
 func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if s.cfgPath == "" {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "config file path unknown — cannot persist"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist")
 	}
 	var req struct {
 		BaseURL           string         `json:"base_url"`
@@ -2562,15 +2584,15 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 		ParallelToolCalls *bool          `json:"parallel_tool_calls"` // OpenAI: false=serialize tool calls
 	}
 	if err := c.BodyParser(&req); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if id == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "provider id is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "provider id is required")
 	}
 
 	raw, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	llmMap := getOrCreateMap(raw, "llm")
 	provsMap := getOrCreateMap(llmMap, "providers")
@@ -2616,7 +2638,7 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	}
 
 	if err := writeRawConfig(s.cfgPath, raw); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Mirror to live config.
@@ -2712,12 +2734,12 @@ func (s *Server) handleListSkills(c *fiber.Ctx) error {
 // handleGetSkill returns the full content (instructions) of a single skill.
 func (s *Server) handleGetSkill(c *fiber.Ctx) error {
 	if s.skillLoader == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "skills not enabled"})
+		return s.errMsg(c, fiber.StatusNotFound, "skills not enabled")
 	}
 	name := c.Params("name")
 	sk := s.skillLoader.Get(name)
 	if sk == nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "skill not found"})
+		return s.errMsg(c, fiber.StatusNotFound, "skill not found")
 	}
 	return c.JSON(fiber.Map{
 		"name":          sk.Name,
@@ -2955,7 +2977,7 @@ func (s *Server) templatesCatalog() *templates.Catalog {
 func (s *Server) handleListTemplates(c *fiber.Ctx) error {
 	entries, err := s.templatesCatalog().List()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"templates": entries, "count": len(entries)})
 }
@@ -2971,19 +2993,21 @@ func (s *Server) handleListTemplates(c *fiber.Ctx) error {
 func (s *Server) handleInstantiateTemplate(c *fiber.Ctx) error {
 	name := c.Params("name")
 	if name == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "template name is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "template name is required")
 	}
 	var req struct {
 		ID string `json:"id"`
 	}
-	// Body is optional — empty body is fine.
-	_ = c.BodyParser(&req)
+	// Body is optional — empty body is fine; only log unexpected parse errors.
+	if err := c.BodyParser(&req); err != nil && err != fiber.ErrUnprocessableEntity {
+		s.log.Debug("template instantiate body parse", zap.Error(err))
+	}
 
 	def, err := s.templatesCatalog().Instantiate(name, req.ID, func(candidate string) bool {
 		return s.loader.Get(candidate) == nil
 	})
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 
 	// Default LLM provider to the configured one if the template left it
@@ -2999,11 +3023,13 @@ func (s *Server) handleInstantiateTemplate(c *fiber.Ctx) error {
 		dir = s.cfg.AgentDirs[0]
 	}
 	if err := s.loader.Upsert(dir, def); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Register with scheduler if applicable (cron / oneshot templates).
-	_ = s.scheduler.RegisterAgent(def)
+	if err := s.scheduler.RegisterAgent(def); err != nil {
+		s.log.Warn("scheduler registration failed", zap.String("agent", def.ID), zap.Error(err))
+	}
 
 	return c.Status(fiber.StatusCreated).JSON(def)
 }

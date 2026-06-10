@@ -312,10 +312,35 @@ type Definition struct {
 	MCPTools *[]string `yaml:"mcp_tools,omitempty" json:"mcp_tools,omitempty"`
 
 	// SystemTools, when true, opts this agent into the OS-level built-in tool set
-	// (shell_exec, run_script, install_library, read_file, write_file, list_dir).
+	// (shell_exec, run_script, install_library, write_file, download_file, …).
 	// ALSO requires runtime.allow_system_tools: true in config.yaml — both must
 	// be set. This double opt-in prevents accidental exposure of system access.
+	//
+	// SEC-3: SystemTools is retained for backward compatibility and is treated
+	// as equivalent to declaring the "system" capability (see Capabilities).
+	// New SOUL.yaml should prefer `capabilities: [system]`.
 	SystemTools bool `yaml:"system_tools,omitempty" json:"system_tools,omitempty"`
+
+	// Capabilities is the per-agent list of privileged capabilities this agent
+	// has been granted (SEC-3). Currently the only recognised value is:
+	//
+	//   "system" — admits the destructive OS-level built-ins (shell_exec,
+	//              run_script, install_library, write_file, download_file).
+	//              Still requires runtime.allow_system_tools: true at the
+	//              server level — both gates must pass.
+	//
+	// The legacy `system_tools: true` flag is honoured as an alias for
+	// declaring "system" here (see HasCapability). Unknown capabilities are
+	// ignored (forward-compatible).
+	Capabilities []string `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+
+	// Env is the per-agent allowlist of host environment variable NAMES that
+	// should be passed through to spawned tool subprocesses (SEC-5). The base
+	// allowlist (PATH, HOME, LANG, TMPDIR) is always passed; names listed here
+	// are added on top. Secrets the gateway holds (ANTHROPIC_API_KEY, …) are
+	// NOT inherited unless explicitly listed. Values are read from the
+	// gateway's own environment at spawn time; a name with no value is skipped.
+	Env []string `yaml:"env,omitempty" json:"env,omitempty"`
 
 	// ConfirmTools is the list of built-in tool names that require explicit user
 	// approval before execution. The engine pauses, emits a "tool_confirm" SSE
@@ -469,6 +494,8 @@ func (d *Definition) Clone() *Definition {
 	cp.Knowledge = cloneStrSlice(d.Knowledge)
 	cp.Agents = cloneStrSlice(d.Agents)
 	cp.ConfirmTools = cloneStrSlice(d.ConfirmTools)
+	cp.Capabilities = cloneStrSlice(d.Capabilities)
+	cp.Env = cloneStrSlice(d.Env)
 
 	// Memory slices.
 	cp.Memory = MemoryPolicy{
@@ -589,6 +616,24 @@ func (d *Definition) ResolvedRunTimeout(fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return t
+}
+
+// HasCapability reports whether the agent has been granted the named
+// capability (SEC-3). The legacy `system_tools: true` flag is honoured as an
+// alias for the "system" capability so pre-SEC-3 SOUL.yaml keeps working.
+func (d *Definition) HasCapability(cap string) bool {
+	if d == nil {
+		return false
+	}
+	if cap == "system" && d.SystemTools {
+		return true
+	}
+	for _, c := range d.Capabilities {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // Status is the live operational state of a loaded agent.

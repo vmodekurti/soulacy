@@ -135,6 +135,14 @@ func run() error {
 		return fmt.Errorf("ensure dirs: %w", err)
 	}
 
+	// SEC-4: `--allow-unauthenticated` overrides the non-loopback empty-key
+	// hard-fail. Honored here so it works for both `soulacy` and `soulacy serve`.
+	for _, a := range os.Args[1:] {
+		if a == "--allow-unauthenticated" {
+			cfg.Server.AllowUnauthenticated = true
+		}
+	}
+
 	// "Dumb install" first-run bootstrap. If config.yaml doesn't exist,
 	// write a default with a generated API key. If it exists but has no
 	// key on a loopback bind, generate one and patch just that field

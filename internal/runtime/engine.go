@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -203,7 +202,30 @@ type Engine struct {
 	// LLM backend is built for an agent (tests / embedders). nil = derive
 	// from def.LLM.Provider via reasoning.DefaultBackendFor.
 	reasoningBackendFactory func(*agent.Definition) reasoning.LLMBackend
+
+	// ── PERF-1: session eviction ────────────────────────────────────────────
+	// sessionTTL bounds how long an idle session is retained before the sweep
+	// reclaims it. maxSessions caps the live session count. Both are set via
+	// SetSessionEviction; zero values fall back to the documented defaults
+	// (24h TTL, 10000 sessions). evictStop stops the sweeper goroutine.
+	sessionTTL  time.Duration
+	maxSessions int
+	evictStop   chan struct{}
+	evictOnce   sync.Once
+
+	// ── PERF-2: history windowing ───────────────────────────────────────────
+	// maxHistoryTurns caps the number of NON-system messages retained in a
+	// session's in-memory History. Older turns are trimmed oldest-first; a
+	// leading system message (index 0) is always preserved. Set via
+	// SetMaxHistoryTurns; <=0 falls back to defaultMaxHistoryTurns.
+	maxHistoryTurns int
 }
+
+const (
+	defaultSessionTTL      = 24 * time.Hour
+	defaultMaxSessions     = 10000
+	defaultMaxHistoryTurns = 100
+)
 
 // PluginToolProvider is satisfied by *plugins.Loader. Defined locally to
 // avoid an import cycle (plugins → engine would be circular).
@@ -289,6 +311,17 @@ type Session struct {
 	// passphrase for agents that have security.passphrase set. Enforced in
 	// Go before the LLM is invoked — cannot be bypassed by prompt injection.
 	PassphraseVerified bool
+
+	// lastAccess is the wall-clock time of the most recent inbound message
+	// for this session. The eviction sweep (PERF-1) compares this against
+	// the configured TTL to decide whether an idle session can be reclaimed.
+	// Guarded by mu.
+	lastAccess time.Time
+
+	// inUse counts the number of in-flight Handle() calls touching this
+	// session. The eviction sweep NEVER drops a session with inUse > 0 — a
+	// session that is mid-conversation is always retained. Guarded by mu.
+	inUse int
 }
 
 // NewEngine creates a new agent execution engine.
@@ -618,9 +651,21 @@ func (e *Engine) Knowledge() *knowledge.Service { return e.knowledge }
 func (e *Engine) Builtins() []BuiltinTool {
 	out := make([]BuiltinTool, len(e.builtins))
 	copy(out, e.builtins)
-	// Include system tools in the catalog so the GUI can display them.
+	// SAFE (read-only) OS-level built-ins are always advertised so the GUI
+	// Builder can display them — they are available to every http-channel
+	// agent regardless of capability (SEC-3).
+	out = append(out, e.safeSystemTools()...)
+	// The privileged SYSTEM partition (shell_exec, run_script, …) is only
+	// advertised when the server permits system tools at all. Whether a GIVEN
+	// agent may actually call them additionally requires the "system"
+	// capability — enforced per-agent in systemToolsFor at dispatch time.
 	if e.allowSystemTools {
-		out = append(out, e.buildSystemTools()...)
+		all := e.buildSystemTools()
+		for _, b := range all {
+			if isPrivilegedSystemTool(b.Name) {
+				out = append(out, b)
+			}
+		}
 	}
 	return out
 }
@@ -864,763 +909,86 @@ func (e *Engine) buildSemanticMemoryBuiltin() BuiltinTool {
 	}
 }
 
-// buildSystemTools returns OS-level built-in tools. These are registered for
-// every agent when runtime.allow_system_tools is true (the default). Set
-// allow_system_tools: false in config.yaml to disable on multi-tenant deployments.
+// privilegedSystemTools is the set of OS-level built-ins that can mutate the
+// host or execute arbitrary code (SEC-3 "SYSTEM" partition). These are offered
+// ONLY when the server permits (runtime.allow_system_tools) AND the agent
+// declares the "system" capability. Everything else returned by
+// buildSystemTools is treated as a read-only "SAFE" tool, always available.
 //
-// WARNING: these tools execute arbitrary shell commands and read/write files
-// on the host. Only enable on trusted, secured deployments.
-func (e *Engine) buildSystemTools() []BuiltinTool {
-	return []BuiltinTool{
-		{
-			Name:        "shell_exec",
-			Gate:        "",
-			Description: "Execute a shell command on the host OS and return stdout + stderr combined. Runs via /bin/sh -c so pipes, redirects, and shell built-ins work. Use for system administration, process management, git commands, and anything else you'd do in a terminal.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"command": map[string]any{
-						"type":        "string",
-						"description": "Shell command to execute (passed to /bin/sh -c)",
-					},
-					"working_dir": map[string]any{
-						"type":        "string",
-						"description": "Optional working directory (must be a valid absolute path on the host. Do NOT guess paths like /home/user. Omit this parameter entirely to run in the default home directory.)",
-					},
-					"timeout_seconds": map[string]any{
-						"type":        "integer",
-						"description": "Max seconds to wait (default 60, max 600)",
-					},
-				},
-				"required": []string{"command"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				command := strings.TrimSpace(argString(args, "command"))
-				if command == "" {
-					return "", fmt.Errorf("shell_exec: command is required")
-				}
-				workDir := argString(args, "working_dir")
-				homeDir, _ := os.UserHomeDir()
-				if workDir == "" {
-					workDir = homeDir
-				} else if workDir == "~" {
-					workDir = homeDir
-				} else if strings.HasPrefix(workDir, "~/") {
-					workDir = filepath.Join(homeDir, workDir[2:])
-				}
-				timeoutSecs := argInt(args, "timeout_seconds", 60)
-				if timeoutSecs <= 0 {
-					timeoutSecs = 60
-				}
-				if timeoutSecs > 600 {
-					timeoutSecs = 600
-				}
-				tctx, cancel := context.WithTimeout(ctx, time.Duration(timeoutSecs)*time.Second)
-				defer cancel()
-				cmd := exec.CommandContext(tctx, "/bin/sh", "-c", command)
-				cmd.Dir = workDir
-				var out bytes.Buffer
-				cmd.Stdout = &out
-				cmd.Stderr = &out
-				runErr := cmd.Run()
-				result := strings.TrimSpace(out.String())
-				if len(result) > 8000 {
-					result = result[:8000] + "\n[output truncated]"
-				}
-				if runErr != nil {
-					return fmt.Sprintf("exit_code: non-zero\n%s\nerror: %v", result, runErr), nil
-				}
-				return result, nil
-			},
-		},
-		{
-			Name:        "run_script",
-			Gate:        "",
-			Description: "Run a script file (Python, Bash, Node.js, Ruby, etc.) on the host. Interpreter is inferred from the file extension (.py→python3, .sh→bash, .js→node) or can be specified explicitly.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{
-						"type":        "string",
-						"description": "Path to the script (absolute or ~/)",
-					},
-					"args": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "Command-line arguments to pass to the script",
-					},
-					"interpreter": map[string]any{
-						"type":        "string",
-						"description": "Override interpreter (e.g. 'python3', 'bash', 'node')",
-					},
-					"working_dir": map[string]any{
-						"type":        "string",
-						"description": "Working directory (defaults to script's directory)",
-					},
-				},
-				"required": []string{"path"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				path := argString(args, "path")
-				if strings.HasPrefix(path, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						path = filepath.Join(home, path[2:])
-					}
-				}
-				interp := argString(args, "interpreter")
-				if interp == "" {
-					switch strings.ToLower(filepath.Ext(path)) {
-					case ".py":
-						interp = "python3"
-					case ".sh":
-						interp = "bash"
-					case ".js":
-						interp = "node"
-					case ".rb":
-						interp = "ruby"
-					default:
-						interp = "bash"
-					}
-				}
-				argv := []string{interp, path}
-				for _, a := range argStringSlice(args, "args") {
-					argv = append(argv, a)
-				}
-				workDir := argString(args, "working_dir")
-				if workDir == "" {
-					workDir = filepath.Dir(path)
-				}
-				tctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-				defer cancel()
-				cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
-				cmd.Dir = workDir
-				var out bytes.Buffer
-				cmd.Stdout = &out
-				cmd.Stderr = &out
-				runErr := cmd.Run()
-				result := strings.TrimSpace(out.String())
-				if len(result) > 8000 {
-					result = result[:8000] + "\n[output truncated]"
-				}
-				if runErr != nil {
-					return fmt.Sprintf("exit_code: non-zero\n%s\nerror: %v", result, runErr), nil
-				}
-				return result, nil
-			},
-		},
-		{
-			Name:        "install_library",
-			Gate:        "",
-			Description: "Install a library or package using pip (Python), npm (Node.js), brew (macOS), or apt (Linux). Returns installation output.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"package": map[string]any{
-						"type":        "string",
-						"description": "Package name (e.g. 'requests', 'lodash', 'pandas')",
-					},
-					"manager": map[string]any{
-						"type":        "string",
-						"enum":        []string{"pip", "pip3", "npm", "brew", "apt"},
-						"description": "Package manager (default: pip3)",
-					},
-					"version": map[string]any{
-						"type":        "string",
-						"description": "Specific version to install (e.g. '2.0.1')",
-					},
-					"global": map[string]any{
-						"type":        "boolean",
-						"description": "Install globally for npm (npm -g flag)",
-					},
-				},
-				"required": []string{"package"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				pkg := strings.TrimSpace(argString(args, "package"))
-				if pkg == "" {
-					return "", fmt.Errorf("install_library: package is required")
-				}
-				manager := argStringDefault(args, "manager", "pip3")
-				version := argString(args, "version")
-				if version != "" {
-					pkg = pkg + "==" + version
-				}
-				isGlobal := argBool(args, "global")
-				var argv []string
-				switch manager {
-				case "pip", "pip3":
-					argv = []string{manager, "install", pkg, "--break-system-packages", "--quiet"}
-				case "npm":
-					argv = []string{"npm", "install"}
-					if isGlobal {
-						argv = append(argv, "-g")
-					}
-					argv = append(argv, pkg)
-				case "brew":
-					argv = []string{"brew", "install", pkg}
-				case "apt":
-					argv = []string{"apt-get", "install", "-y", pkg}
-				default:
-					return "", fmt.Errorf("install_library: unsupported manager %q", manager)
-				}
-				tctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
-				defer cancel()
-				cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
-				var out bytes.Buffer
-				cmd.Stdout = &out
-				cmd.Stderr = &out
-				runErr := cmd.Run()
-				result := strings.TrimSpace(out.String())
-				if len(result) > 4000 {
-					result = result[:4000] + "\n[output truncated]"
-				}
-				if runErr != nil {
-					return fmt.Sprintf("Installation failed:\n%s\nerror: %v", result, runErr), nil
-				}
-				return fmt.Sprintf("Successfully installed %s:\n%s", pkg, result), nil
-			},
-		},
-		{
-			Name:        "read_file",
-			Gate:        "",
-			Description: "Read the contents of a file on the host filesystem. Returns the file content as text.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{
-						"type":        "string",
-						"description": "Absolute or home-relative (~/) path to the file",
-					},
-					"max_bytes": map[string]any{
-						"type":        "integer",
-						"description": "Maximum bytes to read (default 100000, max 1000000)",
-					},
-				},
-				"required": []string{"path"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				path := argString(args, "path")
-				if strings.HasPrefix(path, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						path = filepath.Join(home, path[2:])
-					}
-				}
-				maxBytes := argInt(args, "max_bytes", 100000)
-				if maxBytes <= 0 {
-					maxBytes = 100000
-				}
-				if maxBytes > 1000000 {
-					maxBytes = 1000000
-				}
-				f, err := os.Open(path)
-				if err != nil {
-					return "", fmt.Errorf("read_file: %w", err)
-				}
-				defer f.Close()
-				buf := make([]byte, maxBytes)
-				n, rerr := f.Read(buf)
-				if rerr != nil && rerr.Error() != "EOF" {
-					return "", fmt.Errorf("read_file: read: %w", rerr)
-				}
-				return string(buf[:n]), nil
-			},
-		},
-		{
-			Name:        "write_file",
-			Gate:        "",
-			Description: "Write content to a file on the host filesystem. Creates the file and any parent directories if they don't exist. By default overwrites; set append: true to add to the end.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{
-						"type":        "string",
-						"description": "Absolute or home-relative (~/) path to write",
-					},
-					"content": map[string]any{
-						"type":        "string",
-						"description": "Text content to write",
-					},
-					"append": map[string]any{
-						"type":        "boolean",
-						"description": "Append to the file instead of overwriting (default false)",
-					},
-				},
-				"required": []string{"path", "content"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				path := argString(args, "path")
-				content := argString(args, "content")
-				if strings.HasPrefix(path, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						path = filepath.Join(home, path[2:])
-					}
-				}
-				if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
-					return "", fmt.Errorf("write_file: mkdir: %w", err)
-				}
-				flags := os.O_CREATE | os.O_WRONLY
-				if argBool(args, "append") {
-					flags |= os.O_APPEND
-				} else {
-					flags |= os.O_TRUNC
-				}
-				f, err := os.OpenFile(path, flags, 0644)
-				if err != nil {
-					return "", fmt.Errorf("write_file: open: %w", err)
-				}
-				defer f.Close()
-				if _, err := f.WriteString(content); err != nil {
-					return "", fmt.Errorf("write_file: write: %w", err)
-				}
-				return fmt.Sprintf("Written %d bytes to %s", len(content), path), nil
-			},
-		},
-		{
-			Name:        "list_dir",
-			Gate:        "",
-			Description: "List the contents of a directory. Returns entry names, types (file/dir), and sizes.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{
-						"type":        "string",
-						"description": "Directory path (absolute or ~/)",
-					},
-					"show_hidden": map[string]any{
-						"type":        "boolean",
-						"description": "Include hidden files (starting with .)",
-					},
-				},
-				"required": []string{"path"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				path := argString(args, "path")
-				if strings.HasPrefix(path, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						path = filepath.Join(home, path[2:])
-					}
-				}
-				showHidden := argBool(args, "show_hidden")
-				entries, err := os.ReadDir(path)
-				if err != nil {
-					return "", fmt.Errorf("list_dir: %w", err)
-				}
-				var sb strings.Builder
-				sb.WriteString(fmt.Sprintf("Contents of %s:\n", path))
-				for _, ent := range entries {
-					if !showHidden && strings.HasPrefix(ent.Name(), ".") {
-						continue
-					}
-					info, _ := ent.Info()
-					kind := "file"
-					size := int64(0)
-					if ent.IsDir() {
-						kind = "dir "
-					} else if info != nil {
-						size = info.Size()
-					}
-					sb.WriteString(fmt.Sprintf("  [%s] %-40s %d bytes\n", kind, ent.Name(), size))
-				}
-				return sb.String(), nil
-			},
-		},
-		{
-			Name:        "fetch_url",
-			Gate:        "",
-			Description: "Fetch the content of a URL and return it as text. Useful for reading documentation, GitHub READMEs, APIs, and web pages before acting on them. HTML is returned as-is; use this to understand setup instructions before running commands.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"url": map[string]any{
-						"type":        "string",
-						"description": "The URL to fetch (http or https)",
-					},
-					"max_bytes": map[string]any{
-						"type":        "integer",
-						"description": "Maximum response bytes to return (default 256 KB, max 1 MB)",
-					},
-				},
-				"required": []string{"url"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				rawURL := strings.TrimSpace(argString(args, "url"))
-				if rawURL == "" {
-					return "", fmt.Errorf("fetch_url: url is required")
-				}
-				if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-					return "", fmt.Errorf("fetch_url: only http/https URLs are supported")
-				}
-				if err := checkSSRF(rawURL, e.ssrfProtection, e.allowPrivateHosts); err != nil {
-					return "", err
-				}
+// SYSTEM (privileged):
+//
+//	shell_exec      — arbitrary /bin/sh -c
+//	run_script      — execute a script file with an interpreter
+//	install_library — pip/npm/brew/apt package installs
+//	write_file      — create/overwrite/append host files
+//	download_file   — write arbitrary bytes from a URL to disk
+//
+// SAFE (read-only, always on): read_file, list_dir, find_files, fetch_url,
+//
+//	http_request, env_get, sys_info. (http_request can POST, but it cannot
+//	touch the local filesystem or spawn processes; it is governed instead by
+//	SSRF protection + per-agent confirm_tools, so it stays in the SAFE set.)
+var privilegedSystemTools = map[string]bool{
+	"shell_exec":      true,
+	"run_script":      true,
+	"install_library": true,
+	"write_file":      true,
+	"download_file":   true,
+}
 
-				maxBytes := argInt(args, "max_bytes", 256*1024)
-				if maxBytes <= 0 {
-					maxBytes = 256 * 1024
-				}
-				if maxBytes > 1024*1024 {
-					maxBytes = 1024 * 1024
-				}
+// isPrivilegedSystemTool reports whether name is in the SEC-3 SYSTEM partition.
+func isPrivilegedSystemTool(name string) bool { return privilegedSystemTools[name] }
 
-				// For GitHub repo URLs, redirect to the raw README for cleaner text.
-				// e.g. https://github.com/user/repo → https://raw.githubusercontent.com/user/repo/main/README.md
-				fetchURL := rawURL
-				if strings.HasPrefix(rawURL, "https://github.com/") {
-					parts := strings.Split(strings.TrimPrefix(rawURL, "https://github.com/"), "/")
-					if len(parts) == 2 { // bare repo URL
-						fetchURL = fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/README.md", parts[0], parts[1])
-					}
-				}
-
-				httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, fetchURL, nil)
-				if err != nil {
-					return "", fmt.Errorf("fetch_url: build request: %w", err)
-				}
-				httpReq.Header.Set("User-Agent", "Soulacy/1.0")
-				httpReq.Header.Set("Accept", "text/plain, text/html, */*")
-
-				client := &http.Client{Timeout: 30 * time.Second}
-				resp, err := client.Do(httpReq)
-				if err != nil {
-					return "", fmt.Errorf("fetch_url: request failed: %w", err)
-				}
-				defer resp.Body.Close()
-
-				if resp.StatusCode >= 400 {
-					return "", fmt.Errorf("fetch_url: HTTP %d from %s", resp.StatusCode, fetchURL)
-				}
-
-				body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxBytes)))
-				if err != nil {
-					return "", fmt.Errorf("fetch_url: read body: %w", err)
-				}
-
-				result := fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\n\n%s",
-					fetchURL, resp.StatusCode,
-					resp.Header.Get("Content-Type"),
-					string(body),
-				)
-				if len(body) == maxBytes {
-					result += "\n\n[truncated — response exceeded max_bytes limit]"
-				}
-				return result, nil
-			},
-		},
-		{
-			Name:        "http_request",
-			Gate:        "",
-			Description: "Send an HTTP request with any method (GET, POST, PUT, PATCH, DELETE), custom headers, and a request body. Use for REST API calls, webhooks, and any interaction that needs more than a plain GET.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"method": map[string]any{
-						"type":        "string",
-						"description": "HTTP method: GET, POST, PUT, PATCH, DELETE",
-					},
-					"url": map[string]any{
-						"type":        "string",
-						"description": "The full URL to request (http or https)",
-					},
-					"body": map[string]any{
-						"type":        "string",
-						"description": "Optional request body (plain string or JSON string)",
-					},
-					"content_type": map[string]any{
-						"type":        "string",
-						"description": "Content-Type header value (default: application/json when body is provided)",
-					},
-					"headers": map[string]any{
-						"type":        "object",
-						"description": "Optional extra headers as key-value pairs",
-					},
-				},
-				"required": []string{"method", "url"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				method := strings.ToUpper(strings.TrimSpace(argString(args, "method")))
-				rawURL := strings.TrimSpace(argString(args, "url"))
-				if rawURL == "" {
-					return "", fmt.Errorf("http_request: url is required")
-				}
-				if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-					return "", fmt.Errorf("http_request: only http/https URLs are supported")
-				}
-				if err := checkSSRF(rawURL, e.ssrfProtection, e.allowPrivateHosts); err != nil {
-					return "", err
-				}
-				valid := map[string]bool{"GET": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "HEAD": true}
-				if !valid[method] {
-					return "", fmt.Errorf("http_request: unsupported method %q", method)
-				}
-
-				bodyStr := argString(args, "body")
-				var bodyReader io.Reader
-				if bodyStr != "" {
-					bodyReader = strings.NewReader(bodyStr)
-				}
-
-				req, err := http.NewRequestWithContext(ctx, method, rawURL, bodyReader)
-				if err != nil {
-					return "", fmt.Errorf("http_request: build request: %w", err)
-				}
-				req.Header.Set("User-Agent", "Soulacy/1.0")
-				if bodyStr != "" {
-					ct := argStringDefault(args, "content_type", "application/json")
-					req.Header.Set("Content-Type", ct)
-				}
-				if hdrs, ok := args["headers"].(map[string]any); ok {
-					for k, v := range hdrs {
-						if vs, ok := v.(string); ok {
-							req.Header.Set(k, vs)
-						}
-					}
-				}
-
-				client := &http.Client{Timeout: 30 * time.Second}
-				resp, err := client.Do(req)
-				if err != nil {
-					return "", fmt.Errorf("http_request: request failed: %w", err)
-				}
-				defer resp.Body.Close()
-
-				respBody, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
-				if err != nil {
-					return "", fmt.Errorf("http_request: read response: %w", err)
-				}
-				return fmt.Sprintf("Status: %d %s\nContent-Type: %s\n\n%s",
-					resp.StatusCode, resp.Status,
-					resp.Header.Get("Content-Type"),
-					string(respBody),
-				), nil
-			},
-		},
-		{
-			Name:        "find_files",
-			Gate:        "",
-			Description: "Recursively search for files under a directory by filename glob pattern and/or content regex. Returns matching file paths. Useful for locating config files, finding where a package is installed, or grepping across source trees.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"path": map[string]any{
-						"type":        "string",
-						"description": "Root directory to search (supports ~ and $VAR expansion)",
-					},
-					"name_pattern": map[string]any{
-						"type":        "string",
-						"description": "Glob pattern matched against the filename only (e.g. '*.yaml', 'config.*', 'SOUL.yaml')",
-					},
-					"content_pattern": map[string]any{
-						"type":        "string",
-						"description": "Regular expression matched against file contents",
-					},
-					"max_results": map[string]any{
-						"type":        "integer",
-						"description": "Maximum number of results to return (default 50)",
-					},
-				},
-				"required": []string{"path"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				searchPath := os.ExpandEnv(argString(args, "path"))
-				if strings.HasPrefix(searchPath, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						searchPath = filepath.Join(home, searchPath[2:])
-					}
-				}
-
-				namePattern := argString(args, "name_pattern")
-				contentPattern := argString(args, "content_pattern")
-				maxResults := argInt(args, "max_results", 50)
-				if maxResults <= 0 {
-					maxResults = 50
-				}
-
-				var contentRe *regexp.Regexp
-				if contentPattern != "" {
-					var err error
-					contentRe, err = regexp.Compile(contentPattern)
-					if err != nil {
-						return "", fmt.Errorf("find_files: invalid content_pattern: %w", err)
-					}
-				}
-
-				var results []string
-				_ = filepath.Walk(searchPath, func(p string, info os.FileInfo, err error) error {
-					if err != nil || info.IsDir() {
-						return nil
-					}
-					select {
-					case <-ctx.Done():
-						return filepath.SkipAll
-					default:
-					}
-					if len(results) >= maxResults {
-						return filepath.SkipAll
-					}
-					if namePattern != "" {
-						matched, _ := filepath.Match(namePattern, filepath.Base(p))
-						if !matched {
-							return nil
-						}
-					}
-					if contentRe != nil {
-						data, readErr := os.ReadFile(p)
-						if readErr != nil {
-							return nil
-						}
-						if !contentRe.Match(data) {
-							return nil
-						}
-					}
-					results = append(results, p)
-					return nil
-				})
-
-				if len(results) == 0 {
-					return "No files found matching the criteria.", nil
-				}
-				return strings.Join(results, "\n"), nil
-			},
-		},
-		{
-			Name:        "env_get",
-			Gate:        "",
-			Description: "Read environment variables. Pass a variable name to get its value, or omit to list all environment variables. Useful for checking API keys, PATH, HOME, or any runtime configuration.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"name": map[string]any{
-						"type":        "string",
-						"description": "Variable name to look up (omit to return all)",
-					},
-				},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				name := strings.TrimSpace(argString(args, "name"))
-				if name != "" {
-					val := os.Getenv(name)
-					if val == "" {
-						return fmt.Sprintf("%s=(not set)", name), nil
-					}
-					return fmt.Sprintf("%s=%s", name, val), nil
-				}
-				// Return all env vars, sorted for readability
-				all := os.Environ()
-				sort.Strings(all)
-				return strings.Join(all, "\n"), nil
-			},
-		},
-		{
-			Name:        "sys_info",
-			Gate:        "",
-			Description: "Return system information: operating system, CPU architecture, hostname, current user home directory, working directory, Go runtime version, and PATH. Useful for understanding the host environment before running commands.",
-			Parameters: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				hostname, _ := os.Hostname()
-				home, _ := os.UserHomeDir()
-				cwd, _ := os.Getwd()
-
-				// Get current user via id command (works on macOS and Linux)
-				userStr := os.Getenv("USER")
-				if userStr == "" {
-					userStr = os.Getenv("LOGNAME")
-				}
-				if userStr == "" {
-					if out, err := exec.Command("id", "-un").Output(); err == nil {
-						userStr = strings.TrimSpace(string(out))
-					}
-				}
-
-				return fmt.Sprintf(
-					"OS: %s\nArch: %s\nHostname: %s\nUser: %s\nHome: %s\nCWD: %s\nPATH: %s\nGo: %s",
-					goruntime.GOOS,
-					goruntime.GOARCH,
-					hostname,
-					userStr,
-					home,
-					cwd,
-					os.Getenv("PATH"),
-					goruntime.Version(),
-				), nil
-			},
-		},
-		{
-			Name:        "download_file",
-			Gate:        "",
-			Description: "Download a file from a URL and save it to a local path. Unlike fetch_url (which returns text), this writes the raw bytes to disk — ideal for archives (.zip, .tar.gz), binaries, images, and any non-text content.",
-			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"url": map[string]any{
-						"type":        "string",
-						"description": "The URL to download (http or https)",
-					},
-					"dest_path": map[string]any{
-						"type":        "string",
-						"description": "Local file path to write the download to (supports ~ and $VAR expansion). Parent directories are created as needed.",
-					},
-				},
-				"required": []string{"url", "dest_path"},
-			},
-			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				rawURL := strings.TrimSpace(argString(args, "url"))
-				if rawURL == "" {
-					return "", fmt.Errorf("download_file: url is required")
-				}
-				if !strings.HasPrefix(rawURL, "http://") && !strings.HasPrefix(rawURL, "https://") {
-					return "", fmt.Errorf("download_file: only http/https URLs are supported")
-				}
-				if err := checkSSRF(rawURL, e.ssrfProtection, e.allowPrivateHosts); err != nil {
-					return "", err
-				}
-
-				destPath := os.ExpandEnv(argString(args, "dest_path"))
-				if strings.HasPrefix(destPath, "~/") {
-					if home, err := os.UserHomeDir(); err == nil {
-						destPath = filepath.Join(home, destPath[2:])
-					}
-				}
-				if destPath == "" {
-					return "", fmt.Errorf("download_file: dest_path is required")
-				}
-				if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-					return "", fmt.Errorf("download_file: create dirs: %w", err)
-				}
-
-				req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-				if err != nil {
-					return "", fmt.Errorf("download_file: build request: %w", err)
-				}
-				req.Header.Set("User-Agent", "Soulacy/1.0")
-
-				client := &http.Client{Timeout: 5 * time.Minute} // longer timeout for large files
-				resp, err := client.Do(req)
-				if err != nil {
-					return "", fmt.Errorf("download_file: request failed: %w", err)
-				}
-				defer resp.Body.Close()
-
-				if resp.StatusCode >= 400 {
-					return "", fmt.Errorf("download_file: HTTP %d from %s", resp.StatusCode, rawURL)
-				}
-
-				f, err := os.Create(destPath)
-				if err != nil {
-					return "", fmt.Errorf("download_file: create file: %w", err)
-				}
-				defer f.Close()
-
-				n, err := io.Copy(f, resp.Body)
-				if err != nil {
-					return "", fmt.Errorf("download_file: write: %w", err)
-				}
-				return fmt.Sprintf("Downloaded %d bytes → %s", n, destPath), nil
-			},
-		},
+// safeSystemTools returns only the read-only OS-level built-ins (the SAFE
+// partition). Always available regardless of allow_system_tools / capabilities.
+func (e *Engine) safeSystemTools() []BuiltinTool {
+	all := e.buildSystemTools()
+	out := all[:0:0]
+	for _, b := range all {
+		if !isPrivilegedSystemTool(b.Name) {
+			out = append(out, b)
+		}
 	}
+	return out
+}
+
+// systemToolsFor returns the OS-level built-ins this agent may use. The SAFE
+// partition is always included; the privileged SYSTEM partition is added only
+// when the server permits system tools AND the agent has the "system"
+// capability (SEC-3 double opt-in). When privileged tools are excluded the
+// caller still won't dispatch them — gating is centralised here.
+func (e *Engine) systemToolsFor(def *agent.Definition) []BuiltinTool {
+	all := e.buildSystemTools()
+	allowPrivileged := e.allowSystemTools && def != nil && def.HasCapability("system")
+	out := make([]BuiltinTool, 0, len(all))
+	for _, b := range all {
+		if isPrivilegedSystemTool(b.Name) && !allowPrivileged {
+			continue
+		}
+		out = append(out, b)
+	}
+	return out
+}
+
+// buildSystemTools returns the FULL set of OS-level built-in tools (both the
+// SAFE and SYSTEM partitions). This is the canonical catalog; callers that
+// need gating use safeSystemTools / systemToolsFor instead of this directly.
+//
+// WARNING: the SYSTEM-partition tools (see privilegedSystemTools) execute
+// arbitrary shell commands and write files on the host. They are only offered
+// to agents that pass the SEC-3 double opt-in.
+func (e *Engine) buildSystemTools() []BuiltinTool {
+	// ARCH-2: the tool definitions now live in per-domain files
+	// (engine_tools_shell.go, engine_tools_files.go, engine_tools_http.go,
+	// engine_tools_misc.go). This concatenates them into the canonical
+	// full catalog. The SEC-3 SAFE/SYSTEM partition is applied by callers
+	// (safeSystemTools / systemToolsFor) via privilegedSystemTools, not here.
+	out := make([]BuiltinTool, 0, 12)
+	out = append(out, e.buildShellTools()...)
+	out = append(out, e.buildFileTools()...)
+	out = append(out, e.buildHTTPTools()...)
+	out = append(out, e.buildMiscTools()...)
+	return out
 }
 
 // ollamaWebSearch implements the built-in web_search tool via the Ollama Web
@@ -1853,6 +1221,19 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// Retrieve or create session
 	sess := e.getOrCreateSession(msg.SessionID, msg.AgentID)
 
+	// PERF-1: mark the session as actively in use for the duration of this
+	// Handle call so the eviction sweep never reclaims a mid-conversation
+	// session. lastAccess was already bumped by getOrCreateSession.
+	sess.mu.Lock()
+	sess.inUse++
+	sess.mu.Unlock()
+	defer func() {
+		sess.mu.Lock()
+		sess.inUse--
+		sess.lastAccess = time.Now().UTC()
+		sess.mu.Unlock()
+	}()
+
 	// ── Passphrase gate ───────────────────────────────────────────────────────
 	// Enforced in Go before the LLM is ever invoked. The model cannot bypass
 	// this check regardless of prompt injection or instruction following.
@@ -1900,18 +1281,20 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	}
 
 	// Persist inbound message to memory
-	_ = e.memory.Write(memory.Entry{
+	if err := e.memory.Write(memory.Entry{
 		AgentID: msg.AgentID, SessionID: msg.SessionID,
 		Scope:   memory.ScopeSession,
 		Content: fmt.Sprintf("[%s] %s", msg.Username, flattenParts(msg.Parts)),
-	})
+	}); err != nil {
+		e.log.Warn("memory write failed (inbound)", zap.String("agent", msg.AgentID), zap.Error(err))
+	}
 
 	// Prime the prefix cache for this Handle. Cleared on exit so a
 	// hot-reload between user messages picks up the new def's catalogs.
 	// (PRODUCTION_AUDIT → MED/Engine.)
 	sysPrefix := e.buildSystemPrefix(def)
 	sess.mu.Lock()
-	sess.History = append(sess.History, llm.ChatMessage{
+	e.appendHistoryLocked(sess, llm.ChatMessage{
 		Role: "user", Content: flattenParts(msg.Parts),
 	})
 	sess.cachedPrefix = sysPrefix
@@ -2140,14 +1523,15 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		// sess.mu itself, and Go mutexes are not reentrant, so holding it here
 		// would deadlock the agent on its second turn (any tool-using agent).
 		sess.mu.Lock()
-		sess.History = append(sess.History,
-			llm.ChatMessage{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls},
-		)
+		turns := []llm.ChatMessage{
+			{Role: "assistant", Content: resp.Content, ToolCalls: resp.ToolCalls},
+		}
 		for _, tr := range toolResults {
-			sess.History = append(sess.History, llm.ChatMessage{
+			turns = append(turns, llm.ChatMessage{
 				Role: "tool", Content: tr.Content, ToolCallID: tr.CallID, Name: tr.Name,
 			})
 		}
+		e.appendHistoryLocked(sess, turns...)
 		sess.mu.Unlock()
 
 		chatMsgs = e.buildContext(def, sess, msg) // rebuild with tool results
@@ -2200,17 +1584,19 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess *Session, msg message.Message, finalContent string) message.Message {
 	// Append final assistant response to the in-memory session history
 	sess.mu.Lock()
-	sess.History = append(sess.History, llm.ChatMessage{
+	e.appendHistoryLocked(sess, llm.ChatMessage{
 		Role: "assistant", Content: finalContent,
 	})
 	sess.mu.Unlock()
 
 	// Persist reply to session memory
-	_ = e.memory.Write(memory.Entry{
+	if err := e.memory.Write(memory.Entry{
 		AgentID: msg.AgentID, SessionID: msg.SessionID,
 		Scope:   memory.ScopeSession,
 		Content: fmt.Sprintf("[%s] %s", def.Name, finalContent),
-	})
+	}); err != nil {
+		e.log.Warn("memory write failed (reply)", zap.String("agent", msg.AgentID), zap.Error(err))
+	}
 
 	// RL-09: persist task + reply as an episodic brain memory record.
 	// Fires when brainStore is wired and either (a) episodic is explicitly enabled,
@@ -2221,7 +1607,9 @@ func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess 
 	if e.brainStore != nil && episodicOn {
 		taskInput := flattenParts(msg.Parts)
 		rec := agentmemory.ResultToEpisodicRecord(msg.AgentID, taskInput, finalContent, nil)
-		_ = e.brainStore.Write(rec)
+		if err := e.brainStore.Write(rec); err != nil {
+			e.log.Warn("brain memory write failed", zap.String("agent", msg.AgentID), zap.Error(err))
+		}
 	}
 
 	reply := message.Message{
@@ -2392,11 +1780,243 @@ func (e *Engine) getOrCreateSession(sessionID, agentID string) *Session {
 	// the Writer agent reproducing real filenames from prior RAG Demo runs even
 	// though no tool was called. The (agent, session) tuple isolates per-agent
 	// conversation state cleanly.
+	now := time.Now().UTC()
 	key := agentID + "|" + sessionID
 	val, _ := e.sessions.LoadOrStore(key, &Session{
-		ID: sessionID, AgentID: agentID, CreatedAt: time.Now().UTC(),
+		ID: sessionID, AgentID: agentID, CreatedAt: now, lastAccess: now,
 	})
-	return val.(*Session)
+	sess := val.(*Session)
+	// Refresh the idle timer on every access so the eviction sweep (PERF-1)
+	// never reclaims a session that is being touched.
+	sess.mu.Lock()
+	sess.lastAccess = now
+	sess.mu.Unlock()
+	return sess
+}
+
+// ── PERF-1: session eviction ────────────────────────────────────────────────
+
+// SetSessionEviction configures the TTL + max-count eviction policy. ttl<=0
+// falls back to defaultSessionTTL (24h); maxSessions<=0 falls back to
+// defaultMaxSessions. Safe to call once at startup before StartSessionEviction.
+func (e *Engine) SetSessionEviction(ttl time.Duration, maxSessions int) {
+	if ttl <= 0 {
+		ttl = defaultSessionTTL
+	}
+	if maxSessions <= 0 {
+		maxSessions = defaultMaxSessions
+	}
+	e.sessionTTL = ttl
+	e.maxSessions = maxSessions
+}
+
+// StartSessionEviction launches the background sweep goroutine that reclaims
+// idle/excess sessions. The sweep runs every interval (clamped so a tiny TTL
+// doesn't busy-loop). Idempotent: only the first call starts a sweeper. Call
+// StopSessionEviction (or cancel via the returned stop) at shutdown.
+func (e *Engine) StartSessionEviction(interval time.Duration) {
+	e.evictOnce.Do(func() {
+		if e.sessionTTL <= 0 {
+			e.sessionTTL = defaultSessionTTL
+		}
+		if e.maxSessions <= 0 {
+			e.maxSessions = defaultMaxSessions
+		}
+		if interval <= 0 {
+			interval = e.sessionTTL / 12 // ~every 2h for the 24h default
+		}
+		if interval < time.Second {
+			interval = time.Second
+		}
+		e.evictStop = make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(interval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-e.evictStop:
+					return
+				case <-ticker.C:
+					e.sweepSessions(time.Now().UTC())
+				}
+			}
+		}()
+	})
+}
+
+// StopSessionEviction halts the background sweep goroutine, if running.
+func (e *Engine) StopSessionEviction() {
+	if e.evictStop != nil {
+		select {
+		case <-e.evictStop:
+			// already closed
+		default:
+			close(e.evictStop)
+		}
+	}
+}
+
+// sweepSessions performs one eviction pass at wall-clock time `now`:
+//   - any session idle longer than sessionTTL is evicted (unless in use), and
+//   - if the live count still exceeds maxSessions, the oldest-idle sessions
+//     are evicted until the count is back under the cap.
+//
+// A session with inUse > 0 is NEVER evicted — mid-conversation sessions are
+// always retained. Returns the number of sessions evicted (used by tests).
+func (e *Engine) sweepSessions(now time.Time) int {
+	ttl := e.sessionTTL
+	if ttl <= 0 {
+		ttl = defaultSessionTTL
+	}
+	maxSessions := e.maxSessions
+	if maxSessions <= 0 {
+		maxSessions = defaultMaxSessions
+	}
+
+	type liveSess struct {
+		key  string
+		sess *Session
+		idle time.Time
+	}
+	var live []liveSess
+	evicted := 0
+
+	// Pass 1: TTL-based eviction; collect survivors for the count cap.
+	e.sessions.Range(func(k, v any) bool {
+		key := k.(string)
+		sess := v.(*Session)
+		sess.mu.Lock()
+		inUse := sess.inUse
+		last := sess.lastAccess
+		sess.mu.Unlock()
+
+		if inUse > 0 {
+			// Mid-conversation — never evict.
+			return true
+		}
+		if now.Sub(last) >= ttl {
+			e.evictSession(key, sess)
+			evicted++
+			return true
+		}
+		live = append(live, liveSess{key: key, sess: sess, idle: last})
+		return true
+	})
+
+	// Pass 2: count-cap eviction — drop oldest-idle survivors until under cap.
+	if len(live) > maxSessions {
+		sort.Slice(live, func(i, j int) bool { return live[i].idle.Before(live[j].idle) })
+		overflow := len(live) - maxSessions
+		for i := 0; i < len(live) && overflow > 0; i++ {
+			ls := live[i]
+			// Re-check in-use under lock — a session may have become active
+			// between the two passes.
+			ls.sess.mu.Lock()
+			inUse := ls.sess.inUse
+			ls.sess.mu.Unlock()
+			if inUse > 0 {
+				continue
+			}
+			e.evictSession(ls.key, ls.sess)
+			evicted++
+			overflow--
+		}
+	}
+
+	if evicted > 0 && e.log != nil {
+		e.log.Info("session eviction sweep", zap.Int("evicted", evicted))
+	}
+	return evicted
+}
+
+// evictSession persists the session's history (if a memory backend is present)
+// and then removes it from the in-memory map. Persist-then-evict ensures no
+// conversation context is lost when a session is reclaimed.
+func (e *Engine) evictSession(key string, sess *Session) {
+	if e.archive != nil {
+		sess.mu.Lock()
+		history := make([]llm.ChatMessage, len(sess.History))
+		copy(history, sess.History)
+		agentID := sess.AgentID
+		sessionID := sess.ID
+		sess.mu.Unlock()
+		for _, m := range history {
+			if m.Role == "system" {
+				continue
+			}
+			_ = e.archive.Archive(memory.Entry{
+				AgentID:   agentID,
+				SessionID: sessionID,
+				Scope:     memory.ScopeSession,
+				Content:   m.Role + ": " + m.Content,
+				CreatedAt: time.Now().UTC(),
+			})
+		}
+	}
+	e.sessions.Delete(key)
+}
+
+// ── PERF-2: history windowing ───────────────────────────────────────────────
+
+// SetMaxHistoryTurns configures the per-session history cap. n<=0 falls back to
+// defaultMaxHistoryTurns (100). Safe to call once at startup.
+func (e *Engine) SetMaxHistoryTurns(n int) {
+	if n <= 0 {
+		n = defaultMaxHistoryTurns
+	}
+	e.maxHistoryTurns = n
+}
+
+// historyCap returns the effective per-session history cap.
+func (e *Engine) historyCap() int {
+	if e.maxHistoryTurns <= 0 {
+		return defaultMaxHistoryTurns
+	}
+	return e.maxHistoryTurns
+}
+
+// appendHistoryLocked appends msgs to sess.History and then trims the history
+// back to the configured window. The CALLER MUST hold sess.mu — this is the
+// single funnel every history-append site goes through, so the window cap can
+// never be missed. A leading system message (index 0) is always preserved.
+func (e *Engine) appendHistoryLocked(sess *Session, msgs ...llm.ChatMessage) {
+	sess.History = append(sess.History, msgs...)
+	sess.History = trimHistory(sess.History, e.historyCap())
+}
+
+// trimHistory caps history to at most `cap` NON-system messages, dropping the
+// OLDEST non-system messages first. If history[0] is a system message, it is
+// always retained (it is not counted against the cap and never trimmed). cap<=0
+// disables trimming. The returned slice reuses the backing array where possible.
+func trimHistory(history []llm.ChatMessage, cap int) []llm.ChatMessage {
+	if cap <= 0 || len(history) == 0 {
+		return history
+	}
+
+	// Preserve a leading system message, if present.
+	var head []llm.ChatMessage
+	body := history
+	if history[0].Role == "system" {
+		head = history[:1]
+		body = history[1:]
+	}
+
+	if len(body) <= cap {
+		return history
+	}
+
+	// Keep the newest `cap` body messages.
+	trimmedBody := body[len(body)-cap:]
+	if len(head) == 0 {
+		// Compact in place to avoid retaining the dropped prefix.
+		out := make([]llm.ChatMessage, len(trimmedBody))
+		copy(out, trimmedBody)
+		return out
+	}
+	out := make([]llm.ChatMessage, 0, len(head)+len(trimmedBody))
+	out = append(out, head...)
+	out = append(out, trimmedBody...)
+	return out
 }
 
 // buildSystemPrefix renders the system prompt plus skill/knowledge/agent
@@ -2694,11 +2314,15 @@ result = getattr(mod, %q)(**args)
 _sys.stdout = _orig_stdout
 print(result if isinstance(result, str) else json.dumps(result))
 `, pyFile, funcName)
-			argv := sandbox.Wrap(e.selfPath, e.sandboxLimits, []string{e.pythonBin, "-c", script})
+			// SEC-5: scrub env to base allowlist + agent-declared names.
+			limits := e.sandboxLimits
+			limits.EnvAllow = def.Env
+			argv := sandbox.Wrap(e.selfPath, limits, []string{e.pythonBin, "-c", script})
 			tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
 			defer cancel()
 			cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
 			cmd.Stdin = bytes.NewReader(argsJSON)
+			cmd.Env = sandbox.FilteredEnv(os.Environ(), def.Env)
 			out, err := cmd.Output()
 			if err != nil {
 				return "", fmt.Errorf("plugin tool %q: %w", call.Name, err)
@@ -2739,29 +2363,32 @@ print(result if isinstance(result, str) else json.dumps(result))
 		return result, err
 	}
 
-	// Check system tools (shell_exec, run_script, etc.) if allowed
-	if e.allowSystemTools && def.SystemTools {
-		for _, b := range e.buildSystemTools() {
-			if b.Name != call.Name {
-				continue
-			}
-
-			// Confirmation gate: pause and ask the user before executing tools
-			// that are listed in def.ConfirmTools (or "*" for all built-ins).
-			if err := e.maybeConfirm(ctx, def, call); err != nil {
-				return "", err
-			}
-
-			tstart := time.Now()
-			tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
-			defer cancel()
-			result, err := b.Handler(tctx, call.Arguments)
-
-			// Audit log every built-in call.
-			e.logAudit(ctx, def, call, result, tstart, false, err)
-
-			return result, err
+	// Check system tools (SEC-3 partition). systemToolsFor returns the SAFE
+	// (read-only) built-ins unconditionally, and the privileged SYSTEM
+	// built-ins (shell_exec, run_script, install_library, write_file,
+	// download_file) only when the server permits system tools AND the agent
+	// holds the "system" capability. A privileged tool call from an agent
+	// without the capability therefore falls through to "tool not defined".
+	for _, b := range e.systemToolsFor(def) {
+		if b.Name != call.Name {
+			continue
 		}
+
+		// Confirmation gate: pause and ask the user before executing tools
+		// that are listed in def.ConfirmTools (or "*" for all built-ins).
+		if err := e.maybeConfirm(ctx, def, call); err != nil {
+			return "", err
+		}
+
+		tstart := time.Now()
+		tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+		defer cancel()
+		result, err := b.Handler(tctx, call.Arguments)
+
+		// Audit log every built-in call.
+		e.logAudit(ctx, def, call, result, tstart, false, err)
+
+		return result, err
 	}
 
 	// Find the agent's Python tool definition
@@ -2855,9 +2482,17 @@ print(result if isinstance(result, str) else json.dumps(result))
 	// caps before execve. When sandboxing is disabled OR we couldn't
 	// resolve our own binary path at boot, sandbox.Wrap returns the
 	// original argv unchanged — the engine doesn't have to branch.
-	argv := sandbox.Wrap(e.selfPath, e.sandboxLimits, []string{e.pythonBin, "-c", script})
+	//
+	// SEC-5: carry the agent's declared env allowlist into the sandbox wrapper
+	// (--env= flags) AND set cmd.Env directly so the non-sandboxed path is also
+	// scrubbed. Either way the tool sees only BaseEnvAllowlist + def.Env, never
+	// the gateway's full environment.
+	limits := e.sandboxLimits
+	limits.EnvAllow = def.Env
+	argv := sandbox.Wrap(e.selfPath, limits, []string{e.pythonBin, "-c", script})
 	cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
 	cmd.Stdin = bytes.NewReader(argsJSON)
+	cmd.Env = sandbox.FilteredEnv(os.Environ(), def.Env)
 
 	// Stream stderr line-by-line into the actionlog as `tool.log` events so
 	// the GUI/CLI can see long-running tools make progress instead of
@@ -3035,15 +2670,36 @@ func (e *Engine) allToolSchemas(def *agent.Definition, channel string) []llm.Too
 		}
 	}
 
-	// System tools — shell_exec, run_script, install_library, read_file,
-	// write_file, list_dir. Three-way guard:
-	//   (1) server must allow system tools (runtime.allow_system_tools)
-	//   (2) agent must opt in (def.SystemTools: true in SOUL.yaml)
-	//   (3) request must come via the local HTTP/web channel
-	// Bot channels (telegram, discord, slack, whatsapp) are ALWAYS excluded —
-	// this cannot be overridden by agent config alone.
-	if e.allowSystemTools && def.SystemTools && channel == "http" {
-		for _, st := range e.buildSystemTools() {
+	// System tools (SEC-3 partition). Bot channels (telegram, discord, slack,
+	// whatsapp) are ALWAYS excluded — only the local HTTP/web channel may use
+	// OS-level built-ins, and this cannot be overridden by agent config alone.
+	//
+	// Within the http channel, systemToolsFor applies the SEC-3 gating:
+	//   - SAFE (read-only) built-ins — read_file, list_dir, find_files,
+	//     fetch_url, http_request, env_get, sys_info — are always offered.
+	//   - SYSTEM (privileged) built-ins — shell_exec, run_script,
+	//     install_library, write_file, download_file — are offered ONLY when
+	//     the server permits (runtime.allow_system_tools) AND the agent
+	//     declares the "system" capability (capabilities: [system], or the
+	//     legacy system_tools: true alias).
+	//
+	// An explicit `builtins: []` (peer-only orchestrator) suppresses the
+	// ambient SAFE system tools too — an agent that opted out of ALL Go-native
+	// built-ins should not be handed read_file/list_dir/etc. behind its back.
+	// A PRIVILEGED tool, by contrast, is only ever present when the agent made
+	// a deliberate `capabilities: [system]` (or system_tools) grant, so it is
+	// NOT suppressed by builtins: [] — the explicit privileged opt-in wins.
+	// A named allowlist (`builtins: [read_file]`) admits only those names.
+	suppressSafe := def.Builtins != nil && len(*def.Builtins) == 0
+	if channel == "http" {
+		for _, st := range e.systemToolsFor(def) {
+			priv := isPrivilegedSystemTool(st.Name)
+			if !priv {
+				// SAFE tool: respect builtins: [] and any named allowlist.
+				if suppressSafe || (!wildcardBuiltins && !allow[st.Name]) {
+					continue
+				}
+			}
 			schemas = append(schemas, llm.ToolSchema{
 				Name:        st.Name,
 				Description: st.Description,
@@ -3270,14 +2926,14 @@ func (e *Engine) buildAgentCallSchemas(def *agent.Definition) []llm.ToolSchema {
 // existing peer-call path. The peer's reply becomes the router's reply.
 //
 // Matching:
-//   1. Routes are tried in declaration order; the first match wins.
-//   2. Each route has at most one effective match clause — Regex,
-//      Prefix, or any-of Contains. A route with NONE of those clauses
-//      is the "else" fallback (must be last if present).
-//   3. Match is case-insensitive for Prefix and Contains. Regex follows
-//      Go's regexp semantics (use `(?i)…` for case-insensitive patterns).
-//   4. If no route matches and no fallback exists, the router emits an
-//      error event and returns an empty reply.
+//  1. Routes are tried in declaration order; the first match wins.
+//  2. Each route has at most one effective match clause — Regex,
+//     Prefix, or any-of Contains. A route with NONE of those clauses
+//     is the "else" fallback (must be last if present).
+//  3. Match is case-insensitive for Prefix and Contains. Regex follows
+//     Go's regexp semantics (use `(?i)…` for case-insensitive patterns).
+//  4. If no route matches and no fallback exists, the router emits an
+//     error event and returns an empty reply.
 //
 // Authorization: the Target must be in the router's declared peer list
 // (def.Agents). runAgentCall enforces this independently, so a router

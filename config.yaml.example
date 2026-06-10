@@ -167,7 +167,9 @@ runtime:
     #   open_files: 256
     #   file_size_mb: 64
 
-    # Optional: write per-session tool-call audit logs as JSONL.
+    # Optional, OFF by default: also write per-session tool-call audit logs as
+    # JSONL. This is redundant debug output — the authoritative incident record
+    # is the SQLite action log (always on). See docs/security/audit.md.
     # audit_dir: /Users/yourname/.soulacy/audit
 
 # ── Server ────────────────────────────────────────────────────────────────────
@@ -204,6 +206,29 @@ server:
 #     - id: github
 #       type: git
 #       priority: 100
+
+# ── Vector memory backend ────────────────────────────────────────────────────
+# Default: "sqlite-vec" (built-in, no external service). The Qdrant backend
+# below is EXPERIMENTAL: it has no automated tests and no known production
+# users — enabling it logs a startup WARN. Prefer sqlite-vec or an external
+# sidecar (see below) for anything you depend on.
+# vector:
+#     backend: qdrant                       # EXPERIMENTAL / untested — use at your own risk
+#     url: http://localhost:6333
+#     collection: soulacy_memory
+#     api_key: ""
+#     dims: 768
+
+# ── Queue backend ─────────────────────────────────────────────────────────────
+# Default: "memory" (in-process, zero-dependency). The NATS JetStream backend
+# below is EXPERIMENTAL: it has no automated tests and no known production
+# users — enabling it logs a startup WARN. The in-memory queue is the
+# supported path; use an external sidecar (below) if you need durability.
+# queue:
+#     backend: nats                         # EXPERIMENTAL / untested — use at your own risk
+#     nats_url: nats://localhost:4222
+#     nats_stream: soulacy
+#     nats_ack_wait: 30s
 
 # ── External storage sidecars (Story E24) ────────────────────────────────────
 # Vector and queue backends can be served by a sidecar process speaking the

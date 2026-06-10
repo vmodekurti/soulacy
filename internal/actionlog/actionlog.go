@@ -21,9 +21,11 @@ package actionlog
 
 import (
 	"bufio"
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,6 +45,18 @@ const (
 	maxFileBytes = 1 << 20 // 1 MiB
 	// keepLines is how many recent lines are retained when a file is pruned.
 	keepLines = 2000
+
+	// PERF-3: rotation. The in-place prune above keeps the *active* file small
+	// (~1 MiB) for fast tailing, but the previous implementation discarded the
+	// pruned-off history entirely. Rotation instead preserves history by
+	// renaming the active file to a numbered, gzipped backup (.1.gz, .2.gz, …)
+	// once it crosses defaultMaxRotateBytes, keeping at most defaultMaxRotated
+	// backups (oldest dropped). Defaults are overridable via WithRotation.
+
+	// defaultMaxRotateBytes is the size at which a per-agent log is rotated.
+	defaultMaxRotateBytes = 50 << 20 // 50 MiB
+	// defaultMaxRotated is how many gzipped backups (.N.gz) are retained.
+	defaultMaxRotated = 5
 
 	// writerQueueSize is how many events can be buffered before Append
 	// becomes a drop (with a warn log). Sized for ~1 second of high-rate
@@ -88,13 +102,36 @@ type Logger struct {
 	// picks it up out-of-band. Buffered to avoid blocking the writer if
 	// the prune goroutine is mid-rewrite.
 	pruneRequest chan string
+
+	// PERF-3 rotation config (per-Logger so tests can use small thresholds).
+	maxRotateBytes int64
+	maxRotated     int
+}
+
+// Option configures a Logger at construction time. Defined as a variadic on
+// New so existing 3-arg callers keep compiling.
+type Option func(*Logger)
+
+// WithRotation overrides the action-log rotation policy: maxBytes is the size
+// at which the active per-agent log is rotated into a gzipped backup, and
+// maxBackups is how many .N.gz backups are retained (oldest dropped). Values
+// <= 0 leave the corresponding default in place.
+func WithRotation(maxBytes int64, maxBackups int) Option {
+	return func(l *Logger) {
+		if maxBytes > 0 {
+			l.maxRotateBytes = maxBytes
+		}
+		if maxBackups > 0 {
+			l.maxRotated = maxBackups
+		}
+	}
 }
 
 // New creates a Logger. dir is the per-agent log directory (created if missing);
 // dbPath is the SQLite database for durable event history. The async writer
 // goroutine is started before New returns; callers must invoke Close() on
 // shutdown to flush any pending events.
-func New(dir, dbPath string, log *zap.Logger) (*Logger, error) {
+func New(dir, dbPath string, log *zap.Logger, opts ...Option) (*Logger, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, fmt.Errorf("actionlog: create dir %s: %w", dir, err)
 	}
@@ -119,12 +156,17 @@ func New(dir, dbPath string, log *zap.Logger) (*Logger, error) {
 		return nil, fmt.Errorf("actionlog: schema version: %w", err)
 	}
 	l := &Logger{
-		dir:          dir,
-		db:           db,
-		log:          log,
-		queue:        make(chan message.Event, writerQueueSize),
-		pruneRequest: make(chan string, 64),
-		stop:         make(chan struct{}),
+		dir:            dir,
+		db:             db,
+		log:            log,
+		queue:          make(chan message.Event, writerQueueSize),
+		pruneRequest:   make(chan string, 64),
+		stop:           make(chan struct{}),
+		maxRotateBytes: defaultMaxRotateBytes,
+		maxRotated:     defaultMaxRotated,
+	}
+	for _, opt := range opts {
+		opt(l)
 	}
 	l.wg.Add(2)
 	go l.run()
@@ -298,7 +340,24 @@ func (l *Logger) writeDBBatch(events []message.Event) {
 	}
 }
 
+// tailBlockSize is the chunk size used by Tail when reading a log file
+// backwards from the end. 64 KiB comfortably holds many JSONL lines per read
+// while keeping a single reusable buffer small.
+const tailBlockSize = 64 * 1024
+
 // Tail returns the most recent events for an agent from its log file, oldest-first.
+//
+// PERF-4: this reads the file BACKWARDS in fixed-size blocks (seeking from the
+// end) and stops as soon as it has collected `limit` lines, so memory and I/O
+// are O(limit) rather than O(file size). Behaviour and signature are unchanged
+// from the previous whole-file implementation: blank lines are skipped, lines
+// that fail to JSON-unmarshal are dropped, and the result is oldest-first.
+//
+// Scope: Tail reads the CURRENT active log file only. If rotation (PERF-3) has
+// split older history into <agent>.log.N.gz backups, those are intentionally
+// not traversed here — the active file is what the GUI polls, and reaching back
+// into compressed backups would defeat the O(limit) goal. Callers needing full
+// history should query SQLite (agent_events) instead.
 func (l *Logger) Tail(agentID string, limit int) ([]message.Event, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 500
@@ -314,20 +373,62 @@ func (l *Logger) Tail(agentID string, limit int) ([]message.Event, error) {
 	}
 	defer f.Close()
 
-	var lines []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1024*1024), 1024*1024)
-	for sc.Scan() {
-		if t := sc.Text(); strings.TrimSpace(t) != "" {
-			lines = append(lines, t)
-		}
-	}
-	if err := sc.Err(); err != nil {
+	info, err := f.Stat()
+	if err != nil {
 		return nil, err
 	}
-	if len(lines) > limit {
-		lines = lines[len(lines)-limit:]
+	size := info.Size()
+
+	// Collect up to `limit` lines reading backwards. `lines` holds them in
+	// reverse (newest-first) order; we flip to oldest-first at the end.
+	lines := make([]string, 0, limit)
+	buf := make([]byte, tailBlockSize)
+	// `carry` is the partial first line of the most-recently-read block: its
+	// start hasn't been seen yet because it continues into the previous block.
+	var carry []byte
+	pos := size
+
+	for pos > 0 && len(lines) < limit {
+		readSize := int64(tailBlockSize)
+		if pos < readSize {
+			readSize = pos
+		}
+		pos -= readSize
+		if _, err := f.ReadAt(buf[:readSize], pos); err != nil && err != io.EOF {
+			return nil, err
+		}
+		// Prepend this block to any carry from the previous (later) block.
+		chunk := make([]byte, 0, int(readSize)+len(carry))
+		chunk = append(chunk, buf[:readSize]...)
+		chunk = append(chunk, carry...)
+
+		// Split into lines. The segment before the first '\n' is incomplete
+		// unless we've reached the start of the file (pos == 0); hold it as the
+		// new carry to be completed by the next (earlier) block.
+		var start int
+		if pos > 0 {
+			if nl := indexByte(chunk, '\n'); nl >= 0 {
+				carry = append(carry[:0], chunk[:nl]...)
+				start = nl + 1
+			} else {
+				// No newline in the whole accumulated chunk yet — keep buffering.
+				carry = append(carry[:0], chunk...)
+				continue
+			}
+		} else {
+			carry = carry[:0]
+			start = 0
+		}
+
+		// Emit complete lines from `start` to end, newest-first.
+		emitLinesReverse(chunk[start:], &lines, limit)
 	}
+
+	// Reverse to oldest-first and clamp (we may have collected exactly limit).
+	if len(lines) > limit {
+		lines = lines[:limit]
+	}
+	reverseStrings(lines)
 
 	events := make([]message.Event, 0, len(lines))
 	for _, ln := range lines {
@@ -337,6 +438,49 @@ func (l *Logger) Tail(agentID string, limit int) ([]message.Event, error) {
 		}
 	}
 	return events, nil
+}
+
+// emitLinesReverse splits data on '\n' and appends non-blank lines to *lines in
+// reverse (last line first), stopping once *lines reaches limit. Used by Tail
+// while walking the file backwards so the newest lines accumulate first.
+func emitLinesReverse(data []byte, lines *[]string, limit int) {
+	// Walk from the end so the newest line in this block is appended first.
+	end := len(data)
+	for end > 0 && len(*lines) < limit {
+		nl := lastIndexByte(data[:end], '\n')
+		seg := data[nl+1 : end]
+		if t := strings.TrimSpace(string(seg)); t != "" {
+			*lines = append(*lines, t)
+		}
+		if nl < 0 {
+			break
+		}
+		end = nl
+	}
+}
+
+func indexByte(b []byte, c byte) int {
+	for i := 0; i < len(b); i++ {
+		if b[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+func lastIndexByte(b []byte, c byte) int {
+	for i := len(b) - 1; i >= 0; i-- {
+		if b[i] == c {
+			return i
+		}
+	}
+	return -1
+}
+
+func reverseStrings(s []string) {
+	for i, j := 0, len(s)-1; i < j; i, j = i+1, j-1 {
+		s[i], s[j] = s[j], s[i]
+	}
 }
 
 // IncompleteMessageIns returns the payload JSON of every message.in event
@@ -494,6 +638,7 @@ func (l *Logger) pruneLoop() {
 			pending[path] = struct{}{}
 		case <-tick.C:
 			for path := range pending {
+				l.rotateIfLarge(path)
 				l.pruneIfLarge(path)
 			}
 			pending = make(map[string]struct{})
@@ -509,6 +654,7 @@ func (l *Logger) pruneLoop() {
 				}
 			}
 			for path := range pending {
+				l.rotateIfLarge(path)
 				l.pruneIfLarge(path)
 			}
 			return
@@ -545,6 +691,96 @@ func (l *Logger) pruneIfLarge(path string) {
 		return
 	}
 	_ = os.Rename(tmp, path)
+}
+
+// rotateIfLarge implements PERF-3 size-based rotation. When the active log
+// (path) grows past l.maxRotateBytes it is rotated:
+//
+//	path.(N-1).gz → path.N.gz   (shift existing backups up, oldest dropped)
+//	path          → path.1.gz   (compress the current file into the newest slot)
+//	path                         (recreated empty so appends continue)
+//
+// At most l.maxRotated gzipped backups are kept; any beyond that (including a
+// rotated-out path.(maxRotated+1).gz) are deleted, bounding total disk use.
+//
+// Rotation runs in the prune goroutine, off the agent hot path. It is a no-op
+// when the file is missing, under threshold, or rotation is disabled
+// (maxRotateBytes <= 0 / maxRotated <= 0).
+func (l *Logger) rotateIfLarge(path string) {
+	if l.maxRotateBytes <= 0 || l.maxRotated <= 0 {
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() < l.maxRotateBytes {
+		return
+	}
+
+	// Shift existing backups up by one, dropping anything that would exceed
+	// the retention count. Walk from the oldest down so renames don't clobber.
+	// We also remove a would-be path.(maxRotated+1).gz to bound disk use even
+	// if maxRotated shrank between runs.
+	if old := l.rotatedPath(path, l.maxRotated+1); fileExists(old) {
+		_ = os.Remove(old)
+	}
+	for i := l.maxRotated; i >= 1; i-- {
+		src := l.rotatedPath(path, i)
+		if !fileExists(src) {
+			continue
+		}
+		if i == l.maxRotated {
+			// This is the oldest retained slot; it gets evicted.
+			_ = os.Remove(src)
+			continue
+		}
+		_ = os.Rename(src, l.rotatedPath(path, i+1))
+	}
+
+	// Compress the active file into the newest backup slot (.1.gz), then
+	// truncate the active file so appends resume into an empty log.
+	if err := gzipFile(path, l.rotatedPath(path, 1)); err != nil {
+		l.log.Warn("actionlog: rotate gzip", zap.String("path", path), zap.Error(err))
+		return
+	}
+	if err := os.Truncate(path, 0); err != nil {
+		l.log.Warn("actionlog: rotate truncate", zap.String("path", path), zap.Error(err))
+	}
+}
+
+// rotatedPath returns the backup name for the Nth rotation of path, e.g.
+// "<agent>.log.1.gz". N starts at 1 (newest).
+func (l *Logger) rotatedPath(path string, n int) string {
+	return fmt.Sprintf("%s.%d.gz", path, n)
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+// gzipFile writes a gzip-compressed copy of src to dst (overwriting dst).
+func gzipFile(src, dst string) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cerr := out.Close(); cerr != nil && err == nil {
+			err = cerr
+		}
+	}()
+
+	gw := gzip.NewWriter(out)
+	if _, err := io.Copy(gw, in); err != nil {
+		_ = gw.Close()
+		return err
+	}
+	return gw.Close()
 }
 
 // Close stops the writer goroutine, drains any pending events, and releases

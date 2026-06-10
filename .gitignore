@@ -48,19 +48,26 @@ coverage.html
 
 # ── Internal dev & session artifacts (not useful for contributors) ────────────
 docs/SESSION_HANDOFF.md
+SESSION_HANDOFF.md
 docs/PRODUCTION_AUDIT.md
 docs/REGRESSION_TESTING.md
 docs/*.html
+
+# ── Runtime workspace / WhatsApp session keys (NEVER commit — SEC-2) ───────────
+.soulacy/
 
 # ── Node / frontend tooling ───────────────────────────────────────────────────
 node_modules/
 gui/node_modules/
 gui/vite.config.js.timestamp-*
 
-# ── Personal convenience scripts ─────────────────────────────────────────────
-build-and-restart.command
+# ── Personal convenience scripts (never commit — HYG-2/HYG-3) ────────────────
+*.command
+deploy.sh
 reinstall.sh
-session*.command
+reinstall-from-scratch.command
+run_memory_tests.sh
+run-story1-tests.command
 
 # ── Agent configs (installation-specific, never commit) ──────────────────────
 examples/agents/*

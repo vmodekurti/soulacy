@@ -15,6 +15,7 @@ import (
 // ── safeChannelsView: known channel spec secrets redacted ─────────────────────
 
 func TestSafeChannelsView_TelegramTokenRedacted(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	out := safeChannelsView(map[string]map[string]any{
 		"telegram": {
 			"enabled":  true,
@@ -35,6 +36,7 @@ func TestSafeChannelsView_TelegramTokenRedacted(t *testing.T) {
 }
 
 func TestSafeChannelsView_SlackAndWhatsAppSecretsRedacted(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	out := safeChannelsView(map[string]map[string]any{
 		"slack": {
 			"bot_token": "xoxb-real",
@@ -65,6 +67,7 @@ func TestSafeChannelsView_SlackAndWhatsAppSecretsRedacted(t *testing.T) {
 // ── safeChannelsView: empty secrets stay empty (not masked as set) ────────────
 
 func TestSafeChannelsView_EmptySecretNotMasked(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	out := safeChannelsView(map[string]map[string]any{
 		"telegram": {"token": "", "agent_id": "a"},
 	})
@@ -76,6 +79,7 @@ func TestSafeChannelsView_EmptySecretNotMasked(t *testing.T) {
 // ── safeChannelsView: bots list secrets redacted ──────────────────────────────
 
 func TestSafeChannelsView_BotListSecretsRedacted(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	out := safeChannelsView(map[string]map[string]any{
 		"telegram": {
 			"bots": []any{
@@ -104,6 +108,7 @@ func TestSafeChannelsView_BotListSecretsRedacted(t *testing.T) {
 // ── safeChannelsView: unknown channel types use generic heuristic ─────────────
 
 func TestSafeChannelsView_UnknownChannelGenericRedaction(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	out := safeChannelsView(map[string]map[string]any{
 		"customhook": {
 			"webhook_secret": "shhh-real",
@@ -126,6 +131,7 @@ func TestSafeChannelsView_UnknownChannelGenericRedaction(t *testing.T) {
 // ── safeChannelsView: does not mutate the live config map ─────────────────────
 
 func TestSafeChannelsView_DoesNotMutateSource(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	src := map[string]map[string]any{
 		"telegram": {"token": "111:real"},
 	}
@@ -138,6 +144,7 @@ func TestSafeChannelsView_DoesNotMutateSource(t *testing.T) {
 // ── isSecretChannelKey ─────────────────────────────────────────────────────────
 
 func TestIsSecretChannelKey_SpecAuthoritative(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	spec := channelSpecByID("telegram")
 	if spec == nil {
 		t.Fatal("telegram spec missing")
@@ -154,6 +161,7 @@ func TestIsSecretChannelKey_SpecAuthoritative(t *testing.T) {
 }
 
 func TestIsSecretChannelKey_GenericFallback(t *testing.T) {
+	t.Parallel() // TEST-4: pure redaction logic, no shared state.
 	cases := map[string]bool{
 		"webhook_secret": true,
 		"access_token":   true,
