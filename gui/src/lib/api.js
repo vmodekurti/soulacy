@@ -138,6 +138,14 @@ export const api = {
     patch: (patch) => apiFetch('/config', { method: 'PATCH', body: JSON.stringify(patch) }),
   },
 
+  // Encrypted secret slots stored in the workspace vault (~/.soulacy/soulspace).
+  // The catalog never carries values — `set` is a bool flag only.
+  secrets: {
+    list:   ()             => apiFetch('/secrets'),
+    set:    (name, value)  => apiFetch(`/secrets/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+    delete: (name)         => apiFetch(`/secrets/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  },
+
   logs: {
     get: (lines = 500, filter = '') => {
       const params = new URLSearchParams()

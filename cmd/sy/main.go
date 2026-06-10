@@ -121,6 +121,7 @@ Quick start:
 		buildPullCmd(),      // sy pull — agent marketplace
 		buildEvalCmd(),      // sy eval — evaluation framework
 		buildRegistryCmd(),  // sy registry — review + manage skill sources (E26)
+		buildSecretsCmd(),   // sy secrets — manage the gateway-global secrets store
 		buildVersionCmd(),
 	)
 	return root

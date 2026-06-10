@@ -14,6 +14,7 @@
   import Schedule   from './pages/Schedule.svelte'
   import Skills     from './pages/Skills.svelte'
   import Providers  from './pages/Providers.svelte'
+  import Secrets    from './pages/Secrets.svelte'
   import MCP        from './pages/MCP.svelte'
   import Activity   from './pages/Activity.svelte'
   import Config     from './pages/Config.svelte'
@@ -46,6 +47,7 @@
     { id: 'mcp',       icon: '🔌', label: 'MCP',        group: 'ops'     },
     { id: 'pluginmgr', icon: '🧱', label: 'Plugins',    group: 'ops'     },
     { id: 'providers', icon: '⚙', label: 'Providers',  group: 'ops'     },
+    { id: 'secrets',   icon: '🔑', label: 'Secrets',    group: 'ops'     },
     { id: 'activity',  icon: '📈', label: 'Activity',   group: 'system'  },
     { id: 'config',    icon: '≡', label: 'Config',      group: 'system'  },
     { id: 'logs',      icon: '📋', label: 'Logs',       group: 'system'  },
@@ -201,6 +203,8 @@
       <Skills />
     {:else if page === 'providers'}
       <Providers />
+    {:else if page === 'secrets'}
+      <Secrets />
     {:else if page === 'mcp'}
       <MCP />
     {:else if page === 'pluginmgr'}

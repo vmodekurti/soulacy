@@ -56,6 +56,14 @@ func (a *App) Run(parent context.Context) error {
 	// crashed previous run; live ones are recreated by their owners below.
 	a.sweepScratch(ws)
 
+	// ── Credential vault + global secrets (SEC-8) ────────────────────────────
+	// Built early so vault-stored secrets are migrated out of config.yaml and
+	// overlaid onto the in-memory config BEFORE the LLM router and channel
+	// adapters read their api_keys / tokens. Secrets live only at runtime in the
+	// encrypted vault under the workspace (~/.soulacy/soulspace/credentials.db).
+	credVault := a.wireCredentialVault(ws, stack)
+	a.wireSecrets(credVault)
+
 	// ── Agent brain memory (episodic / semantic / procedural) ────────────────
 	brainStore := a.wireBrainMemory(ws, stack)
 
@@ -216,8 +224,8 @@ func (a *App) Run(parent context.Context) error {
 		}
 	}
 
-	// ── Credential Vault ──────────────────────────────────────────────────────
-	credVault := a.wireCredentialVault(ws, stack)
+	// Credential vault + secrets were wired early (see top of Run) so config
+	// secrets are overlaid before the LLM router / channels are built.
 
 	// ── Channel Registry ─────────────────────────────────────────────────────
 	chanReg := channels.NewRegistry(512)

@@ -814,6 +814,14 @@ func (s *Server) buildApp() *fiber.App {
 		return c.JSON(fiber.Map{"versions": versions})
 	})
 
+	// --- Global Secrets Store ---
+	// Gateway-global secrets layered over the credential vault. The Manager is
+	// built per-request from s.CredentialVault() so it's nil-safe and picks up
+	// SetCredentialVault() called after New(). Values are never returned.
+	api.Get("/secrets", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleListSecrets)
+	api.Put("/secrets/:name", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleSetSecret)
+	api.Delete("/secrets/:name", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleDeleteSecret)
+
 	// --- API Key Management (admin) ---
 	api.Post("/admin/api-keys", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), func(c *fiber.Ctx) error {
 		if s.apiKeyStore == nil {

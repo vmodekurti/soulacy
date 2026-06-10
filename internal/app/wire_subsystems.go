@@ -40,11 +40,12 @@ import (
 	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/sandbox"
+	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/internal/skills"
 	"github.com/soulacy/soulacy/internal/storage"
-	"github.com/soulacy/soulacy/internal/telemetry"
 	storagepg "github.com/soulacy/soulacy/internal/storage/postgres"
 	storagesqlite "github.com/soulacy/soulacy/internal/storage/sqlite"
+	"github.com/soulacy/soulacy/internal/telemetry"
 	"github.com/soulacy/soulacy/internal/vector"
 	"github.com/soulacy/soulacy/pkg/message"
 	"github.com/soulacy/soulacy/sdk/queue"
@@ -592,6 +593,29 @@ func (a *App) wireCredentialVault(ws config.Paths, stack *closerStack) credentia
 	stack.pushClose("credential-vault", cv)
 	log.Info("credential vault ready", zap.String("path", vaultPath))
 	return cv
+}
+
+// wireSecrets (SEC-8) migrates any plaintext secrets in config.yaml into the
+// encrypted vault on first run, then overlays vault-stored secrets onto the
+// in-memory config (vault wins). Runs BEFORE the LLM router and channel
+// adapters are built so they read vault values. No-op when the vault is nil.
+func (a *App) wireSecrets(vault credentials.Vault) {
+	if vault == nil {
+		return
+	}
+	mgr := secrets.New(vault)
+	ctx := context.Background()
+	if a.cfgPath != "" {
+		if n, err := mgr.Migrate(ctx, a.cfg, a.cfgPath); err != nil {
+			a.log.Warn("secret migration failed", zap.Error(err))
+		} else if n > 0 {
+			a.log.Info("migrated plaintext secrets into encrypted vault",
+				zap.Int("count", n), zap.String("config", a.cfgPath))
+		}
+	}
+	if n := mgr.Overlay(ctx, a.cfg); n > 0 {
+		a.log.Info("applied secrets from vault", zap.Int("count", n))
+	}
 }
 
 // wirePluginContributions applies plugin manifest-v2 contributions (E7):
