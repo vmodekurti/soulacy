@@ -143,7 +143,7 @@
         break
       case 'compile.request':
         await handleStudioRequest(id, 'compile.response', () =>
-          api.studio.compile({ intent: msg.intent, answers: msg.answers }))
+          api.studio.compile({ intent: msg.intent, answers: msg.answers, catalog: msg.catalog }))
         break
       case 'test.request':
         // M5: the test bench passes richer input — optional per-node `mocks`,

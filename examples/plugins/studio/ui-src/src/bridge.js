@@ -117,7 +117,7 @@ export function bridgeRequest(op, payload = {}, timeoutMs = HOST_TIMEOUT_MS) {
 
 export const bridge = {
   catalog: () => bridgeRequest('catalog'),
-  compile: (intent, answers) => bridgeRequest('compile', { intent, answers }),
+  compile: (intent, answers, catalog) => bridgeRequest('compile', { intent, answers, catalog }),
   // M5: a test bench. `opts` may carry { mocks, assertions, mode }; only
   // present fields are sent so the backend defaults the rest.
   test: (workflow, input, opts = {}) =>

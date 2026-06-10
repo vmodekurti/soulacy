@@ -152,7 +152,11 @@ func mapTrigger(t string) agent.TriggerKind {
 	case "manual", "internal":
 		return agent.TriggerInternal
 	default:
-		return agent.TriggerChannel
+		// An unspecified/unknown trigger type must NOT default into the most
+		// exposed kind (channel). Fall back to internal (manual/programmatic)
+		// so an under-specified draft is conservative; the validate layer also
+		// warns on unknown trigger types.
+		return agent.TriggerInternal
 	}
 }
 
