@@ -16,7 +16,10 @@ export async function apiFetch(path, opts = {}) {
   if (!res.ok) {
     const body = await res.json().catch(() => ({}))
     if (res.status === 401 || res.status === 403) authRequired.set(true)
-    throw Object.assign(new Error(body.error || res.statusText), { status: res.status })
+    // Preserve the full error body alongside the status so callers can read
+    // structured fields (e.g. Studio's 409 consent fallback carries
+    // requiresConsent + consentItems beyond the human `error` string).
+    throw Object.assign(new Error(body.error || res.statusText), { status: res.status, body })
   }
   // /health bypasses auth on the server, so a success there says nothing
   // about credentials — only clear the auth-required flag on authenticated paths.
@@ -156,6 +159,9 @@ export const api = {
   // Skill sources / package registries (Story E26)
   registries: {
     list:   ()      => apiFetch('/registries'),
+    // Searches every configured (or default) skill source — natively including
+    // skills.sh. Returns { packages:[{slug,version,checksum,source,description,
+    // provider}], count }. Reused by Studio M4's `discover` bridge op.
     search: (q)     => apiFetch('/registries/search?q=' + encodeURIComponent(q)),
     probe: (url)   => apiFetch('/registries/probe', { method: 'POST', body: JSON.stringify({ url }) }),
     add:   (entry) => apiFetch('/registries', { method: 'POST', body: JSON.stringify(entry) }),
@@ -188,6 +194,113 @@ export const api = {
   voice: {
     status:    () => apiFetch('/voice/status'),
     ephemeral: () => apiFetch('/voice/ephemeral', { method: 'POST' }),
+  },
+
+  // Studio visual builder (M1 Wave 2). Called by the host bridge in
+  // PluginFrame.svelte on behalf of the sandboxed Studio plugin iframe.
+  studio: {
+    /** Compile an intent (+ optional clarifying answers) into a draft workflow. */
+    compile: ({ intent, catalog, answers } = {}) =>
+      apiFetch('/studio/compile', {
+        method: 'POST',
+        body: JSON.stringify({ intent, catalog, answers }),
+      }),
+    /**
+     * Exercise a workflow against a sample input as a test bench (M5).
+     * Optional `mocks` ({<nodeId>:<output>}) override individual node outputs,
+     * `assertions` ([{target,op,value}]) are evaluated against the trace/result,
+     * and `mode` ("dry"|"live") selects the run mode (live is gated server-side).
+     * @returns {Promise<{trace:{nodeId,kind,input,output,mocked?}[], result,
+     *                     assertions:{target,op,value,pass,detail}[], passed,
+     *                     mode, warnings?}>}
+     */
+    test: ({ workflow, input, mocks, assertions, mode } = {}) =>
+      apiFetch('/studio/test', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflow,
+          input,
+          ...(mocks ? { mocks } : {}),
+          ...(assertions ? { assertions } : {}),
+          ...(mode ? { mode } : {}),
+        }),
+      }),
+    /**
+     * Classify the workflow's capability tier and decide whether saving it
+     * would create a privileged channel exposure that needs consent.
+     * @returns {Promise<{tier, reasons:string[], requiresConsent:boolean,
+     *                     consentItems:{kind,name,reason}[]}>}
+     */
+    plan: ({ workflow } = {}) =>
+      apiFetch('/studio/plan', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+    /**
+     * Validate a draft workflow (structure, ports, branch conditions).
+     * Non-blocking: callers debounce this after compile/edits to surface
+     * errors/warnings on the canvas.
+     * @returns {Promise<{ok:boolean,
+     *                     errors:{nodeId?,edgeIndex?,message}[],
+     *                     warnings:{nodeId?,message}[]}>}
+     */
+    validate: ({ workflow } = {}) =>
+      apiFetch('/studio/validate', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+    /**
+     * Persist a workflow as a (disabled) agent. Pass acceptPrivilegedExposure
+     * when plan reported requiresConsent. On a 409 consent fallback the thrown
+     * error carries .body.requiresConsent + .body.consentItems.
+     */
+    save: ({ workflow, acceptPrivilegedExposure } = {}) =>
+      apiFetch('/studio/save', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, acceptPrivilegedExposure: !!acceptPrivilegedExposure }),
+      }),
+
+    // ── Studio M6: templates, draft library, per-node refine ────────────────
+    /**
+     * List starter templates a fresh draft can begin from.
+     * @returns {Promise<{templates:{id,name,description,workflow}[]}>}
+     */
+    templates: () => apiFetch('/studio/templates'),
+    /**
+     * Persist the current draft into the server-side draft library.
+     * @returns {Promise<{id}>}
+     */
+    draftSave: ({ name, workflow } = {}) =>
+      apiFetch('/studio/drafts', {
+        method: 'POST',
+        body: JSON.stringify({ name, workflow }),
+      }),
+    /**
+     * List saved drafts.
+     * @returns {Promise<{drafts:{id,name,updated}[]}>}
+     */
+    draftsList: () => apiFetch('/studio/drafts'),
+    /**
+     * Load one saved draft by id.
+     * @returns {Promise<{id,name,workflow}>}
+     */
+    draftLoad: (id) => apiFetch(`/studio/drafts/${encodeURIComponent(id)}`),
+    /**
+     * Delete one saved draft by id.
+     * @returns {Promise<{ok:true}>}
+     */
+    draftDelete: (id) =>
+      apiFetch(`/studio/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    /**
+     * Ask the backend to refine one node of a workflow from a natural-language
+     * instruction, returning a NEW workflow.
+     * @returns {Promise<{workflow}>}
+     */
+    refine: ({ workflow, nodeId, instruction } = {}) =>
+      apiFetch('/studio/refine', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, nodeId, instruction }),
+      }),
   },
 
   knowledge: {

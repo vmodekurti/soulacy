@@ -42,7 +42,7 @@ func (s *Server) handleForkSession(c *fiber.Ctx) error {
 		NewSessionID string `json:"new_session_id"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid JSON body")
 	}
 	if body.UptoEntryID <= 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -57,7 +57,7 @@ func (s *Server) handleForkSession(c *fiber.Ctx) error {
 	copied, err := forker.Fork(c.Context(), srcSession, newSession, body.UptoEntryID)
 	if err != nil {
 		// Target-collision and self-fork are caller errors → 409.
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusConflict, err)
 	}
 	if copied == 0 {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
@@ -68,7 +68,7 @@ func (s *Server) handleForkSession(c *fiber.Ctx) error {
 	entries, err := s.historyStore.Load(c.Context(), newSession, 0)
 	if err != nil {
 		s.log.Error("fork: load new branch failed", zap.Error(err))
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "fork created but could not be read back"})
+		return s.errMsg(c, fiber.StatusInternalServerError, "fork created but could not be read back")
 	}
 
 	// Seed the engine so the next chat turn on the branch has the copied

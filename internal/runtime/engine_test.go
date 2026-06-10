@@ -358,41 +358,51 @@ func TestAllToolSchemasBuiltinsGate(t *testing.T) {
 	}
 }
 
+// TestAllToolSchemasSystemToolsRequireDoubleOptInAndHTTP pins SEC-3 gating.
+// The PRIVILEGED (SYSTEM-partition) tools — shell_exec, write_file — require
+// BOTH the server permit (allowSystemTools) AND the agent "system" capability,
+// and are never offered off the http channel. The SAFE read-only tools —
+// read_file — are offered on http regardless of capability.
 func TestAllToolSchemasSystemToolsRequireDoubleOptInAndHTTP(t *testing.T) {
 	cases := []struct {
 		name             string
 		allowSystemTools bool
-		defSystemTools   bool
+		defSystemTools   bool // legacy alias for capabilities: [system]
 		channel          string
-		wantSystemTools  bool
+		wantPrivileged   bool // shell_exec + write_file present
+		wantSafe         bool // read_file present
 	}{
 		{
-			name:             "global and agent opt-in on http exposes system tools",
+			name:             "global and agent opt-in on http exposes privileged + safe",
 			allowSystemTools: true,
 			defSystemTools:   true,
 			channel:          "http",
-			wantSystemTools:  true,
+			wantPrivileged:   true,
+			wantSafe:         true,
 		},
 		{
-			name:             "global off blocks agent opt-in",
+			name:             "global off blocks privileged but safe remains",
 			allowSystemTools: false,
 			defSystemTools:   true,
 			channel:          "http",
-			wantSystemTools:  false,
+			wantPrivileged:   false,
+			wantSafe:         true,
 		},
 		{
-			name:             "agent off blocks global opt-in",
+			name:             "no capability blocks privileged but safe remains",
 			allowSystemTools: true,
 			defSystemTools:   false,
 			channel:          "http",
-			wantSystemTools:  false,
+			wantPrivileged:   false,
+			wantSafe:         true,
 		},
 		{
-			name:             "bot channel blocks both opt-ins",
+			name:             "bot channel blocks everything system",
 			allowSystemTools: true,
 			defSystemTools:   true,
 			channel:          "telegram",
-			wantSystemTools:  false,
+			wantPrivileged:   false,
+			wantSafe:         false,
 		},
 	}
 
@@ -405,12 +415,32 @@ func TestAllToolSchemasSystemToolsRequireDoubleOptInAndHTTP(t *testing.T) {
 				SystemTools: tc.defSystemTools,
 			}, tc.channel))
 
-			got := names["shell_exec"] && names["read_file"] && names["write_file"]
-			if got != tc.wantSystemTools {
-				t.Fatalf("system tool exposure = %v, want %v; schemas=%v",
-					got, tc.wantSystemTools, sortedSchemaNames(names))
+			gotPriv := names["shell_exec"] && names["write_file"]
+			if gotPriv != tc.wantPrivileged {
+				t.Fatalf("privileged tool exposure = %v, want %v; schemas=%v",
+					gotPriv, tc.wantPrivileged, sortedSchemaNames(names))
+			}
+			if names["read_file"] != tc.wantSafe {
+				t.Fatalf("safe tool (read_file) exposure = %v, want %v; schemas=%v",
+					names["read_file"], tc.wantSafe, sortedSchemaNames(names))
 			}
 		})
+	}
+}
+
+// TestAllToolSchemasCapabilitiesGrantSystemTools verifies the new
+// `capabilities: [system]` declaration is honoured equivalently to the legacy
+// `system_tools: true` flag (SEC-3).
+func TestAllToolSchemasCapabilitiesGrantSystemTools(t *testing.T) {
+	e := &Engine{allowSystemTools: true}
+	e.builtins = e.buildBuiltins()
+	names := toolSchemaNameSet(e.allToolSchemas(&agent.Definition{
+		ID:           "sys",
+		Capabilities: []string{"system"},
+	}, "http"))
+	if !names["shell_exec"] || !names["write_file"] {
+		t.Fatalf("capabilities: [system] should expose privileged tools; schemas=%v",
+			sortedSchemaNames(names))
 	}
 }
 

@@ -768,16 +768,28 @@ func TestBuiltins_SystemToolsIncluded(t *testing.T) {
 }
 
 // TestBuiltins_SystemToolsExcludedWhenDisabled verifies that when allowSystemTools
-// is false, Builtins() does not include system tools.
+// is false, Builtins() does not include the PRIVILEGED (SYSTEM-partition)
+// built-ins. SEC-3: the SAFE (read-only) built-ins such as read_file remain
+// advertised regardless — only the destructive tools are gated by the server
+// permit. This is an intentional behaviour change introduced by SEC-3.
 func TestBuiltins_SystemToolsExcludedWhenDisabled(t *testing.T) {
 	e := newMinimalEngine(t)
 	e.allowSystemTools = false
 	builtins := e.Builtins()
 
+	nameSet := make(map[string]bool)
 	for _, b := range builtins {
-		if b.Name == "shell_exec" || b.Name == "read_file" || b.Name == "write_file" {
-			t.Errorf("Builtins() should not include system tool %q when allowSystemTools=false", b.Name)
+		nameSet[b.Name] = true
+	}
+	// Privileged tools must be absent when the server permit is off.
+	for _, priv := range []string{"shell_exec", "run_script", "write_file", "download_file", "install_library"} {
+		if nameSet[priv] {
+			t.Errorf("Builtins() should not include privileged system tool %q when allowSystemTools=false", priv)
 		}
+	}
+	// SAFE read-only tools are still advertised (SEC-3 partition).
+	if !nameSet["read_file"] {
+		t.Error("Builtins() should still include the SAFE tool read_file when allowSystemTools=false (SEC-3)")
 	}
 }
 

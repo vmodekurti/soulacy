@@ -92,14 +92,26 @@ func (a *Adapter) connect(ctx context.Context) {
 		wsURL, err := a.openConnection(ctx)
 		if err != nil {
 			log.Printf("slack: open connection error: %v — retrying in 10s", err)
-			time.Sleep(10 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.stopCh:
+				return
+			case <-time.After(10 * time.Second):
+			}
 			continue
 		}
 
 		if err := a.run(ctx, wsURL); err != nil {
 			log.Printf("slack: run error: %v — reconnecting in 5s", err)
 			a.connected = false
-			time.Sleep(5 * time.Second)
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.stopCh:
+				return
+			case <-time.After(5 * time.Second):
+			}
 		}
 	}
 }

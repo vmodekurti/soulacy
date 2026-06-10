@@ -76,7 +76,9 @@ skills: [csv-analysis]             # Agent Skills (or ["*"] for all installed)
 agents: [critic]                   # peer agents exposed as agent__critic
 mcp_servers: [github]              # MCP allowlist by server
 mcp_tools: [mcp__github__search_repositories]   # …or by full tool name
-system_tools: false                # OS-level tools (needs config.yaml opt-in too)
+capabilities: [system]             # SEC-3: grant privileged OS tools (shell_exec, write_file, …)
+system_tools: false                # legacy alias for capabilities: [system]
+env: [GITHUB_TOKEN]                # SEC-5: extra host env var NAMES passed to tool subprocesses
 confirm_tools: [write_file, shell_exec]   # pause for approval; ["*"] = all built-ins
 
 # ── Memory ────────────────────────────────────────────────

@@ -25,7 +25,7 @@ RUN npm run build
 # Output: /src/gui/dist  (copied to /src/internal/webui/dist in gobuild)
 
 # ── Stage 2: Go binary ───────────────────────────────────────────────────────
-FROM golang:1.24-bookworm AS gobuild
+FROM golang:1.25-bookworm AS gobuild
 ARG VERSION=dev
 WORKDIR /src
 
@@ -60,8 +60,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Python SDK — agents written in Python work without any extra setup.
-# Failure is non-fatal: the gateway works fine without it.
-RUN pip3 install --break-system-packages soulacy 2>/dev/null || true
+# The SDK is experimental and not yet published to PyPI, so it is NOT installed
+# here. Once published via CI, add an explicit (non-hedged) install step.
+# RUN pip3 install --break-system-packages soulacy
 
 RUN useradd --create-home --shell /usr/sbin/nologin soulacy
 

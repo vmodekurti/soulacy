@@ -165,11 +165,11 @@ func (s *Server) emitArtifactEvent(run workboard.Run, task workboard.Task, a wor
 func (s *Server) handleWorkboardArtifacts(c *fiber.Ctx) error {
 	store := s.workboardStore
 	if store == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "workboard store not configured"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "workboard store not configured")
 	}
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid task id"})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid task id")
 	}
 	arts, err := store.ListArtifacts(c.Context(), id)
 	if err != nil {
@@ -186,11 +186,11 @@ func (s *Server) handleWorkboardArtifacts(c *fiber.Ctx) error {
 func (s *Server) handleWorkboardArtifactDownload(c *fiber.Ctx) error {
 	store := s.workboardStore
 	if store == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "workboard store not configured"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "workboard store not configured")
 	}
 	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid artifact id"})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid artifact id")
 	}
 	a, err := store.GetArtifact(c.Context(), id)
 	if err != nil {

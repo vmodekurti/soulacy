@@ -70,7 +70,7 @@ func (s *Server) handleGetEpisodic(c *fiber.Ctx) error {
 
 	records, err := store.EpisodicRecords(agentID, limit)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if records == nil {
 		records = []agentmemory.Record{}
@@ -88,7 +88,7 @@ func (s *Server) handleClearEpisodic(c *fiber.Ctx) error {
 	}
 	agentID := c.Params("agentID")
 	if err := store.ClearEpisodic(agentID); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
@@ -108,10 +108,10 @@ func (s *Server) handleWriteEpisodic(c *fiber.Ctx) error {
 		Tags    []string `json:"tags"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if body.Content == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "content is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "content is required")
 	}
 
 	rec := agentmemory.Record{
@@ -122,7 +122,7 @@ func (s *Server) handleWriteEpisodic(c *fiber.Ctx) error {
 		Timestamp: time.Now().UTC(),
 	}
 	if err := store.Write(rec); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"ok": true})
 }
@@ -154,13 +154,13 @@ func (s *Server) handleUpdateProcedural(c *fiber.Ctx) error {
 		Rules string `json:"rules"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if err := store.UpdateProcedural(agentID, body.Rules); err != nil {
 		if errors.Is(err, agentmemory.ErrRulebookLocked) {
-			return c.Status(fiber.StatusLocked).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusLocked, err)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"ok": true})
 }
@@ -176,9 +176,9 @@ func (s *Server) handleClearProcedural(c *fiber.Ctx) error {
 	agentID := c.Params("agentID")
 	if err := store.UpdateProcedural(agentID, ""); err != nil {
 		if errors.Is(err, agentmemory.ErrRulebookLocked) {
-			return c.Status(fiber.StatusLocked).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusLocked, err)
 		}
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.Status(fiber.StatusNoContent).Send(nil)
 }
@@ -201,7 +201,7 @@ func (s *Server) handleContextPreview(c *fiber.Ctx) error {
 		MaxSemantic int    `json:"max_semantic"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if body.MaxEpisodic <= 0 {
 		body.MaxEpisodic = 5
@@ -217,7 +217,7 @@ func (s *Server) handleContextPreview(c *fiber.Ctx) error {
 		MaxSemantic: body.MaxSemantic,
 	})
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	block := agentmemory.BuildContextBlock(result)
@@ -264,12 +264,12 @@ func formatMemoryPath(agentID string) string {
 func (s *Server) handleRulebookHistory(c *fiber.Ctx) error {
 	store := s.engine.BrainStore()
 	if store == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "brain memory not configured")
 	}
 	agentID := c.Params("agentID")
 	versions, err := store.RulebookVersions(agentID)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if versions == nil {
 		versions = []agentmemory.RuleVersion{}
@@ -288,16 +288,16 @@ func (s *Server) handleRulebookHistory(c *fiber.Ctx) error {
 func (s *Server) handleRulebookVersion(c *fiber.Ctx) error {
 	store := s.engine.BrainStore()
 	if store == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "brain memory not configured")
 	}
 	agentID := c.Params("agentID")
 	version, err := c.ParamsInt("version")
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "version must be an integer"})
+		return s.errMsg(c, fiber.StatusBadRequest, "version must be an integer")
 	}
 	rules, err := store.RulebookVersion(agentID, version)
 	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 	return c.JSON(fiber.Map{"agent_id": agentID, "version": version, "rules": rules})
 }
@@ -308,21 +308,21 @@ func (s *Server) handleRulebookVersion(c *fiber.Ctx) error {
 func (s *Server) handleRulebookRollback(c *fiber.Ctx) error {
 	store := s.engine.BrainStore()
 	if store == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "brain memory not configured")
 	}
 	agentID := c.Params("agentID")
 	var body struct {
 		Version int `json:"version"`
 	}
 	if err := c.BodyParser(&body); err != nil || body.Version <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "body must be {version: <int ≥ 1>}"})
+		return s.errMsg(c, fiber.StatusBadRequest, "body must be {version: <int ≥ 1>}")
 	}
 	newVersion, err := store.RollbackProcedural(agentID, body.Version)
 	if err != nil {
 		if errors.Is(err, agentmemory.ErrRulebookLocked) {
-			return c.Status(fiber.StatusLocked).JSON(fiber.Map{"error": err.Error()})
+			return s.errJSON(c, fiber.StatusLocked, err)
 		}
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.JSON(fiber.Map{"ok": true, "version": newVersion, "rolled_back_to": body.Version})
 }
@@ -334,17 +334,17 @@ func (s *Server) handleRulebookRollback(c *fiber.Ctx) error {
 func (s *Server) handleRulebookLock(c *fiber.Ctx) error {
 	store := s.engine.BrainStore()
 	if store == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "brain memory not configured"})
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "brain memory not configured")
 	}
 	agentID := c.Params("agentID")
 	var body struct {
 		Locked bool `json:"locked"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	if err := store.SetRulebookLocked(agentID, body.Locked); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	return c.JSON(fiber.Map{"ok": true, "locked": body.Locked})
 }

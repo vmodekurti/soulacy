@@ -66,6 +66,12 @@ vector:
   dims: 768
 ```
 
+!!! warning "Qdrant is experimental"
+    The `qdrant` vector backend has **no automated tests and no known
+    production users**. Enabling it logs a startup WARN. It is unsupported —
+    prefer `sqlite-vec` (the default) or an external sidecar for anything you
+    depend on.
+
 ## Message queue (`queue:`)
 
 Carries the [event stream](events.md) and internal work distribution.
@@ -91,6 +97,12 @@ queue:
 With the default `memory` backend, events exist in-process only (still
 consumed by the webhook dispatcher). Switch to `nats` to consume events
 from other processes or machines.
+
+!!! warning "NATS is experimental"
+    The `nats` queue backend has **no automated tests and no known production
+    users**. Enabling it logs a startup WARN. It is unsupported — the default
+    in-memory queue is the supported path; use an external sidecar if you need
+    cross-process durability.
 
 ## External sidecars (External Storage Protocol)
 
@@ -158,6 +170,10 @@ vectors, matching the `vector.dims` / `memory.vector_dims` default of
 | Deployment | storage | vector | queue |
 |------------|---------|--------|-------|
 | Laptop / single user | `sqlite` | `sqlite-vec` | `memory` |
-| Single VPS, external observers | `sqlite` | `sqlite-vec` | `nats` |
-| Multi-instance / heavy traffic | `postgres` | `qdrant` | `nats` |
+| Single VPS, external observers | `sqlite` | `sqlite-vec` | `external` |
+| Multi-instance / heavy traffic | `postgres` | `external` | `external` |
 | Custom database stack | any | `external` | `external` |
+
+The `qdrant` and `nats` backends are **experimental and unsupported** (no
+tests, no known users). For cross-process vector search or queueing, prefer an
+`external` sidecar.

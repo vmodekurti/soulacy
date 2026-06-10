@@ -138,6 +138,9 @@ nav:
     - Security Posture: configuration/security.md
     - Rate Limiting: configuration/rate-limiting.md
     - Telemetry: configuration/telemetry.md
+  - Security:
+    - Tool Sandbox: security/sandbox.md
+    - Audit & Incident Records: security/audit.md
   - API Reference:
     - Overview: api/index.md
     - Auth: api/auth.md

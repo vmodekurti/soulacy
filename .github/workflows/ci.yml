@@ -7,6 +7,20 @@ on:
     branches: [main]
 
 jobs:
+  # ── Secret scanning (gitleaks) ───────────────────────────────────────────────
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   # ── Go build + test ──────────────────────────────────────────────────────────
   go:
     name: Go build & test
@@ -37,11 +51,46 @@ jobs:
       - name: go build
         run: CGO_ENABLED=1 go build ./...
 
-      - name: go test
-        run: CGO_ENABLED=1 go test ./... -v -timeout 60s
+      - name: go test (race detector)
+        run: CGO_ENABLED=1 go test -race -timeout 120s ./...
 
       - name: go vet
         run: go vet ./...
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck
+        run: govulncheck ./...
+
+  # ── Go lint (golangci-lint) ──────────────────────────────────────────────────
+  lint:
+    name: Go lint (golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+          cache: true
+
+      - name: Install SQLite dev libs (needed for cgo)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev build-essential pkg-config
+
+      - name: Build GUI placeholder (so //go:embed all:dist works)
+        run: |
+          mkdir -p internal/webui/dist
+          touch internal/webui/dist/.gitkeep
+          echo '<html><body>CI placeholder</body></html>' > internal/webui/dist/index.html
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest
 
   # ── GUI build ────────────────────────────────────────────────────────────────
   gui:
@@ -60,6 +109,10 @@ jobs:
       - name: Install dependencies
         working-directory: gui
         run: npm ci
+
+      - name: Test
+        working-directory: gui
+        run: npm test
 
       - name: Build
         working-directory: gui
@@ -83,3 +136,12 @@ jobs:
 
       - name: Basic import check
         run: python3 -c "import soulacy; print('SDK ok')"
+
+      - name: Install test deps
+        working-directory: sdk/python
+        run: pip install pytest --quiet
+
+      - name: Run pytest
+        working-directory: sdk/python
+        # Exit code 5 == "no tests collected"; treat as success until tests are added.
+        run: pytest || ([ $? -eq 5 ] && echo "No Python tests collected yet")

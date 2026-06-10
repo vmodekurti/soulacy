@@ -190,6 +190,13 @@ type ServerConfig struct {
 	TLSCert      string `mapstructure:"tls_cert"`
 	TLSKey       string `mapstructure:"tls_key"`
 
+	// AllowUnauthenticated explicitly permits starting with no API key while
+	// bound to a non-loopback address. Without it, such a configuration is a
+	// hard error (SEC-4) — an open gateway on a public interface is almost
+	// never intended. Settable via config, SOULACY_SERVER_ALLOW_UNAUTHENTICATED,
+	// or the `--allow-unauthenticated` flag.
+	AllowUnauthenticated bool `mapstructure:"allow_unauthenticated"`
+
 	// AllowedOrigins is an explicit allow-list of CORS origins. When empty,
 	// only the gateway's own UI origin (`http://<host>:<port>`) is allowed —
 	// no localhost:3000 / 5173 dev-server escape hatch. (PRODUCTION_AUDIT
@@ -210,10 +217,16 @@ type RuntimeConfig struct {
 	// (PRODUCTION_AUDIT → F1, 2026-05-27)
 	Sandbox SandboxConfig `mapstructure:"sandbox"`
 
-	// AllowSystemTools enables OS-level built-in tools (shell_exec, run_script,
-	// install_library, read_file, write_file, list_dir). Enabled by default so
-	// the built-in system agent works out of the box. Set to false in
-	// config.yaml to disable across all agents (e.g. in multi-tenant deployments).
+	// AllowSystemTools is the SERVER-LEVEL permit for the destructive OS-level
+	// "system" built-ins (shell_exec, run_script, install_library, write_file,
+	// download_file). SEC-3: this now defaults to FALSE — a breaking change.
+	// Even when true, an agent only receives system tools if it ALSO declares
+	// the "system" capability (capabilities: [system] in SOUL.yaml). The two
+	// gates are independent: the server permits, the agent opts in.
+	//
+	// NOTE: the read-only "safe" built-ins (read_file, list_dir, find_files,
+	// http_request, fetch_url, env_get, sys_info) are NOT governed by this flag
+	// — they are always available, see Engine.buildSystemTools / safeSystemTools.
 	AllowSystemTools bool `mapstructure:"allow_system_tools"`
 
 	// SSRFProtection, when true, blocks HTTP tools (fetch_url, http_request,
@@ -227,9 +240,14 @@ type RuntimeConfig struct {
 	// is true (e.g. an internal API server the agent legitimately needs).
 	AllowPrivateHosts []string `mapstructure:"allow_private_hosts"`
 
-	// AuditDir is where tool-call audit logs are written as JSONL.
+	// AuditDir is where the OPTIONAL JSONL tool-call audit log is written.
 	// Each session gets <AuditDir>/<date>/<sessionID>.jsonl.
-	// Defaults to ~/.soulacy/audit. Set to "" to disable.
+	//
+	// DOC-4: this JSONL log is debug/convenience output and defaults OFF
+	// (empty string). The authoritative incident-reconstruction record is the
+	// SQLite action log (internal/actionlog), which is always on regardless of
+	// this setting. Set AuditDir to a path (e.g. <workspace>/audit) to ALSO
+	// emit the redundant per-session JSONL files. See docs/security/audit.md.
 	AuditDir string `mapstructure:"audit_dir"`
 
 	// AllowedToolDirs is an allowlist of directory prefixes that python_file
@@ -247,6 +265,26 @@ type RuntimeConfig struct {
 	// Default (empty list): all paths are permitted (single-user / trusted
 	// operator deployments where every SOUL.yaml author is already trusted).
 	AllowedToolDirs []string `mapstructure:"allowed_tool_dirs"`
+
+	// SessionTTL bounds how long an idle in-memory session is retained before
+	// the engine's eviction sweep reclaims it. Sessions that have not been
+	// touched (no inbound message) within this window are persisted (if a
+	// memory backend is present) and then dropped from the in-memory map.
+	// Empty/zero defaults to 24h. (PERF-1 — session eviction)
+	SessionTTL string `mapstructure:"session_ttl"` // e.g. "24h"
+
+	// MaxSessions caps the number of live in-memory sessions. When the map
+	// exceeds this count, the eviction sweep drops the oldest-idle sessions
+	// (never one mid-conversation) until the count is back under the cap.
+	// Zero/negative defaults to 10000. (PERF-1 — session eviction)
+	MaxSessions int `mapstructure:"max_sessions"`
+
+	// MaxHistoryTurns bounds the number of conversation turns kept in a
+	// session's in-memory History. When appends push history past this many
+	// non-system messages, the oldest are trimmed first — the system prompt
+	// (if present at index 0) is always preserved. Zero/negative defaults to
+	// 100. (PERF-2 — history windowing)
+	MaxHistoryTurns int `mapstructure:"max_history_turns"`
 }
 
 // SandboxConfig is the YAML face of internal/sandbox.Limits.
@@ -484,8 +522,14 @@ func Load(cfgPath string) (*Config, string, error) {
 	// agent declared a per-tool override. 120s is the new sane floor;
 	// per-tool override at `tools[i].timeout` still applies.
 	v.SetDefault("runtime.tool_timeout", "120s")
-	v.SetDefault("runtime.allow_system_tools", true)
+	// SEC-3: default OFF. Destructive system tools (shell_exec, run_script,
+	// write_file, …) now require BOTH this server permit AND a per-agent
+	// `capabilities: [system]` declaration. Breaking change — see CHANGELOG.
+	v.SetDefault("runtime.allow_system_tools", false)
 	v.SetDefault("runtime.ssrf_protection", false)
+	v.SetDefault("runtime.session_ttl", "24h")
+	v.SetDefault("runtime.max_sessions", 10000)
+	v.SetDefault("runtime.max_history_turns", 100)
 	// PRODUCTION_AUDIT → F1: sandbox defaults ON with conservative caps
 	// suitable for typical agent tools. Disable per-deployment by setting
 	// runtime.sandbox.enabled=false. Limits = 0 means "no cap for that knob"
@@ -581,7 +625,12 @@ func setHomeDefaults(v *viper.Viper, ws Paths) {
 	v.SetDefault("memory.dir", ws.Memory)
 	v.SetDefault("memory.sqlite_path", ws.DB("archive"))
 	v.SetDefault("knowledge.db_path", ws.DB("knowledge"))
-	v.SetDefault("runtime.audit_dir", ws.Audit)
+	// DOC-4: the JSONL audit log (internal/audit) is OPTIONAL DEBUG output and
+	// defaults OFF. The authoritative incident-reconstruction record is the
+	// SQLite action log (internal/actionlog), which is always on. Operators who
+	// want the redundant per-session JSONL files set runtime.audit_dir
+	// explicitly (e.g. to <workspace>/audit). See docs/security/audit.md.
+	v.SetDefault("runtime.audit_dir", "")
 	v.SetDefault("server.gui_static_dir", ws.GUI)
 	// Default to a workspace log file so the GUI Logs page works out of the
 	// box (it tails log.file; empty = stdout-only and the page stays empty).

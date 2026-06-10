@@ -211,7 +211,7 @@ func TestExplain_ReasonsMatchTier(t *testing.T) {
 		wantTier  Tier
 		reasonHas string // substring that must appear in at least one reason
 	}{
-		{"system_tools", def("a", systemTools()), Privileged, "system_tools"},
+		{"system_tools", def("a", systemTools()), Privileged, "capabilities: [system]"},
 		{"shell_exec", def("a", builtins("shell_exec")), Privileged, "shell_exec"},
 		{"wildcard builtins", def("a", builtins("*")), Privileged, "wildcard builtins"},
 		{"wildcard mcp", def("a", mcpServers("*")), Privileged, "wildcard mcp_servers"},

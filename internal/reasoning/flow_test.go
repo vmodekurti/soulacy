@@ -10,6 +10,7 @@ import (
 
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 	"github.com/soulacy/soulacy/sdk/registry"
+	"gopkg.in/yaml.v3"
 )
 
 // recNode records each node execution and returns canned results.
@@ -382,4 +383,164 @@ type fakeFlowExecutor struct {
 func (f *fakeFlowExecutor) Execute(ctx context.Context, call ToolCall) Observation {
 	f.calls = append(f.calls, call)
 	return Observation{Content: f.out[call.Tool], Source: call.Tool}
+}
+
+// --- Story S0.3: typed ports & per-node params ---
+
+// TestCompileFlow_PortValidation covers edge port wiring: an undeclared
+// from/to port is a compile error; a declared one compiles; and an empty
+// port (the legacy implicit single port) always compiles regardless of
+// whether the node declares ports.
+func TestCompileFlow_PortValidation(t *testing.T) {
+	// Declared ports referenced by an edge → ok.
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "a", Tool: "t", Outputs: []sdkr.FlowPort{{Name: "out1"}}},
+			{ID: "b", Tool: "t", Inputs: []sdkr.FlowPort{{Name: "in1"}}},
+		},
+		Edges: []sdkr.FlowEdge{{From: "a", To: "b", FromPort: "out1", ToPort: "in1"}},
+	})
+	if err != nil {
+		t.Fatalf("declared ports should compile: %v", err)
+	}
+	if g == nil {
+		t.Fatal("nil graph")
+	}
+
+	// Empty ports on nodes that DO declare ports → still legacy implicit, ok.
+	if _, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "a", Tool: "t", Outputs: []sdkr.FlowPort{{Name: "out1"}}},
+			{ID: "b", Tool: "t", Inputs: []sdkr.FlowPort{{Name: "in1"}}},
+		},
+		Edges: []sdkr.FlowEdge{{From: "a", To: "b"}},
+	}); err != nil {
+		t.Fatalf("empty ports should compile (implicit): %v", err)
+	}
+
+	// Undeclared from_port / to_port → compile error.
+	bad := map[string]sdkr.FlowSpec{
+		"undeclared from_port": {
+			Nodes: []sdkr.FlowNode{
+				{ID: "a", Tool: "t", Outputs: []sdkr.FlowPort{{Name: "out1"}}},
+				{ID: "b", Tool: "t"},
+			},
+			Edges: []sdkr.FlowEdge{{From: "a", To: "b", FromPort: "ghost"}},
+		},
+		"from_port on node with no outputs": {
+			Nodes: []sdkr.FlowNode{
+				{ID: "a", Tool: "t"},
+				{ID: "b", Tool: "t"},
+			},
+			Edges: []sdkr.FlowEdge{{From: "a", To: "b", FromPort: "out1"}},
+		},
+		"undeclared to_port": {
+			Nodes: []sdkr.FlowNode{
+				{ID: "a", Tool: "t"},
+				{ID: "b", Tool: "t", Inputs: []sdkr.FlowPort{{Name: "in1"}}},
+			},
+			Edges: []sdkr.FlowEdge{{From: "a", To: "b", ToPort: "ghost"}},
+		},
+	}
+	for name, spec := range bad {
+		if _, err := CompileFlow(spec); err == nil {
+			t.Errorf("%s: expected compile error", name)
+		}
+	}
+}
+
+// TestCompileFlow_ParamsPreserved confirms typed per-node Params survive
+// compilation onto the node and are untouched.
+func TestCompileFlow_ParamsPreserved(t *testing.T) {
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "a", Tool: "t", Params: map[string]any{"limit": 5, "mode": "fast"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	p := g.Node("a").Params
+	if p == nil || p["limit"] != 5 || p["mode"] != "fast" {
+		t.Errorf("params not preserved on compiled node: %+v", p)
+	}
+}
+
+// TestRunFlow_PortsAndParamsRegression proves a flow that declares ports
+// and params still compiles, runs, and templates Input EXACTLY as a
+// portless/paramless flow would — ports/params are inert at runtime.
+func TestRunFlow_PortsAndParamsRegression(t *testing.T) {
+	r := &recRunner{results: map[string]string{
+		"fetch":   `{"items": 3}`,
+		"publish": `"done"`,
+	}}
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{
+			{
+				ID: "fetch", Tool: "web_search", Input: `{"q":"{{.trigger}}"}`, Output: "found",
+				Outputs: []sdkr.FlowPort{{Name: "result", Type: "json"}},
+				Params:  map[string]any{"k": "v"},
+			},
+			{
+				ID: "publish", Tool: "post", Input: `{"count":{{.found.items}}}`,
+				Inputs: []sdkr.FlowPort{{Name: "payload"}},
+			},
+		},
+		Edges: []sdkr.FlowEdge{{From: "fetch", To: "publish", FromPort: "result", ToPort: "payload"}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	out, err := RunFlow(context.Background(), g, map[string]any{"trigger": "news"}, r.run, FlowHooks{})
+	if err != nil {
+		t.Fatalf("RunFlow: %v", err)
+	}
+	if string(out) != `"done"` {
+		t.Errorf("final output = %s", out)
+	}
+	want := []string{`fetch:{"q":"news"}`, `publish:{"count":3}`}
+	if len(r.calls) != 2 || r.calls[0] != want[0] || r.calls[1] != want[1] {
+		t.Errorf("calls = %v, want %v (ports/params must not alter execution)", r.calls, want)
+	}
+}
+
+// TestFlowPorts_YAMLRoundTrip verifies the new fields serialize via YAML
+// with snake_case keys and survive a marshal/unmarshal cycle.
+func TestFlowPorts_YAMLRoundTrip(t *testing.T) {
+	in := sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{{
+			ID:      "a",
+			Tool:    "t",
+			Inputs:  []sdkr.FlowPort{{Name: "in1", Type: "string", Label: "In"}},
+			Outputs: []sdkr.FlowPort{{Name: "out1"}},
+			Params:  map[string]any{"k": "v"},
+		}},
+		Edges: []sdkr.FlowEdge{{From: "a", To: "end", FromPort: "out1"}},
+	}
+	b, err := yaml.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, key := range []string{"inputs:", "outputs:", "params:", "from_port:"} {
+		if !strings.Contains(string(b), key) {
+			t.Errorf("expected YAML key %q in:\n%s", key, b)
+		}
+	}
+	var got sdkr.FlowSpec
+	if err := yaml.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	n := got.Nodes[0]
+	if len(n.Inputs) != 1 || n.Inputs[0].Name != "in1" || n.Inputs[0].Type != "string" || n.Inputs[0].Label != "In" {
+		t.Errorf("inputs round-trip wrong: %+v", n.Inputs)
+	}
+	if len(n.Outputs) != 1 || n.Outputs[0].Name != "out1" {
+		t.Errorf("outputs round-trip wrong: %+v", n.Outputs)
+	}
+	if n.Params["k"] != "v" {
+		t.Errorf("params round-trip wrong: %+v", n.Params)
+	}
+	if got.Edges[0].FromPort != "out1" {
+		t.Errorf("from_port round-trip wrong: %q", got.Edges[0].FromPort)
+	}
 }

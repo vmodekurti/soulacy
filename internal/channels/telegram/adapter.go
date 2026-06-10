@@ -115,8 +115,14 @@ func (a *Adapter) poll(ctx context.Context) {
 
 		updates, err := a.getUpdates(ctx)
 		if err != nil {
-			log.Printf("telegram: getUpdates error: %v", err)
-			time.Sleep(5 * time.Second)
+			log.Printf("telegram: getUpdates error: %v — retrying in 5s", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.stopCh:
+				return
+			case <-time.After(5 * time.Second):
+			}
 			continue
 		}
 

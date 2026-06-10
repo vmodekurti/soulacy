@@ -83,10 +83,11 @@ func TestRemoteSkillInstall_HappyPath(t *testing.T) {
 	var out bytes.Buffer
 	rescanned := false
 	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "greeter", remoteInstallOpts{
-		SkillsDir: skillsDir,
-		AssumeYes: true,
-		Out:       &out,
-		Rescan:    func() error { rescanned = true; return nil },
+		SkillsDir:       skillsDir,
+		AssumeYes:       true,
+		AllowUnverified: true, // unsigned test registry — bypass the SEC-7 gate
+		Out:             &out,
+		Rescan:          func() error { rescanned = true; return nil },
 	})
 	if err != nil {
 		t.Fatalf("install: %v\noutput:\n%s", err, out.String())
@@ -117,7 +118,7 @@ func TestRemoteSkillInstall_UnknownSlug(t *testing.T) {
 	archive, checksum := buildSkillArchive(t, map[string]string{"SKILL.md": "x"})
 	srv := fakeRegistry(t, "exists", archive, checksum)
 	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "ghost", remoteInstallOpts{
-		SkillsDir: t.TempDir(), AssumeYes: true, Out: &bytes.Buffer{},
+		SkillsDir: t.TempDir(), AssumeYes: true, AllowUnverified: true, Out: &bytes.Buffer{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "no configured registry resolves it") {
 		t.Errorf("err = %v", err)
@@ -129,9 +130,10 @@ func TestRemoteSkillInstall_UserDeclines(t *testing.T) {
 	srv := fakeRegistry(t, "s", archive, checksum)
 	skillsDir := t.TempDir()
 	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "s", remoteInstallOpts{
-		SkillsDir: skillsDir,
-		Confirm:   func(string) bool { return false },
-		Out:       &bytes.Buffer{},
+		SkillsDir:       skillsDir,
+		AllowUnverified: true,
+		Confirm:         func(string) bool { return false },
+		Out:             &bytes.Buffer{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "aborted") {
 		t.Errorf("err = %v", err)
@@ -156,10 +158,11 @@ func TestRemoteSkillInstall_DangerVerdictIgnoresYes(t *testing.T) {
 	// --yes set, but the danger verdict demands interactive confirmation;
 	// Confirm denies → abort.
 	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "sketchy", remoteInstallOpts{
-		SkillsDir: skillsDir,
-		AssumeYes: true,
-		Confirm:   func(string) bool { return false },
-		Out:       &out,
+		SkillsDir:       skillsDir,
+		AssumeYes:       true,
+		AllowUnverified: true,
+		Confirm:         func(string) bool { return false },
+		Out:             &out,
 	})
 	if err == nil || !strings.Contains(err.Error(), "danger verdict") {
 		t.Errorf("err = %v", err)
@@ -173,7 +176,7 @@ func TestRemoteSkillInstall_NotASkillPackage(t *testing.T) {
 	archive, checksum := buildSkillArchive(t, map[string]string{"README.md": "no SKILL.md here"})
 	srv := fakeRegistry(t, "notskill", archive, checksum)
 	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "notskill", remoteInstallOpts{
-		SkillsDir: t.TempDir(), AssumeYes: true, Out: &bytes.Buffer{},
+		SkillsDir: t.TempDir(), AssumeYes: true, AllowUnverified: true, Out: &bytes.Buffer{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "SKILL.md") {
 		t.Errorf("err = %v", err)
@@ -188,10 +191,98 @@ func TestRemoteSkillInstall_AlreadyInstalled(t *testing.T) {
 		t.Fatal(err)
 	}
 	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "dup", remoteInstallOpts{
-		SkillsDir: skillsDir, AssumeYes: true, Out: &bytes.Buffer{},
+		SkillsDir: skillsDir, AssumeYes: true, AllowUnverified: true, Out: &bytes.Buffer{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "already installed") {
 		t.Errorf("err = %v", err)
+	}
+}
+
+// SEC-7: unverifiable installs are blocked unless --allow-unverified is set.
+
+func TestRemoteSkillInstall_UnverifiedBlockedWithoutFlag(t *testing.T) {
+	archive, checksum := buildSkillArchive(t, map[string]string{"SKILL.md": "# x"})
+	srv := fakeRegistry(t, "unsigned", archive, checksum)
+	skillsDir := t.TempDir()
+	var out bytes.Buffer
+	// Unsigned package from a registry with no signing_key → unverifiable.
+	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "unsigned", remoteInstallOpts{
+		SkillsDir: skillsDir,
+		AssumeYes: true,
+		Out:       &out,
+		// AllowUnverified defaults to false.
+	})
+	if err == nil || !strings.Contains(err.Error(), "authenticity cannot be verified") {
+		t.Fatalf("expected unverified install to be blocked, got err = %v\n%s", err, out.String())
+	}
+	if !strings.Contains(err.Error(), "--allow-unverified") {
+		t.Errorf("error should explain the override flag:\n%v", err)
+	}
+	// Nothing installed, no staging leftovers.
+	if _, serr := os.Stat(filepath.Join(skillsDir, "unsigned")); !os.IsNotExist(serr) {
+		t.Error("blocked install must not leave the skill behind")
+	}
+	if entries, _ := os.ReadDir(skillsDir); len(entries) != 0 {
+		t.Errorf("blocked install left files: %v", entries)
+	}
+}
+
+func TestRemoteSkillInstall_UnverifiedAllowedWithFlag(t *testing.T) {
+	archive, checksum := buildSkillArchive(t, map[string]string{"SKILL.md": "# greeter\nhi"})
+	srv := fakeRegistry(t, "greeter", archive, checksum)
+	skillsDir := t.TempDir()
+	var out bytes.Buffer
+	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "greeter", remoteInstallOpts{
+		SkillsDir:       skillsDir,
+		AssumeYes:       true,
+		AllowUnverified: true,
+		Out:             &out,
+	})
+	if err != nil {
+		t.Fatalf("install with --allow-unverified should succeed: %v\n%s", err, out.String())
+	}
+	if _, serr := os.Stat(filepath.Join(skillsDir, "greeter", "SKILL.md")); serr != nil {
+		t.Errorf("skill not installed: %v", serr)
+	}
+	if !strings.Contains(out.String(), "WARNING: installing UNVERIFIED") {
+		t.Errorf("loud unverified warning missing from output:\n%s", out.String())
+	}
+}
+
+func TestRemoteSkillInstall_SignedRegistryNoFlagNeeded(t *testing.T) {
+	// A verified package proceeds with no friction even without the flag.
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	archive, checksum := buildSkillArchive(t, map[string]string{"SKILL.md": "# Signed\nok"})
+	sig, err := pkgregistry.SignChecksum(priv, checksum)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	var srv *httptest.Server
+	mux.HandleFunc("/v1/packages/", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"slug": "signed-skill", "version": "2.0.0", "checksum": checksum,
+			"signature": sig, "source": srv.URL + "/a.tar.gz",
+		})
+	})
+	mux.HandleFunc("/a.tar.gz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(archive) })
+	srv = httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	eng := registriesFromConfig([]config.RegistryConfig{
+		{ID: "signed", Type: "http", BaseURL: srv.URL, Priority: 1, SigningKey: hex.EncodeToString(pub)},
+	}, zap.NewNop())
+
+	var out bytes.Buffer
+	err = remoteSkillInstall(context.Background(), eng, "signed-skill", remoteInstallOpts{
+		SkillsDir: t.TempDir(), AssumeYes: true, Out: &out,
+		// AllowUnverified deliberately false — the signed path needs no override.
+	})
+	if err != nil {
+		t.Fatalf("verified install must proceed without --allow-unverified: %v\n%s", err, out.String())
+	}
+	if strings.Contains(out.String(), "WARNING: installing UNVERIFIED") {
+		t.Errorf("verified install should not emit the unverified warning:\n%s", out.String())
 	}
 }
 
@@ -263,7 +354,7 @@ func TestRemoteSkillInstall_UnsignedReportedInOutput(t *testing.T) {
 	srv := fakeRegistry(t, "plain", archive, checksum)
 	var out bytes.Buffer
 	err := remoteSkillInstall(context.Background(), testEngine(t, srv.URL), "plain", remoteInstallOpts{
-		SkillsDir: t.TempDir(), AssumeYes: true, Out: &out,
+		SkillsDir: t.TempDir(), AssumeYes: true, AllowUnverified: true, Out: &out,
 	})
 	if err != nil {
 		t.Fatal(err)

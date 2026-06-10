@@ -1,0 +1,63 @@
+/* Studio plugin UI — global theme. Self-contained, no external fonts/CDNs
+ * (the iframe is sandboxed). Dark theme tuned to the Soulacy portal:
+ * deep navy background, accent #6c63ff. */
+
+:root {
+  --bg: #0c0f1a;
+  --bg-elev: #141927;
+  --bg-elev-2: #1b2235;
+  --border: #262e44;
+  --text: #e6e9f2;
+  --text-muted: #8b93ab;
+  --accent: #6c63ff;
+  --accent-dim: rgba(108, 99, 255, 0.18);
+  --ok: #36d399;
+  --warn: #f5c542;
+  --error: #ff6b81;
+  --radius: 10px;
+  --gap: 14px;
+
+  /* @xyflow/svelte dark-mode overrides (its base.css ships a light palette). */
+  --xy-background-color: var(--bg);
+  --xy-edge-stroke: #4a5170;
+  --xy-edge-stroke-selected: var(--accent);
+  --xy-connectionline-stroke: var(--accent);
+  --xy-attribution-background-color: transparent;
+  --xy-controls-button-background-color: var(--bg-elev-2);
+  --xy-controls-button-background-color-hover: var(--bg-elev);
+  --xy-controls-button-color: var(--text);
+  --xy-controls-button-color-hover: var(--accent);
+  --xy-controls-button-border-color: var(--border);
+  --xy-minimap-background-color: var(--bg-elev);
+  --xy-minimap-mask-background-color: rgba(12, 15, 26, 0.7);
+  --xy-node-color: var(--text);
+  --xy-node-border: 1px solid var(--border);
+  --xy-node-background-color: var(--bg-elev-2);
+}
+
+* { box-sizing: border-box; }
+
+html, body { margin: 0; height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica,
+    Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* The xyflow viewport must own the navy background; clear its default handles. */
+.svelte-flow {
+  background: var(--bg);
+}
+.svelte-flow__attribution { display: none; }
+.svelte-flow__handle {
+  width: 7px;
+  height: 7px;
+  background: var(--accent);
+  border: none;
+}
+.svelte-flow__edge-text { fill: var(--text-muted); font-size: 10px; }
+.svelte-flow__edge-textbg { fill: var(--bg-elev); }

@@ -3,14 +3,14 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui install clean test lint dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui plugin-ui install clean test lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 \
         service-install service-uninstall help
 
-## Full build: GUI then Go binaries
-all: gui build
+## Full build: GUI + Studio plugin UI, then Go binaries
+all: gui plugin-ui build
 
 ## Build only the Go binaries (embeds whatever is in internal/webui/dist/).
 ## `go mod tidy` runs first so go.sum picks up any newly-added deps.
@@ -27,6 +27,15 @@ gui:
 	@command -v npm >/dev/null 2>&1 || { echo "npm not found — install Node.js from https://nodejs.org"; exit 1; }
 	cd gui && npm install --silent && npm run build
 	@echo "→ GUI built."
+
+## Build the Studio plugin UI → outputs to examples/plugins/studio/ui/.
+## Served from disk by the gateway (gui.static: ui), so it is NOT embedded and
+## the built output is gitignored — `make all` regenerates it.
+plugin-ui:
+	@echo "→ Building Studio plugin UI..."
+	@command -v npm >/dev/null 2>&1 || { echo "npm not found — install Node.js from https://nodejs.org"; exit 1; }
+	cd examples/plugins/studio/ui-src && npm install --silent && npm run build
+	@echo "→ Studio plugin UI built."
 
 build-gateway:
 	@echo "→ Building gateway server..."
@@ -55,6 +64,12 @@ sdk-install-release:
 dev:
 	@which air > /dev/null 2>&1 || go install github.com/cosmtrek/air@latest
 	air -c .air.toml
+
+## Build everything and serve with the repo dev config (config.dev.yaml).
+## One-liner to see the portal incl. the Studio plugin during development.
+run-dev: all
+	@echo "→ Serving with ./config.dev.yaml — open http://127.0.0.1:18789"
+	SOULACY_CONFIG_PATH=./config.dev.yaml ./bin/soulacy serve
 
 ## Run tests
 test:

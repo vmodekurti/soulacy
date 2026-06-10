@@ -148,8 +148,8 @@ func explain(def *agent.Definition, lookup Lookup, seen map[string]bool, out *[]
 	}
 	seen[def.ID] = true
 
-	if def.SystemTools {
-		*out = append(*out, "system_tools: true (OS-level shell access)")
+	if def.HasCapability("system") {
+		*out = append(*out, "capabilities: [system] (OS-level shell access)")
 		return Privileged
 	}
 	if hasWildcard(def.Builtins) {
@@ -242,8 +242,8 @@ func compute(def *agent.Definition, lookup Lookup, seen map[string]bool) Tier {
 	}
 	seen[def.ID] = true
 
-	// 1. system_tools is an unambiguous escalation.
-	if def.SystemTools {
+	// 1. The "system" capability (or legacy system_tools) is an unambiguous escalation.
+	if def.HasCapability("system") {
 		return Privileged
 	}
 

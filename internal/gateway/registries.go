@@ -74,7 +74,7 @@ func (s *Server) configuredOrDefaultRegistries() []config.RegistryConfig {
 func (s *Server) handleSearchRegistries(c *fiber.Ctx) error {
 	query := strings.TrimSpace(c.Query("q"))
 	if query == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "q query parameter is required"})
+		return s.errMsg(c, fiber.StatusBadRequest, "q query parameter is required")
 	}
 	eng, _ := pkgregistry.FromConfig(s.configuredOrDefaultRegistries(), s.log)
 	ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
@@ -89,7 +89,7 @@ func (s *Server) handleListRegistries(c *fiber.Ctx) error {
 	}
 	entries, err := s.rawRegistries()
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	if len(entries) == 0 {
 		// Surface the native defaults so the GUI shows what's active.
@@ -126,13 +126,13 @@ func (s *Server) handleProbeRegistry(c *fiber.Ctx) error {
 		URL string `json:"url"`
 	}
 	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.URL) == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "body must be {\"url\": \"…\"}"})
+		return s.errMsg(c, fiber.StatusBadRequest, "body must be {\"url\": \"…\"}")
 	}
 	ctx, cancel := context.WithTimeout(c.Context(), 30*time.Second)
 	defer cancel()
 	rep, err := pkgregistry.Probe(ctx, body.URL)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.JSON(rep)
 }
@@ -151,7 +151,7 @@ func (s *Server) handleAddRegistry(c *fiber.Ctx) error {
 		SigningKey string `json:"signing_key"`
 	}
 	if err := c.BodyParser(&body); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 	if body.Type == "" {
 		body.Type = "http"
@@ -162,7 +162,7 @@ func (s *Server) handleAddRegistry(c *fiber.Ctx) error {
 		})
 	}
 	if body.Type != "git" && strings.TrimSpace(body.BaseURL) == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "base_url is required for type " + body.Type})
+		return s.errMsg(c, fiber.StatusBadRequest, "base_url is required for type "+body.Type)
 	}
 	if body.ID == "" {
 		body.ID = body.Type
@@ -170,7 +170,7 @@ func (s *Server) handleAddRegistry(c *fiber.Ctx) error {
 
 	current, err := readRawConfig(s.cfgPath)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	raw, _ := current["registries"].([]any)
 	for _, e := range raw {
@@ -192,7 +192,7 @@ func (s *Server) handleAddRegistry(c *fiber.Ctx) error {
 	}
 	current["registries"] = append(raw, entry)
 	if err := writeRawConfig(s.cfgPath, current); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.log.Info("registry source added via API",
 		zap.String("id", body.ID), zap.String("type", body.Type), zap.String("base_url", body.BaseURL))

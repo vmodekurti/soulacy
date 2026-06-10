@@ -8,6 +8,7 @@ import (
 )
 
 func TestPreserveHiddenAgentUpdateFieldsCopiesMissingAdvancedFields(t *testing.T) {
+	t.Parallel() // TEST-4: pure in-memory struct logic, no shared state.
 	builtins := []string{"web_search"}
 	mcpServers := []string{"github"}
 	mcpTools := []string{"mcp__github__search_repositories"}
@@ -83,6 +84,7 @@ func TestPreserveHiddenAgentUpdateFieldsCopiesMissingAdvancedFields(t *testing.T
 }
 
 func TestPreserveHiddenAgentUpdateFieldsKeepsExplicitAdvancedFields(t *testing.T) {
+	t.Parallel() // TEST-4: pure in-memory struct logic, no shared state.
 	oldBuiltins := []string{"web_search"}
 	oldMCPServers := []string{"github"}
 	oldMCPTools := []string{"mcp__github__search_repositories"}
@@ -162,6 +164,7 @@ func TestPreserveHiddenAgentUpdateFieldsKeepsExplicitAdvancedFields(t *testing.T
 }
 
 func TestPreserveHiddenAgentUpdateFieldsNilSafe(t *testing.T) {
+	t.Parallel() // TEST-4: pure in-memory struct logic, no shared state.
 	preserveHiddenAgentUpdateFields(nil, &agent.Definition{})
 	preserveHiddenAgentUpdateFields(&agent.Definition{}, nil)
 }
