@@ -13,7 +13,6 @@ import (
 	"os"
 	"strings"
 
-	studioplugin "github.com/soulacy/soulacy/examples/plugins/studio"
 	"github.com/soulacy/soulacy/internal/app"
 	"github.com/soulacy/soulacy/internal/buildtool"
 	"github.com/soulacy/soulacy/internal/config"
@@ -146,18 +145,6 @@ func run() error {
 	}
 	if bootstrap.Action != config.BootstrapNoop {
 		printFirstRunBanner(bootstrap, cfg.Server.Host, cfg.Server.Port)
-	}
-
-	// Seed the bundled, default-on Studio plugin into the default plugins dir
-	// on first run so it appears in the portal with zero operator config.
-	// Absent-only: never clobbers an existing copy. A seed failure must not
-	// block startup — warn and continue.
-	if len(cfg.PluginDirs) > 0 {
-		if seeded, serr := studioplugin.Seed(cfg.PluginDirs[0]); serr != nil {
-			fmt.Fprintf(os.Stderr, "warning: seed Studio plugin: %v\n", serr)
-		} else if seeded {
-			fmt.Fprintf(os.Stderr, "Seeded bundled Studio plugin into %s\n", cfg.PluginDirs[0])
-		}
 	}
 
 	a, err := app.New(cfg, app.WithConfigPath(cfgPath))

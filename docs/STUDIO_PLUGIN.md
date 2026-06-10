@@ -204,24 +204,27 @@ left out here.
 All `internal/studio` logic is unit-tested and green in-sandbox; the gateway's
 final compile remains the `make all` check on the Mac.
 
-## Shipping — zero-config, default-on
+## Shipping — a normal plugin, installed by default
 
-Studio is **bundled in the gateway binary** and seeded automatically, so a
-non-technical user gets it with no config, no copying, no `plugin_dirs`:
+Studio is just a plain plugin (manifest + built `ui/`) living in the workspace
+plugins dir — **not** embedded in the binary. This keeps it simple and
+hot-reloadable:
 
-- `examples/plugins/studio/embed.go` embeds the manifest + built `ui/` into the
-  binary (`//go:embed plugin.yaml README.md all:ui`).
-- On startup, after `config.EnsureBootstrap` ensures the workspace,
-  `cmd/soulacy` calls `studioplugin.Seed(cfg.PluginDirs[0])`, which writes
-  `studio/` into the default plugins dir (`~/.soulacy/soulspace/plugins`) **if it
-  isn't already there** (absent-only — never clobbers a user copy). No
-  `.soulacy-install.json` is written, so the plugin loads **unmanaged → no
-  approval step**. It appears in the portal's Plugins nav on first run.
-- Because of the embed, building the binary requires `ui/` to exist — `make all`
-  runs `plugin-ui` before the Go build, exactly like the GUI's `internal/webui/dist`.
-- Dev loop: `make run-dev` builds everything and serves with `config.dev.yaml`.
-- *Known follow-up:* seeding is absent-only, so a binary upgrade won't refresh an
-  already-seeded copy — add a version-aware re-seed when prebuilt releases land.
+- **Installed by `curl | bash`.** `install.sh`, after `make all` builds the UI,
+  copies `examples/plugins/studio` (only `plugin.yaml` + `ui/`) into
+  `<workspace>/plugins/studio` (`~/.soulacy/soulspace/plugins`, or
+  `$SOULACY_WORKSPACE`). Re-running the installer refreshes it.
+- **Loaded by the framework.** The default `plugin_dirs` is `<workspace>/plugins`,
+  which the loader scans at startup. No `.soulacy-install.json` is written, so it
+  loads **unmanaged → no approval step**, and appears in the portal's Plugins nav.
+- **Hot reload.** The gateway serves the plugin's UI from disk on every request,
+  so UI edits show on a browser refresh with no rebuild. Adding/updating a plugin
+  or changing its manifest is picked up on gateway restart (the loader re-scans).
+  (A live manifest file-watch is a possible future add — not needed for the flow.)
+- **Dev loop.** A repo checkout running `config.dev.yaml` loads Studio directly via
+  `plugin_dirs: [examples/plugins]`; `make run-dev` builds everything and serves
+  with that config. The plugin UI is built by `make all` (target `plugin-ui`) into
+  a gitignored `ui/`; nothing about Studio is compiled into the binary.
 
 ## Vasu's open questions
 
