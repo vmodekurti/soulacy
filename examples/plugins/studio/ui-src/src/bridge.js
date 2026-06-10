@@ -115,9 +115,14 @@ export function bridgeRequest(op, payload = {}, timeoutMs = HOST_TIMEOUT_MS) {
   })
 }
 
+// compile + refine call the LLM on the host, which routinely takes well over
+// the 8s default — give them a wide timeout so a slow model doesn't surface as
+// a bogus "host did not respond".
+const LLM_TIMEOUT_MS = 120000
+
 export const bridge = {
   catalog: () => bridgeRequest('catalog'),
-  compile: (intent, answers, catalog) => bridgeRequest('compile', { intent, answers, catalog }),
+  compile: (intent, answers, catalog) => bridgeRequest('compile', { intent, answers, catalog }, LLM_TIMEOUT_MS),
   // M5: a test bench. `opts` may carry { mocks, assertions, mode }; only
   // present fields are sent so the backend defaults the rest.
   test: (workflow, input, opts = {}) =>
@@ -146,5 +151,5 @@ export const bridge = {
   draftLoad: (id) => bridgeRequest('draftLoad', { id }),
   draftDelete: (id) => bridgeRequest('draftDelete', { id }),
   refine: (workflow, nodeId, instruction) =>
-    bridgeRequest('refine', { workflow, nodeId, instruction }, 30000),
+    bridgeRequest('refine', { workflow, nodeId, instruction }, LLM_TIMEOUT_MS),
 }
