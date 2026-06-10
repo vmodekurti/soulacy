@@ -79,3 +79,9 @@ config.*.yaml
 # Reference examples we DO ship with the repo (Phase 1 persona-blocks).
 !examples/agents/persona-demo/
 !examples/agents/persona-demo/**
+
+# Studio plugin UI: built from examples/plugins/studio/ui-src by `make all`
+# (served from disk, not embedded). Regenerated on every build — `make all`
+# runs `plugin-ui` before the gateway binary, so the dir always exists at run
+# time, exactly like internal/webui/dist. Not committed.
+examples/plugins/studio/ui/

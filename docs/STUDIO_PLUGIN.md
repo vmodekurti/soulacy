@@ -127,8 +127,8 @@ The full describe → graph → test → save loop is implemented.
 
 - **Visual builder (S1.2/S1.3):** the plugin UI is now a Svelte + Vite +
   `@xyflow/svelte` app. Source in `examples/plugins/studio/ui-src/`
-  (`base: './'`, builds to `ui/`, built bundle committed; regenerate with
-  `cd ui-src && npm install && npm run build`). Renders the compiled draft on a
+  (`base: './'`, builds to a gitignored `ui/`; built by `make all` via the
+  `plugin-ui` target, or `make plugin-ui` alone). Renders the compiled draft on a
   canvas (auto-layout when nodes lack x/y), a node inspector, a clarify-questions
   panel that re-compiles with answers, a transparency strip for compiler notes,
   and Test / Save actions.
