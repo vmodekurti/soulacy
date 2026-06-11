@@ -47,6 +47,13 @@ TOOLCHAIN="${HOME}/.soulacy/toolchain"
 GO_VERSION="1.25.11"
 NODE_VERSION="22.12.0"
 
+# Detect an existing config up-front (BEFORE anything is written) so we only run
+# the first-time setup wizard on a genuinely fresh install.
+CONFIG_LEGACY="$HOME/.soulacy/config.yaml"
+CONFIG_WORKSPACE="$HOME/.soulacy/soulspace/config.yaml"
+CONFIG_EXISTS=0
+if [ -f "$CONFIG_LEGACY" ] || [ -f "$CONFIG_WORKSPACE" ]; then CONFIG_EXISTS=1; fi
+
 # ── Tiny output helpers ──────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'; BOLD='\033[1m'
 ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
@@ -317,6 +324,22 @@ printf "${GREEN}║${NC}  soulacy → %-52s ${GREEN}║${NC}\n" "$BIN_DIR/soulac
 printf "${GREEN}║${NC}  sy      → %-52s ${GREEN}║${NC}\n" "$BIN_DIR/sy"
 printf "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}\n\n"
 
+# ── First-time setup wizard (fresh install + interactive shell only) ─────────
+# Guides the user through provider/model + web search + an API key, writing the
+# config so the gateway is ready on first launch. Skipped for upgrades (config
+# already present) and for piped `curl | bash` (no tty).
+if [ "$CONFIG_EXISTS" -eq 0 ] && [ -t 0 ]; then
+    hdr "First-time setup"
+    printf "  No existing config found — let's get you configured.\n\n"
+    export PATH="$BIN_DIR:$PATH"
+    if "$BIN_DIR/sy" setup; then
+        # Re-detect: setup just wrote the config.
+        [ -f "$CONFIG_LEGACY" ] || [ -f "$CONFIG_WORKSPACE" ] && CONFIG_EXISTS=1
+    else
+        warn "Setup did not complete — re-run it any time with:  sy setup"
+    fi
+fi
+
 printf "${BOLD}Next steps${NC}\n"
 printf "──────────\n"
 STEP=1
@@ -339,6 +362,26 @@ printf "  ${BOLD}%d.${NC} Try the CLI:\n" "$STEP"
 printf "     ${YELLOW}sy doctor${NC}            -- check the workspace\n"
 printf "     ${YELLOW}sy agent ls${NC}          -- list installed agents\n"
 printf "     ${YELLOW}sy --help${NC}            -- everything else\n\n"
+
+# ── KEY THINGS TO REMEMBER: show the configured API key prominently ──────────
+# Read server.api_key from whichever config exists (the FIRST api_key: line is
+# the server key, written near the top of the file). Shown for both fresh and
+# upgrade installs so the user always knows their dashboard key.
+CONFIG_FILE=""
+[ -f "$CONFIG_WORKSPACE" ] && CONFIG_FILE="$CONFIG_WORKSPACE"
+[ -z "$CONFIG_FILE" ] && [ -f "$CONFIG_LEGACY" ] && CONFIG_FILE="$CONFIG_LEGACY"
+API_KEY=""
+if [ -n "$CONFIG_FILE" ]; then
+    API_KEY=$(grep -E '^[[:space:]]*api_key:[[:space:]]*"' "$CONFIG_FILE" | head -1 | sed -E 's/^[^"]*"([^"]*)".*/\1/')
+fi
+if [ -n "$API_KEY" ]; then
+    printf "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━  KEY THINGS TO REMEMBER  ━━━━━━━━━━━━━━━━━━━━━━${NC}\n\n"
+    printf "  ${BOLD}Your Soulacy API key${NC} ${YELLOW}(paste this to log into the dashboard)${NC}:\n\n"
+    printf "      ${GREEN}${BOLD}%s${NC}\n\n" "$API_KEY"
+    printf "  Save it now — it gates the dashboard and every API call. It lives in:\n"
+    printf "      ${YELLOW}%s${NC}\n" "$CONFIG_FILE"
+    printf "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n\n"
+fi
 
 # Offer to launch right now (only when stdin is a tty -- piped curl|bash skips).
 if [ -t 0 ]; then

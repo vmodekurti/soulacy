@@ -771,6 +771,8 @@ type engineDeps struct {
 	pyExecutor     executor.Backend
 	brainStore     *agentmemory.CompositeStore
 	ollamaAPIKey   string
+	searchProvider string
+	searchAPIKey   string
 	toolTimeout    time.Duration
 }
 
@@ -785,6 +787,7 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 		cfg.Runtime.PythonBin, d.toolTimeout, log, d.hub, d.skillLoader, d.ollamaAPIKey, d.mcpClient, d.knowledgeSvc,
 		cfg.Runtime.AllowSystemTools, d.vectorStore, d.pluginProvider,
 	)
+	engine.SetSearchConfig(d.searchProvider, d.searchAPIKey)
 	engine.SetExecutor(d.pyExecutor)
 
 	// Story 16 — reasoning loop backends: cloud-provider keys come from the

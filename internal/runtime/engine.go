@@ -99,6 +99,12 @@ type Engine struct {
 	ollamaAPIKeyMu sync.RWMutex
 	ollamaAPIKey   string
 
+	// Web search provider and API key
+	searchProviderMu sync.RWMutex
+	searchProvider   string
+	searchAPIKey     string
+
+
 	// mcpClient routes MCP tool calls to configured external MCP servers.
 	// All tools from connected servers are offered to every agent, namespaced
 	// as mcp__<server>__<tool>. May be nil if no servers are configured.
@@ -388,6 +394,21 @@ func (e *Engine) getOllamaAPIKey() string {
 	defer e.ollamaAPIKeyMu.RUnlock()
 	return e.ollamaAPIKey
 }
+
+// SetSearchConfig configures the search provider and key for the built-in web_search tool.
+func (e *Engine) SetSearchConfig(provider, apiKey string) {
+	e.searchProviderMu.Lock()
+	defer e.searchProviderMu.Unlock()
+	e.searchProvider = strings.TrimSpace(provider)
+	e.searchAPIKey = strings.TrimSpace(apiKey)
+}
+
+func (e *Engine) getSearchConfig() (string, string) {
+	e.searchProviderMu.RLock()
+	defer e.searchProviderMu.RUnlock()
+	return e.searchProvider, e.searchAPIKey
+}
+
 
 // SetSSRF configures SSRF protection for the HTTP-fetching built-in tools.
 func (e *Engine) SetSSRF(enabled bool, allowedHosts []string) {
@@ -719,7 +740,7 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// can opt out of all built-ins via `builtins: []` in SOUL.yaml.
 	tools = append(tools, BuiltinTool{
 		Name:        "web_search",
-		Description: "Search the web for current, up-to-date information. Use for facts, news, prices, or anything beyond the model's training data. Returns titles, URLs, and content snippets. Requires OLLAMA_API_KEY (server-side config); works with any LLM provider.",
+		Description: "Search the web for current, up-to-date information. Use for facts, news, prices, or anything beyond the model's training data. Returns titles, URLs, and content snippets. Supports Ollama, Tavily, and Serper backends.",
 		Gate:        "",
 		Parameters: map[string]any{
 			"type": "object",
@@ -735,7 +756,7 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 			},
 			"required": []string{"query"},
 		},
-		Handler: e.ollamaWebSearch,
+		Handler: e.webSearch,
 	})
 
 	// Skill built-ins are only added when a skill loader is configured;
@@ -1024,6 +1045,165 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 	return out
 }
 
+// webSearch routes the query to the configured search provider.
+func (e *Engine) webSearch(ctx context.Context, args map[string]any) (string, error) {
+	provider, _ := e.getSearchConfig()
+	provider = strings.ToLower(provider)
+	if provider == "" {
+		provider = "ollama"
+	}
+	switch provider {
+	case "tavily":
+		return e.tavilyWebSearch(ctx, args)
+	case "serper":
+		return e.serperWebSearch(ctx, args)
+	default:
+		return e.ollamaWebSearch(ctx, args)
+	}
+}
+
+// tavilyWebSearch implements the web_search tool via Tavily API.
+func (e *Engine) tavilyWebSearch(ctx context.Context, args map[string]any) (string, error) {
+	query := strings.TrimSpace(argString(args, "query"))
+	if query == "" {
+		return "", fmt.Errorf("web_search: query is required")
+	}
+	maxResults := argInt(args, "max_results", 5)
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+
+	_, key := e.getSearchConfig()
+	if key == "" {
+		key = os.Getenv("TAVILY_API_KEY")
+	}
+	if key == "" {
+		return "", fmt.Errorf("web_search: no Tavily API key. Set TAVILY_API_KEY environment variable or search.api_key in config.yaml")
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"api_key":     key,
+		"query":       query,
+		"max_results": maxResults,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.tavily.com/search", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("web_search (tavily): request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("web_search (tavily): API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var out struct {
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("web_search (tavily): decode response: %w", err)
+	}
+	if len(out.Results) == 0 {
+		return fmt.Sprintf("No web results found for %q.", query), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Web search results for %q:\n", query))
+	for i, r := range out.Results {
+		content := strings.TrimSpace(r.Content)
+		if len(content) > 600 {
+			content = content[:600] + "…"
+		}
+		sb.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n   %s\n", i+1, r.Title, r.URL, content))
+	}
+	return sb.String(), nil
+}
+
+// serperWebSearch implements the web_search tool via Serper API.
+func (e *Engine) serperWebSearch(ctx context.Context, args map[string]any) (string, error) {
+	query := strings.TrimSpace(argString(args, "query"))
+	if query == "" {
+		return "", fmt.Errorf("web_search: query is required")
+	}
+	maxResults := argInt(args, "max_results", 5)
+	if maxResults <= 0 {
+		maxResults = 5
+	}
+
+	_, key := e.getSearchConfig()
+	if key == "" {
+		key = os.Getenv("SERPER_API_KEY")
+	}
+	if key == "" {
+		return "", fmt.Errorf("web_search: no Serper API key. Set SERPER_API_KEY environment variable or search.api_key in config.yaml")
+	}
+
+	payload, err := json.Marshal(map[string]any{
+		"q":   query,
+		"num": maxResults,
+	})
+	if err != nil {
+		return "", err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://google.serper.dev/search", bytes.NewReader(payload))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("X-API-KEY", key)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("web_search (serper): request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("web_search (serper): API returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+
+	var out struct {
+		Organic []struct {
+			Title   string `json:"title"`
+			Link    string `json:"link"`
+			Snippet string `json:"snippet"`
+		} `json:"organic"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil {
+		return "", fmt.Errorf("web_search (serper): decode response: %w", err)
+	}
+	if len(out.Organic) == 0 {
+		return fmt.Sprintf("No web results found for %q.", query), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Web search results for %q:\n", query))
+	for i, r := range out.Organic {
+		snippet := strings.TrimSpace(r.Snippet)
+		if len(snippet) > 600 {
+			snippet = snippet[:600] + "…"
+		}
+		sb.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n   %s\n", i+1, r.Title, r.Link, snippet))
+	}
+	return sb.String(), nil
+}
+
 // ollamaWebSearch implements the built-in web_search tool via the Ollama Web
 // Search API (https://ollama.com/api/web_search). Requires an Ollama API key.
 func (e *Engine) ollamaWebSearch(ctx context.Context, args map[string]any) (string, error) {
@@ -1088,6 +1268,7 @@ func (e *Engine) ollamaWebSearch(ctx context.Context, args map[string]any) (stri
 	}
 	return sb.String(), nil
 }
+
 
 // Handle processes an inbound message and returns the agent's reply.
 // It is safe to call concurrently from multiple goroutines.

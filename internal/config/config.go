@@ -114,6 +114,9 @@ type Config struct {
 	// docs/VOICE_SPIKE.md). Empty provider = voice panel disabled.
 	Voice VoiceConfig `mapstructure:"voice"`
 
+	// Search configures the built-in web_search tool.
+	Search SearchConfig `mapstructure:"search"`
+
 	// Logging
 	Log LogConfig `mapstructure:"log"`
 }
@@ -658,6 +661,7 @@ func setHomeDefaults(v *viper.Viper, ws Paths) {
 	// box (it tails log.file; empty = stdout-only and the page stays empty).
 	// The logger still mirrors to stdout — this only ADDS the file sink.
 	v.SetDefault("log.file", filepath.Join(ws.Logs, "soulacy.log"))
+	v.SetDefault("search.provider", "ollama")
 }
 
 // DataDir returns the workspace root: ~/.soulacy/soulspace for new
@@ -705,3 +709,10 @@ func EnsureDirs(cfg *Config) error {
 	}
 	return nil
 }
+
+// SearchConfig configures the built-in web_search tool.
+type SearchConfig struct {
+	Provider string `mapstructure:"provider"`
+	APIKey   string `mapstructure:"api_key"`
+}
+

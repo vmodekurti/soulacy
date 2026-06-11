@@ -451,7 +451,7 @@ func TestRegistry_Execute_ContextCanceled(t *testing.T) {
 // ─── WebSearchSpec (no API key path) ─────────────────────────────────────────
 
 func TestWebSearchSpec_NoAPIKey(t *testing.T) {
-	spec := reasoning.WebSearchSpec("") // no key
+	spec := reasoning.WebSearchSpec("", "") // no provider, no key
 	r := reasoning.NewRegistry()
 	r.Register(spec)
 
@@ -470,7 +470,7 @@ func TestWebSearchSpec_NoAPIKey(t *testing.T) {
 }
 
 func TestWebSearchSpec_EmptyQuery(t *testing.T) {
-	spec := reasoning.WebSearchSpec("fake-key")
+	spec := reasoning.WebSearchSpec("", "fake-key")
 	r := reasoning.NewRegistry()
 	r.Register(spec)
 
@@ -484,7 +484,7 @@ func TestWebSearchSpec_EmptyQuery(t *testing.T) {
 }
 
 func TestWebSearchSpec_AllowedKeys(t *testing.T) {
-	spec := reasoning.WebSearchSpec("")
+	spec := reasoning.WebSearchSpec("", "")
 	// Verify the spec has name and allowed keys set correctly.
 	if spec.Name != "web_search" {
 		t.Errorf("expected spec.Name='web_search', got %q", spec.Name)

@@ -191,12 +191,8 @@ func memoryWriteHandler(store *agentmemory.CompositeStore) HandlerFunc {
 }
 
 // WebSearchSpec returns a ToolSpec for the web_search tool backed by the
-// Ollama Web Search API (https://ollama.com/api/web_search).
-//
-// Pass apiKey from config (OLLAMA_API_KEY env var or llm.providers.ollama.api_key).
-// When apiKey is empty the tool returns a clear "no key configured" message
-// instead of silently returning empty results — the LLM can report this to the user.
-func WebSearchSpec(apiKey string) ToolSpec {
+// configured Web Search API (Ollama, Tavily, or Serper).
+func WebSearchSpec(provider, apiKey string) ToolSpec {
 	return ToolSpec{
 		Name:        "web_search",
 		AllowedKeys: []string{"query", "num_results"},
@@ -206,9 +202,138 @@ func WebSearchSpec(apiKey string) ToolSpec {
 				return "", fmt.Errorf("web_search: query is required")
 			}
 			maxResults := parseIntInput(input["num_results"], 5)
-			return ollamaWebSearch(ctx, apiKey, query, maxResults)
+			p := strings.ToLower(provider)
+			if p == "" {
+				p = "ollama"
+			}
+			switch p {
+			case "tavily":
+				return tavilyWebSearch(ctx, apiKey, query, maxResults)
+			case "serper":
+				return serperWebSearch(ctx, apiKey, query, maxResults)
+			default:
+				return ollamaWebSearch(ctx, apiKey, query, maxResults)
+			}
 		},
 	}
+}
+
+// tavilyWebSearch calls the Tavily API and returns formatted results.
+func tavilyWebSearch(ctx context.Context, apiKey, query string, maxResults int) (string, error) {
+	if apiKey == "" {
+		apiKey = os.Getenv("TAVILY_API_KEY")
+	}
+	if apiKey == "" {
+		return "web_search unavailable: no TAVILY_API_KEY configured. " +
+			"Get a key at https://tavily.com and set TAVILY_API_KEY " +
+			"or search.api_key in config.yaml.", nil
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"api_key":     apiKey,
+		"query":       query,
+		"max_results": maxResults,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://api.tavily.com/search", bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("web_search (tavily): %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("web_search (tavily): request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("web_search (tavily): API returned %d — %s", resp.StatusCode, strings.TrimSpace(string(body))), nil
+	}
+
+	var out struct {
+		Results []struct {
+			Title   string `json:"title"`
+			URL     string `json:"url"`
+			Content string `json:"content"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || len(out.Results) == 0 {
+		return fmt.Sprintf("No web results found for %q.", query), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Web search results for %q:\n", query))
+	for i, r := range out.Results {
+		content := strings.TrimSpace(r.Content)
+		if len(content) > 600 {
+			content = content[:600] + "…"
+		}
+		sb.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n   %s\n", i+1, r.Title, r.URL, content))
+	}
+	return sb.String(), nil
+}
+
+// serperWebSearch calls the Serper API and returns formatted results.
+func serperWebSearch(ctx context.Context, apiKey, query string, maxResults int) (string, error) {
+	if apiKey == "" {
+		apiKey = os.Getenv("SERPER_API_KEY")
+	}
+	if apiKey == "" {
+		return "web_search unavailable: no SERPER_API_KEY configured. " +
+			"Get a key at https://serper.dev and set SERPER_API_KEY " +
+			"or search.api_key in config.yaml.", nil
+	}
+
+	payload, _ := json.Marshal(map[string]any{
+		"q":   query,
+		"num": maxResults,
+	})
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://google.serper.dev/search", bytes.NewReader(payload))
+	if err != nil {
+		return "", fmt.Errorf("web_search (serper): %w", err)
+	}
+	req.Header.Set("X-API-KEY", apiKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("web_search (serper): request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("web_search (serper): API returned %d — %s", resp.StatusCode, strings.TrimSpace(string(body))), nil
+	}
+
+	var out struct {
+		Organic []struct {
+			Title   string `json:"title"`
+			Link    string `json:"link"`
+			Snippet string `json:"snippet"`
+		} `json:"organic"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || len(out.Organic) == 0 {
+		return fmt.Sprintf("No web results found for %q.", query), nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Web search results for %q:\n", query))
+	for i, r := range out.Organic {
+		snippet := strings.TrimSpace(r.Snippet)
+		if len(snippet) > 600 {
+			snippet = snippet[:600] + "…"
+		}
+		sb.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n   %s\n", i+1, r.Title, r.Link, snippet))
+	}
+	return sb.String(), nil
 }
 
 // ollamaWebSearch calls the Ollama Web Search API and returns formatted results.
