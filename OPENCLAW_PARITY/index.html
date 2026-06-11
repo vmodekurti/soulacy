@@ -1,0 +1,3708 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Open-source multi-agent orchestration platform — deploy AI agents to Telegram, Slack, Discord, WhatsApp, and HTTP in minutes.">
+      
+      
+      
+        <link rel="canonical" href="https://vmodekurti.github.io/soulacy/OPENCLAW_PARITY/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/logo.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Soulacy vs OpenClaw — competitive parity analysis - Soulacy</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#soulacy-vs-openclaw-competitive-parity-analysis" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Soulacy" class="md-header__button md-logo" aria-label="Soulacy" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Soulacy
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Soulacy vs OpenClaw — competitive parity analysis
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="purple"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/vmodekurti/soulacy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    vmodekurti/soulacy
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../using/chat/" class="md-tabs__link">
+          
+  
+  
+  Using Soulacy
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../agents/soul-yaml/" class="md-tabs__link">
+          
+  
+  
+  Agents
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../extend/installing-skills/" class="md-tabs__link">
+          
+  
+  
+  Skills & Plugins
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../channels/" class="md-tabs__link">
+          
+  
+  
+  Channels
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../configuration/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../security/sandbox/" class="md-tabs__link">
+          
+  
+  
+  Security
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../api/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cli/reference/" class="md-tabs__link">
+          
+  
+  
+  CLI
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../deployment/docker/" class="md-tabs__link">
+          
+  
+  
+  Deployment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/overview/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Soulacy" class="md-nav__button md-logo" aria-label="Soulacy" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="logo">
+
+    </a>
+    Soulacy
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/vmodekurti/soulacy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    vmodekurti/soulacy
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/first-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your First Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/gui-tour/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI Tour
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using Soulacy
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using Soulacy
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/chat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/voice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Voice Conversations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dashboard & Activity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/workboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/knowledge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Knowledge Bases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Memory & Rulebooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/templates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow Templates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/flow-view/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flow View
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/soul-yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SOUL.yaml Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/reasoning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reasoning Strategies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow Steps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/flows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flow Graphs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/peers-builtins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Peer Agents & Built-ins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & Plugins
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Skills & Plugins
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/installing-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installing Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/skill-sources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/plugin-security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin Security Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/safety/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Safety Introspection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/registries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Package Registries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/custom-distributions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Distributions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channels
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Channels
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/telegram/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telegram
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/slack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/whatsapp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WhatsApp
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/http/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/sidecars/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Sidecar Channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/workspace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspace Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/gui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web GUI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/llm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage & Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/events/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Events & Webhooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/voice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Voice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Auth
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Posture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/rate-limiting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rate Limiting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Security
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/sandbox/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Sandbox
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Audit & Incident Records
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Auth
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/workboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/registries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Registries & Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/credentials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Credentials
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/costs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Costs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deployment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docker
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux / VPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/upgrades/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrades & Reinstall
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_12" id="__nav_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_12">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/specs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specs & Deep Dives
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#tldr" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        TL;DR
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-openclaw-actually-is" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What OpenClaw actually is
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parity-matrix" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Parity matrix
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Parity matrix">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#install-first-run" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Install &amp; first-run
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#channels-the-openclaw-headline-number" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Channels (the OpenClaw headline number)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#llm-providers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        LLM providers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#voice" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Voice
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#native-apps" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Native apps
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skills-agents-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Skills / agents / memory
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#storage-distribution-mcp" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Storage, distribution, MCP
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ux-polish" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        UX / polish
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-soulacy-has-that-openclaw-doesnt-lean-into-these" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What Soulacy has that OpenClaw doesn't (lean into these)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#recommended-implementation-shortlist-pick-one-or-two" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Recommended implementation shortlist (pick one or two)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Recommended implementation shortlist (pick one or two)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#pick-1-sy-onboard-first-run-wizard-1-day-highest-leverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pick 1: sy onboard — first-run wizard (~1 day, HIGHEST leverage)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pick-2-sy-doctor-v2-explainable-health-checks-half-day-medium-leverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pick 2: sy doctor v2 — explainable health checks (~half day, MEDIUM leverage)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#pick-3-sy-daemon-install-first-class-auto-start-half-day-lower-leverage" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Pick 3: sy daemon install — first-class auto-start (~half day, LOWER leverage)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#what-to-explicitly-not-do-deferred-or-rejected" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        What to explicitly NOT do (deferred or rejected)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decision-request" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Decision request
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/vmodekurti/soulacy/edit/main/docs/OPENCLAW_PARITY.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="soulacy-vs-openclaw-competitive-parity-analysis">Soulacy vs OpenClaw — competitive parity analysis<a class="headerlink" href="#soulacy-vs-openclaw-competitive-parity-analysis" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-06-08
+<strong>Author:</strong> Vasu + Claude
+<strong>Posture:</strong> <em>competitor to differentiate from</em> — sharpen what Soulacy does that OpenClaw doesn't, only close gaps where parity is load-bearing for our positioning. Do NOT chase OpenClaw's surface area.</p>
+<hr />
+<h2 id="tldr">TL;DR<a class="headerlink" href="#tldr" title="Permanent link">&para;</a></h2>
+<p>OpenClaw is a Node-based, multi-thousand-source-file personal AI assistant with 24 channel adapters, 40+ LLM providers, native macOS / iOS / Android companion apps, voice wake / talk-back, a Canvas (A2UI) mode, an Onboard wizard, and a Sparkle auto-update pipeline. It's heavily funded (OpenAI / NVIDIA / GitHub sponsors visible), with ~18,000 commits in the last 30 days. <strong>We will not match this surface area, and we shouldn't try.</strong> We close 3 specific gaps where parity sharpens our existing differentiation (dumb-install, opinionated, single binary), and explicitly diverge on everything else.</p>
+<p><strong>Recommended implementation shortlist (this session, after your pick):</strong></p>
+<ol>
+<li><strong><code>sy onboard</code> — guided first-run wizard</strong> that beats OpenClaw's at the dumb-install game (no Node, no plugin install, runs against our already-bootstrapped workspace). [HIGH leverage, ~1 day]</li>
+<li><strong><code>sy doctor</code> expansion — explainable health checks</strong> with a small fraction of OpenClaw's 140 checks, but covering the 10 things that actually go wrong (config, port, providers, channels, sandbox, db). [MEDIUM leverage, ~half day]</li>
+<li><strong>Daemon install / auto-start</strong> — <code>sy daemon install</code> for launchd (macOS) / systemd (Linux). Currently we only set up LaunchAgent inside install.sh; this makes it a first-class CLI surface that survives upgrades. [LOW-MEDIUM leverage, ~half day]</li>
+</ol>
+<p>Anything else listed below is in the "diverge" or "ignore" column.</p>
+<hr />
+<h2 id="what-openclaw-actually-is">What OpenClaw actually is<a class="headerlink" href="#what-openclaw-actually-is" title="Permanent link">&para;</a></h2>
+<p>A personal AI assistant for technically-comfortable single users. Terminal-first by design (<code>openclaw onboard</code> is the recommended setup path). It answers you on the channels you already use (WhatsApp, Telegram, Slack, Discord, iMessage, plus 19 more), can talk and listen on macOS / iOS / Android, and can render an agent-controlled "Canvas" surface. Implemented as a Node 22+ gateway with ~140 plugins under <code>extensions/</code>, a SQLite-only storage policy, and three native companion apps. Origin myth: Warelay → Clawdbot → Moltbot → OpenClaw.</p>
+<p>It is <strong>not what Soulacy is.</strong> Soulacy is a <em>self-hosted agent runtime</em> — a single Go binary you run on a laptop or VPS, with YAML agents, capability tiers, and zero Node toolchain. OpenClaw's product is "the assistant"; Soulacy's product is "the runtime your assistant runs on." That framing matters for everything below.</p>
+<hr />
+<h2 id="parity-matrix">Parity matrix<a class="headerlink" href="#parity-matrix" title="Permanent link">&para;</a></h2>
+<p>Columns: <strong>OpenClaw</strong> = what they have today. <strong>Soulacy</strong> = what we have today. <strong>Recommendation</strong> = one of <code>CLOSE</code> (worth matching), <code>DIVERGE</code> (deliberately do the opposite or skip), <code>IGNORE</code> (out of scope for our positioning, don't worry about it).</p>
+<h3 id="install-first-run">Install &amp; first-run<a class="headerlink" href="#install-first-run" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Install command</td>
+<td><code>npm install -g openclaw</code> (needs Node 22+)</td>
+<td><code>curl … \| bash</code> (needs Go + npm to build)</td>
+<td><strong>DIVERGE</strong> — Ours requires no runtime once built; theirs requires Node at runtime. We win this dimension <em>once we ship prebuilt binaries</em>. Tier 3 of our INSTALL_UX_GAPS.md.</td>
+</tr>
+<tr>
+<td>Onboarding wizard</td>
+<td><code>openclaw onboard</code> — Clack TUI, ~13 steps, writes config, installs daemon, migrates from Claude Code/Hermes, atomic config rewrites</td>
+<td>None. <code>soulacy serve</code> does silent first-run bootstrap; we never <em>ask</em> the user anything</td>
+<td><strong>CLOSE</strong> — <code>sy onboard</code> is the single highest-leverage thing on this list. We can do it cleaner than them because we don't have plugin installs to manage.</td>
+</tr>
+<tr>
+<td>Daemon / auto-start</td>
+<td><code>openclaw daemon install</code> registers launchd/systemd user service via CLI; survives upgrades</td>
+<td>Only as an interactive prompt inside <code>install.sh</code> (macOS LaunchAgent). Not a CLI surface.</td>
+<td><strong>CLOSE</strong> — promote to <code>sy daemon {install,uninstall,status}</code>, mirror across launchd + systemd.</td>
+</tr>
+<tr>
+<td>Doctor / health</td>
+<td>~140 <code>doctor-*.ts</code> checks (config, auth, sandbox, gateway-health, post-upgrade migrations)</td>
+<td><code>sy doctor</code> — basic workspace + agent_dirs + python_bin + KB db checks</td>
+<td><strong>CLOSE (small)</strong> — we don't need 140; we need the 10 that catch real failures. Add: provider reachability, port availability, GUI dist embed sanity, sandbox enabled, recent error rate from action log.</td>
+</tr>
+<tr>
+<td>Auto-update</td>
+<td>Sparkle on macOS app (<code>appcast.xml</code>); <code>openclaw update</code> for npm</td>
+<td>None</td>
+<td><strong>DIVERGE</strong> — auto-update of a single binary is solvable later via <code>soulacy update</code> that pulls the latest GitHub release. Don't build now; punt until we have releases at all.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="channels-the-openclaw-headline-number">Channels (the OpenClaw headline number)<a class="headerlink" href="#channels-the-openclaw-headline-number" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Adapters</td>
+<td>24 channel plugins + WebChat surface (Slack, Discord, Telegram, WhatsApp, iMessage, Signal, Matrix, Teams, Google Chat, Feishu, LINE, Mattermost, Nextcloud Talk, Nostr, IRC, Twitch, SMS, QQ, Zalo, Zalo personal, Synology Chat, Tlon, WeChat, ClickClack)</td>
+<td>Built-in: HTTP, Telegram, Slack, Discord, WhatsApp Web. 5 adapters.</td>
+<td><strong>DIVERGE</strong> — adding 19 channel adapters would be a quarter of work. Our positioning lets us bet on <code>kind: router</code> + MCP + webhook as the <em>generic</em> way to add any channel. Document that explicitly in README instead.</td>
+</tr>
+<tr>
+<td>Channel breadth claim</td>
+<td>"supports 23+ channels"</td>
+<td>"Telegram, Slack, Discord, WhatsApp out of the box; any HTTP-receiving service via webhook adapter"</td>
+<td><strong>CLOSE (cheap)</strong> — the <em>honest</em> version of our story is already strong. Just say it well in README. Adding a generic webhook→router adapter (~50 LoC) makes "any channel" provably true.</td>
+</tr>
+<tr>
+<td>DM safety / pairing</td>
+<td>First-class pairing flow with <code>openclaw pairing approve &lt;channel&gt; &lt;code&gt;</code> — DMs locked down by default</td>
+<td>We have capability tiers (ReadOnly/Active/Privileged) + <code>accept_privileged_exposure</code> on binding</td>
+<td><strong>DIVERGE (we're already ahead)</strong> — our capability-tier model is more principled than their pairing flow. Make sure the GUI surfaces it well.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="llm-providers">LLM providers<a class="headerlink" href="#llm-providers" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Provider extensions</td>
+<td>~40 (OpenAI, Anthropic, Bedrock, Google, Cerebras, Cloudflare, DeepSeek, Fireworks, Groq, HuggingFace, Kimi, LMStudio, Microsoft Foundry, Mistral, Moonshot, Novita, NVIDIA, Ollama, OpenRouter, Perplexity, Qianfan, Qwen, SGLang, StepFun, Together, Venice, Vercel AI, vLLM, Volcengine, Voyage, xAI, Zhipu, …)</td>
+<td>OpenAI, Anthropic, Ollama, Groq, Mistral, OpenRouter — plus arbitrary OpenAI-compatible via <code>customId</code> (this just shipped in Providers.svelte)</td>
+<td><strong>IGNORE</strong> — <code>customId</code> + OpenAI-compatible endpoint covers ~90% of OpenClaw's provider list (DeepSeek, Together, Fireworks, etc. are all OpenAI-compatible). The differentiating ones (Bedrock IAM auth, Vertex SA auth, native xAI) can be added one-at-a-time when a user actually asks.</td>
+</tr>
+<tr>
+<td>Provider routing</td>
+<td>Internal <code>provider-runtime</code> with retry, model picker, fallback</td>
+<td>Per-agent <code>default_provider</code>, <code>allowed_providers</code> allowlist</td>
+<td><strong>DIVERGE</strong> — we have <code>allowed_providers</code> which they don't (or it's buried). Make sure it's surfaced in the GUI.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="voice">Voice<a class="headerlink" href="#voice" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Voice runtime</td>
+<td><code>src/talk/</code> (84+ files) — turn-taking, agent-talkback, fast context, forced-consult coordinator</td>
+<td>None</td>
+<td><strong>IGNORE</strong> — voice is a quarter of work and a different product. Soulacy is text-first; that's fine.</td>
+</tr>
+<tr>
+<td>TTS / STT providers</td>
+<td>ElevenLabs, Deepgram, Azure, Inworld, Minimax, Senseaudio, OpenAI, local MLX TTS, local sherpa-onnx</td>
+<td>None</td>
+<td><strong>IGNORE</strong></td>
+</tr>
+<tr>
+<td>Wake word daemon</td>
+<td><code>swabble</code> (separate Swift package, "clawd" wake word)</td>
+<td>None</td>
+<td><strong>IGNORE</strong></td>
+</tr>
+<tr>
+<td>Voice on iOS / Android</td>
+<td>Native apps with realtime Talk playback, continuous voice tab</td>
+<td>None</td>
+<td><strong>IGNORE</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="native-apps">Native apps<a class="headerlink" href="#native-apps" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>macOS app</td>
+<td>SwiftUI menu bar, 238 Swift files, 117 tests, Sparkle auto-update, Canvas client, Peekaboo automation</td>
+<td>ClawStackMac (SwiftUI executable, REST client, sidebar nav, visual canvas builder)</td>
+<td><strong>DIVERGE</strong> — we already have a Mac app at ~/Documents/Development/agenticai/clawstack-mac/. Rename + ship it as the official Soulacy Mac companion. Don't try to match Sparkle / menu bar / Peekaboo <em>now</em>; first ship what we have under the right brand.</td>
+</tr>
+<tr>
+<td>iOS app</td>
+<td>"Super Alpha, internal-use only" — TestFlight only</td>
+<td>None</td>
+<td><strong>IGNORE</strong> — even OpenClaw is alpha here. Punt indefinitely.</td>
+</tr>
+<tr>
+<td>Android app</td>
+<td>"extremely alpha, actively being rebuilt"</td>
+<td>None</td>
+<td><strong>IGNORE</strong> — same as iOS.</td>
+</tr>
+<tr>
+<td>Windows Hub</td>
+<td>Native WinUI app, signed installers via GitHub releases — <strong>not in this repo</strong></td>
+<td>None</td>
+<td><strong>IGNORE</strong> — they market it loudly but it lives elsewhere. Building a WinUI app to compete is absurd for us.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="skills-agents-memory">Skills / agents / memory<a class="headerlink" href="#skills-agents-memory" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Agent definition format</td>
+<td>Runtime in <code>openclaw.json</code> + per-agent SQLite</td>
+<td>YAML (SOUL.yaml) on disk in <code>~/.soulacy/soulspace/agents/&lt;id&gt;/SOUL.yaml</code></td>
+<td><strong>DIVERGE (we're better)</strong> — file-on-disk YAML beats runtime JSON for git-versioning, code-review, and "I can read what my agent does." Lean into this.</td>
+</tr>
+<tr>
+<td>Skills</td>
+<td><code>SKILL.md</code> files with YAML frontmatter — 58 bundled, plus workspace + plugin dirs. New "Skill Workshop" lets agents <em>propose</em> new skills</td>
+<td>We have skills as a concept but not a Workshop equivalent</td>
+<td><strong>CLOSE (lightweight)</strong> — already have a skills pipeline; document the SKILL.md convention so our format is interchangeable with theirs. Free interop win.</td>
+</tr>
+<tr>
+<td>Memory model</td>
+<td><code>active-memory</code> + <code>memory-core</code> ("Dreaming" — light/REM/deep sweeps via cron) + <code>memory-lancedb</code> + <code>memory-wiki</code>. Their VISION admits this is unresolved — they ship 4 competing memory plugins.</td>
+<td>Episodic / semantic / procedural tiers with provenance (per memory) — one model, not four</td>
+<td><strong>DIVERGE (we're better)</strong> — one unified model is the right answer. They will eventually consolidate to one; we already did. Mention this in CRITIQUE_RESPONSE.</td>
+</tr>
+<tr>
+<td>Multi-agent</td>
+<td>Workboard (new, 2026.6.x) — orchestration primitives, task-backed board runs</td>
+<td><code>kind: router</code> agent + agent-as-tool dispatcher + <code>Agents []string</code> field (researcher+writer example). Capability tiers cycle-detected.</td>
+<td><strong>DIVERGE (we ship cleaner)</strong> — router-as-agent is more elegant than Workboard's orchestration objects.</td>
+</tr>
+<tr>
+<td>Sandboxing</td>
+<td>Docker default for non-main sessions; SSH, OpenShell backends</td>
+<td>Self-reexec subprocess sandbox (rlimits, no Docker required)</td>
+<td><strong>DIVERGE (we're better for single-machine)</strong> — no Docker dependency = dumb install actually works on a fresh laptop.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="storage-distribution-mcp">Storage, distribution, MCP<a class="headerlink" href="#storage-distribution-mcp" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Storage policy</td>
+<td>SQLite-only, enforced by lint (<code>pnpm lint:kysely</code>). 4 DBs (state, per-agent, plugin KV, sessions)</td>
+<td>SQLite for actions.db / archive.db / knowledge db / credentials.db. Files for SOUL.yaml</td>
+<td><strong>DIVERGE</strong> — file-based SOUL.yaml is a strength. Don't move agents into SQLite just because they did.</td>
+</tr>
+<tr>
+<td>MCP support</td>
+<td>Server (expose OpenClaw tools as MCP) + client (mount external MCP servers)</td>
+<td>Client only (mount external MCP servers via <code>mcp-servers/</code>)</td>
+<td><strong>CLOSE (high leverage, separate session)</strong> — expose Soulacy as an MCP server so Claude Desktop / Cursor / etc. can use Soulacy agents as tools. Major distribution lever. Don't do this session; flag as next priority.</td>
+</tr>
+<tr>
+<td>ClawHub registry / plugin marketplace</td>
+<td>Yes — npm-packaged plugins discoverable via clawhub.ai</td>
+<td>None</td>
+<td><strong>IGNORE</strong> — they need a marketplace because they have 140 plugins. We don't. Plugins as MCP servers is the marketplace.</td>
+</tr>
+<tr>
+<td>Auto-update for binary</td>
+<td>npm <code>update</code> command for the gateway + Sparkle for the Mac app</td>
+<td>None</td>
+<td><strong>PUNT</strong> — needed eventually (<code>soulacy update</code> via GitHub releases), but no point until we have releases.</td>
+</tr>
+<tr>
+<td>Observability</td>
+<td>OpenTelemetry + Prometheus extensions</td>
+<td>Prometheus <code>/metrics</code> endpoint shipped (Bundle J)</td>
+<td><strong>DIVERGE (we're there)</strong> — already have Prometheus. Add OpenTelemetry only if a user asks.</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ux-polish">UX / polish<a class="headerlink" href="#ux-polish" title="Permanent link">&para;</a></h3>
+<table>
+<thead>
+<tr>
+<th>Aspect</th>
+<th>OpenClaw</th>
+<th>Soulacy</th>
+<th>Recommendation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>README</td>
+<td>86KB, multi-language, sponsor logos, badge wall, docs deep-links</td>
+<td>~10KB, focused. Just rewrote install section.</td>
+<td><strong>DIVERGE</strong> — short README is a feature. Don't bloat.</td>
+</tr>
+<tr>
+<td>Documentation site</td>
+<td><code>docs.openclaw.ai</code> (hosted) — getting started, install, platforms, FAQ, troubleshooting</td>
+<td>Inline in <code>docs/</code> directory; no hosted site</td>
+<td><strong>CLOSE (low priority)</strong> — publish <code>docs/</code> as a static site via GitHub Pages. Tier 3 polish, not this session.</td>
+</tr>
+<tr>
+<td>Discord community</td>
+<td>Discord server (<code>discord.gg/clawd</code>)</td>
+<td>None</td>
+<td><strong>IGNORE for now</strong> — community follows users; ship something users want first.</td>
+</tr>
+<tr>
+<td>Sponsor logos</td>
+<td>OpenAI, NVIDIA, GitHub, Vercel, Blacksmith, Convex</td>
+<td>None</td>
+<td><strong>IGNORE</strong> — irrelevant signal to a self-hoster.</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="what-soulacy-has-that-openclaw-doesnt-lean-into-these">What Soulacy has that OpenClaw doesn't (lean into these)<a class="headerlink" href="#what-soulacy-has-that-openclaw-doesnt-lean-into-these" title="Permanent link">&para;</a></h2>
+<p>Worth highlighting in README, marketing, and CRITIQUE_RESPONSE because these are real:</p>
+<ol>
+<li><strong>Single Go binary, no Node toolchain at runtime.</strong> Their install requires Node 22+ permanently on the host. Ours requires Node <em>once at build time</em> (for the embedded GUI) and then never again. Once we ship prebuilt binaries, even that goes away.</li>
+<li><strong>YAML-on-disk agent definitions</strong> (SOUL.yaml). Git-versionable, code-reviewable, human-editable. Theirs are runtime config + SQLite — opaque.</li>
+<li><strong>Capability tiers</strong> (ReadOnly / Active / Privileged) with cycle-detected peer-graph walk + <code>accept_privileged_exposure</code> on the binding. We didn't have this last week — now we do. OpenClaw has <em>pairing</em>, which is a different and weaker primitive: pairing is "is this contact allowed to message", tiers are "is this agent allowed to be exposed on this channel".</li>
+<li><strong>Unified memory model</strong> (episodic / semantic / procedural with provenance) versus their four-competing-plugins problem.</li>
+<li><strong><code>kind: router</code> agent</strong> — more elegant than Workboard's orchestration objects. Routing is just an agent kind, dispatch reuses peer-call machinery.</li>
+<li><strong>First-run config + key auto-generation</strong> (<code>internal/config.EnsureBootstrap</code>). OpenClaw makes you walk through 13 wizard steps. We make zero steps — <em>and we can still add a wizard for users who want one</em> (gap 1 below).</li>
+<li><strong>No Docker required.</strong> Their default sandbox is Docker-based; non-main sessions need a container runtime. Ours is a self-reexec subprocess with rlimits. Works on a stock Mac with no setup.</li>
+<li><strong><code>soulacy build</code> flavored binaries</strong> — operators can compile a custom distribution including their own drivers. They have plugin install via npm, which is heavier.</li>
+</ol>
+<hr />
+<h2 id="recommended-implementation-shortlist-pick-one-or-two">Recommended implementation shortlist (pick one or two)<a class="headerlink" href="#recommended-implementation-shortlist-pick-one-or-two" title="Permanent link">&para;</a></h2>
+<p>In priority order. Each estimates how much it'd take and what we get out of it.</p>
+<h3 id="pick-1-sy-onboard-first-run-wizard-1-day-highest-leverage">Pick 1: <code>sy onboard</code> — first-run wizard <em>(~1 day, HIGHEST leverage)</em><a class="headerlink" href="#pick-1-sy-onboard-first-run-wizard-1-day-highest-leverage" title="Permanent link">&para;</a></h3>
+<p>Cobra subcommand that wraps the soulacy serve bootstrap with a 5-step Clack-style TUI:</p>
+<ol>
+<li>Where should the workspace live? <em>(default <code>~/.soulacy/soulspace</code>, pre-validated against <code>ResolveWorkspace</code>)</em></li>
+<li>Bind to a loopback (recommended) or expose? <em>(loopback default; non-loopback prompts for auth choice)</em></li>
+<li>Pick a default LLM provider — Ollama (auto-detect localhost:11434), OpenAI (paste key), Anthropic (paste key), or "skip for now".</li>
+<li>Want a starter agent? <em>(<code>basic-chat</code> default; can also pick from templates)</em></li>
+<li>Install a daemon so <code>soulacy serve</code> runs on login? <em>(launchd / systemd)</em></li>
+</ol>
+<p>State persists into <code>config.yaml</code> via the same EnsureBootstrap surface — wizard just <em>fills</em> fields the bootstrap would have left blank. No new file format.</p>
+<p><strong>Why this and not the others:</strong> ours can be cleaner than OpenClaw's because we already have the silent bootstrap working. The wizard becomes a thin layer that <em>replaces</em> default values, never a precondition for things working.</p>
+<h3 id="pick-2-sy-doctor-v2-explainable-health-checks-half-day-medium-leverage">Pick 2: <code>sy doctor</code> v2 — explainable health checks <em>(~half day, MEDIUM leverage)</em><a class="headerlink" href="#pick-2-sy-doctor-v2-explainable-health-checks-half-day-medium-leverage" title="Permanent link">&para;</a></h3>
+<p>Don't build 140 checks. Build 10 that catch the actual failure modes:</p>
+<ol>
+<li>Workspace path exists and writable</li>
+<li>Config file parseable</li>
+<li>Port 18789 free (or configured port)</li>
+<li>At least one provider has a key set</li>
+<li>Provider endpoint reachable (HEAD request, 2s timeout)</li>
+<li>Python binary resolvable (already checked)</li>
+<li>KB db exists and openable (already partial)</li>
+<li>Sandbox enabled when <code>runtime.sandbox.enabled: true</code></li>
+<li>Agent count &gt; 0 (warn if 0 — "run <code>sy onboard</code> or copy a SOUL.yaml")</li>
+<li>Recent error rate from action log &lt; threshold</li>
+</ol>
+<p>Each check returns <code>(status, summary, fix-hint)</code>. Print in a table. Exit non-zero on any failure. JSON output mode for scripts (<code>--json</code>).</p>
+<h3 id="pick-3-sy-daemon-install-first-class-auto-start-half-day-lower-leverage">Pick 3: <code>sy daemon install</code> — first-class auto-start <em>(~half day, LOWER leverage)</em><a class="headerlink" href="#pick-3-sy-daemon-install-first-class-auto-start-half-day-lower-leverage" title="Permanent link">&para;</a></h3>
+<p>Promote the LaunchAgent setup from inside install.sh to a CLI surface:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>sy daemon install    # writes launchd plist (mac) / systemd user unit (linux)
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>sy daemon uninstall  # removes + unloads
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>sy daemon status     # is it loaded? recent failures?
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>sy daemon logs       # tail
+</span></code></pre></div>
+<p>Cleanly survives <code>soulacy</code> upgrades — the plist points at a stable <code>~/.local/bin/soulacy</code>. OpenClaw has this; we should too.</p>
+<hr />
+<h2 id="what-to-explicitly-not-do-deferred-or-rejected">What to explicitly NOT do (deferred or rejected)<a class="headerlink" href="#what-to-explicitly-not-do-deferred-or-rejected" title="Permanent link">&para;</a></h2>
+<ul>
+<li>❌ Native iOS / Android apps. Even OpenClaw's are alpha; we don't have the platform expertise to ship this.</li>
+<li>❌ Voice. Different product. Punt indefinitely.</li>
+<li>❌ Canvas / A2UI. Cool but niche; not in our positioning.</li>
+<li>❌ Adding 19 channel adapters. Wrong move. We have a generic router and HTTP webhook surface — document those as the "any channel" answer.</li>
+<li>❌ A plugin marketplace. We don't have enough plugins to need one. MCP is the marketplace.</li>
+<li>❌ Bloated README. Our 10KB README beats their 86KB one for first-impression clarity.</li>
+<li>❌ Sparkle / auto-update. Punt until we ship binary releases (Tier 3 of INSTALL_UX_GAPS.md).</li>
+<li>❌ Match-the-doctor-check-count. Their 140 is signaling, not value. 10 well-chosen checks is better than 100 noisy ones.</li>
+<li>❌ Multi-user / RBAC. They explicitly don't have it either; both projects are personal-assistant model. Don't accidentally rebuild org auth.</li>
+</ul>
+<hr />
+<h2 id="decision-request">Decision request<a class="headerlink" href="#decision-request" title="Permanent link">&para;</a></h2>
+<p>Pick <strong>one</strong> (or two if they don't overlap) of these to implement now:</p>
+<ul>
+<li><strong>A.</strong> <code>sy onboard</code> wizard</li>
+<li><strong>B.</strong> <code>sy doctor</code> v2</li>
+<li><strong>C.</strong> <code>sy daemon install</code></li>
+</ul>
+<p>Once you've picked, I'll go straight to implementation in this session — no further discussion needed.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/vmodekurti/soulacy" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+    
+  </body>
+</html>
