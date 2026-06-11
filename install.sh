@@ -43,12 +43,96 @@ BIN_DIR="$PREFIX/bin"
 NEEDS_SUDO=0
 [[ "$BIN_DIR" == /usr/* || "$BIN_DIR" == /opt/* ]] && NEEDS_SUDO=1
 
+TOOLCHAIN="${HOME}/.soulacy/toolchain"
+GO_VERSION="1.25.11"
+NODE_VERSION="22.12.0"
+
 # ── Tiny output helpers ──────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'; BOLD='\033[1m'
 ok()   { printf "${GREEN}✓${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}⚠${NC}  %s\n" "$*"; }
 err()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
 hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
+
+ensure_go() {
+    if command -v go >/dev/null 2>&1; then
+        local local_ver
+        local_ver="$(go version | awk '{print $3}' | sed 's/go//')"
+        local major minor
+        major=$(echo "$local_ver" | cut -d. -f1)
+        minor=$(echo "$local_ver" | cut -d. -f2)
+        if [ "$major" -gt 1 ] || { [ "$major" -eq 1 ] && [ "$minor" -ge 25 ]; }; then
+            return 0
+        fi
+        warn "Local Go version ($local_ver) is lower than the required 1.25+."
+    fi
+    if [ -x "${TOOLCHAIN}/go/bin/go" ]; then
+        export PATH="${TOOLCHAIN}/go/bin:${PATH}"
+        return 0
+    fi
+
+    local install_go="n"
+    if [ -t 0 ]; then
+        read -r -p "  Go 1.25+ is required. Install Go ${GO_VERSION} privately to ${TOOLCHAIN}? [Y/n]: " install_go
+        install_go="${install_go:-Y}"
+    elif [ -c /dev/tty ] && { read -r -p "  Go 1.25+ is required. Install Go ${GO_VERSION} privately to ${TOOLCHAIN}? [Y/n]: " install_go < /dev/tty; } 2>/dev/null; then
+        install_go="${install_go:-Y}"
+    else
+        install_go="Y"
+    fi
+
+    if [[ "$install_go" =~ ^[Yy]$ ]]; then
+        echo "  Installing Go ${GO_VERSION} privately to ${TOOLCHAIN} (no system changes)..."
+        mkdir -p "$TOOLCHAIN"
+        local os arch
+        os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+        arch="$(uname -m)"
+        case "$arch" in
+            x86_64)        arch="amd64" ;;
+            aarch64|arm64) arch="arm64" ;;
+        esac
+        curl -fsSL "https://go.dev/dl/go${GO_VERSION}.${os}-${arch}.tar.gz" | tar -xz -C "$TOOLCHAIN"
+        export PATH="${TOOLCHAIN}/go/bin:${PATH}"
+        ok "Go $(go version | awk '{print $3}') ready"
+    else
+        err "Go 1.25+ is required. Install from https://go.dev/dl/"
+    fi
+}
+
+ensure_node() {
+    if command -v npm >/dev/null 2>&1; then return 0; fi
+    local arch os node_arch node_dir
+    arch="$(uname -m)"
+    os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+    node_arch="$arch"
+    [ "$node_arch" = "x86_64" ] && node_arch="x64"
+    [ "$node_arch" = "amd64" ] && node_arch="x64"
+    node_dir="${TOOLCHAIN}/node-v${NODE_VERSION}-${os}-${node_arch}"
+    if [ -x "${node_dir}/bin/npm" ]; then
+        export PATH="${node_dir}/bin:${PATH}"
+        return 0
+    fi
+
+    local install_node="n"
+    if [ -t 0 ]; then
+        read -r -p "  npm is required but not found. Install Node ${NODE_VERSION} privately to ${TOOLCHAIN}? [Y/n]: " install_node
+        install_node="${install_node:-Y}"
+    elif [ -c /dev/tty ] && { read -r -p "  npm is required but not found. Install Node ${NODE_VERSION} privately to ${TOOLCHAIN}? [Y/n]: " install_node < /dev/tty; } 2>/dev/null; then
+        install_node="${install_node:-Y}"
+    else
+        install_node="Y"
+    fi
+
+    if [[ "$install_node" =~ ^[Yy]$ ]]; then
+        echo "  Installing Node ${NODE_VERSION} privately to ${TOOLCHAIN} (no system changes)..."
+        mkdir -p "$TOOLCHAIN"
+        curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${os}-${node_arch}.tar.gz" | tar -xz -C "$TOOLCHAIN"
+        export PATH="${node_dir}/bin:${PATH}"
+        ok "Node $(node --version) ready"
+    else
+        err "npm is required to build the embedded GUI. Install Node.js from https://nodejs.org"
+    fi
+}
 
 printf "\n${BOLD}  Soulacy installer${NC}\n  ────────────────────────────────────────\n\n"
 
@@ -147,8 +231,8 @@ fi
 
 # ── 2. Build ────────────────────────────────────────────────────────────────
 hdr "Step 2: Build"
-command -v go  >/dev/null 2>&1 || err "Go 1.25+ is required. Install from https://go.dev/dl/"
-command -v npm >/dev/null 2>&1 || err "npm is required to build the embedded GUI. Install Node.js from https://nodejs.org"
+ensure_go
+ensure_node
 echo "  Go:  $(go version | awk '{print $3}' | sed 's/go//')"
 echo "  npm: $(npm --version)"
 # `make all` = gui (Svelte build → internal/webui/dist/) + build (Go binaries).

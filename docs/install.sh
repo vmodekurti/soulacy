@@ -73,7 +73,7 @@ log "Detected: ${OS}/${ARCH}"
 # ~/.soulacy/toolchain (official upstream tarballs) — nothing touches the
 # system package manager and nothing else on the machine changes.
 TOOLCHAIN="${HOME}/.soulacy/toolchain"
-GO_VERSION="1.25.0"
+GO_VERSION="1.25.11"
 NODE_VERSION="22.12.0"
 
 ensure_git() {
