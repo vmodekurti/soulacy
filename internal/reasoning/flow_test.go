@@ -544,3 +544,33 @@ func TestFlowPorts_YAMLRoundTrip(t *testing.T) {
 		t.Errorf("from_port round-trip wrong: %q", got.Edges[0].FromPort)
 	}
 }
+
+// TestCompileFlow_PythonKind covers the Studio "Custom Python" node (Phase 1):
+// inline Code infers kind=python and compiles; an explicit python node may
+// instead reference a deployed tool; a python node with neither is rejected.
+func TestCompileFlow_PythonKind(t *testing.T) {
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{{ID: "transform", Code: "print(1)"}},
+		Entry: "transform",
+	})
+	if err != nil {
+		t.Fatalf("inline-code node should compile: %v", err)
+	}
+	if got := g.Node("transform").Kind; got != sdkr.FlowNodePython {
+		t.Fatalf("expected inferred kind=python, got %q", got)
+	}
+
+	if _, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{{ID: "t", Kind: sdkr.FlowNodePython, Tool: "notebooklm.gen"}},
+		Entry: "t",
+	}); err != nil {
+		t.Fatalf("python node referencing a tool should compile: %v", err)
+	}
+
+	if _, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{{ID: "empty", Kind: sdkr.FlowNodePython}},
+		Entry: "empty",
+	}); err == nil {
+		t.Fatalf("python node with neither code nor tool should error")
+	}
+}

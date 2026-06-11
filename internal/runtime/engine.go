@@ -566,6 +566,39 @@ func (e *Engine) RunTool(ctx context.Context, toolName string, argsJSON string) 
 	return nil, fmt.Errorf("tool %q not found", toolName)
 }
 
+// RunInlinePython executes a Studio "Custom Python" node's inline code in the
+// sandboxed Python executor (process-per-call; env filtered to the allowlist).
+// argsJSON is delivered on stdin and passed to the node's run(inputs) function;
+// the printed value is captured and returned as JSON (a non-JSON string is
+// wrapped as a JSON string so downstream flow vars stay well-typed). Returns an
+// error when no Python executor is configured.
+//
+// SECURITY: this runs LLM/user-authored code. The flow runner must only reach
+// here for a python node whose per-case consent has been granted (see the
+// consent model in internal/studio/plan.go and docs/STUDIO_PYTHON_TOOLS.md §13);
+// RunInlinePython itself is the mechanism, not the gate.
+func (e *Engine) RunInlinePython(ctx context.Context, code string, argsJSON []byte) (json.RawMessage, error) {
+	if e.pyExecutor == nil {
+		return nil, fmt.Errorf("RunInlinePython: no python executor configured")
+	}
+	if len(argsJSON) == 0 {
+		argsJSON = []byte("{}")
+	}
+	out, err := e.pyExecutor.Run(ctx, "", "run", code, argsJSON)
+	if err != nil {
+		return nil, fmt.Errorf("RunInlinePython: %w", err)
+	}
+	trimmed := []byte(strings.TrimSpace(out))
+	if json.Valid(trimmed) {
+		return json.RawMessage(trimmed), nil
+	}
+	wrapped, merr := json.Marshal(out)
+	if merr != nil {
+		return nil, fmt.Errorf("RunInlinePython: encode output: %w", merr)
+	}
+	return json.RawMessage(wrapped), nil
+}
+
 // maybeConfirm checks whether call.Name is in def.ConfirmTools and, if so,
 // emits a tool_confirm SSE event and blocks until the user approves or denies.
 // Returns nil if confirmation is not required or if the tool is approved.

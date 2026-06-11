@@ -1,9 +1,19 @@
 # Soulacy Studio — Design & Roadmap
 
-**Studio** is the visual, plain-language workflow builder for Soulacy, shipped as
-a **plugin** (intent compiler + builder UI + capability catalog + test harness),
-not core. It is a layer on top of primitives Soulacy already has — it emits
-`WorkflowSpec` / SOUL.yaml and never introduces a parallel runtime.
+> **Update (ARCH-6): Studio is now built into the core dashboard.** It is no
+> longer packaged as a sandboxed iframe plugin. The visual builder lives in the
+> main GUI (`gui/src/pages/Studio.svelte` + `gui/src/lib/studio/`), is embedded
+> into the gateway binary by `make gui`, and is reachable at `/studio` (nav
+> entry "Studio"). It calls the `/api/v1/studio/*` endpoints directly with the
+> user's authenticated session — there is no more `postMessage` RPC bridge, no
+> `examples/plugins/studio` directory, and no `<workspace>/plugins/studio`
+> install step. The historical plugin design below is retained for context;
+> references to the iframe shell, the scoped plugin token, and the
+> `/plugins/studio/ui/*` static hosting describe the superseded packaging.
+
+**Studio** is the visual, plain-language workflow builder for Soulacy. It is a
+layer on top of primitives Soulacy already has — it emits `WorkflowSpec` /
+SOUL.yaml and never introduces a parallel runtime.
 
 ## Vision
 

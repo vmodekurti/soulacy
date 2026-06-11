@@ -54,13 +54,16 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 		if _, dup := nodes[n.ID]; dup {
 			return nil, fmt.Errorf("flow: duplicate node id %q", n.ID)
 		}
-		// Kind inference: tool set → tool, agent set → agent, neither → branch.
+		// Kind inference: tool set → tool, agent set → agent, code set → python,
+		// none of those → branch.
 		if n.Kind == "" {
 			switch {
 			case n.Tool != "":
 				n.Kind = sdkr.FlowNodeTool
 			case n.Agent != "":
 				n.Kind = sdkr.FlowNodeAgent
+			case n.Code != "":
+				n.Kind = sdkr.FlowNodePython
 			default:
 				n.Kind = sdkr.FlowNodeBranch
 			}
@@ -73,6 +76,12 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 		case sdkr.FlowNodeAgent:
 			if n.Agent == "" {
 				return nil, fmt.Errorf("flow: node %q is kind=agent but names no agent", n.ID)
+			}
+		case sdkr.FlowNodePython:
+			// A python node must carry either inline Code or reference a
+			// deployed python tool by name.
+			if n.Code == "" && n.Tool == "" {
+				return nil, fmt.Errorf("flow: node %q is kind=python but has neither inline code nor a tool", n.ID)
 			}
 		case sdkr.FlowNodeBranch:
 			// nothing to validate
@@ -213,6 +222,15 @@ func RunFlow(ctx context.Context, g *FlowGraph, vars map[string]any, run FlowRun
 							hooks.Failed(visitKey, err)
 						}
 						return nil, err
+					}
+				} else if node.Kind == sdkr.FlowNodePython {
+					// A python node with no explicit Input receives ALL flow vars as a
+					// JSON `inputs` dict (keyed by each prior node's output var), so its
+					// run(inputs) sees upstream outputs without manual templating.
+					if b, jerr := json.Marshal(vars); jerr == nil {
+						rendered = string(b)
+					} else {
+						rendered = "{}"
 					}
 				}
 

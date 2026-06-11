@@ -209,6 +209,22 @@ func flowWarnings(flow Flow) []ValidateWarning {
 			})
 		}
 	}
+	// Custom Python node sanity ("python" == sdkr.FlowNodePython): inline code
+	// should define a run(inputs) entry point. (A python node with NEITHER code
+	// nor a tool is already a hard CompileFlow error, surfaced as a validate
+	// error, so it never reaches here.) Warning only — never blocks the canvas.
+	for _, n := range flow.Nodes {
+		if n.Kind != "python" {
+			continue
+		}
+		code := strings.TrimSpace(n.Code)
+		if code != "" && !strings.Contains(code, "def run(") {
+			out = append(out, ValidateWarning{
+				NodeID:  n.ID,
+				Message: fmt.Sprintf("python node %q should define a run(inputs) function — its return value becomes the node output", n.ID),
+			})
+		}
+	}
 	return out
 }
 

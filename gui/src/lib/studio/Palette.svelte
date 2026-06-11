@@ -10,11 +10,24 @@
   // install state + handlers (reusing the same bridge ops as Needs-setup).
   export let onBrowse = null  // () => void — runs discover with the intent
   export let onInstall = null // (pkg) => void — stages an install
+  // Click a workflow-bearing agent to open it on the canvas; delete removes it.
+  export let onOpenAgent = null   // (agentId) => void
+  export let onDeleteAgent = null // (agentId, name) => void
   export let browse = { open: false, loading: false, error: '', results: [], message: '' }
 
+  // Each item carries an optional `drag` payload describing what dropping it on
+  // the canvas should create. Agents/tools become flow nodes; channels attach
+  // to the workflow output. Providers carry no payload (not droppable).
   function agentItems(c) {
     const agents = (c && c.agents && c.agents.agents) || []
-    return agents.map((a) => ({ label: a.name || a.id || 'agent', sub: a.description || '' }))
+    return agents.map((a) => ({
+      label: a.name || a.id || 'agent',
+      sub: a.description || '',
+      drag: { kind: 'agent', name: a.name || a.id, id: a.id || a.name },
+      agentId: a.id,
+      // A workflow-bearing agent can be opened on the canvas to edit/delete.
+      hasWorkflow: !!(a.workflow && Array.isArray(a.workflow.nodes) && a.workflow.nodes.length),
+    }))
   }
   function toolItems(c) {
     const t = (c && c.tools) || {}
@@ -22,9 +35,12 @@
     const mcp = t.mcp_tools || []
     const builtins = t.builtins || []
     const items = []
-    builtins.forEach((x) => items.push({ label: x.name, sub: 'builtin' }))
-    py.forEach((x) => items.push({ label: x.name, sub: 'python' }))
-    mcp.forEach((x) => items.push({ label: x.name || x.full_name, sub: 'mcp · ' + (x.server || '') }))
+    builtins.forEach((x) => items.push({ label: x.name, sub: 'builtin', drag: { kind: 'tool', name: x.name } }))
+    py.forEach((x) => items.push({ label: x.name, sub: 'python', drag: { kind: 'tool', name: x.name } }))
+    mcp.forEach((x) => {
+      const name = x.name || x.full_name
+      items.push({ label: name, sub: 'mcp · ' + (x.server || ''), drag: { kind: 'tool', name } })
+    })
     return items
   }
   function providerItems(c) {
@@ -47,8 +63,20 @@
       if (ch.enabled) parts.push('enabled')
       else parts.push('disabled')
       if (ch.configured) parts.push('configured')
-      return { label: ch.name || ch.id || 'channel', sub: parts.join(' · ') }
+      return {
+        label: ch.name || ch.id || 'channel',
+        sub: parts.join(' · '),
+        drag: { kind: 'channel', id: ch.id || ch.name, name: ch.name || ch.id },
+      }
     })
+  }
+
+  // Begin an HTML5 drag carrying the item's node payload. The Studio canvas
+  // listens for `application/studio-node` and creates the node on drop.
+  function startDrag(e, drag) {
+    if (!drag || !e.dataTransfer) return
+    e.dataTransfer.setData('application/studio-node', JSON.stringify(drag))
+    e.dataTransfer.effectAllowed = 'copy'
   }
 
   $: agents = error ? [] : agentItems(catalog)
@@ -56,11 +84,18 @@
   $: providers = error ? [] : providerItems(catalog)
   $: channels = error ? [] : channelItems(catalog)
 
-  const groups = [
-    { key: 'agents', icon: '🤖', title: 'Agents', get: () => agents, empty: 'No agents' },
-    { key: 'tools', icon: '🛠️', title: 'Tools', get: () => tools, empty: 'No tools' },
-    { key: 'providers', icon: '🧠', title: 'Providers', get: () => providers, empty: 'No providers' },
-    { key: 'channels', icon: '📡', title: 'Channels', get: () => channels, empty: 'No channels' },
+  // `groups` MUST be reactive (`$:`) and carry the resolved arrays inline.
+  // The catalog loads asynchronously after mount, so `agents`/`tools`/… start
+  // empty and fill in later. If the template read them through an opaque call
+  // (e.g. `g.get()`), Svelte couldn't see that the {#each} body depends on
+  // those arrays and would never re-render once the data arrived — the palette
+  // would stay stuck at its initial empty/zero state. Referencing them here
+  // makes `groups` a tracked dependency of agents/tools/providers/channels.
+  $: groups = [
+    { key: 'agents', icon: '🤖', title: 'Agents', items: agents, empty: 'No agents' },
+    { key: 'tools', icon: '🛠️', title: 'Tools', items: tools, empty: 'No tools' },
+    { key: 'providers', icon: '🧠', title: 'Providers', items: providers, empty: 'No providers' },
+    { key: 'channels', icon: '📡', title: 'Channels', items: channels, empty: 'No channels' },
   ]
 </script>
 
@@ -68,23 +103,62 @@
   <h2 class="palette-title">Palette</h2>
   <div class="palette-status {statusKind ? 'status-' + statusKind : ''}" role="status">{status}</div>
 
+  <!-- Blocks: synthetic palette items not backed by the catalog. A Custom
+       Python block lets you drop an inline script step onto the canvas. -->
+  <section class="group">
+    <h3 class="group-head">
+      <span class="group-icon" aria-hidden="true">🧩</span>
+      Blocks
+    </h3>
+    <ul class="group-list">
+      <li
+        class="item draggable"
+        draggable="true"
+        on:dragstart={(e) => startDrag(e, { kind: 'python' })}
+        title="Drag onto the canvas — a custom Python step you can edit in the Inspector"
+      >
+        <span class="item-label">🐍 Custom Python</span>
+        <span class="item-sub">inline script</span>
+      </li>
+    </ul>
+  </section>
+
   {#each groups as g (g.key)}
     <section class="group">
       <h3 class="group-head">
         <span class="group-icon" aria-hidden="true">{g.icon}</span>
         {g.title}
-        <span class="group-count">{error ? 0 : g.get().length}</span>
+        <span class="group-count">{g.items.length}</span>
       </h3>
       <ul class="group-list">
         {#if error}
           <li class="item item-error">{error}</li>
-        {:else if g.get().length === 0}
+        {:else if g.items.length === 0}
           <li class="item item-empty">{g.empty}</li>
         {:else}
-          {#each g.get() as it}
-            <li class="item" draggable="true">
+          {#each g.items as it}
+            <li
+              class="item"
+              class:draggable={!!it.drag}
+              class:openable={it.hasWorkflow}
+              draggable={!!it.drag}
+              on:dragstart={(e) => startDrag(e, it.drag)}
+              on:click={() => it.hasWorkflow && onOpenAgent && onOpenAgent(it.agentId)}
+              on:keydown={(e) => { if (it.hasWorkflow && onOpenAgent && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenAgent(it.agentId) } }}
+              role={it.hasWorkflow ? 'button' : undefined}
+              tabindex={it.hasWorkflow ? 0 : undefined}
+              title={it.hasWorkflow ? 'Click to edit this workflow · drag to add a handoff step' : (it.drag ? 'Drag onto the canvas' : '')}
+            >
               <span class="item-label">{it.label}</span>
               {#if it.sub}<span class="item-sub">{it.sub}</span>{/if}
+              {#if it.hasWorkflow && onDeleteAgent}
+                <button
+                  class="item-del"
+                  type="button"
+                  title="Delete this agent"
+                  on:click|stopPropagation={() => onDeleteAgent(it.agentId, it.label)}
+                >🗑</button>
+              {/if}
             </li>
           {/each}
         {/if}
@@ -193,9 +267,21 @@
     background: var(--bg-elev-2);
     border: 1px solid var(--border);
     border-radius: 8px;
-    cursor: grab;
+    cursor: default;
     transition: border-color 0.12s ease, transform 0.12s ease;
   }
+  .item.draggable { cursor: grab; }
+  .item.draggable:active { cursor: grabbing; }
+  .item.openable { cursor: pointer; position: relative; }
+  .item.openable:hover { border-color: var(--accent); }
+  .item-del {
+    position: absolute; top: 6px; right: 6px;
+    background: none; border: none; color: var(--text-muted);
+    font-size: 12px; line-height: 1; padding: 2px; cursor: pointer; opacity: 0;
+    transition: opacity 0.12s ease;
+  }
+  .item.openable:hover .item-del { opacity: 1; }
+  .item-del:hover { color: var(--error); }
   .item:hover { border-color: var(--accent); transform: translateX(2px); }
   .item:active { cursor: grabbing; }
   .item-label { font-size: 13px; color: var(--text); word-break: break-word; }

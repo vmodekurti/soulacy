@@ -130,7 +130,29 @@ func (e *Executor) Close() error { return nil }
 // identical behaviour regardless of which executor backend is active.
 func buildScript(pyFile, funcName, inline string) (string, error) {
 	if inline != "" {
-		return inline, nil
+		// Studio "Custom Python" node: the inline source defines `funcName`
+		// (e.g. `run`). Wrap it with a harness that reads the JSON args from
+		// stdin, passes them as a single positional arg, and prints the
+		// JSON-encoded return value. stdout is quarantined to stderr while the
+		// user code loads so stray prints don't corrupt the result (mirrors the
+		// file harness below). With no funcName the inline code runs as-is.
+		if funcName == "" {
+			return inline, nil
+		}
+		return fmt.Sprintf(`
+import sys as _sys, json
+_orig_stdout = _sys.stdout
+_sys.stdout = _sys.stderr
+%s
+_raw = _sys.stdin.read()
+try:
+    _args = json.loads(_raw) if _raw.strip() else {}
+except Exception:
+    _args = {"input": _raw}
+_result = %s(_args)
+_sys.stdout = _orig_stdout
+print(_result if isinstance(_result, str) else json.dumps(_result))
+`, inline, funcName), nil
 	}
 	if pyFile == "" {
 		return "", fmt.Errorf("executor/process: both pyFile and inline are empty")

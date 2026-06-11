@@ -31,7 +31,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.25.11"
           cache: true
 
       - name: Install SQLite dev libs (needed for cgo)
@@ -73,7 +73,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25"
+          go-version: "1.25.11"
           cache: true
 
       - name: Install SQLite dev libs (needed for cgo)
@@ -87,10 +87,13 @@ jobs:
           touch internal/webui/dist/.gitkeep
           echo '<html><body>CI placeholder</body></html>' > internal/webui/dist/index.html
 
+      - name: go mod tidy
+        run: go mod tidy
+
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v7
         with:
-          version: latest
+          version: v2.12.2
 
   # ── GUI build ────────────────────────────────────────────────────────────────
   gui:

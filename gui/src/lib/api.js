@@ -262,10 +262,14 @@ export const api = {
      * when plan reported requiresConsent. On a 409 consent fallback the thrown
      * error carries .body.requiresConsent + .body.consentItems.
      */
-    save: ({ workflow, acceptPrivilegedExposure } = {}) =>
+    save: ({ workflow, acceptPrivilegedExposure, grants } = {}) =>
       apiFetch('/studio/save', {
         method: 'POST',
-        body: JSON.stringify({ workflow, acceptPrivilegedExposure: !!acceptPrivilegedExposure }),
+        body: JSON.stringify({
+          workflow,
+          acceptPrivilegedExposure: !!acceptPrivilegedExposure,
+          ...(Array.isArray(grants) && grants.length ? { grants } : {}),
+        }),
       }),
 
     // ── Studio M6: templates, draft library, per-node refine ────────────────
@@ -308,6 +312,19 @@ export const api = {
       apiFetch('/studio/refine', {
         method: 'POST',
         body: JSON.stringify({ workflow, nodeId, instruction }),
+      }),
+
+    // "My Workflows": list workflow-bearing agents + load one back as a draft.
+    agents: {
+      list: () => apiFetch('/studio/agents'),
+      get:  (id) => apiFetch(`/studio/agents/${encodeURIComponent(id)}`),
+    },
+    // Framework-written Python: deterministic scaffolds + in-framework codegen.
+    scaffolds: () => apiFetch('/studio/scaffolds'),
+    codegen: ({ nodeId, description, workflow } = {}) =>
+      apiFetch('/studio/codegen', {
+        method: 'POST',
+        body: JSON.stringify({ nodeId, description, workflow }),
       }),
   },
 

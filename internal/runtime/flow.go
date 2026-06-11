@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/soulacy/soulacy/internal/reasoning"
+	"github.com/soulacy/soulacy/internal/studio/consent"
 	"github.com/soulacy/soulacy/pkg/message"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 	"go.uber.org/zap"
@@ -64,6 +65,19 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	}
 
 	runNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
+		// Studio "Custom Python" node with inline code: execute it in the
+		// sandboxed Python executor. The rendered input is delivered as the
+		// run(inputs) argument. (A python node that instead references a deployed
+		// tool — Code empty, Tool set — falls through to the RunTool path.)
+		if node.Kind == sdkr.FlowNodePython && node.Code != "" {
+			// Fail-closed per-case consent (§13): refuse to run code beyond the
+			// ReadOnly guardrails unless the node carries a matching, valid
+			// consent stamp and the operator ceiling permits it.
+			if cerr := consent.Authorize(node, w.engine.allowSystemTools); cerr != nil {
+				return nil, cerr
+			}
+			return w.engine.RunInlinePython(ctx, node.Code, []byte(renderedInput))
+		}
 		tool := node.Tool
 		if node.Kind == sdkr.FlowNodeAgent {
 			tool = "agent__" + node.Agent

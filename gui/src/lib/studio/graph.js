@@ -37,6 +37,7 @@ const KIND_META = {
   tool:   { color: '#2bb3a3', label: 'Tool',   shape: 'card' },
   agent:  { color: '#6c63ff', label: 'Agent',  shape: 'peer' },
   branch: { color: '#f5a742', label: 'Branch', shape: 'decision' },
+  python: { color: '#e06c9f', label: 'Python', shape: 'card' },
 }
 
 // Normalise a declared-port array ([{name,type,label}] | ["name"]) to a
@@ -181,6 +182,7 @@ export function toFlow(workflow, validation = null) {
         kind: n.kind || 'node',
         shape: meta.shape,
         color: meta.color,
+        description: n.description || '',
         inputs,
         outputs,
         isEntry: n.id === entry,

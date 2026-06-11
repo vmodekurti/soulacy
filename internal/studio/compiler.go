@@ -17,6 +17,7 @@ import (
 	"strings"
 
 	reasoning "github.com/soulacy/soulacy/internal/reasoning"
+	"github.com/soulacy/soulacy/internal/studio/codeclass"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
@@ -108,27 +109,41 @@ type Result struct {
 // wired with from_port/to_port — so the model treats branching, peer-agent
 // handoff, and named ports as the norm, not the exception.
 const canonicalExample = `{
-  "name": "Weekday HN Digest",
+  "name": "Weekday AI Digest",
   "trigger": { "type": "schedule", "config": { "cron": "0 8 * * 1-5" } },
   "channels": ["telegram"],
   "flow": {
     "nodes": [
-      { "id": "fetch", "kind": "tool", "tool": "http_get", "input": "{\"url\":\"https://hacker-news.firebaseio.com/v0/topstories.json\"}", "output": "stories",
-        "outputs": [ { "name": "ok", "type": "json" } ], "x": 0, "y": 0 },
-      { "id": "triage", "kind": "branch",
+      { "id": "search_ai_news", "kind": "tool", "tool": "web_search",
+        "description": "Search the web for today's top AI news",
+        "input": "{\"query\": \"latest artificial intelligence research and product news\", \"num_results\": 10}",
+        "output": "search", "x": 0, "y": 0 },
+      { "id": "pick_top_articles", "kind": "python",
+        "description": "Parse the search results and keep the top 5 as {title,url}",
+        "code": "def run(inputs):\n    res = inputs.get('search', {})\n    items = res.get('results') or res.get('items') or []\n    return [{'title': it.get('title', ''), 'url': it.get('url') or it.get('link', '')} for it in items[:5]]",
+        "output": "articles", "x": 220, "y": 0 },
+      { "id": "have_articles", "kind": "branch",
+        "description": "Continue only if at least one article was found",
         "inputs":  [ { "name": "in" } ],
-        "outputs": [ { "name": "hot" }, { "name": "quiet" } ], "x": 200, "y": 0 },
-      { "id": "summarize", "kind": "agent", "agent": "summarizer", "input": "Summarize the top 5: {{.stories}}", "output": "summary", "x": 400, "y": -80 },
-      { "id": "notify", "kind": "agent", "agent": "notifier", "input": "Nothing notable today.", "output": "note", "x": 400, "y": 80 }
+        "outputs": [ { "name": "hot" }, { "name": "quiet" } ], "x": 440, "y": 0 },
+      { "id": "write_digest", "kind": "agent", "agent": "summarizer",
+        "description": "Summarize the articles into a 5-bullet digest",
+        "input": "Write a 5-bullet AI digest \u2014 one bullet per article: a one-sentence takeaway then the link.\n{{ toJson .articles }}",
+        "output": "digest", "x": 660, "y": -80 },
+      { "id": "say_quiet", "kind": "agent", "agent": "notifier",
+        "description": "Send a short 'nothing notable today' note",
+        "input": "Reply exactly: No notable AI news today.",
+        "output": "note", "x": 660, "y": 80 }
     ],
     "edges": [
-      { "from": "fetch", "to": "triage", "from_port": "ok", "to_port": "in" },
-      { "from": "triage", "to": "summarize", "from_port": "hot",   "if": "{{ gt (len .stories) 0 }}" },
-      { "from": "triage", "to": "notify",    "from_port": "quiet" },
-      { "from": "summarize", "to": "end" },
-      { "from": "notify", "to": "end" }
+      { "from": "search_ai_news", "to": "pick_top_articles" },
+      { "from": "pick_top_articles", "to": "have_articles" },
+      { "from": "have_articles", "to": "write_digest", "from_port": "hot", "if": "{{ gt (len .articles) 0 }}" },
+      { "from": "have_articles", "to": "say_quiet", "from_port": "quiet" },
+      { "from": "write_digest", "to": "end" },
+      { "from": "say_quiet", "to": "end" }
     ],
-    "entry": "fetch"
+    "entry": "search_ai_news"
   }
 }`
 
@@ -149,12 +164,21 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- trigger.type is one of: schedule, channel, webhook, manual.\n")
 	sb.WriteString("- For schedule triggers, put a cron expression in trigger.config.cron.\n")
 	sb.WriteString("- channels is a list of output channel names (e.g. \"telegram\", \"slack\", \"email\").\n")
-	sb.WriteString("- flow.nodes[].kind is one of: tool, agent, branch. tool nodes set \"tool\"; agent nodes set \"agent\"; branch nodes set neither.\n")
+	sb.WriteString("- flow.nodes[].kind is one of: tool, agent, branch, python. tool nodes set \"tool\"; agent nodes set \"agent\"; python nodes set \"code\" (inline Python); branch nodes set none of these.\n")
 	sb.WriteString("- Every flow must have an entry node and edges that terminate at \"end\".\n")
 	sb.WriteString("- Prefer at least one tool node (to fetch/act) and one agent node (to reason/summarize).\n")
 	sb.WriteString("- Build REAL multi-node graphs. Emit MULTIPLE tool and agent nodes when the intent has multiple steps; multiple agent (kind=agent) nodes are peers that hand off to each other.\n")
 	sb.WriteString("- Use a branch node (kind=branch, no tool/agent) whenever the work forks on a CONDITION. A branch node fans out 2+ edges; put a Go-template predicate in edge.if (over flow vars, e.g. \"{{ gt (len .stories) 0 }}\"). Edges from a node are tried IN ORDER; the first whose if is truthy wins, so leave the LAST/fallback edge's if empty.\n")
 	sb.WriteString("- When a node fans out to multiple targets, you MAY declare typed ports: set nodes[].outputs / inputs to lists of {\"name\":...,\"type\"?:...} and wire edges with from_port / to_port. A named from_port MUST be one of the From node's declared outputs; a named to_port MUST be one of the To node's declared inputs. Omit ports entirely for simple linear hops.\n\n")
+	sb.WriteString("- Use a python node (kind=python) ONLY for glue the available tools can't do: shelling out to a local CLI the user says is installed, parsing a tool's raw output, reshaping data, or calling an external command. Put the script in nodes[].code as a function `def run(inputs):` where `inputs` is a dict of the node's rendered input (JSON) and the value you RETURN becomes the node's output. Always prefer an existing tool or agent when one fits; reach for python only for the gaps, and keep the code minimal. Do NOT invent tool names for capabilities that don't exist — write a python node instead.\n\n")
+	sb.WriteString("- CRITICAL — every node MUST carry its REAL instruction derived from the intent, never a placeholder or empty field:\n")
+	sb.WriteString("    * tool nodes: set \"input\" to the tool's arguments as a JSON object built from the intent. A search/web tool node MUST contain the actual query, e.g. {\"query\":\"latest AI research articles\",\"num_results\":10}. Never leave a tool node's input empty when it takes arguments.\n")
+	sb.WriteString("    * agent nodes: set \"input\" to the full, concrete task prompt for that agent (what to do, with which data) — not a one-word label. Inject an upstream output with {{ toJson .var }} for a JSON value, or {{ .var }} for a plain string.\n")
+	sb.WriteString("    * python nodes: write COMPLETE, runnable code in \"code\" that actually performs the step. NEVER a stub, `pass`, `...`, TODO, or `return inputs`. The code automatically receives ALL prior node outputs as the `inputs` dict (keyed by each node's output var), so read e.g. inputs.get(\"articles\"). Always define def run(inputs).\n")
+	sb.WriteString("    * Pull concrete values straight from the user's words: if they ask for \"top 10 AI articles\", the query is about AI articles and the count is 10 — bake that in, do not leave it generic.\n")
+	sb.WriteString("- Give every node a meaningful \"output\" var name so downstream nodes can reference it (e.g. \"articles\", \"notebook_id\", \"audio_url\").\n")
+	sb.WriteString("- Give every node a one-line \"description\" stating concretely what THAT node does (e.g. \"Search the web for today's AI news\", \"Keep the top 5 articles as {title,url}\") — not a vague label. The node ids should also read as verbs (search_ai_news, pick_top_articles), not generic names like node1.\n")
+	sb.WriteString("- Only reference agents/tools that appear in the Available lists below. Do NOT invent agent or tool names. If the intent needs reasoning and no suitable agent exists, do the work in a python node or a tool you DO have, rather than inventing a peer agent.\n\n")
 
 	if len(catalog.Agents) > 0 {
 		sb.WriteString("Available agents: ")
@@ -296,6 +320,17 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// SHAPE (nodes/edges/entry/ports stay as emitted) — it only fills a blank
 	// Kind from the node's Tool/Agent fields, mirroring CompileFlow.
 	normalizeFlow(&draft)
+
+	// Auto-declare any edge-referenced port the model forgot to list on a node.
+	// reasoning.CompileFlow is strict (a named from_port/to_port MUST appear in
+	// the node's declared Outputs/Inputs), and models occasionally name a port
+	// they didn't declare — which would otherwise throw away an entire
+	// otherwise-valid draft over one cosmetic wiring slip.
+	reconcilePorts(&draft)
+
+	// Classify each Custom Python node's required capabilities from its code so
+	// the canvas can show them and save/consent can gate on them.
+	classifyFlowNodes(&draft.Flow)
 
 	// The flow must compile — this is the hard contract. A model that emits a
 	// structurally invalid multi-node/branch/port graph is rejected here and
@@ -652,9 +687,63 @@ func normalizeFlow(d *Draft) {
 			n.Kind = sdkr.FlowNodeTool
 		case strings.TrimSpace(n.Agent) != "":
 			n.Kind = sdkr.FlowNodeAgent
+		case strings.TrimSpace(n.Code) != "":
+			n.Kind = sdkr.FlowNodePython
 		default:
 			n.Kind = sdkr.FlowNodeBranch
 		}
+	}
+}
+
+// reconcilePorts makes every edge's port references self-consistent so the
+// strict reasoning.CompileFlow port check passes. For each edge with a named
+// from_port/to_port that the referenced node did not declare, we ADD that port
+// to the node's Outputs/Inputs (preserving the model's intended named handle)
+// rather than failing the compile. Edges to the terminal ("end"/"") have no
+// target node and are skipped naturally by the id lookup. Idempotent.
+func reconcilePorts(d *Draft) {
+	if d == nil {
+		return
+	}
+	idx := make(map[string]*sdkr.FlowNode, len(d.Flow.Nodes))
+	for i := range d.Flow.Nodes {
+		idx[d.Flow.Nodes[i].ID] = &d.Flow.Nodes[i]
+	}
+	ensure := func(ports *[]sdkr.FlowPort, name string) {
+		if name == "" {
+			return
+		}
+		for _, port := range *ports {
+			if port.Name == name {
+				return
+			}
+		}
+		*ports = append(*ports, sdkr.FlowPort{Name: name})
+	}
+	for _, e := range d.Flow.Edges {
+		if n, ok := idx[e.From]; ok {
+			ensure(&n.Outputs, e.FromPort)
+		}
+		if n, ok := idx[e.To]; ok {
+			ensure(&n.Inputs, e.ToPort)
+		}
+	}
+}
+
+// classifyFlowNodes sets Requires on every Custom Python node from its inline
+// Code (internal/studio/codeclass). Deterministic and idempotent; a node with
+// no code, or pure-data code, ends up with no Requires (ReadOnly). Nodes that
+// reference a deployed tool (no inline Code) are left untouched.
+func classifyFlowNodes(f *Flow) {
+	if f == nil {
+		return
+	}
+	for i := range f.Nodes {
+		n := &f.Nodes[i]
+		if n.Kind != sdkr.FlowNodePython || strings.TrimSpace(n.Code) == "" {
+			continue
+		}
+		n.Requires = codeclass.Classify(n.Code).Requires
 	}
 }
 

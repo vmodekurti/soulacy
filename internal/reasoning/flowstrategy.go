@@ -118,10 +118,28 @@ func flowOutputString(out json.RawMessage) string {
 	return string(out)
 }
 
+// flowTemplateFuncs are available inside node Input / edge If templates. toJson
+// (alias json) is the important one: flow vars hold PARSED JSON (Go maps and
+// slices), and Go's default {{ .x }} prints those in Go syntax (map[...]), which
+// is NOT valid JSON. {{ toJson .x }} emits real JSON so a python node's stdin
+// (or any JSON-consuming tool) receives well-formed input.
+var flowTemplateFuncs = template.FuncMap{
+	"toJson": toJSONString,
+	"json":   toJSONString,
+}
+
+func toJSONString(v any) (string, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
 // renderTemplate executes a Go text/template over the flow vars (same
 // semantics as the workflow executor's templates).
 func renderTemplate(tmplStr string, vars map[string]any) (string, error) {
-	tmpl, err := template.New("").Option("missingkey=zero").Parse(tmplStr)
+	tmpl, err := template.New("").Funcs(flowTemplateFuncs).Option("missingkey=zero").Parse(tmplStr)
 	if err != nil {
 		return "", fmt.Errorf("parse template: %w", err)
 	}

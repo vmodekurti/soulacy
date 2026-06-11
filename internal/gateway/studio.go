@@ -1,4 +1,11 @@
-// studio.go — HTTP handler for the Studio plugin backend (Story S1.1).
+// studio.go — HTTP handlers for the Studio visual builder (Story S1.1).
+//
+// As of ARCH-6 the Studio UI is a first-class page of the core dashboard
+// (gui/src/pages/Studio.svelte), not a sandboxed plugin. These endpoints are
+// registered under /api/v1/studio/* with the standard user RBAC (agent
+// read/write) and are NOT in the plugin route allowlist, so scoped plugin
+// tokens are rejected with 403 — the dashboard calls them with the user's
+// own session.
 //
 // Route (under /api/v1, user-authenticated, same RBAC as agent writes):
 //
@@ -16,12 +23,15 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strings"
 
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/studio"
+	"github.com/soulacy/soulacy/internal/studio/consent"
 )
 
 // routerLLM adapts the gateway's *llm.Router to studio.LLM. It routes to
@@ -53,10 +63,21 @@ func (s *Server) studioLLM() studio.LLM {
 	if s.llmRouter == nil {
 		return nil
 	}
-	provider := s.cfg.LLM.DefaultProvider
-	model := ""
-	if pc, ok := s.cfg.LLM.Providers[provider]; ok {
-		model = pc.Model
+	// Studio compile is reasoning-heavy. Honour the optional llm.studio override
+	// so operators can run it on a stronger model than the global default. A
+	// configured-but-unregistered provider falls back to the default rather than
+	// failing every compile.
+	provider := strings.TrimSpace(s.cfg.LLM.Studio.Provider)
+	if provider == "" {
+		provider = s.cfg.LLM.DefaultProvider
+	} else if _, ok := s.cfg.LLM.Providers[provider]; !ok {
+		provider = s.cfg.LLM.DefaultProvider
+	}
+	model := strings.TrimSpace(s.cfg.LLM.Studio.Model)
+	if model == "" {
+		if pc, ok := s.cfg.LLM.Providers[provider]; ok {
+			model = pc.Model
+		}
 	}
 	return routerLLM{router: s.llmRouter, provider: provider, model: model}
 }
@@ -170,6 +191,17 @@ func (s *Server) handleStudioPlan(c *fiber.Ctx) error {
 type studioSaveRequest struct {
 	Workflow                 studio.Draft `json:"workflow"`
 	AcceptPrivilegedExposure bool         `json:"acceptPrivilegedExposure"`
+	// Grants carries the per-node code consent collected by the Studio consent
+	// dialog (§13). One entry per beyond-guardrail Custom Python node.
+	Grants []studioGrant `json:"grants,omitempty"`
+}
+
+// studioGrant is one per-node code-consent grant from the save request.
+type studioGrant struct {
+	NodeID       string   `json:"nodeId"`
+	Hash         string   `json:"hash"`
+	Capabilities []string `json:"capabilities"`
+	Scope        string   `json:"scope"`
 }
 
 // handleStudioSave implements POST /api/v1/studio/save. It converts the
@@ -210,6 +242,35 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	if def.LLM.Provider == "" {
 		def.LLM.Provider = s.cfg.LLM.DefaultProvider
 	}
+	// Stamp per-node code consent (§13) onto the workflow nodes. ApplyGrants
+	// refuses if any beyond-guardrail Custom Python node lacks a matching grant,
+	// so a saved (and later enabled) agent can never carry unconsented host or
+	// network code — the runtime fail-closed check in internal/runtime/flow.go
+	// then honours these stamps. GrantedBy records who approved.
+	if def.Workflow != nil {
+		grantedBy := ""
+		if cl := auth.ClaimsFromCtx(c); cl != nil {
+			grantedBy = cl.Subject
+		}
+		grants := make([]consent.Grant, 0, len(req.Grants))
+		for _, g := range req.Grants {
+			grants = append(grants, consent.Grant{
+				NodeID:       g.NodeID,
+				Hash:         g.Hash,
+				Capabilities: g.Capabilities,
+				Scope:        g.Scope,
+				GrantedBy:    grantedBy,
+			})
+		}
+		if gerr := consent.ApplyGrants(def.Workflow.Nodes, grants); gerr != nil {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error":           gerr.Error(),
+				"requiresConsent": true,
+				"consentItems":    plan.ConsentItems,
+			})
+		}
+	}
+
 	// Persist as a DISABLED agent — Studio saves are staged, not live.
 	def.Enabled = false
 
@@ -225,6 +286,76 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 		"agentId": def.ID,
 		"enabled": false,
 	})
+}
+
+// handleStudioListAgents implements GET /api/v1/studio/agents. It returns the
+// agents that carry a workflow graph (Studio-editable) as lightweight summaries
+// for the "My Workflows" list. Agents without a workflow are skipped.
+func (s *Server) handleStudioListAgents(c *fiber.Ctx) error {
+	type agentSummary struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Enabled     bool   `json:"enabled"`
+		Trigger     string `json:"trigger"`
+		Nodes       int    `json:"nodes"`
+	}
+	out := []agentSummary{}
+	for _, d := range s.loader.All() {
+		if d == nil || !studio.HasWorkflow(*d) {
+			continue
+		}
+		out = append(out, agentSummary{
+			ID:          d.ID,
+			Name:        d.Name,
+			Description: d.Description,
+			Enabled:     d.Enabled,
+			Trigger:     string(d.Trigger),
+			Nodes:       len(d.Workflow.Nodes),
+		})
+	}
+	return c.JSON(fiber.Map{"agents": out})
+}
+
+// handleStudioLoadAgent implements GET /api/v1/studio/agents/:id. It returns the
+// agent's workflow as a Studio Draft so it can be re-opened on the canvas for
+// editing; re-saving (POST /studio/save) upserts the same id.
+// handleStudioScaffolds implements GET /api/v1/studio/scaffolds. It returns the
+// built-in framework Python scaffolds (deterministic, shipped code — no LLM) the
+// Custom Python editor offers as "Insert scaffold".
+func (s *Server) handleStudioScaffolds(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"scaffolds": studio.Scaffolds()})
+}
+
+// handleStudioCodegen implements POST /api/v1/studio/codegen. It asks the
+// framework's configured model (llm.studio → studioLLM) to write a complete
+// Custom Python node body for ONE node from its description + workflow context.
+// In-framework only — the same llm.Router the rest of the gateway uses.
+func (s *Server) handleStudioCodegen(c *fiber.Ctx) error {
+	var req studio.CodegenRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	llm := s.studioLLM()
+	if llm == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "no LLM provider configured for code generation")
+	}
+	code, err := studio.GenerateNodeCode(c.Context(), llm, req)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusBadGateway, err)
+	}
+	return c.JSON(fiber.Map{"code": code})
+}
+
+func (s *Server) handleStudioLoadAgent(c *fiber.Ctx) error {
+	def := s.loader.Get(c.Params("id"))
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	if !studio.HasWorkflow(*def) {
+		return s.errMsg(c, fiber.StatusBadRequest, "agent has no editable workflow")
+	}
+	return c.JSON(fiber.Map{"workflow": studio.FromAgentDefinition(*def)})
 }
 
 // --- Studio templates (Story S6.1) ---
