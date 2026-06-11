@@ -324,17 +324,26 @@ printf "${GREEN}║${NC}  soulacy → %-52s ${GREEN}║${NC}\n" "$BIN_DIR/soulac
 printf "${GREEN}║${NC}  sy      → %-52s ${GREEN}║${NC}\n" "$BIN_DIR/sy"
 printf "${GREEN}╚════════════════════════════════════════════════════════════════╝${NC}\n\n"
 
-# ── First-time setup wizard (fresh install + interactive shell only) ─────────
+# ── First-time setup wizard (fresh install, terminal available) ──────────────
 # Guides the user through provider/model + web search + an API key, writing the
-# config so the gateway is ready on first launch. Skipped for upgrades (config
-# already present) and for piped `curl | bash` (no tty).
-if [ "$CONFIG_EXISTS" -eq 0 ] && [ -t 0 ]; then
+# config so the gateway is ready on first launch. Runs whenever a terminal is
+# reachable — including `curl | bash`, where stdin is the pipe but the wizard
+# reads from /dev/tty. Skipped for upgrades (config already present) and truly
+# non-interactive shells (no tty, e.g. CI).
+if [ "$CONFIG_EXISTS" -eq 0 ] && { [ -t 0 ] || [ -c /dev/tty ]; }; then
     hdr "First-time setup"
     printf "  No existing config found — let's get you configured.\n\n"
     export PATH="$BIN_DIR:$PATH"
-    if "$BIN_DIR/sy" setup; then
+    SETUP_RC=0
+    if [ -t 0 ]; then
+        "$BIN_DIR/sy" setup || SETUP_RC=$?
+    else
+        # stdin is a pipe (curl | bash) — feed the wizard from the terminal.
+        "$BIN_DIR/sy" setup < /dev/tty || SETUP_RC=$?
+    fi
+    if [ "$SETUP_RC" -eq 0 ]; then
         # Re-detect: setup just wrote the config.
-        [ -f "$CONFIG_LEGACY" ] || [ -f "$CONFIG_WORKSPACE" ] && CONFIG_EXISTS=1
+        { [ -f "$CONFIG_LEGACY" ] || [ -f "$CONFIG_WORKSPACE" ]; } && CONFIG_EXISTS=1
     else
         warn "Setup did not complete — re-run it any time with:  sy setup"
     fi
@@ -383,10 +392,17 @@ if [ -n "$API_KEY" ]; then
     printf "${YELLOW}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n\n"
 fi
 
-# Offer to launch right now (only when stdin is a tty -- piped curl|bash skips).
-if [ -t 0 ]; then
+# Offer to launch right now whenever a terminal is reachable (incl. curl | bash,
+# reading the answer from /dev/tty). Truly non-interactive shells just get the
+# hint.
+if [ -t 0 ] || [ -c /dev/tty ]; then
     printf "──────────\n"
-    read -r -p "Launch the gateway now? [Y/n]: " LAUNCH
+    LAUNCH="Y"
+    if [ -t 0 ]; then
+        read -r -p "Launch the gateway now? [Y/n]: " LAUNCH || true
+    else
+        read -r -p "Launch the gateway now? [Y/n]: " LAUNCH < /dev/tty || true
+    fi
     LAUNCH="${LAUNCH:-Y}"
     if [[ "$LAUNCH" =~ ^[Yy]$ ]]; then
         printf "\nStarting ${BOLD}soulacy serve${NC} ... (Ctrl-C to stop)\n\n"
