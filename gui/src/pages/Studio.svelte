@@ -4,23 +4,24 @@
     SvelteFlow, Background, Controls, MiniMap, Position,
   } from '@xyflow/svelte'
   import '@xyflow/svelte/dist/style.css'
-  import { writable } from 'svelte/store'
+  import { writable, get } from 'svelte/store'
 
-  import { bridge } from './bridge.js'
-  import { toFlow, kindMeta } from './graph.js'
-  import Palette from './Palette.svelte'
-  import Inspector from './Inspector.svelte'
-  import StudioNode from './nodes/StudioNode.svelte'
-  import TriggerNode from './nodes/TriggerNode.svelte'
-  import OutputNode from './nodes/OutputNode.svelte'
+  // ARCH-6: Studio is now a first-class page of the core dashboard, not a
+  // sandboxed iframe plugin. The old postMessage RPC bridge is replaced by a
+  // thin client that calls the gateway directly through the GUI's
+  // authenticated `api` session (studioApi.js keeps the same `bridge` shape).
+  import { bridge } from '../lib/studio/studioApi.js'
+  import { toFlow, kindMeta } from '../lib/studio/graph.js'
+  import Palette from '../lib/studio/Palette.svelte'
+  import Inspector from '../lib/studio/Inspector.svelte'
+  import StudioNode from '../lib/studio/nodes/StudioNode.svelte'
+  import TriggerNode from '../lib/studio/nodes/TriggerNode.svelte'
+  import OutputNode from '../lib/studio/nodes/OutputNode.svelte'
+  import '../lib/studio/studio.css'
 
-  // Scrub the token from the URL fragment (kept by the host; the bridge needs
-  // no credential — the host holds the session).
-  try {
-    if (window.location.hash) {
-      window.history.replaceState(null, '', window.location.pathname + window.location.search)
-    }
-  } catch (_) { /* sandbox may block history */ }
+  // (Removed) The old iframe build scrubbed the plugin token from the URL
+  // fragment on mount. Embedded in the SPA we hold no token and must NOT touch
+  // the hash — the core dashboard uses it for routing (#studio).
 
   const nodeTypes = {
     studio: StudioNode,
@@ -224,6 +225,197 @@
     nodes.set(flow.nodes)
     edges.set(flow.edges)
   }
+
+  // ── Palette drag-and-drop (create nodes by dropping) ──────────────────────
+  // Palette items carry an `application/studio-node` payload. Dropping one on
+  // the canvas creates a real flow node (agent/tool) at the drop point, or
+  // attaches a channel to the workflow output. New feature on top of ARCH-6.
+  const DRAG_MIME = 'application/studio-node'
+
+  // Starter script for a freshly-dropped Custom Python block. The runtime
+  // contract (Phase 1): upstream node outputs arrive as `inputs` (a dict); the
+  // value you return/print becomes this node's output.
+  const PYTHON_STARTER = `# Custom Python step.
+# Upstream node outputs arrive as 'inputs' (a dict).
+# Return (or print) a value — it becomes this node's output.
+def run(inputs):
+    # TODO: your logic here
+    return inputs
+`
+
+  function emptyWorkflow() {
+    return {
+      name: 'Untitled workflow',
+      trigger: { type: 'manual' },
+      channels: [],
+      flow: { nodes: [], edges: [], entry: '' },
+    }
+  }
+
+  function onCanvasDragOver(e) {
+    if (!e.dataTransfer) return
+    if (Array.from(e.dataTransfer.types || []).includes(DRAG_MIME)) {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'copy'
+    }
+  }
+
+  function onCanvasDrop(e) {
+    if (!e.dataTransfer) return
+    const raw = e.dataTransfer.getData(DRAG_MIME)
+    if (!raw) return
+    e.preventDefault()
+    let drag
+    try { drag = JSON.parse(raw) } catch (_) { return }
+    addFromPalette(drag, dropFlowPosition(e))
+  }
+
+  // Invert the current viewport transform (read off the xyflow viewport element)
+  // to turn the drop's screen coords into flow coords. Identity fallback when no
+  // canvas is mounted yet (first drop onto the empty state).
+  function dropFlowPosition(e) {
+    const pane = document.querySelector('#studio-app .svelte-flow')
+    if (!pane) return { x: 0, y: 0 }
+    const rect = pane.getBoundingClientRect()
+    let tx = 0, ty = 0, zoom = 1
+    const vp = pane.querySelector('.svelte-flow__viewport')
+    if (vp) {
+      try {
+        const m = new DOMMatrixReadOnly(getComputedStyle(vp).transform)
+        tx = m.m41; ty = m.m42; zoom = m.a || 1
+      } catch (_) { /* identity fallback */ }
+    }
+    return {
+      x: (e.clientX - rect.left - tx) / zoom,
+      y: (e.clientY - rect.top - ty) / zoom,
+    }
+  }
+
+  function uniqueNodeId(prefix) {
+    const used = new Set(((workflow && workflow.flow && workflow.flow.nodes) || []).map((n) => n.id))
+    let i = 1, id
+    do { id = prefix + '_' + i++ } while (used.has(id))
+    return id
+  }
+
+  // Snapshot current on-screen node positions into x/y on the raw nodes.
+  // graph.js auto-lays-out only when EVERY node lacks x/y, so baking existing
+  // positions before appending a positioned node keeps the compiled layout from
+  // collapsing onto (0,0).
+  function bakePositions(rawNodes) {
+    const live = get(nodes)
+    const pos = new Map(live.map((n) => [n.id, n.position]))
+    return (rawNodes || []).map((n) => {
+      const pt = pos.get(n.id)
+      return pt ? { ...n, x: Math.round(pt.x), y: Math.round(pt.y) } : n
+    })
+  }
+
+  function addFromPalette(drag, at) {
+    if (!drag || !drag.kind) return
+
+    // Channels attach to the workflow output rather than becoming a flow node.
+    if (drag.kind === 'channel') {
+      const base = workflow || emptyWorkflow()
+      const chans = Array.isArray(base.channels) ? base.channels.slice() : []
+      const id = drag.id || drag.name
+      if (id && !chans.includes(id)) chans.push(id)
+      workflow = { ...base, channels: chans }
+      rebuildGraph()
+      scheduleValidate()
+      return
+    }
+
+    // Agent / tool / python -> a new flow node at the drop point.
+    const id = uniqueNodeId(drag.kind)
+    const node = {
+      id,
+      kind: drag.kind,
+      ...(drag.kind === 'tool' ? { tool: drag.name } : {}),
+      ...(drag.kind === 'agent' ? { agent: drag.name } : {}),
+      ...(drag.kind === 'python' ? { code: PYTHON_STARTER } : {}),
+      input: '',
+      output: '',
+      inputs: [],
+      outputs: [],
+      params: {},
+      x: Math.round(at.x),
+      y: Math.round(at.y),
+    }
+
+    if (!workflow) {
+      workflow = { ...emptyWorkflow(), flow: { nodes: [node], edges: [], entry: id } }
+    } else {
+      const flow = workflow.flow || { nodes: [], edges: [], entry: '' }
+      const baked = bakePositions(flow.nodes)
+      workflow = { ...workflow, flow: { ...flow, nodes: [...baked, node], entry: flow.entry || id } }
+    }
+    selectedNode = node     // select the new node for immediate editing
+    selectedEdge = null
+    rebuildGraph()
+    scheduleValidate()
+  }
+
+  // ── Delete a node / edge from the canvas ──────────────────────────────────
+  function deleteNode(nodeId) {
+    if (!nodeId || !workflow || !workflow.flow) return
+    const flow = workflow.flow
+    // Bake positions first so the survivors keep their places, then drop the
+    // node and every edge that touched it.
+    const remaining = bakePositions(flow.nodes).filter((n) => n.id !== nodeId)
+    const remEdges = (flow.edges || []).filter((e) => e.from !== nodeId && e.to !== nodeId)
+    let entry = flow.entry
+    if (entry === nodeId) entry = remaining.length ? remaining[0].id : ''
+    workflow = { ...workflow, flow: { ...flow, nodes: remaining, edges: remEdges, entry } }
+    if (selectedNode && selectedNode.id === nodeId) selectedNode = null
+    selectedEdge = null
+    rebuildGraph()
+    scheduleValidate()
+  }
+
+  function deleteEdge(index) {
+    if (index == null || !workflow || !workflow.flow || !Array.isArray(workflow.flow.edges)) return
+    const edges = workflow.flow.edges.filter((_, i) => i !== index)
+    workflow = { ...workflow, flow: { ...workflow.flow, edges } }
+    selectedEdge = null
+    rebuildGraph()
+    scheduleValidate()
+  }
+
+  // Merge a patch into one node of the draft (e.g. the Custom Python editor
+  // writing inline code back). Bakes positions so the graph doesn't reflow, and
+  // refreshes the selection reference so the Inspector keeps editing the live
+  // node after rebuildGraph.
+  function applyNodePatch(nodeId, patch) {
+    if (!nodeId || !patch || !workflow || !workflow.flow) return
+    const flow = workflow.flow
+    let updated = null
+    const nodes = bakePositions(flow.nodes).map((n) => {
+      if (n.id !== nodeId) return n
+      updated = { ...n, ...patch }
+      return updated
+    })
+    if (!updated) return
+    workflow = { ...workflow, flow: { ...flow, nodes } }
+    if (selectedNode && selectedNode.id === nodeId) selectedNode = updated
+    rebuildGraph()
+    scheduleValidate()
+  }
+
+  // Delete/Backspace removes the selected node (or edge) — but never while the
+  // user is typing in a field (intent box, inspector inputs, refine textarea).
+  function onCanvasKeydown(e) {
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return
+    const el = document.activeElement
+    if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return
+    if (selectedNode) { e.preventDefault(); deleteNode(selectedNode.id) }
+    else if (selectedEdge) { e.preventDefault(); deleteEdge(selectedEdge.index) }
+  }
+
+  onMount(() => {
+    window.addEventListener('keydown', onCanvasKeydown)
+    return () => window.removeEventListener('keydown', onCanvasKeydown)
+  })
 
   // Debounced, best-effort validation. On any bridge error we degrade
   // gracefully: clear the strip rather than block editing.
@@ -591,7 +783,7 @@
         openConsent(p.consentItems)
         return        // wait for the operator's acknowledgement
       }
-      await doSave(false)
+      await doSave(false, [])
     } catch (e) {
       saveError = e.message || 'plan failed'
     } finally {
@@ -599,13 +791,14 @@
     }
   }
 
-  // Persist the draft. acceptPrivilegedExposure threads the operator's consent.
-  // Handles the 409 consent fallback (error carrying requiresConsent +
-  // consentItems) by opening the same dialog.
-  async function doSave(acceptPrivilegedExposure) {
+  // Persist the draft. acceptPrivilegedExposure threads the operator's
+  // channel-consent; grants threads the per-node code consent (§13). Handles the
+  // 409 consent fallback (error carrying requiresConsent + consentItems) by
+  // opening the same dialog.
+  async function doSave(acceptPrivilegedExposure, grants) {
     saveError = ''
     try {
-      const res = await bridge.save(workflow, acceptPrivilegedExposure)
+      const res = await bridge.save(workflow, acceptPrivilegedExposure, grants)
       const id = (res && res.agentId) || '(unknown)'
       saveMsg = `Saved as disabled agent ${id} — enable it from the Agents page.`
       consent = null
@@ -622,14 +815,45 @@
   }
 
   function openConsent(items) {
-    consent = { items: Array.isArray(items) ? items : [] }
+    const list = Array.isArray(items) ? items : []
+    // Default every code item's scope to "this workflow until the code changes".
+    const scopes = {}
+    for (const it of list) {
+      if (it.kind === 'code') scopes[it.name] = 'workflow'
+    }
+    consent = { items: list, scopes }
+  }
+
+  function setConsentScope(nodeId, scope) {
+    if (!consent) return
+    consent = { ...consent, scopes: { ...consent.scopes, [nodeId]: scope } }
+  }
+
+  // The inline code for a consent item's node, shown in the dialog so the user
+  // sees exactly what they're approving.
+  function codeForNode(nodeId) {
+    const n = draftNodes.find((x) => x.id === nodeId)
+    return (n && n.code) || ''
+  }
+
+  // Build the per-node grant array from the code consent items + chosen scopes.
+  function collectGrants() {
+    if (!consent) return []
+    return (consent.items || [])
+      .filter((it) => it.kind === 'code')
+      .map((it) => ({
+        nodeId: it.name,
+        hash: it.hash,
+        capabilities: it.capabilities || [],
+        scope: (consent.scopes && consent.scopes[it.name]) || 'workflow',
+      }))
   }
 
   async function acknowledgeConsent() {
     if (saving) return
     saving = true
     try {
-      await doSave(true)
+      await doSave(true, collectGrants())
     } finally {
       saving = false
     }
@@ -683,9 +907,9 @@
     closeTemplates()
   }
 
-  // ── M6: Draft library — Save / Open / Load / Delete (S6.2) ────────────────
+  // ── Draft library + "My Workflows" (published agent workflows) ────────────
   let savingDraft = false
-  let library = { open: false, loading: false, error: '', drafts: [], busyId: '' }
+  let library = { open: false, loading: false, error: '', drafts: [], agents: [], busyId: '' }
 
   async function saveDraft() {
     if (!workflow || savingDraft) return
@@ -717,19 +941,94 @@
     }
   }
 
+  // Opens the unified "My Workflows" panel: published agent workflows + drafts,
+  // fetched together. Each list degrades independently so one failure doesn't
+  // hide the other.
   async function openLibrary() {
-    library = { open: true, loading: true, error: '', drafts: [], busyId: '' }
-    try {
-      const data = await bridge.draftsList()
-      const drafts = (data && Array.isArray(data.drafts)) ? data.drafts : []
-      library = { open: true, loading: false, error: '', drafts, busyId: '' }
-    } catch (e) {
-      library = { open: true, loading: false, error: e.message || 'could not list drafts', drafts: [], busyId: '' }
-    }
+    library = { open: true, loading: true, error: '', drafts: [], agents: [], busyId: '' }
+    const [agentsRes, draftsRes] = await Promise.allSettled([
+      bridge.agentWorkflows(),
+      bridge.draftsList(),
+    ])
+    const agents = agentsRes.status === 'fulfilled' && Array.isArray(agentsRes.value?.agents)
+      ? agentsRes.value.agents : []
+    const drafts = draftsRes.status === 'fulfilled' && Array.isArray(draftsRes.value?.drafts)
+      ? draftsRes.value.drafts : []
+    const errs = []
+    if (agentsRes.status === 'rejected') errs.push('agents: ' + (agentsRes.reason?.message || 'failed'))
+    if (draftsRes.status === 'rejected') errs.push('drafts: ' + (draftsRes.reason?.message || 'failed'))
+    library = { open: true, loading: false, error: errs.join(' · '), drafts, agents, busyId: '' }
   }
 
   function closeLibrary() {
     library = { ...library, open: false }
+  }
+
+  // Start a brand-new, empty workflow (clears the canvas).
+  function newWorkflow() {
+    setWorkflow(null)
+    closeLibrary()
+  }
+
+  // Click an agent in the left palette → load its workflow onto the canvas for
+  // editing. Re-Saving (same name → same id) upserts it.
+  async function openAgentOnCanvas(id) {
+    if (!id) return
+    try {
+      const data = await bridge.loadAgentWorkflow(id)
+      const wf = (data && data.workflow) || null
+      if (!wf) { toast('This agent has no editable workflow.'); return }
+      setWorkflow(wf, { name: wf.name })
+      toast('Loaded workflow — edit and Save to update the agent.')
+    } catch (e) {
+      toast(e.message || 'Could not load agent workflow')
+    }
+  }
+
+  // Delete an agent straight from the palette (with confirm), then refresh the
+  // palette so it disappears.
+  async function deleteAgentFromPalette(id, name) {
+    if (!id) return
+    let ok = true
+    try { ok = window.confirm(`Delete agent “${name || id}”? This cannot be undone.`) } catch (_) { ok = true }
+    if (!ok) return
+    try {
+      await bridge.deleteAgent(id)
+      toast(`Deleted agent ${name || id}.`)
+      await loadCatalog()
+    } catch (e) {
+      toast(e.message || 'Could not delete agent')
+    }
+  }
+
+  // Load a saved agent's workflow back onto the canvas for editing. Re-saving
+  // (with the same name → same id) upserts the agent.
+  async function editAgent(a) {
+    if (!a || !a.id || library.busyId) return
+    library = { ...library, busyId: a.id, error: '' }
+    try {
+      const data = await bridge.loadAgentWorkflow(a.id)
+      const wf = (data && data.workflow) || null
+      if (!wf) throw new Error('agent has no editable workflow')
+      setWorkflow(wf, { name: wf.name || a.name })
+      closeLibrary()
+    } catch (e) {
+      library = { ...library, busyId: '', error: e.message || 'could not load agent' }
+    }
+  }
+
+  async function deleteAgentWorkflow(a) {
+    if (!a || !a.id || library.busyId) return
+    let ok = true
+    try { ok = window.confirm(`Delete agent “${a.name || a.id}”? This cannot be undone.`) } catch (_) { ok = true }
+    if (!ok) return
+    library = { ...library, busyId: a.id, error: '' }
+    try {
+      await bridge.deleteAgent(a.id)
+      library = { ...library, busyId: '', agents: library.agents.filter((x) => x.id !== a.id) }
+    } catch (e) {
+      library = { ...library, busyId: '', error: e.message || 'could not delete agent' }
+    }
   }
 
   async function loadDraft(d) {
@@ -870,10 +1169,93 @@
     toastTimer = setTimeout(() => { toastMsg = '' }, 3500)
   }
 
+  // Framework-written Python: deterministic scaffolds (fetched once) + the
+  // framework's own model writing a node's code on demand.
+  let scaffolds = []
+  onMount(() => {
+    bridge.scaffolds().then((d) => { scaffolds = (d && d.scaffolds) || [] }).catch(() => { scaffolds = [] })
+  })
+
+  async function generateNodeCode(nodeId) {
+    const n = draftNodes.find((x) => x.id === nodeId)
+    if (!n) return ''
+    try {
+      const r = await bridge.generateCode(nodeId, n.description || '', workflow)
+      return (r && r.code) || ''
+    } catch (e) {
+      toast(e.message || 'code generation failed')
+      return ''
+    }
+  }
+
+  // ── Studio model picker (llm.studio) ─────────────────────────────────────
+  // Lets the developer choose which IN-FRAMEWORK provider/model Studio uses for
+  // its reasoning + code generation, without editing config.yaml by hand.
+  let modelPicker = { open: false, provider: '', model: '', models: [], saving: false, error: '' }
+  let studioModelLabel = 'default'
+
+  $: providerOptions = (catalog && catalog.providers && catalog.providers.providers)
+    ? Object.keys(catalog.providers.providers) : []
+
+  function fmtModelLabel(provider, model) {
+    if (!provider) return 'default'
+    return model ? `${provider} / ${model}` : provider
+  }
+
+  onMount(() => {
+    bridge.getConfig().then((cfg) => {
+      const st = (cfg && cfg.llm && cfg.llm.studio) || {}
+      studioModelLabel = fmtModelLabel(st.provider, st.model)
+    }).catch(() => {})
+  })
+
+  async function openModelPicker() {
+    modelPicker = { open: true, provider: '', model: '', models: [], saving: false, error: '' }
+    try {
+      const cfg = await bridge.getConfig()
+      const st = (cfg && cfg.llm && cfg.llm.studio) || {}
+      modelPicker = { ...modelPicker, provider: st.provider || '', model: st.model || '' }
+      if (st.provider) loadModelsFor(st.provider)
+    } catch (e) {
+      modelPicker = { ...modelPicker, error: e.message || 'could not load config' }
+    }
+  }
+
+  async function loadModelsFor(provider) {
+    if (!provider) { modelPicker = { ...modelPicker, models: [] }; return }
+    try {
+      const r = await bridge.providerModels(provider)
+      const raw = (r && (r.models || r)) || []
+      const models = Array.isArray(raw)
+        ? raw.map((m) => (typeof m === 'string' ? m : (m.id || m.name || ''))).filter(Boolean)
+        : []
+      modelPicker = { ...modelPicker, models }
+    } catch (_) {
+      modelPicker = { ...modelPicker, models: [] }
+    }
+  }
+
+  function pickProvider(p) {
+    modelPicker = { ...modelPicker, provider: p, model: '' }
+    loadModelsFor(p)
+  }
+
+  async function saveStudioModel() {
+    modelPicker = { ...modelPicker, saving: true, error: '' }
+    try {
+      await bridge.setStudioModel(modelPicker.provider, modelPicker.model)
+      studioModelLabel = fmtModelLabel(modelPicker.provider, modelPicker.model)
+      modelPicker = { ...modelPicker, open: false, saving: false }
+      toast('Studio model updated.')
+    } catch (e) {
+      modelPicker = { ...modelPicker, saving: false, error: e.message || 'could not save' }
+    }
+  }
+
   onMount(loadCatalog)
 </script>
 
-<div id="app">
+<div id="studio-app">
   <!-- Top bar -->
   <header class="topbar">
     <div class="brand">
@@ -895,8 +1277,8 @@
 
     <!-- M6: draft management toolbar -->
     <div class="toolbar" role="group" aria-label="Draft management">
+      <button class="btn" type="button" on:click={openModelPicker} title="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
       <button class="btn" type="button" on:click={openTemplates} title="Start from a template">Templates</button>
-      <button class="btn" type="button" on:click={openLibrary} title="Open a saved draft">Open</button>
       <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} title="Save the current draft to the library">
         {savingDraft ? 'Saving…' : 'Save draft'}
       </button>
@@ -913,9 +1295,6 @@
       />
     </div>
 
-    <div class="badge" title="Scoped plugin principal">
-      principal: <strong>plugin:studio</strong>
-    </div>
   </header>
 
   <!-- M6: import error + toast strips -->
@@ -935,6 +1314,8 @@
       onBrowse={browseRegistry}
       {browse}
       onInstall={installBrowse}
+      onOpenAgent={openAgentOnCanvas}
+      onDeleteAgent={deleteAgentFromPalette}
     />
 
     <!-- Center: canvas + transparency strips + panels -->
@@ -1040,7 +1421,13 @@
         </div>
       {/if}
 
-      <div class="canvas">
+      <div
+        class="canvas"
+        role="application"
+        aria-label="Workflow canvas — drop palette items here"
+        on:dragover={onCanvasDragOver}
+        on:drop={onCanvasDrop}
+      >
         {#if compiling}
           <div class="canvas-state">Compiling…</div>
         {:else if !workflow}
@@ -1352,6 +1739,10 @@
       onEdgeChange={applyEdgePatch}
       onRefine={refineNode}
       {refineState}
+      onDelete={deleteNode}
+      onNodeChange={applyNodePatch}
+      {scaffolds}
+      onGenerateCode={generateNodeCode}
     />
   </main>
 
@@ -1386,38 +1777,105 @@
     </div>
   {/if}
 
-  <!-- ── M6: Draft library (S6.2) ────────────────────────────────────────── -->
+  <!-- ── My Workflows: published agent workflows + drafts ──────────────────── -->
   {#if library.open}
     <div class="modal-backdrop" on:click|self={closeLibrary} role="presentation">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="lib-title">
-        <h2 id="lib-title" class="modal-title">Open a draft</h2>
+        <div class="lib-head">
+          <h2 id="lib-title" class="modal-title">My Workflows</h2>
+          <button class="btn primary btn-sm" type="button" on:click={newWorkflow}>+ New workflow</button>
+        </div>
         {#if library.error}<div class="strip strip-error">⚠ {library.error}</div>{/if}
         {#if library.loading}
-          <p class="muted">Loading drafts…</p>
-        {:else if !library.drafts.length}
-          <p class="muted">No saved drafts yet. Use “Save draft” to create one.</p>
+          <p class="muted">Loading…</p>
         {:else}
-          <ul class="picker-list">
-            {#each library.drafts as d (d.id)}
-              <li class="picker-item lib-item">
-                <button class="picker-main" type="button" on:click={() => loadDraft(d)} disabled={!!library.busyId} title="Load this draft">
-                  <span class="picker-name">{d.name || d.id}</span>
-                  {#if draftWhen(d)}<span class="picker-desc">updated {draftWhen(d)}</span>{/if}
-                </button>
-                <div class="lib-actions">
-                  <button class="btn btn-sm" type="button" on:click={() => loadDraft(d)} disabled={!!library.busyId}>
-                    {library.busyId === d.id ? '…' : 'Load'}
+          <!-- Published agent workflows -->
+          <h3 class="lib-section">Saved agents</h3>
+          {#if !library.agents.length}
+            <p class="muted">No saved agent workflows yet. Build one and click Save.</p>
+          {:else}
+            <ul class="picker-list">
+              {#each library.agents as a (a.id)}
+                <li class="picker-item lib-item">
+                  <button class="picker-main" type="button" on:click={() => editAgent(a)} disabled={!!library.busyId} title="Edit this workflow">
+                    <span class="picker-name">
+                      {a.name || a.id}
+                      <span class="agent-badge {a.enabled ? 'on' : 'off'}">{a.enabled ? 'enabled' : 'disabled'}</span>
+                    </span>
+                    <span class="picker-desc">{a.description || (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's'))}</span>
                   </button>
-                  <button class="btn btn-sm" type="button" on:click={() => deleteDraft(d)} disabled={!!library.busyId} title="Delete this draft">
-                    Delete
+                  <div class="lib-actions">
+                    <button class="btn btn-sm" type="button" on:click={() => editAgent(a)} disabled={!!library.busyId}>
+                      {library.busyId === a.id ? '…' : 'Edit'}
+                    </button>
+                    <button class="btn btn-sm" type="button" on:click={() => deleteAgentWorkflow(a)} disabled={!!library.busyId} title="Delete this agent">
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+
+          <!-- Work-in-progress drafts -->
+          <h3 class="lib-section">Drafts</h3>
+          {#if !library.drafts.length}
+            <p class="muted">No saved drafts. Use “Save draft” to keep a work in progress.</p>
+          {:else}
+            <ul class="picker-list">
+              {#each library.drafts as d (d.id)}
+                <li class="picker-item lib-item">
+                  <button class="picker-main" type="button" on:click={() => loadDraft(d)} disabled={!!library.busyId} title="Load this draft">
+                    <span class="picker-name">{d.name || d.id}</span>
+                    {#if draftWhen(d)}<span class="picker-desc">updated {draftWhen(d)}</span>{/if}
                   </button>
-                </div>
-              </li>
-            {/each}
-          </ul>
+                  <div class="lib-actions">
+                    <button class="btn btn-sm" type="button" on:click={() => loadDraft(d)} disabled={!!library.busyId}>
+                      {library.busyId === d.id ? '…' : 'Load'}
+                    </button>
+                    <button class="btn btn-sm" type="button" on:click={() => deleteDraft(d)} disabled={!!library.busyId} title="Delete this draft">
+                      Delete
+                    </button>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
         {/if}
         <div class="modal-actions">
           <button class="btn" type="button" on:click={closeLibrary}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Studio model picker: choose the in-framework provider/model for Studio. -->
+  {#if modelPicker.open}
+    <div class="modal-backdrop" on:click|self={() => modelPicker = { ...modelPicker, open: false }} role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-title">
+        <h2 id="model-title" class="modal-title">Studio model</h2>
+        <p class="modal-body">
+          Which provider/model should Studio use for its reasoning and code
+          generation? Uses your configured providers — leave provider blank to
+          use the global default.
+        </p>
+        {#if modelPicker.error}<div class="strip strip-error">⚠ {modelPicker.error}</div>{/if}
+        <label class="field-label" for="mp-provider">provider</label>
+        <select id="mp-provider" value={modelPicker.provider} on:change={(e) => pickProvider(e.target.value)}>
+          <option value="">(default provider)</option>
+          {#each providerOptions as p}<option value={p}>{p}</option>{/each}
+        </select>
+        <label class="field-label" for="mp-model">model</label>
+        <input id="mp-model" list="mp-models" placeholder="leave blank for the provider's default model"
+          bind:value={modelPicker.model} />
+        <datalist id="mp-models">
+          {#each modelPicker.models as m}<option value={m}></option>{/each}
+        </datalist>
+        <div class="modal-actions">
+          <button class="btn" type="button" on:click={() => modelPicker = { ...modelPicker, open: false }} disabled={modelPicker.saving}>Cancel</button>
+          <button class="btn primary" type="button" on:click={saveStudioModel} disabled={modelPicker.saving}>
+            {modelPicker.saving ? 'Saving…' : 'Save'}
+          </button>
         </div>
       </div>
     </div>
@@ -1428,27 +1886,55 @@
   {#if consent}
     <div class="modal-backdrop" on:click|self={cancelConsent} role="presentation">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="consent-title">
-        <h2 id="consent-title" class="modal-title">Privileged channel exposure</h2>
+        <h2 id="consent-title" class="modal-title">Review &amp; consent</h2>
         <p class="modal-body">
-          This workflow uses privileged tools (shell/file/install-class) and is bound to a
-          channel. Acknowledge to save it as a <strong>DISABLED</strong> agent.
-          Note: an operator must still grant channel exposure at deploy time
-          (<code>accept_privileged_exposure</code> in config) before it can run.
+          This workflow needs your explicit consent before it can be saved. Review
+          each item below. It is saved as a <strong>DISABLED</strong> agent;
+          consent is bound to the exact code shown — editing it later voids the grant.
         </p>
         {#if consent.items.length}
           <ul class="consent-items">
             {#each consent.items as it}
-              <li>
-                <span class="consent-name">{it.name}</span>
-                {#if it.reason}<span class="consent-reason">{it.reason}</span>{/if}
-              </li>
+              {#if it.kind === 'code'}
+                <li class="consent-code">
+                  <div class="consent-row">
+                    <span class="consent-name">🐍 {it.name}</span>
+                    {#each (it.capabilities || []) as cap}
+                      <span class="cap cap-{cap}">{cap}</span>
+                    {/each}
+                    {#if it.dynamic}<span class="cap cap-dynamic">dynamic</span>{/if}
+                  </div>
+                  {#if it.reason}<div class="consent-reason">{it.reason}</div>{/if}
+                  <pre class="consent-codeblock">{codeForNode(it.name)}</pre>
+                  <label class="consent-scope">
+                    Grant scope:
+                    <select
+                      value={consent.scopes[it.name] || 'workflow'}
+                      on:change={(e) => setConsentScope(it.name, e.target.value)}
+                    >
+                      <option value="run">this run only</option>
+                      <option value="workflow">this workflow (until the code changes)</option>
+                      <option value="until_revoked">until I revoke it</option>
+                    </select>
+                  </label>
+                </li>
+              {:else}
+                <li>
+                  <span class="consent-name">{it.name}</span>
+                  {#if it.reason}<span class="consent-reason">{it.reason}</span>{/if}
+                  <div class="consent-note">
+                    Privileged channel exposure — an operator must still set
+                    <code>accept_privileged_exposure</code> in config at deploy time.
+                  </div>
+                </li>
+              {/if}
             {/each}
           </ul>
         {/if}
         <div class="modal-actions">
           <button class="btn" on:click={cancelConsent} disabled={saving}>Cancel</button>
           <button class="btn primary" on:click={acknowledgeConsent} disabled={saving}>
-            {saving ? 'Saving…' : 'Acknowledge & save'}
+            {saving ? 'Saving…' : 'Consent & save'}
           </button>
         </div>
       </div>
@@ -1457,10 +1943,15 @@
 </div>
 
 <style>
-  #app {
+  #studio-app {
     display: flex;
     flex-direction: column;
-    height: 100vh;
+    /* ARCH-6: fill the dashboard content area (.content is flex:1 of a 100vh
+     * layout) rather than the viewport, so the embedded page sits correctly
+     * below the mobile top bar and beside the sidebar. */
+    height: 100%;
+    min-height: 0;
+    flex: 1 1 auto;
     overflow: hidden;
   }
 
@@ -1490,16 +1981,6 @@
   .intent input::placeholder { color: var(--text-muted); }
   .intent input:focus { border-color: var(--accent); }
 
-  .badge {
-    flex: 0 0 auto;
-    padding: 6px 12px;
-    background: var(--accent-dim);
-    border: 1px solid var(--accent);
-    border-radius: 999px;
-    font-size: 12px;
-    white-space: nowrap;
-  }
-  .badge strong { color: var(--accent); font-weight: 600; }
 
   .btn {
     flex: 0 0 auto;
@@ -1541,6 +2022,11 @@
   .empty-or { font-size: 12px; color: var(--text-muted); margin: 4px 0; }
 
   /* M6: picker / library lists in modals */
+  .lib-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 4px; }
+  .lib-section { margin: 14px 0 6px; font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
+  .agent-badge { margin-left: 8px; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); vertical-align: middle; }
+  .agent-badge.on { color: var(--ok); border-color: var(--ok); background: rgba(54,211,153,.12); }
+  .agent-badge.off { color: var(--text-muted); }
   .picker-list { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .picker-item {
     background: var(--bg-elev-2);
@@ -2077,8 +2563,22 @@
     border-radius: 8px;
     padding: 8px 10px;
   }
-  .consent-name { display: block; font-size: 13px; font-weight: 600; color: var(--text); }
+  .consent-name { display: inline-block; font-size: 13px; font-weight: 600; color: var(--text); }
   .consent-reason { display: block; margin-top: 3px; font-size: 12px; color: var(--text-muted); }
+  .consent-note { margin-top: 4px; font-size: 11px; color: var(--text-muted); }
+  .consent-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .cap { font-size: 11px; font-weight: 600; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); }
+  .cap-system  { background: rgba(255,107,129,.14); border-color: var(--error); color: var(--error); }
+  .cap-network { background: rgba(245,197,66,.14);  border-color: var(--warn);  color: var(--warn); }
+  .cap-dynamic { background: rgba(245,197,66,.14);  border-color: var(--warn);  color: var(--warn); }
+  .consent-codeblock {
+    margin: 8px 0 6px; max-height: 180px; overflow: auto;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px; font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    line-height: 1.5; white-space: pre; color: var(--text);
+  }
+  .consent-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
+  .consent-scope select { width: auto; flex: 1; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
   /* ── Edge styling (M3) ──────────────────────────────────────────────────

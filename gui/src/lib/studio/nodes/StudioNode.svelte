@@ -48,6 +48,7 @@
     {#if data.isEntry}<span class="entry-chip">entry</span>{/if}
   </div>
   <div class="node-title" title={data.label}>{data.label}</div>
+  {#if data.description}<div class="node-desc" title={data.description}>{data.description}</div>{/if}
   <div class="node-meta">
     <span class="node-id">{node.id}</span>
     {#if node.output}<span class="node-out">→ {node.output}</span>{/if}
@@ -147,6 +148,17 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+  .node-desc {
+    font-size: 10.5px;
+    line-height: 1.35;
+    color: var(--text-muted);
+    margin-top: 3px;
+    max-width: 200px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
   }
   .node-meta {
     display: flex;

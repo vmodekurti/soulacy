@@ -186,28 +186,11 @@ install_one "$BUILT_SY"      "$BIN_DIR/sy"
 ok "Installed: $BIN_DIR/soulacy"
 ok "Installed: $BIN_DIR/sy"
 
-# ── 3b. Studio plugin (ships by default) ─────────────────────────────────────
-# Studio is a normal plugin: plain files in the workspace plugins dir, loaded
-# (and UI hot-reloaded) by the framework. We copy it here so `curl | bash`
-# deploys it. `make all` already built its UI into examples/plugins/studio/ui.
-# Only available on the source-build path — prebuilt tarballs ship just the
-# two binaries, and the gateway provisions Studio from its embedded copy.
-hdr "Step 3b: Studio plugin"
-WORKSPACE="${SOULACY_WORKSPACE:-$HOME/.soulacy/soulspace}"
-PLUGINS_DIR="$WORKSPACE/plugins"
-STUDIO_SRC="$SRC_DIR/examples/plugins/studio"
-if [ -z "$SRC_DIR" ]; then
-    echo "  Installed from a prebuilt release — Studio ships embedded in the gateway."
-elif [ -d "$STUDIO_SRC/ui" ]; then
-    rm -rf "$PLUGINS_DIR/studio"
-    mkdir -p "$PLUGINS_DIR/studio"
-    cp "$STUDIO_SRC/plugin.yaml" "$PLUGINS_DIR/studio/"
-    [ -f "$STUDIO_SRC/README.md" ] && cp "$STUDIO_SRC/README.md" "$PLUGINS_DIR/studio/"
-    cp -R "$STUDIO_SRC/ui" "$PLUGINS_DIR/studio/ui"
-    ok "Studio plugin installed → $PLUGINS_DIR/studio"
-else
-    warn "Studio UI not built ($STUDIO_SRC/ui missing) — skipping Studio plugin."
-fi
+# ── 3b. Studio (built into the dashboard) ────────────────────────────────────
+# ARCH-6: Studio is no longer a separate plugin copied into the workspace. The
+# visual builder is compiled directly into the core GUI (`make gui` →
+# internal/webui/dist, embedded in the gateway binary), so it works out of the
+# box with zero extra install steps and no <workspace>/plugins/studio directory.
 
 # ── 4. PATH check ───────────────────────────────────────────────────────────
 if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then

@@ -13,6 +13,7 @@ const (
 	FlowNodeTool   = "tool"   // run a tool (Tool + Input template)
 	FlowNodeAgent  = "agent"  // invoke a peer agent (Agent = agent id)
 	FlowNodeBranch = "branch" // no action; exists to fan edges out
+	FlowNodePython = "python" // run inline Python (Code) or a deployed python tool (Tool)
 )
 
 // FlowPort is a declared, named connection point on a node (Story S0.3).
@@ -38,6 +39,28 @@ type FlowNode struct {
 	Tool string `yaml:"tool,omitempty" json:"tool,omitempty"`
 	// Agent names a peer agent to invoke as agent__<id> (kind=agent).
 	Agent string `yaml:"agent,omitempty" json:"agent,omitempty"`
+	// Description is a short, concrete human-readable line of exactly what this
+	// node does (Studio shows it under the node on the canvas and in the
+	// inspector). Purely descriptive; ignored by execution.
+	Description string `yaml:"description,omitempty" json:"description,omitempty"`
+	// Code is the inline Python source for a kind=python node (Studio "Custom
+	// Python" block). When set, the runtime executes it in the sandboxed Python
+	// executor (process-per-call); inputs arrive as a JSON `inputs` payload and
+	// the node's printed/returned value becomes its Output. Empty for a
+	// python node that instead references a deployed tool via Tool.
+	Code string `yaml:"code,omitempty" json:"code,omitempty"`
+	// Requires lists the capabilities a kind=python node needs, inferred from
+	// its Code by the Studio classifier (internal/studio/codeclass): a subset of
+	// {"system","network"}. Empty = ReadOnly (inside the default guardrails).
+	// Drives the per-case consent model; never widens what the runtime grants.
+	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
+	// Consent is the per-case grant recorded for a beyond-guardrail kind=python
+	// node (Studio §13). It is bound to the exact code via Hash; the runtime
+	// REFUSES to execute the node unless this stamp is present, its Hash matches
+	// the current Code, and it covers the code's required capabilities. nil =
+	// no grant — valid only for ReadOnly code. Pure data; the decision logic
+	// lives in internal/studio/consent.
+	Consent *FlowConsent `yaml:"consent,omitempty" json:"consent,omitempty"`
 	// Input is a Go template producing the node's input from flow vars.
 	Input string `yaml:"input,omitempty" json:"input,omitempty"`
 	// Output names the flow var that stores this node's result.
@@ -58,6 +81,19 @@ type FlowNode struct {
 	// alongside the node. nil = none. The flow runtime passes it through
 	// untouched; it does not affect Input templating or execution order.
 	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
+}
+
+// FlowConsent records a user's per-case consent for a beyond-guardrail python
+// node (system/network/dynamic code). It is content-bound: Hash is the
+// first 12 hex chars of sha256(Code) at grant time, so editing the code voids
+// the grant. Capabilities is the set the user approved. Scope is one of
+// "run" | "workflow" | "until_revoked". Purely data — see internal/studio/consent.
+type FlowConsent struct {
+	Hash         string   `yaml:"hash" json:"hash"`
+	Capabilities []string `yaml:"capabilities,omitempty" json:"capabilities,omitempty"`
+	Scope        string   `yaml:"scope,omitempty" json:"scope,omitempty"`
+	GrantedAt    string   `yaml:"granted_at,omitempty" json:"granted_at,omitempty"`
+	GrantedBy    string   `yaml:"granted_by,omitempty" json:"granted_by,omitempty"`
 }
 
 // FlowEdge is one directed edge. Edges from a node are evaluated IN ORDER;

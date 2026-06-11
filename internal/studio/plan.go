@@ -9,17 +9,36 @@
 package studio
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+
+	"github.com/soulacy/soulacy/internal/studio/codeclass"
 	"github.com/soulacy/soulacy/internal/tier"
 )
 
-// ConsentItem describes one concrete reason consent is being requested. For
-// M2 the only kind is "channel": binding a Privileged-tier workflow to a
-// non-web channel exposes the workflow's shell/write/install surface to that
-// channel's users.
+// ConsentItem describes one concrete reason consent is being requested.
+//
+//   - kind "channel": binding a Privileged-tier workflow to a non-web channel
+//     exposes the workflow's shell/write/install surface to that channel's users.
+//   - kind "code": a Custom Python node runs BEYOND the default guardrails
+//     (needs system/network, or uses dynamic execution). Per the per-case
+//     consent policy (docs/STUDIO_PYTHON_TOOLS.md §13) each such node is its own
+//     decision, bound to a content Hash so editing the code voids the consent.
 type ConsentItem struct {
-	Kind   string `json:"kind"`   // "channel"
-	Name   string `json:"name"`   // the channel being bound
-	Reason string `json:"reason"` // why the workflow is privileged (from tier.Explain)
+	Kind   string `json:"kind"`   // "channel" | "code"
+	Name   string `json:"name"`   // channel id, or the node id for kind=code
+	Reason string `json:"reason"` // human-readable justification
+
+	// Capabilities (kind=code) lists what the node needs: subset of
+	// {"system","network"}. Empty with Dynamic=true means review-only.
+	Capabilities []string `json:"capabilities,omitempty"`
+	// Dynamic (kind=code) flags eval/exec/__import__ the classifier can't see
+	// through — raises the warning level.
+	Dynamic bool `json:"dynamic,omitempty"`
+	// Hash (kind=code) is the first 12 hex chars of sha256(code). A grant is
+	// bound to this; a code edit changes the hash and voids prior consent.
+	Hash string `json:"hash,omitempty"`
 }
 
 // PlanResult is the POST /api/v1/studio/plan response and the shared
@@ -81,7 +100,68 @@ func Plan(draft Draft) (PlanResult, error) {
 		}
 	}
 
+	// Per-case code consent (§13): every Custom Python node that runs beyond the
+	// ReadOnly guardrails is its own consent decision, independent of channels —
+	// running code/commands on the host needs the user's explicit OK each time,
+	// bound to the exact code via a content hash.
+	for _, item := range codeConsentItems(draft.Flow) {
+		res.RequiresConsent = true
+		res.ConsentItems = append(res.ConsentItems, item)
+	}
+
 	return res, nil
+}
+
+// codeConsentItems returns one ConsentItem per Custom Python node whose code is
+// beyond the guardrails (needs system/network, or uses dynamic execution).
+func codeConsentItems(flow Flow) []ConsentItem {
+	var out []ConsentItem
+	for _, n := range flow.Nodes {
+		// Any node carrying inline code is a Custom Python node (kind may not be
+		// normalized yet on a raw draft); classify by the code itself.
+		if strings.TrimSpace(n.Code) == "" {
+			continue
+		}
+		cls := codeclass.Classify(n.Code)
+		if !cls.Beyond() {
+			continue
+		}
+		out = append(out, ConsentItem{
+			Kind:         "code",
+			Name:         n.ID,
+			Reason:       codeConsentReason(cls),
+			Capabilities: cls.Requires,
+			Dynamic:      cls.Dynamic,
+			Hash:         hashCode(n.Code),
+		})
+	}
+	return out
+}
+
+func codeConsentReason(c codeclass.Result) string {
+	var parts []string
+	for _, cap := range c.Requires {
+		switch cap {
+		case codeclass.CapSystem:
+			parts = append(parts, "runs commands / writes files on the host")
+		case codeclass.CapNetwork:
+			parts = append(parts, "makes network requests")
+		}
+	}
+	if c.Dynamic {
+		parts = append(parts, "uses dynamic execution the scanner cannot inspect")
+	}
+	if len(parts) == 0 {
+		return "runs code beyond the default guardrails"
+	}
+	return "this step " + strings.Join(parts, "; ")
+}
+
+// hashCode returns the first 12 hex chars of sha256(code) — the binding a code
+// consent grant is tied to. Editing the code changes the hash, voiding consent.
+func hashCode(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 // tierLabel maps a tier.Tier onto the wire vocabulary the frontend contract

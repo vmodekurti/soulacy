@@ -3,6 +3,7 @@
   import { apiKey, connected, authRequired } from './lib/stores.js'
   import Dashboard  from './pages/Dashboard.svelte'
   import Builder    from './pages/Builder.svelte'
+  import Studio     from './pages/Studio.svelte'
   import Flow       from './pages/Flow.svelte'
   import Agents     from './pages/Agents.svelte'
   import Chat       from './pages/Chat.svelte'
@@ -34,6 +35,7 @@
   const pages = [
     { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'    },
     { id: 'builder',   icon: '✦', label: 'Build',       group: 'main'    },
+    { id: 'studio',    icon: '🎬', label: 'Studio',      group: 'main'    },
     { id: 'flow',      icon: '⌘', label: 'Flow',        group: 'main'    },
     { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'    },
     { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'    },
@@ -65,7 +67,15 @@
   onMount(() => {
     const applyHash = () => {
       const h = location.hash.slice(1)
-      if (h && (pages.find(p => p.id === h) || isPluginPage(h))) page = h
+      if (h && (pages.find(p => p.id === h) || isPluginPage(h))) { page = h; return }
+      // Path-based entry (ARCH-6): the SPA fallback serves index.html for any
+      // unmatched path, so a deep link / refresh on e.g. /studio lands here
+      // with an empty hash. Map the last path segment to a page id when it
+      // matches a known route so /studio opens the Studio editor directly.
+      if (!h) {
+        const seg = location.pathname.replace(/\/+$/, '').split('/').pop()
+        if (seg && pages.find(p => p.id === seg)) page = seg
+      }
     }
     applyHash()
     window.addEventListener('popstate', applyHash)
@@ -181,6 +191,8 @@
       <Dashboard />
     {:else if page === 'builder'}
       <Builder />
+    {:else if page === 'studio'}
+      <Studio />
     {:else if page === 'flow'}
       <Flow />
     {:else if page === 'agents'}

@@ -75,6 +75,10 @@ func (s *Server) safeConfigView() fiber.Map {
 		"llm": fiber.Map{
 			"default_provider": cfg.LLM.DefaultProvider,
 			"providers":        providers,
+			"studio": fiber.Map{
+				"provider": cfg.LLM.Studio.Provider,
+				"model":    cfg.LLM.Studio.Model,
+			},
 		},
 		"log": fiber.Map{
 			"level":  cfg.Log.Level,
@@ -182,6 +186,13 @@ type PatchableConfig struct {
 
 	LLM *struct {
 		DefaultProvider string `json:"default_provider" yaml:"default_provider"`
+		// Studio overrides the provider/model used for Studio reasoning + code
+		// generation (llm.studio). Empty strings clear the override (fall back
+		// to the default provider/model).
+		Studio *struct {
+			Provider string `json:"provider" yaml:"provider"`
+			Model    string `json:"model" yaml:"model"`
+		} `json:"studio" yaml:"studio"`
 	} `json:"llm" yaml:"llm"`
 
 	Log *struct {
@@ -308,6 +319,11 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		llm := getOrCreateMap(dst, "llm")
 		if patch.LLM.DefaultProvider != "" {
 			llm["default_provider"] = patch.LLM.DefaultProvider
+		}
+		if patch.LLM.Studio != nil {
+			st := getOrCreateMap(llm, "studio")
+			st["provider"] = patch.LLM.Studio.Provider
+			st["model"] = patch.LLM.Studio.Model
 		}
 	}
 	if patch.Log != nil {

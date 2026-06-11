@@ -1,0 +1,129 @@
+/*
+ * Studio API client (ARCH-6).
+ *
+ * Replaces the old host-mediated postMessage RPC bridge (bridge.js, relayed by
+ * PluginFrame.svelte). Studio now runs as a first-class page of the core
+ * dashboard, so it can call the gateway directly through the GUI's
+ * authenticated `api` client — inheriting the user's session and auth headers —
+ * instead of bouncing every request through a parent frame.
+ *
+ * The export keeps the EXACT shape and method signatures of the old `bridge`
+ * object so the migrated Studio page (pages/Studio.svelte) is unchanged at its
+ * call sites. The only behavioural contract we must preserve by hand is the
+ * /studio/save 409 consent fallback: the old bridge surfaced `requiresConsent`
+ * and `consentItems` as TOP-LEVEL fields on the rejected Error, whereas
+ * apiFetch puts the whole error body on `err.body`. We hoist them so the
+ * Studio save handler keeps working without changes.
+ */
+
+import { api } from '../api.js'
+
+// Hoist the structured consent fields apiFetch parked on err.body up to the
+// top level, matching the old bridge's rejection shape.
+function hoistConsent(err) {
+  const b = err && err.body
+  if (b && typeof b === 'object') {
+    if (b.requiresConsent != null) err.requiresConsent = b.requiresConsent
+    if (b.consentItems != null) err.consentItems = b.consentItems
+  }
+  return err
+}
+
+export const bridge = {
+  // Read-only catalog: agents + tools + providers + channels, fetched in
+  // parallel with the user's own session (no more host relay).
+  catalog: async () => {
+    const [agents, tools, providers, channels] = await Promise.all([
+      api.agents.list(),
+      api.tools.catalog(),
+      api.providers.list(),
+      api.channels.list(),
+    ])
+    return { agents, tools, providers, channels }
+  },
+
+  compile: (intent, answers, catalog) =>
+    api.studio.compile({ intent, answers, catalog }),
+
+  // M5 test bench: only forward present optional fields; the backend defaults
+  // the rest.
+  test: (workflow, input, opts = {}) =>
+    api.studio.test({
+      workflow,
+      input,
+      ...(opts.mocks ? { mocks: opts.mocks } : {}),
+      ...(opts.assertions ? { assertions: opts.assertions } : {}),
+      ...(opts.mode ? { mode: opts.mode } : {}),
+    }),
+
+  plan: (workflow) => api.studio.plan({ workflow }),
+
+  validate: (workflow) => api.studio.validate({ workflow }),
+
+  // On the 409 consent fallback, re-throw with the consent fields hoisted to
+  // the top level so the save handler can open the consent dialog unchanged.
+  // grants (optional) is the per-node code-consent array collected from the
+  // consent dialog: [{ nodeId, hash, capabilities, scope }].
+  save: async (workflow, acceptPrivilegedExposure, grants) => {
+    try {
+      return await api.studio.save({ workflow, acceptPrivilegedExposure, grants })
+    } catch (e) {
+      throw hoistConsent(e)
+    }
+  },
+
+  // M4 discover: relay the existing skill-source search; pass packages through
+  // verbatim under `results`, matching the old bridge contract.
+  discover: async (query, kind) => {
+    const res = await api.registries.search(query || '')
+    const results = res && Array.isArray(res.packages) ? res.packages : []
+    return { results, count: (res && res.count) || results.length }
+  },
+
+  // M4 install: STAGE the package (a real, review-bearing op that does NOT
+  // activate anything; the operator must still Approve it in the Plugins page).
+  // We report that honestly (multiStep:true) — same shape the host produced.
+  install: async ({ source, checksum, name } = {}) => {
+    const res = await api.plugins.stage(source, checksum || '')
+    const preview = (res && res.preview) || null
+    return {
+      staged:
+        (preview &&
+          (preview.StagedID || preview.stagedID || preview.staged_id)) ||
+        '',
+      multiStep: true,
+      preview,
+      security: (preview && (preview.Security || preview.security)) || null,
+      note:
+        (res && res.note) ||
+        'Staged for review — approve it in the Plugins page to activate.',
+    }
+  },
+
+  // M6: templates, draft library, per-node refine.
+  templates: () => api.studio.templates(),
+  draftSave: (name, workflow) => api.studio.draftSave({ name, workflow }),
+  draftsList: () => api.studio.draftsList(),
+  draftLoad: (id) => api.studio.draftLoad(id),
+  draftDelete: (id) => api.studio.draftDelete(id),
+  refine: (workflow, nodeId, instruction) =>
+    api.studio.refine({ workflow, nodeId, instruction }),
+
+  // "My Workflows": published agent workflows (list / load-as-draft / delete)
+  // alongside the draft library already exposed above.
+  agentWorkflows: () => api.studio.agents.list(),
+  loadAgentWorkflow: (id) => api.studio.agents.get(id),
+  deleteAgent: (id) => api.agents.delete(id),
+
+  // Framework-written Python for a node: deterministic scaffolds, or the
+  // framework's own configured model writing the code (no external service).
+  scaffolds: () => api.studio.scaffolds(),
+  generateCode: (nodeId, description, workflow) =>
+    api.studio.codegen({ nodeId, description, workflow }),
+
+  // Studio model picker: read current config + set the llm.studio override.
+  getConfig: () => api.config.get(),
+  providerModels: (id) => api.providers.models(id),
+  setStudioModel: (provider, model) =>
+    api.config.patch({ llm: { studio: { provider, model } } }),
+}

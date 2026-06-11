@@ -692,6 +692,13 @@ func (s *Server) buildApp() *fiber.App {
 	api.Delete("/studio/drafts/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionDelete), s.handleStudioDeleteDraft)
 	// Studio plugin backend (M6): per-node re-describe.
 	api.Post("/studio/refine", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioRefine)
+	// Studio "My Workflows": list workflow-bearing agents + load one as a draft.
+	api.Get("/studio/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioListAgents)
+	api.Get("/studio/agents/:id", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioLoadAgent)
+	// Built-in framework Python scaffolds for the Custom Python editor.
+	api.Get("/studio/scaffolds", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioScaffolds)
+	// In-framework code generation for one Custom Python node.
+	api.Post("/studio/codegen", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCodegen)
 
 	// E4: Capability Gap Detection
 	if s.builderRegistry != nil {

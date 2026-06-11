@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/soulacy/soulacy/pkg/agent"
+	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
 // slugRE collapses any run of non-alphanumeric chars into a single dash so
@@ -52,13 +53,17 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		return agent.Definition{}, fmt.Errorf("studio: cannot derive an agent id from an empty workflow name")
 	}
 
+	// Ensure every Custom Python node carries fresh capability classification on
+	// the saved agent (a draft may have been imported/edited without a compile).
+	classifyFlowNodes(&draft.Flow)
+
 	def := agent.Definition{
 		ID:           id,
 		Name:         draft.Name,
-		Description:  "Created in Studio.",
+		Description:  describeWorkflowShort(draft),
 		Trigger:      mapTrigger(draft.Trigger.Type),
 		Channels:     append([]string(nil), draft.Channels...),
-		SystemPrompt: "Studio-authored workflow agent.",
+		SystemPrompt: buildSystemPrompt(draft),
 		// Disabled by construction: a Studio save stages an agent for the
 		// operator to review and enable.
 		Enabled: false,
@@ -165,4 +170,195 @@ func slug(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
 	s = slugRE.ReplaceAllString(s, "-")
 	return strings.Trim(s, "-")
+}
+
+// systemBuiltins are the OS-level builtins whose presence means a workflow runs
+// code/commands on the host (used to add a scope-of-action line to the prompt).
+var systemBuiltins = map[string]bool{
+	"shell_exec": true, "run_script": true, "write_file": true,
+	"download_file": true, "install_library": true,
+}
+
+// buildSystemPrompt derives a well-defined system prompt from the saved
+// workflow: who the agent is, when it runs, the ordered steps it performs, where
+// output goes, and the scope it must stay within. A Studio-saved agent should
+// arrive with a real prompt — not a generic placeholder — so it reads clearly in
+// the Agents list and grounds any LLM/agent steps it contains.
+func buildSystemPrompt(draft Draft) string {
+	var b strings.Builder
+	name := strings.TrimSpace(draft.Name)
+	if name == "" {
+		name = "this workflow"
+	}
+	fmt.Fprintf(&b, "You are %q, an automation agent created in Soulacy Studio. ", name)
+	b.WriteString("You execute a fixed workflow graph: each step runs in order and its output feeds the next according to the edges. Follow the graph faithfully and do not invent steps or take actions outside it.\n\n")
+
+	b.WriteString("Trigger: ")
+	b.WriteString(describeTrigger(draft.Trigger))
+	b.WriteString("\n\n")
+
+	ids := orderedNodeIDs(draft.Flow)
+	if len(ids) > 0 {
+		byID := make(map[string]sdkr.FlowNode, len(draft.Flow.Nodes))
+		for _, n := range draft.Flow.Nodes {
+			byID[n.ID] = n
+		}
+		b.WriteString("Steps:\n")
+		i := 1
+		for _, id := range ids {
+			n, ok := byID[id]
+			if !ok {
+				continue
+			}
+			fmt.Fprintf(&b, "%d. %s\n", i, describeNode(n))
+			i++
+		}
+		b.WriteString("\n")
+	}
+
+	if len(draft.Channels) > 0 {
+		fmt.Fprintf(&b, "Output: deliver results to the following channel(s): %s.\n\n", strings.Join(draft.Channels, ", "))
+	}
+
+	if flowHasHostExecution(draft.Flow) {
+		b.WriteString("Some steps run code or system commands on the host. Operate strictly within the actions defined by the steps above; never take actions beyond them.\n\n")
+	}
+
+	b.WriteString("Be reliable and concise. On a step error, honor that step's on_error policy (retry, skip, or abort).")
+	return b.String()
+}
+
+// describeWorkflowShort is the one-line agent Description: trigger + step count
+// (+ channels), so the Agents list reads meaningfully.
+func describeWorkflowShort(draft Draft) string {
+	n := len(draft.Flow.Nodes)
+	plural := "s"
+	if n == 1 {
+		plural = ""
+	}
+	out := fmt.Sprintf("Studio workflow — %s, %d step%s", triggerShort(draft.Trigger), n, plural)
+	if len(draft.Channels) > 0 {
+		out += " → " + strings.Join(draft.Channels, ", ")
+	}
+	return out + "."
+}
+
+func triggerShort(t Trigger) string {
+	switch strings.ToLower(strings.TrimSpace(t.Type)) {
+	case "schedule", "cron":
+		if cron, ok := t.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
+			return "scheduled (" + cron + ")"
+		}
+		return "scheduled"
+	case "channel":
+		return "channel-triggered"
+	case "webhook":
+		return "webhook-triggered"
+	default:
+		return "manual"
+	}
+}
+
+func describeTrigger(t Trigger) string {
+	switch strings.ToLower(strings.TrimSpace(t.Type)) {
+	case "schedule", "cron":
+		if cron, ok := t.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
+			return fmt.Sprintf("runs on a schedule (cron %q).", cron)
+		}
+		return "runs on a schedule."
+	case "channel":
+		return "runs when a message arrives on a connected channel."
+	case "webhook":
+		return "runs when its webhook endpoint is called."
+	case "manual", "internal", "":
+		return "runs when triggered manually or programmatically."
+	default:
+		return fmt.Sprintf("trigger type %q.", t.Type)
+	}
+}
+
+// describeNode renders one step as a concise imperative sentence.
+func describeNode(n sdkr.FlowNode) string {
+	var head string
+	switch {
+	case n.Kind == sdkr.FlowNodePython:
+		if strings.TrimSpace(n.Tool) != "" {
+			head = fmt.Sprintf("Run the %q Python tool", n.Tool)
+		} else {
+			head = "Run an inline Python step"
+		}
+	case strings.TrimSpace(n.Tool) != "":
+		head = fmt.Sprintf("Call the %q tool", n.Tool)
+	case strings.TrimSpace(n.Agent) != "":
+		head = fmt.Sprintf("Hand off to the %q agent", n.Agent)
+	case n.Kind == sdkr.FlowNodeBranch:
+		head = "Branch based on a condition"
+	default:
+		head = "Run a step"
+	}
+	meta := []string{"id " + n.ID}
+	if out := strings.TrimSpace(n.Output); out != "" {
+		meta = append(meta, "output → "+out)
+	}
+	return fmt.Sprintf("%s (%s).", head, strings.Join(meta, "; "))
+}
+
+// orderedNodeIDs returns node ids in execution order: a BFS from the entry along
+// the edges, with any unreached nodes appended in declared order. Deterministic.
+func orderedNodeIDs(flow Flow) []string {
+	if len(flow.Nodes) == 0 {
+		return nil
+	}
+	exists := make(map[string]bool, len(flow.Nodes))
+	for _, n := range flow.Nodes {
+		exists[n.ID] = true
+	}
+	adj := map[string][]string{}
+	for _, e := range flow.Edges {
+		if e.To == "" || e.To == "end" {
+			continue
+		}
+		adj[e.From] = append(adj[e.From], e.To)
+	}
+	entry := flow.Entry
+	if entry == "" || !exists[entry] {
+		entry = flow.Nodes[0].ID
+	}
+	var order []string
+	seen := map[string]bool{}
+	queue := []string{entry}
+	seen[entry] = true
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if exists[cur] {
+			order = append(order, cur)
+		}
+		for _, nx := range adj[cur] {
+			if exists[nx] && !seen[nx] {
+				seen[nx] = true
+				queue = append(queue, nx)
+			}
+		}
+	}
+	for _, n := range flow.Nodes {
+		if !seen[n.ID] {
+			order = append(order, n.ID)
+		}
+	}
+	return order
+}
+
+// flowHasHostExecution reports whether any node runs code/commands on the host
+// (a python/code node, or a system builtin), to add a scope line to the prompt.
+func flowHasHostExecution(flow Flow) bool {
+	for _, n := range flow.Nodes {
+		if n.Kind == sdkr.FlowNodePython || strings.TrimSpace(n.Code) != "" {
+			return true
+		}
+		if systemBuiltins[strings.TrimSpace(n.Tool)] {
+			return true
+		}
+	}
+	return false
 }

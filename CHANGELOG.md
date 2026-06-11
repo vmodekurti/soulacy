@@ -48,8 +48,40 @@ Post-audit hardening (see `improvements.md`). Work in progress on the
 - `govulncheck` is wired into CI (CI-4); it could not run in the offline build
   sandbox (vuln DB unreachable), so the authoritative scan happens in CI.
 
+### Added
+
+- **Studio "Custom Python" nodes with a per-case consent model.** Studio can now
+  author inline Python steps: a `python` flow-node kind (`sdk/reasoning` +
+  `internal/reasoning.CompileFlow`), a draggable "Custom Python" palette block, an
+  Inspector code editor, and execution via the existing sandboxed process
+  executor (`Engine.RunInlinePython` + an inline `run(inputs)` harness in
+  `internal/executor/process`). The compiler emits these nodes for glue the
+  available tools can't do (e.g. shelling out to a local CLI). Security is
+  per-case (docs/STUDIO_PYTHON_TOOLS.md §13): a static classifier
+  (`internal/studio/codeclass`) infers `system`/`network`/`dynamic` from the code;
+  beyond-guardrail nodes need explicit, content-hash-bound consent collected in
+  the save dialog (`internal/studio/consent`, `plan.go`), and the engine is
+  **fail-closed** — it refuses to run a beyond-guardrail node without a matching
+  grant and the `allow_system_tools` ceiling. Editing the code voids the grant.
+  Studio-saved agents also now carry a generated, well-defined system prompt.
+
 ### Changed
 
+- **Studio is now built into the core dashboard (ARCH-6).** The visual workflow
+  builder is no longer a sandboxed iframe plugin. Its Svelte UI moved from
+  `examples/plugins/studio/ui-src` into the main GUI (`gui/src/pages/Studio.svelte`
+  + `gui/src/lib/studio/`), is embedded into the gateway binary by `make gui`, and
+  is reachable as a first-class route at `/studio` (and `#studio`). The
+  host-mediated `postMessage` RPC bridge is gone: Studio now calls the existing
+  `/api/v1/studio/*` endpoints directly with the user's authenticated session
+  (`gui/src/lib/studio/studioApi.js`). The studio-specific relay was removed from
+  `PluginFrame.svelte`, which remains the generic host for other plugin UIs. The
+  `examples/plugins/studio` directory was deleted, the Makefile `plugin-ui` target
+  and `make all`'s separate plugin build step were removed, and `install.sh` no
+  longer copies anything into `<workspace>/plugins/studio`. The `/studio/*`
+  endpoints keep their existing user RBAC and are not in the plugin route
+  allowlist, so scoped plugin tokens are still rejected. Drafts still persist to
+  `<workspace>/studio/drafts/`.
 - Data-path write failures (session memory, brain memory, scheduler
   registration, agent upsert) are now logged instead of silently discarded
   (ARCH-1).

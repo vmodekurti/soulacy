@@ -139,10 +139,13 @@ func TestCompile_TypedPortsPass(t *testing.T) {
 	}
 }
 
-// TestCompile_UndeclaredPortErrors (Story M3, test c error path): an edge that
-// names a port NOT declared on the referenced node is rejected — Compile
-// returns an error and does not produce a draft.
-func TestCompile_UndeclaredPortErrors(t *testing.T) {
+// TestCompile_UndeclaredPortReconciled: an edge that names a port NOT declared
+// on the referenced node no longer fails the compile. reconcilePorts
+// auto-declares the referenced port on the node (preserving the model's
+// intended named handle) so an otherwise-valid draft is not thrown away over a
+// single cosmetic wiring slip — the historical failure mode that rejected real
+// workflows. The reconciled draft must declare the port and compile cleanly.
+func TestCompile_UndeclaredPortReconciled(t *testing.T) {
 	canned := `{
   "name": "Bad Ports",
   "trigger": { "type": "manual" },
@@ -152,19 +155,45 @@ func TestCompile_UndeclaredPortErrors(t *testing.T) {
       { "id": "summarize", "kind": "agent", "agent": "summarizer", "input": "go" }
     ],
     "edges": [
-      { "from": "fetch", "to": "summarize", "from_port": "nope" },
+      { "from": "fetch", "to": "summarize", "from_port": "nope", "to_port": "in" },
       { "from": "summarize", "to": "end" }
     ],
     "entry": "fetch"
   }
 }`
-	_, err := Compile(context.Background(), fakeLLM{out: canned}, "bad ports", Catalog{}, nil)
-	if err == nil {
-		t.Fatalf("expected an error for an undeclared from_port, got nil")
+	res, err := Compile(context.Background(), fakeLLM{out: canned}, "bad ports", Catalog{}, nil)
+	if err != nil {
+		t.Fatalf("Compile should reconcile undeclared ports, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "from_port") {
-		t.Fatalf("expected error to mention from_port, got: %v", err)
+	// The undeclared from_port "nope" must now be declared on "fetch" Outputs,
+	// and the undeclared to_port "in" on "summarize" Inputs.
+	var fetch, summarize *sdkr.FlowNode
+	for i := range res.Workflow.Flow.Nodes {
+		switch res.Workflow.Flow.Nodes[i].ID {
+		case "fetch":
+			fetch = &res.Workflow.Flow.Nodes[i]
+		case "summarize":
+			summarize = &res.Workflow.Flow.Nodes[i]
+		}
 	}
+	if fetch == nil || !hasPortNamed(fetch.Outputs, "nope") {
+		t.Fatalf("expected fetch to declare output port %q, got %+v", "nope", fetch)
+	}
+	if summarize == nil || !hasPortNamed(summarize.Inputs, "in") {
+		t.Fatalf("expected summarize to declare input port %q, got %+v", "in", summarize)
+	}
+	if _, err := reasoning.CompileFlow(res.Workflow.spec()); err != nil {
+		t.Fatalf("reconciled graph failed CompileFlow: %v", err)
+	}
+}
+
+func hasPortNamed(ports []sdkr.FlowPort, name string) bool {
+	for _, p := range ports {
+		if p.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 // TestNormalizeFlow_FillsKinds confirms post-parse normalization makes implied

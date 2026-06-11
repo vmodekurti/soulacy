@@ -404,6 +404,28 @@ type QueueConfig struct {
 type LLMConfig struct {
 	DefaultProvider string                    `mapstructure:"default_provider"`
 	Providers       map[string]ProviderConfig `mapstructure:"providers"`
+
+	// Studio optionally overrides which provider/model the Studio visual
+	// builder uses for its COMPILE reasoning (turning a plain-language intent
+	// into a workflow graph, and — soon — authoring Python tool scripts).
+	// Compilation is reasoning-heavy, so operators can point Studio at a
+	// stronger model than the global default without changing it for every
+	// agent. Empty fields fall back to DefaultProvider and that provider's Model.
+	//
+	//	llm:
+	//	  default_provider: google
+	//	  studio:
+	//	    provider: anthropic
+	//	    model: claude-opus-4-8
+	Studio StudioLLMConfig `mapstructure:"studio"`
+}
+
+// StudioLLMConfig overrides the provider/model used for Studio workflow
+// compilation. Both fields are optional and independently fall back to the
+// global default.
+type StudioLLMConfig struct {
+	Provider string `mapstructure:"provider"`
+	Model    string `mapstructure:"model"`
 }
 
 type ProviderConfig struct {
