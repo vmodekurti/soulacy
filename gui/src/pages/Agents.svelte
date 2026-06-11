@@ -146,9 +146,22 @@
         id,
         registered: regs.includes(id),
         configured: (res.providers || {})[id] != null,
+        defaultModel: (res.providers || {})[id]?.model || '',
       }))
     } catch (e) {
       providers = []
+    }
+  }
+
+  $: enabledProviders = providers.filter(p => p.registered)
+
+  function onProviderChange() {
+    if (!editing?.llm) return
+    const prov = providers.find(p => p.id === editing.llm.provider)
+    if (prov && prov.defaultModel) {
+      editing.llm.model = prov.defaultModel
+    } else {
+      editing.llm.model = ''
     }
   }
 
@@ -172,6 +185,16 @@
 
   // Reactive: any time the editor's provider changes, pull its model list.
   $: if (editing?.llm?.provider) loadModels(editing.llm.provider)
+
+  // Reactive: if the agent model is unset, default to the provider's defaultModel once providers are loaded.
+  $: if (editing && providers.length > 0) {
+    if (editing.llm && !editing.llm.model && editing.llm.provider) {
+      const prov = providers.find(p => p.id === editing.llm.provider)
+      if (prov && prov.defaultModel) {
+        editing.llm.model = prov.defaultModel
+      }
+    }
+  }
 
   // Computed: options for the model dropdown.
   // Rules:
@@ -925,13 +948,16 @@ console.log(reply);` : ''
             <div class="row-3">
               <div class="field">
                 <span class="field-label">Provider</span>
-                <select bind:value={editing.llm.provider}>
-                  {#if providers.length === 0}
+                <select bind:value={editing.llm.provider} on:change={onProviderChange}>
+                  {#if enabledProviders.length === 0}
                     <option value={editing.llm.provider}>{editing.llm.provider || 'ollama'}</option>
                   {:else}
-                    {#each providers as p}
+                    {#if editing.llm.provider && !enabledProviders.some(p => p.id === editing.llm.provider)}
+                      <option value={editing.llm.provider}>{editing.llm.provider} (disabled/unregistered)</option>
+                    {/if}
+                    {#each enabledProviders as p}
                       <option value={p.id}>
-                        {p.id}{p.registered ? '' : ' (not registered)'}
+                        {p.id}
                       </option>
                     {/each}
                   {/if}
@@ -1311,7 +1337,10 @@ console.log(reply);` : ''
                 <span>Provider</span>
                 <select bind:value={playProvider} disabled={!playUseOverrides}>
                   <option value="">unchanged</option>
-                  {#each providers as p}
+                  {#if playProvider && !enabledProviders.some(p => p.id === playProvider)}
+                    <option value={playProvider}>{playProvider} (disabled/unregistered)</option>
+                  {/if}
+                  {#each enabledProviders as p}
                     <option value={p.id}>{p.id}</option>
                   {/each}
                 </select>

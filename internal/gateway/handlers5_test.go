@@ -774,8 +774,8 @@ func TestGatewayHandleSetProviderCredentials_OllamaMessage(t *testing.T) {
 		t.Fatalf("ollama creds: %d body=%v", status, body)
 	}
 	msg, _ := body["message"].(string)
-	if !strings.Contains(msg, "Ollama") {
-		t.Fatalf("expected Ollama-specific message, got %q", msg)
+	if msg != "Saved." {
+		t.Fatalf("expected 'Saved.', got %q", msg)
 	}
 }
 
@@ -790,8 +790,8 @@ func TestGatewayHandleSetProviderCredentials_AnthropicMessage(t *testing.T) {
 		t.Fatalf("anthropic creds: %d body=%v", status, body)
 	}
 	msg, _ := body["message"].(string)
-	if !strings.Contains(strings.ToLower(msg), "restart") {
-		t.Fatalf("expected restart mention for anthropic message, got %q", msg)
+	if msg != "Saved." {
+		t.Fatalf("expected 'Saved.', got %q", msg)
 	}
 }
 
