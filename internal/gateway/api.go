@@ -30,12 +30,14 @@ import (
 	"github.com/soulacy/soulacy/internal/channels"
 	wawebchan "github.com/soulacy/soulacy/internal/channels/whatsappweb"
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/templates"
 	"github.com/soulacy/soulacy/internal/tier"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
+	"github.com/soulacy/soulacy/sdk/registry"
 )
 
 // handleHealth returns gateway status, version, and a snapshot of dependency
@@ -2554,12 +2556,68 @@ func (s *Server) handleSetProviderModel(c *fiber.Ctx) error {
 	pc.Model = req.Model
 	s.cfg.LLM.Providers[id] = pc
 
+	// Re-register the provider in s.llmRouter so it updates without a gateway restart
+	if s.llmRouter != nil {
+		m := providerCfgMap(pc)
+		m["id"] = id
+		p, ok, perr := registry.NewProvider(id, m)
+		if !ok {
+			if pc.BaseURL != "" {
+				p, _, perr = registry.NewProvider("openai", m)
+			}
+		}
+		if perr == nil && p != nil {
+			s.llmRouter.Register(p)
+			s.log.Info("provider model dynamically re-registered in llm router", zap.String("provider", id), zap.String("model", req.Model))
+		} else {
+			s.log.Warn("failed to dynamically re-register provider in llm router on model update", zap.String("provider", id), zap.Error(perr))
+		}
+	}
+
 	s.log.Info("provider model updated via API", zap.String("provider", id), zap.String("model", req.Model))
 	return c.JSON(fiber.Map{
 		"ok":      true,
 		"model":   req.Model,
-		"message": "Model saved. Restart the gateway for it to take effect for running agents.",
+		"message": "Model saved.",
 	})
+}
+
+func providerCfgMap(p config.ProviderConfig) map[string]any {
+	m := map[string]any{}
+	if p.BaseURL != "" {
+		m["base_url"] = p.BaseURL
+	}
+	if p.APIKey != "" {
+		m["api_key"] = p.APIKey
+	}
+	if p.Model != "" {
+		m["model"] = p.Model
+	}
+	if p.KeepAlive != "" {
+		m["keep_alive"] = p.KeepAlive
+	}
+	if p.Options != nil {
+		m["options"] = p.Options
+	}
+	if p.PromptCaching {
+		m["prompt_caching"] = true
+	}
+	if p.ExtendedThinking {
+		m["extended_thinking"] = true
+	}
+	if p.ThinkingBudget != 0 {
+		m["thinking_budget"] = p.ThinkingBudget
+	}
+	if p.SafetyLevel != "" {
+		m["safety_level"] = p.SafetyLevel
+	}
+	if p.Organization != "" {
+		m["organization"] = p.Organization
+	}
+	if p.ParallelToolCalls != nil {
+		m["parallel_tool_calls"] = p.ParallelToolCalls
+	}
+	return m
 }
 
 // handleSetProviderCredentials persists base_url / api_key for a provider into
@@ -2681,20 +2739,31 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	}
 	s.cfg.LLM.Providers[id] = pc
 
+	if s.llmRouter != nil {
+		m := providerCfgMap(pc)
+		m["id"] = id
+		p, ok, perr := registry.NewProvider(id, m)
+		if !ok {
+			if pc.BaseURL != "" {
+				p, _, perr = registry.NewProvider("openai", m)
+			}
+		}
+		if perr == nil && p != nil {
+			s.llmRouter.Register(p)
+			s.log.Info("provider dynamically registered in llm router", zap.String("provider", id))
+		} else {
+			s.log.Warn("failed to dynamically register provider in llm router", zap.String("provider", id), zap.Error(perr))
+		}
+	}
+
 	if id == "ollama" && req.APIKey != "" && req.APIKey != "***" && s.engine != nil {
 		s.engine.SetOllamaAPIKey(req.APIKey)
 	}
 
 	s.log.Info("provider credentials updated", zap.String("provider", id))
-	message := "Saved. Restart the gateway for the new provider to be registered."
-	if id == "ollama" {
-		message = "Saved. Ollama web-search credentials are active for new requests; restart to apply local model, base URL, or tuning changes."
-	} else if id == "anthropic" {
-		message = "Saved. Restart the gateway for changes to take effect."
-	}
 	return c.JSON(fiber.Map{
 		"ok":      true,
-		"message": message,
+		"message": "Saved.",
 	})
 }
 

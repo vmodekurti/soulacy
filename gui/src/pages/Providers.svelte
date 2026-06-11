@@ -160,7 +160,7 @@
       }
       const res = await api.providers.setCredentials(targetId, body)
       notice = res.message || 'Saved.'
-      restartNeeded = true
+      restartNeeded = false
       showAdd = false
       await load()
     } catch (e) {
@@ -240,7 +240,7 @@
       // reflect immediately
       providers = { ...providers, [providerId]: { ...providers[providerId], model } }
       notice = res.message || `Saved ${model} as the default model for ${providerId}.`
-      restartNeeded = true
+      restartNeeded = false
     } catch (e) {
       error = e.message
     } finally {
