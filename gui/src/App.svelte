@@ -81,11 +81,41 @@
     window.addEventListener('popstate', applyHash)
     window.addEventListener('hashchange', applyHash)
 
+    // Auth probe: hit an authenticated endpoint. apiFetch flips $authRequired
+    // true on 401/403 (→ login screen) and false on success (→ dashboard).
+    api.agents.list().then(() => { $authRequired = false }).catch(() => {})
+
     // Plugin GUI mounts (E8): populate the Plugins nav group.
     api.plugins.ui()
       .then((res) => { pluginPages = pluginNavEntries(res?.mounts) })
       .catch(() => { pluginPages = [] }) // older gateways: no route, no nav group
   })
+
+  // ── Login screen (shown full-screen while $authRequired) ──────────────────
+  let loginKey = ''
+  let loginError = ''
+  let loginChecking = false
+
+  async function submitLogin() {
+    const key = loginKey.trim()
+    if (!key || loginChecking) return
+    loginChecking = true
+    loginError = ''
+    const prev = $apiKey
+    $apiKey = key // apiFetch reads the key from this store
+    try {
+      await api.agents.list() // validate the key
+      $authRequired = false   // success → reveal the app
+      loginKey = ''
+    } catch (e) {
+      $apiKey = prev          // never persist a rejected key
+      loginError = (e && (e.status === 401 || e.status === 403))
+        ? 'That key was rejected. Double-check it and try again.'
+        : (e?.message || 'Could not reach the gateway. Is it running?')
+    } finally {
+      loginChecking = false
+    }
+  }
 
   function saveKey() {
     $apiKey = keyInput.trim()
@@ -98,6 +128,42 @@
     showKeyModal = true
   }
 </script>
+
+<!-- Full-screen login: intercepts the whole UI while authentication is required. -->
+{#if $authRequired}
+  <div class="login-screen">
+    <div class="login-aurora" aria-hidden="true"></div>
+    <form class="login-card" on:submit|preventDefault={submitLogin}>
+      <div class="login-brand">
+        <span class="login-glyph" aria-hidden="true">⬡</span>
+      </div>
+      <h1 class="login-title">Soulacy</h1>
+      <p class="login-sub">Enter your API key to continue.</p>
+
+      <input
+        class="login-input"
+        type="password"
+        autocomplete="current-password"
+        placeholder="sy_…"
+        bind:value={loginKey}
+        disabled={loginChecking}
+      />
+
+      {#if loginError}
+        <p class="login-error" role="alert">{loginError}</p>
+      {/if}
+
+      <button class="login-submit" type="submit" disabled={loginChecking || !loginKey.trim()}>
+        {loginChecking ? 'Verifying…' : 'Unlock'}
+      </button>
+
+      <p class="login-hint">
+        Find your key in <code>~/.soulacy/soulspace/config.yaml</code> (under
+        <code>server.api_key</code>) or the <code>SOULACY_API_KEY</code> env var.
+      </p>
+    </form>
+  </div>
+{/if}
 
 <!-- API Key modal -->
 {#if showKeyModal}
@@ -412,4 +478,68 @@
   .modal p  { color: #7b82a8; font-size: 0.85rem; line-height: 1.6; }
   .modal p code { background: #1c1f35; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.8rem; }
   .modal-row { display: flex; gap: 0.75rem; justify-content: flex-end; }
+
+  /* ── Login screen (glassmorphic) ──────────────────────────────────────── */
+  .login-screen {
+    position: fixed; inset: 0; z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    background: radial-gradient(1200px 800px at 50% -10%, hsl(248 60% 16%), hsl(240 40% 6%) 60%);
+    overflow: hidden;
+  }
+  .login-aurora {
+    position: absolute; inset: -20%;
+    background:
+      radial-gradient(40% 40% at 20% 30%, hsla(258, 90%, 60%, 0.35), transparent 70%),
+      radial-gradient(35% 35% at 80% 25%, hsla(190, 90%, 55%, 0.25), transparent 70%),
+      radial-gradient(45% 45% at 60% 90%, hsla(280, 90%, 60%, 0.22), transparent 70%);
+    filter: blur(40px);
+    animation: login-drift 18s ease-in-out infinite alternate;
+  }
+  @keyframes login-drift {
+    from { transform: translate3d(-3%, -2%, 0) scale(1); }
+    to   { transform: translate3d(3%, 2%, 0) scale(1.08); }
+  }
+  .login-card {
+    position: relative; z-index: 1;
+    width: min(380px, 92vw);
+    padding: 2.4rem 2rem 1.8rem;
+    display: flex; flex-direction: column; align-items: center; gap: 0.5rem;
+    background: hsla(240, 30%, 16%, 0.55);
+    border: 1px solid hsla(255, 40%, 70%, 0.18);
+    border-radius: 20px;
+    backdrop-filter: blur(22px) saturate(140%);
+    -webkit-backdrop-filter: blur(22px) saturate(140%);
+    box-shadow: 0 24px 80px hsla(248, 60%, 4%, 0.6), inset 0 1px 0 hsla(0,0%,100%,0.06);
+  }
+  .login-glyph {
+    font-size: 2.6rem;
+    color: hsl(252, 90%, 72%);
+    filter: drop-shadow(0 0 16px hsla(252, 90%, 65%, 0.7));
+    animation: login-pulse 3.2s ease-in-out infinite;
+  }
+  @keyframes login-pulse {
+    0%,100% { filter: drop-shadow(0 0 12px hsla(252,90%,65%,0.5)); }
+    50%     { filter: drop-shadow(0 0 26px hsla(252,90%,70%,0.95)); }
+  }
+  .login-title { font-size: 1.5rem; font-weight: 700; letter-spacing: 0.06em; color: hsl(0,0%,98%); margin-top: 0.2rem; }
+  .login-sub { font-size: 0.85rem; color: hsl(240, 15%, 72%); margin-bottom: 0.6rem; }
+  .login-input {
+    width: 100%; text-align: center; letter-spacing: 0.04em;
+    padding: 0.7rem 0.9rem; font-size: 0.95rem;
+    background: hsla(240, 30%, 10%, 0.6);
+    border: 1px solid hsla(255, 40%, 70%, 0.2);
+    border-radius: 10px; color: hsl(0,0%,96%);
+  }
+  .login-input:focus { outline: none; border-color: hsl(252, 90%, 68%); box-shadow: 0 0 0 3px hsla(252,90%,65%,0.25); }
+  .login-error { font-size: 0.8rem; color: hsl(352, 90%, 72%); margin: 0.1rem 0; text-align: center; }
+  .login-submit {
+    width: 100%; margin-top: 0.5rem; padding: 0.7rem 1rem;
+    font-size: 0.95rem; font-weight: 600; color: #fff; border: none; border-radius: 10px; cursor: pointer;
+    background: linear-gradient(135deg, hsl(252, 85%, 62%), hsl(280, 80%, 60%));
+    box-shadow: 0 8px 24px hsla(258, 80%, 50%, 0.4);
+  }
+  .login-submit:hover:not(:disabled) { filter: brightness(1.08); }
+  .login-submit:disabled { opacity: 0.55; cursor: not-allowed; }
+  .login-hint { margin-top: 0.8rem; font-size: 0.72rem; line-height: 1.5; color: hsl(240, 12%, 60%); text-align: center; }
+  .login-hint code { background: hsla(240, 30%, 12%, 0.7); padding: 0.05rem 0.3rem; border-radius: 4px; font-size: 0.7rem; }
 </style>

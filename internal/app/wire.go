@@ -113,14 +113,41 @@ func (a *App) Run(parent context.Context) error {
 	if toolTimeout == 0 {
 		toolTimeout = 30 * time.Second
 	}
-	// Ollama Web Search API key for the built-in web_search tool: env var first,
-	// then llm.providers.ollama.api_key from config.
-	ollamaAPIKey := os.Getenv("OLLAMA_API_KEY")
-	if ollamaAPIKey == "" {
-		if oc, ok := cfg.LLM.Providers["ollama"]; ok {
-			ollamaAPIKey = oc.APIKey
+	// Web Search configuration: Ollama, Tavily, Serper.
+	searchProvider := cfg.Search.Provider
+	if searchProvider == "" {
+		searchProvider = "ollama"
+	}
+	searchAPIKey := cfg.Search.APIKey
+	if searchAPIKey == "" {
+		switch searchProvider {
+		case "ollama":
+			searchAPIKey = os.Getenv("OLLAMA_API_KEY")
+			if searchAPIKey == "" {
+				if oc, ok := cfg.LLM.Providers["ollama"]; ok {
+					searchAPIKey = oc.APIKey
+				}
+			}
+		case "tavily":
+			searchAPIKey = os.Getenv("TAVILY_API_KEY")
+		case "serper":
+			searchAPIKey = os.Getenv("SERPER_API_KEY")
 		}
 	}
+
+	// Legacy fallback for compatibility
+	ollamaAPIKey := ""
+	if searchProvider == "ollama" {
+		ollamaAPIKey = searchAPIKey
+	} else {
+		ollamaAPIKey = os.Getenv("OLLAMA_API_KEY")
+		if ollamaAPIKey == "" {
+			if oc, ok := cfg.LLM.Providers["ollama"]; ok {
+				ollamaAPIKey = oc.APIKey
+			}
+		}
+	}
+
 
 	// ── MCP client (connects to configured MCP servers; tools auto-injected into every agent) ──
 	mcpServers := make(map[string]mcp.ServerConfig, len(cfg.MCP.Servers))
@@ -206,6 +233,8 @@ func (a *App) Run(parent context.Context) error {
 		pyExecutor:     pyExecutor,
 		brainStore:     brainStore,
 		ollamaAPIKey:   ollamaAPIKey,
+		searchProvider: searchProvider,
+		searchAPIKey:   searchAPIKey,
 		toolTimeout:    toolTimeout,
 	})
 
