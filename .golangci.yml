@@ -32,6 +32,14 @@ linters:
       - linters:
           - errcheck
         path: _test\.go
+      - path: 'internal/audit/audit\.go'
+        linters:
+          - unused
+        text: "mu is unused"
+      - path: 'internal/plugins/loader\.go'
+        linters:
+          - unused
+        text: "resolveToolHandler is unused"
     paths:
       - third_party$
       - builtin$
@@ -39,15 +47,6 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
-  exclude-rules:
-    - path: 'internal/audit/audit\.go'
-      linters:
-        - unused
-      text: "mu is unused"
-    - path: 'internal/plugins/loader\.go'
-      linters:
-        - unused
-      text: "resolveToolHandler is unused"
 formatters:
   exclusions:
     generated: lax
