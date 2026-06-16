@@ -51,6 +51,15 @@ type Scheduler struct {
 	stateMu   sync.Mutex
 	statePath string
 	state     scheduleState
+
+	// failMu guards failCounts. consecutiveFailLimit is the number of back-to-back
+	// failed fires after which a cron agent is auto-disabled (Story 2 / S7.2) so a
+	// permanently-broken agent (bad model, dead provider) stops firing on a loop
+	// nobody is watching. A successful run resets the counter. <=0 disables the
+	// feature.
+	failMu               sync.Mutex
+	failCounts           map[string]int
+	consecutiveFailLimit int
 }
 
 type scheduleState struct {
@@ -75,16 +84,61 @@ func New(engine *runtime.Engine, loader *runtime.Loader, log *zap.Logger, appCtx
 		appCtx = context.Background()
 	}
 	return &Scheduler{
-		cron:    cron.New(cron.WithParser(cronParser)),
-		engine:  engine,
-		loader:  loader,
-		log:     log,
-		appCtx:  appCtx,
-		entries: make(map[string]cron.EntryID),
-		oneshot: make(map[string]context.CancelFunc),
-		running: make(map[string]time.Time),
-		state:   scheduleState{LastCompleted: make(map[string]time.Time)},
+		cron:                 cron.New(cron.WithParser(cronParser)),
+		engine:               engine,
+		loader:               loader,
+		log:                  log,
+		appCtx:               appCtx,
+		entries:              make(map[string]cron.EntryID),
+		oneshot:              make(map[string]context.CancelFunc),
+		running:              make(map[string]time.Time),
+		state:                scheduleState{LastCompleted: make(map[string]time.Time)},
+		failCounts:           make(map[string]int),
+		consecutiveFailLimit: 10, // default; override with SetConsecutiveFailLimit
 	}
+}
+
+// SetConsecutiveFailLimit configures how many back-to-back failed cron fires
+// trigger an auto-disable. n<=0 turns the feature off. (Story 2 / S7.2)
+func (s *Scheduler) SetConsecutiveFailLimit(n int) {
+	s.failMu.Lock()
+	defer s.failMu.Unlock()
+	s.consecutiveFailLimit = n
+}
+
+// recordFireResult updates the consecutive-failure counter for a cron agent and
+// auto-disables it once the limit is reached. Returns true if the agent was
+// just disabled. A successful run (ok=true) resets the counter.
+func (s *Scheduler) recordFireResult(agentID string, ok bool) bool {
+	s.failMu.Lock()
+	limit := s.consecutiveFailLimit
+	if ok {
+		delete(s.failCounts, agentID)
+		s.failMu.Unlock()
+		return false
+	}
+	s.failCounts[agentID]++
+	count := s.failCounts[agentID]
+	s.failMu.Unlock()
+
+	if limit <= 0 || count < limit {
+		return false
+	}
+	// Quarantine the agent: stop it firing and disable it in memory so a fixed
+	// SOUL.yaml (saved later) re-enables it via the normal reload path.
+	s.DeregisterAgent(agentID)
+	disabled := false
+	if s.loader != nil {
+		disabled = s.loader.SetEnabledInMemory(agentID, false)
+	}
+	s.failMu.Lock()
+	delete(s.failCounts, agentID)
+	s.failMu.Unlock()
+	s.log.Error("cron agent auto-disabled after consecutive failures — fix its config and re-enable",
+		zap.String("agent", agentID),
+		zap.Int("consecutive_failures", count),
+		zap.Bool("disabled", disabled))
+	return true
 }
 
 // SetStatePath enables durable scheduler bookkeeping. The scheduler uses this
@@ -323,6 +377,7 @@ func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
 	runStart := time.Now()
 	reply, err := s.engine.Handle(ctx, msg)
 	elapsed := time.Since(runStart).Round(time.Millisecond)
+	isCron := triggerType == "cron" || triggerType == "cron_missed_startup"
 	if err != nil {
 		s.log.Error("scheduled agent execution failed",
 			zap.String("agent", agentID),
@@ -330,9 +385,15 @@ func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
 			zap.Duration("elapsed", elapsed),
 			zap.Error(err),
 		)
+		if isCron {
+			// Track consecutive failures; auto-disable a chronically-failing
+			// cron agent so it stops firing on a loop nobody is watching.
+			s.recordFireResult(agentID, false)
+		}
 		return
 	}
-	if triggerType == "cron" || triggerType == "cron_missed_startup" {
+	if isCron {
+		s.recordFireResult(agentID, true) // success resets the failure streak
 		s.markScheduleCompleted(agentID, scheduledAt)
 	}
 	replyText := ""
