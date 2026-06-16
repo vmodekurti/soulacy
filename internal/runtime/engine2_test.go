@@ -381,7 +381,7 @@ func newMinimalEngine(t *testing.T) *Engine {
 		t.Fatalf("memory store: %v", err)
 	}
 	router := llm.NewRouter("test")
-	return NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	return NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 }
 
 func TestBuildSystemPrefix_EmptyCatalogs(t *testing.T) {
@@ -440,7 +440,7 @@ func TestBuildSystemPrefix_WithPeerAgents(t *testing.T) {
 		t.Fatalf("memory store: %v", err)
 	}
 	router := llm.NewRouter("test")
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	def := &agent.Definition{
 		ID:           "writer",
@@ -717,7 +717,7 @@ func TestRunTool_AgentToolPrefix_UnauthorizedPeer(t *testing.T) {
 
 	mem, _ := memory.NewFileStore(t.TempDir())
 	router := llm.NewRouter("test")
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	_, err := e.runTool(context.Background(), callerDef, "sess-unauth", message.ToolCall{
 		ID:        "call-u",
@@ -767,7 +767,7 @@ func TestRunTool_AgentToolPrefix_DelegatesViaPeer(t *testing.T) {
 	router.Register(provider)
 
 	mem, _ := memory.NewFileStore(t.TempDir())
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	// Call the peer directly via runTool
 	result, err := e.runTool(context.Background(), callerDef, "sess-rt", message.ToolCall{
@@ -784,11 +784,11 @@ func TestRunTool_AgentToolPrefix_DelegatesViaPeer(t *testing.T) {
 }
 
 // TestRunTool_SystemTool_RequiresDoubleOptIn ensures that system tools (like
-// shell_exec) are NOT dispatched when either allowSystemTools or
+// shell_exec) are NOT dispatched when either allowSystemAgents or
 // def.SystemTools is false.
 func TestRunTool_SystemTool_NotAvailableWithoutBothOptIns(t *testing.T) {
 	e := newMinimalEngine(t)
-	e.allowSystemTools = false // global off
+	e.allowSystemAgents = nil // global off
 	e.builtins = e.buildBuiltins()
 
 	def := &agent.Definition{
@@ -804,15 +804,15 @@ func TestRunTool_SystemTool_NotAvailableWithoutBothOptIns(t *testing.T) {
 		},
 	})
 	// Should fail because shell_exec is not in builtins and
-	// allowSystemTools is false, so system tools block is skipped.
+	// allowSystemAgents is nil, so system tools block is skipped.
 	if err == nil {
-		t.Fatal("expected error when global allowSystemTools=false, got nil")
+		t.Fatal("expected error when global allowSystemAgents is nil, got nil")
 	}
 }
 
 func TestRunTool_SystemTool_AgentOptOutBlocks(t *testing.T) {
 	e := newMinimalEngine(t)
-	e.allowSystemTools = true // global on
+	e.allowSystemAgents = []string{"*"} // global on
 	e.builtins = e.buildBuiltins()
 
 	def := &agent.Definition{

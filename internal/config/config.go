@@ -220,17 +220,17 @@ type RuntimeConfig struct {
 	// (PRODUCTION_AUDIT → F1, 2026-05-27)
 	Sandbox SandboxConfig `mapstructure:"sandbox"`
 
-	// AllowSystemTools is the SERVER-LEVEL permit for the destructive OS-level
+	// AllowSystemAgents is the SERVER-LEVEL permit for the destructive OS-level
 	// "system" built-ins (shell_exec, run_script, install_library, write_file,
-	// download_file). SEC-3: this now defaults to FALSE — a breaking change.
-	// Even when true, an agent only receives system tools if it ALSO declares
+	// download_file). This now defaults to ["*"] to rely on the agent-level opt-in.
+	// Even when an agent is listed here, it only receives system tools if it ALSO declares
 	// the "system" capability (capabilities: [system] in SOUL.yaml). The two
 	// gates are independent: the server permits, the agent opts in.
 	//
 	// NOTE: the read-only "safe" built-ins (read_file, list_dir, find_files,
 	// http_request, fetch_url, env_get, sys_info) are NOT governed by this flag
 	// — they are always available, see Engine.buildSystemTools / safeSystemTools.
-	AllowSystemTools bool `mapstructure:"allow_system_tools"`
+	AllowSystemAgents []string `mapstructure:"allow_system_agents"`
 
 	// SSRFProtection, when true, blocks HTTP tools (fetch_url, http_request,
 	// download_file) from reaching private RFC-1918 address ranges and the
@@ -547,10 +547,10 @@ func Load(cfgPath string) (*Config, string, error) {
 	// agent declared a per-tool override. 120s is the new sane floor;
 	// per-tool override at `tools[i].timeout` still applies.
 	v.SetDefault("runtime.tool_timeout", "120s")
-	// SEC-3: default OFF. Destructive system tools (shell_exec, run_script,
+	// SEC-3: default to ["*"]. Destructive system tools (shell_exec, run_script,
 	// write_file, …) now require BOTH this server permit AND a per-agent
 	// `capabilities: [system]` declaration. Breaking change — see CHANGELOG.
-	v.SetDefault("runtime.allow_system_tools", false)
+	v.SetDefault("runtime.allow_system_agents", []string{"*"})
 	v.SetDefault("runtime.ssrf_protection", false)
 	v.SetDefault("runtime.session_ttl", "24h")
 	v.SetDefault("runtime.max_sessions", 10000)

@@ -11,6 +11,7 @@ type ConfirmRequest struct {
 	CallID string         `json:"call_id"`
 	Tool   string         `json:"tool"`
 	Args   map[string]any `json:"args"`
+	Reason string         `json:"reason,omitempty"`
 }
 
 // ConfirmSenderFunc is called by the engine when a tool requires confirmation.

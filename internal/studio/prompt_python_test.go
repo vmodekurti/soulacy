@@ -13,7 +13,7 @@ func TestBuildPrompt_DocumentsPythonNode(t *testing.T) {
 	for _, want := range []string{
 		"python", "code", "def run(inputs):", "kind=python",
 		// Real-instruction guidance (nodes must carry queries/prompts/code).
-		"REAL instruction", "COMPLETE, runnable code", "tool's arguments",
+		"REAL instruction", "COMPLETE, robust, runnable code", "tool's arguments",
 		"Do NOT invent", "toJson",
 	} {
 		if !strings.Contains(p, want) {

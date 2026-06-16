@@ -106,7 +106,7 @@ func newReasoningEngine(t *testing.T, def *agent.Definition, backend reasoning.L
 	router := llm.NewRouter("classic-prov")
 	router.Register(&plainTextProvider{content: "CLASSIC PATH ANSWER"})
 	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), sink,
-		nil, "", nil, nil, false, nil, nil)
+		nil, "", nil, nil, nil, nil, nil)
 	if backend != nil {
 		e.SetReasoningBackendFactory(func(*agent.Definition) reasoning.LLMBackend { return backend })
 	}

@@ -22,17 +22,16 @@ export const authRequired = writable(false)
 export const activityAgent = writable('')
 
 // Chat page — persisted across navigation so in-flight requests survive unmount.
+// chatThreads is keyed by a UI thread id. Each thread owns its agent, runtime
+// session, visible messages, branch state, and per-session metrics baseline.
+export const chatActiveThreadId = writable('')
+export const chatThreads = writable({})
+
+// Legacy single-chat stores kept for older code/tests that import them.
 export const chatAgentId  = writable('')
 export const chatMessages = writable([])
 export const chatSending  = writable(false)
 export const chatSessionId = writable(`gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`)
-
-// Chat branching (Story 8). chatBranches: [{sessionId, label}] — empty until
-// the first fork; chatBranchMessages: sessionId → message[] snapshots for
-// inactive branches so switching is instant and branches never mix.
 export const chatBranches = writable([])
 export const chatBranchMessages = writable({})
-
-// Per-session metrics snapshots (Story 9): sessionId → last-seen cumulative
-// session metrics, used to compute per-reply token/cost deltas.
 export const chatMetricsBaseline = writable({})

@@ -93,11 +93,11 @@ func TestLoadNoConfigFileUsesDefaults(t *testing.T) {
 	if cfg.Runtime.ToolTimeout != "120s" {
 		t.Errorf("runtime.tool_timeout = %q, want 120s", cfg.Runtime.ToolTimeout)
 	}
-	// SEC-3: allow_system_tools now defaults to FALSE (was true). Destructive
+	// SEC-3: allow_system_agents now defaults to ["system"] (was true). Destructive
 	// system tools require BOTH the server permit and a per-agent `system`
 	// capability before they are offered.
-	if cfg.Runtime.AllowSystemTools {
-		t.Error("runtime.allow_system_tools should default to false (SEC-3)")
+	if len(cfg.Runtime.AllowSystemAgents) != 1 || cfg.Runtime.AllowSystemAgents[0] != "*" {
+		t.Errorf("runtime.allow_system_agents should default to [\"*\"], got %v", cfg.Runtime.AllowSystemAgents)
 	}
 	if cfg.Runtime.SSRFProtection {
 		t.Error("runtime.ssrf_protection should default to false")

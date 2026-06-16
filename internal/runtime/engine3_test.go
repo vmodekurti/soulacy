@@ -111,7 +111,7 @@ func TestHandleWorkflowPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	// Register the echo_tool as a builtin so the workflow step can find it.
 	e.builtins = []BuiltinTool{{
@@ -564,7 +564,7 @@ func TestAgentCatalogFor_ContainsPeerInfo(t *testing.T) {
 		t.Fatalf("memory store: %v", err)
 	}
 	router := llm.NewRouter("test")
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	def := &agent.Definition{
 		ID:     "caller",
@@ -650,32 +650,33 @@ func TestRunToolPublic_EmptyArgs(t *testing.T) {
 // read_file, etc.) even though they are not in e.builtins directly.
 func TestBuiltins_IncludesSystemToolsInCatalog(t *testing.T) {
 	e := newMinimalEngine(t)
-	e.allowSystemTools = true
+	e.allowSystemAgents = []string{"*"}
+	e.allowSystemAgents = []string{"*"}
 	e.builtins = e.buildBuiltins()
 
 	catalog := e.Builtins()
 	names := builtinNameSet(catalog)
 
 	if !names["shell_exec"] {
-		t.Error("Builtins() should include shell_exec when allowSystemTools=true")
+		t.Error("Builtins() should include shell_exec when allowSystemAgents is set")
 	}
 	if !names["read_file"] {
-		t.Error("Builtins() should include read_file when allowSystemTools=true")
+		t.Error("Builtins() should include read_file when allowSystemAgents is set")
 	}
 }
 
 // TestBuiltins_ExcludesSystemToolsInCatalogWhenDisabled verifies the inverse:
-// when allowSystemTools is false, system tools do NOT appear in the catalog.
+// when allowSystemAgents is empty, system tools do NOT appear in the catalog.
 func TestBuiltins_ExcludesSystemToolsInCatalogWhenDisabled(t *testing.T) {
 	e := newMinimalEngine(t)
-	e.allowSystemTools = false
+	e.allowSystemAgents = nil
 	e.builtins = e.buildBuiltins()
 
 	catalog := e.Builtins()
 	names := builtinNameSet(catalog)
 
 	if names["shell_exec"] {
-		t.Error("Builtins() should NOT include shell_exec when allowSystemTools=false")
+		t.Error("Builtins() should NOT include shell_exec when allowSystemAgents is empty")
 	}
 }
 
@@ -764,7 +765,7 @@ func TestHandle_LLMErrorPropagated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	_, err = e.Handle(context.Background(), testUserMessage("err-llm-agent", "sess-llm-err", "fail please"))
 	if err == nil {
@@ -854,7 +855,7 @@ func TestHandle_AutoDelegate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	reply, err := e.Handle(context.Background(), testUserMessage("auto-caller", "sess-auto", "hello peer"))
 	if err != nil {
@@ -932,7 +933,7 @@ func TestHandle_WorkflowError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 	e.builtins = nil // ensure no tools are available
 
 	_, err = e.Handle(context.Background(), testUserMessage("wf-error-agent", "sess-wf-err", "go"))

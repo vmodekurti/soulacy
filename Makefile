@@ -3,11 +3,11 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui install clean test lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui install test lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 \
-        service-install service-uninstall help
+        service-install service-uninstall deploy help
 
 ## Full build: unified GUI (Studio is built in as a first-class route), then
 ## Go binaries. ARCH-6 folded the Studio visual builder into the core GUI, so
@@ -39,7 +39,7 @@ build-cli:
 	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/$(BINARY_CLI) ./cmd/sy
 
 ## Install both binaries to /usr/local/bin
-install: build
+install: all
 	@echo "→ Installing to /usr/local/bin..."
 	cp bin/$(BINARY_GATEWAY) /usr/local/bin/$(BINARY_GATEWAY)
 	cp bin/$(BINARY_CLI) /usr/local/bin/$(BINARY_CLI)
@@ -116,16 +116,23 @@ docker-push:
 # ──────────────────────────────────────────────────────────────────────────────
 
 OS := $(shell uname -s)
+REAL_USER := $(if $(SUDO_USER),$(SUDO_USER),$(USER))
+REAL_UID  := $(shell id -u $(REAL_USER))
+REAL_HOME := $(if $(SUDO_USER),$(shell bash -c "eval echo ~$(SUDO_USER)"),$(HOME))
+LAUNCHCTL := $(if $(SUDO_USER),sudo -u $(SUDO_USER) launchctl,launchctl)
+SUDO_CMD  := $(if $(SUDO_USER),sudo -u $(SUDO_USER) ,)
 
 ## Install soulacy as a system service (starts on login/boot)
 service-install: install
 ifeq ($(OS),Darwin)
 	@echo "→ Installing Mac LaunchAgent..."
-	@mkdir -p ~/Library/LaunchAgents
+	@$(SUDO_CMD)mkdir -p $(REAL_HOME)/Library/LaunchAgents
 	@sed "s|__INSTALL_DIR__|/usr/local/bin|g" scripts/com.soulacy.gateway.plist \
-	    > ~/Library/LaunchAgents/com.soulacy.soulacy.plist
-	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || \
-	launchctl load -w ~/Library/LaunchAgents/com.soulacy.soulacy.plist
+	    > /tmp/com.soulacy.soulacy.plist
+	@$(SUDO_CMD)cp /tmp/com.soulacy.soulacy.plist $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
+	@rm -f /tmp/com.soulacy.soulacy.plist
+	$(LAUNCHCTL) bootstrap gui/$(REAL_UID) $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || \
+	$(LAUNCHCTL) load -w $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
 	@echo "✓ Soulacy LaunchAgent installed — starts automatically on login"
 else
 	@echo "→ Installing systemd service..."
@@ -139,14 +146,27 @@ endif
 ## Remove soulacy system service
 service-uninstall:
 ifeq ($(OS),Darwin)
-	launchctl unload ~/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || true
-	rm -f ~/Library/LaunchAgents/com.soulacy.soulacy.plist
+	$(LAUNCHCTL) unload $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || true
+	$(SUDO_CMD)rm -f $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
 	@echo "✓ LaunchAgent removed"
 else
 	sudo systemctl disable --now soulacy 2>/dev/null || true
 	sudo rm -f /etc/systemd/system/soulacy.service
 	sudo systemctl daemon-reload
 	@echo "✓ systemd service removed"
+endif
+
+## Build, install, and restart the gateway service
+deploy: install
+ifeq ($(OS),Darwin)
+	@echo "→ Restarting Mac LaunchAgent..."
+	$(LAUNCHCTL) unload $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || true
+	$(LAUNCHCTL) load -w $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
+	@echo "✓ Gateway service restarted"
+else
+	@echo "→ Restarting systemd service..."
+	sudo systemctl restart soulacy
+	@echo "✓ Gateway service restarted"
 endif
 
 # ──────────────────────────────────────────────────────────────────────────────

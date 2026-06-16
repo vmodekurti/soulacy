@@ -687,7 +687,7 @@ func TestHandle_EmitsMessageInAndOut(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), sink, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), sink, nil, "", nil, nil, nil, nil, nil)
 
 	_, err = e.Handle(context.Background(), testUserMessage("emit-bot-e6", "sess-emit-e6", "hello"))
 	if err != nil {

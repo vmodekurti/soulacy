@@ -32,6 +32,12 @@
   let keyInput = ''
   let sidebarOpen = false   // mobile drawer state (≤768px)
 
+  // Gateway restart (main-menu action): confirm modal + a blocking overlay
+  // that polls /health until the replacement process answers, then reloads.
+  let showRestartModal = false
+  let restarting = false
+  let restartError = ''
+
   const pages = [
     { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'    },
     { id: 'builder',   icon: '✦', label: 'Build',       group: 'main'    },
@@ -62,6 +68,48 @@
     page = p
     sidebarOpen = false
     history.pushState({}, '', '#' + p)
+  }
+
+  function openRestartModal() {
+    restartError = ''
+    showRestartModal = true
+    sidebarOpen = false
+  }
+
+  async function restartGateway() {
+    if (restarting) return
+    restarting = true
+    restartError = ''
+    try {
+      await api.admin.restart()
+    } catch (e) {
+      // The server exits ~250ms after responding, so the fetch itself may
+      // fail with a network error even though the restart was accepted.
+      // Only a real auth/permission error should stop us.
+      if (e?.status === 401 || e?.status === 403) {
+        restarting = false
+        showRestartModal = false
+        restartError = 'You are not authorized to restart the gateway.'
+        return
+      }
+    }
+    showRestartModal = false
+    waitForGatewayBack()
+  }
+
+  // Poll /health until the re-exec'd gateway answers, then hard-reload the
+  // SPA so every store/stream reconnects to the fresh process.
+  async function waitForGatewayBack() {
+    for (let i = 0; i < 60; i++) {
+      await new Promise((r) => setTimeout(r, 1000))
+      try {
+        await api.health()
+        location.reload()
+        return
+      } catch (_) { /* not back yet — keep polling */ }
+    }
+    restarting = false
+    restartError = 'The gateway did not come back within 60s — check the server logs.'
   }
 
   onMount(() => {
@@ -166,6 +214,52 @@
 {/if}
 
 <!-- API Key modal -->
+{#if showRestartModal}
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close restart dialog"
+    on:click|self={() => showRestartModal = false}
+    on:keydown={(e) => e.key === 'Escape' && (showRestartModal = false)}
+  >
+    <div class="modal">
+      <h2>Restart Gateway</h2>
+      <p>This stops the running gateway and starts a fresh process. In-flight
+         requests are dropped and the UI reconnects automatically once it's back
+         (usually a few seconds).</p>
+      <div class="modal-row">
+        <button class="btn-secondary" on:click={() => showRestartModal = false}>Cancel</button>
+        <button class="btn-danger" on:click={restartGateway}>Restart</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if restarting}
+  <div class="restart-overlay" aria-live="polite">
+    <div class="restart-card">
+      <span class="restart-spinner" aria-hidden="true">⟳</span>
+      <p>Restarting gateway…</p>
+      <small>Reconnecting as soon as the new process answers.</small>
+    </div>
+  </div>
+{/if}
+
+{#if restartError}
+  <div class="modal-bg" role="button" tabindex="0" aria-label="Dismiss error"
+       on:click|self={() => restartError = ''}
+       on:keydown={(e) => e.key === 'Escape' && (restartError = '')}>
+    <div class="modal">
+      <h2>Restart</h2>
+      <p>{restartError}</p>
+      <div class="modal-row">
+        <button class="btn-primary" on:click={() => restartError = ''}>OK</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if showKeyModal}
   <div
     class="modal-bg"
@@ -224,6 +318,13 @@
             <span class="nav-label">{p.label}</span>
           </button>
         {/each}
+        {#if group === 'system'}
+          <button class="nav-item nav-action" on:click={openRestartModal}
+                  title="Restart the gateway server">
+            <span class="nav-icon">⟳</span>
+            <span class="nav-label">Restart Gateway</span>
+          </button>
+        {/if}
       {/each}
       {#if pluginPages.length > 0}
         <div class="nav-divider"></div>
@@ -303,6 +404,7 @@
     {/if}
   </main>
 </div>
+
 
 <style>
   /* ── Reset & globals ────────────────────────────────────────────── */
@@ -443,6 +545,31 @@
   .nav-item:hover  { background: #181b30; color: #c8cadf; }
   .nav-item.active { background: rgba(108, 99, 255, 0.12); color: #8b85ff; }
   .nav-icon { font-size: 0.95rem; width: 1.1rem; text-align: center; }
+
+  /* Action item (not a page): restart the gateway. */
+  .nav-action { color: #d98a8a; }
+  .nav-action:hover { background: rgba(127, 32, 32, 0.18); color: #ff9d9d; }
+
+  /* Blocking overlay shown while the gateway re-execs. */
+  .restart-overlay {
+    position: fixed; inset: 0; z-index: 1000;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(8, 10, 20, 0.82);
+    backdrop-filter: blur(3px);
+  }
+  .restart-card {
+    text-align: center; color: #e8eaf6;
+    background: #14172a; border: 1px solid #2a2f4a;
+    border-radius: 12px; padding: 1.75rem 2.25rem;
+    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  }
+  .restart-card p { margin: 0.6rem 0 0.25rem; font-weight: 500; }
+  .restart-card small { color: #8b8fa8; }
+  .restart-spinner {
+    display: inline-block; font-size: 1.8rem; color: #8b85ff;
+    animation: restart-spin 1s linear infinite;
+  }
+  @keyframes restart-spin { to { transform: rotate(360deg); } }
 
   .sidebar-footer {
     display: flex; align-items: center; justify-content: space-between;

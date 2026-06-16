@@ -913,7 +913,7 @@ func TestProviderIsOllama_EmptyProviderFallsBackToRouter(t *testing.T) {
 	}
 	// Router configured with ollama as default.
 	router := llm.NewRouter("ollama")
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	def := &agent.Definition{LLM: agent.LLMConfig{Provider: ""}} // empty → falls back to router default
 	// providerIsOllama resolves against the router's default provider.

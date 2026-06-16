@@ -243,6 +243,24 @@ func TestLoopConfigFromDefinition_PlanExecuteStrategy(t *testing.T) {
 	}
 }
 
+func TestLoopConfigFromDefinition_EnforceSystemReact(t *testing.T) {
+	def := &agent.Definition{
+		Reasoning: agent.ReasoningConfig{
+			Strategy: "plan_execute",
+		},
+		Capabilities: []string{"system"},
+	}
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	// The config builder must aggressively override plan_execute to react
+	// because plan_execute cannot pass arguments to OS-level parameterized tools.
+	if cfg.Strategy != reasoning.StrategyReAct {
+		t.Errorf("expected strategy to be overridden to react for system agent, got %q", cfg.Strategy)
+	}
+}
+
 func TestLoopConfigFromDefinition_DefaultValues(t *testing.T) {
 	// When MaxSteps/MaxPlanSteps/StepTimeout/TotalTimeout are all zero, defaults apply.
 	def := &agent.Definition{

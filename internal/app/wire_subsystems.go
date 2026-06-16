@@ -222,7 +222,6 @@ func (a *App) wireLoaders(ws config.Paths) (*runtime.Loader, *plugins.Loader, *s
 		}
 	}
 	log.Info("agents loaded", zap.Int("count", len(loader.All())))
-
 	// SEC-3: report which agents have the privileged "system" capability so an
 	// operator can audit OS-level access at a glance. System tools (shell_exec,
 	// run_script, write_file, …) require BOTH this server permit and a per-agent
@@ -234,8 +233,8 @@ func (a *App) wireLoaders(ws config.Paths) (*runtime.Loader, *plugins.Loader, *s
 				systemAgents = append(systemAgents, def.ID)
 			}
 		}
-		if !a.cfg.Runtime.AllowSystemTools {
-			log.Info("system tools disabled server-wide (runtime.allow_system_tools=false); "+
+		if len(a.cfg.Runtime.AllowSystemAgents) == 0 {
+			log.Info("system tools disabled server-wide (runtime.allow_system_agents is empty); "+
 				"destructive OS-level built-ins will not be offered to any agent",
 				zap.Int("agents_requesting_system", len(systemAgents)),
 				zap.Strings("agents_requesting_system_ids", systemAgents))
@@ -243,7 +242,8 @@ func (a *App) wireLoaders(ws config.Paths) (*runtime.Loader, *plugins.Loader, *s
 			log.Info("system tools permitted but no agent declares the 'system' capability")
 		} else {
 			log.Warn("system tools ENABLED for agents (capabilities: [system])",
-				zap.Strings("agents", systemAgents))
+				zap.Strings("agents_requesting_system_ids", systemAgents),
+				zap.Strings("server_allowlist", a.cfg.Runtime.AllowSystemAgents))
 		}
 	}
 
@@ -785,7 +785,7 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 	engine := runtime.NewEngine(
 		d.loader, d.llmRouter, d.fileStore, d.memBackend,
 		cfg.Runtime.PythonBin, d.toolTimeout, log, d.hub, d.skillLoader, d.ollamaAPIKey, d.mcpClient, d.knowledgeSvc,
-		cfg.Runtime.AllowSystemTools, d.vectorStore, d.pluginProvider,
+		cfg.Runtime.AllowSystemAgents, d.vectorStore, d.pluginProvider,
 	)
 	engine.SetSearchConfig(d.searchProvider, d.searchAPIKey)
 	engine.SetExecutor(d.pyExecutor)

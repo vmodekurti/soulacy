@@ -34,6 +34,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // SoulspaceDirName is the workspace directory created for new installations.
@@ -148,6 +149,55 @@ func hasLegacyContent(dir string) bool {
 	return false
 }
 
+// pointerFileName records a workspace location chosen at first-run setup. It
+// always lives at the fixed anchor ~/.soulacy/<pointerFileName> (a one-line
+// file holding the absolute workspace root) so the resolver finds a relocated
+// workspace on every boot — including under launchctl/systemd, where an env
+// var set in the install shell would not be present. The default install
+// (~/.soulacy/soulspace) never writes this file.
+const pointerFileName = "workspace"
+
+// readWorkspacePointer returns the workspace root recorded in
+// ~/.soulacy/workspace, or "" when the file is absent, empty, or names a
+// directory that no longer exists (so a stale pointer falls back to defaults
+// rather than silently creating an empty workspace at a dead path).
+func readWorkspacePointer(dotDir string) string {
+	b, err := os.ReadFile(filepath.Join(dotDir, pointerFileName))
+	if err != nil {
+		return ""
+	}
+	root := filepath.Clean(strings.TrimSpace(string(b)))
+	if root == "" || root == "." {
+		return ""
+	}
+	if st, err := os.Stat(root); err == nil && st.IsDir() {
+		return root
+	}
+	return ""
+}
+
+// SaveWorkspacePointer records root as the chosen workspace location at the
+// fixed ~/.soulacy anchor. Called by `sy setup` only when the operator picks a
+// non-default location. home is the user's home directory.
+func SaveWorkspacePointer(home, root string) error {
+	dotDir := filepath.Join(home, ".soulacy")
+	if err := os.MkdirAll(dotDir, 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(dotDir, pointerFileName),
+		[]byte(filepath.Clean(strings.TrimSpace(root))+"\n"), 0o644)
+}
+
+// ClearWorkspacePointer removes the pointer file (no error if it was absent),
+// returning the install to the conventional ~/.soulacy/soulspace default.
+func ClearWorkspacePointer(home string) error {
+	err := os.Remove(filepath.Join(home, ".soulacy", pointerFileName))
+	if os.IsNotExist(err) {
+		return nil
+	}
+	return err
+}
+
 // ResolveWorkspace applies the resolution order documented above. It never
 // creates directories — EnsureDirs does that after config load.
 func ResolveWorkspace() (Paths, error) {
@@ -159,6 +209,10 @@ func ResolveWorkspace() (Paths, error) {
 		return Paths{}, err
 	}
 	dotDir := filepath.Join(home, ".soulacy")
+	// A first-run-selected custom location wins over the conventional layout.
+	if root := readWorkspacePointer(dotDir); root != "" {
+		return soulspacePaths(root), nil
+	}
 	soulspace := filepath.Join(dotDir, SoulspaceDirName)
 	if st, err := os.Stat(soulspace); err == nil && st.IsDir() {
 		return soulspacePaths(soulspace), nil

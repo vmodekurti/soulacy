@@ -73,7 +73,8 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 			// Fail-closed per-case consent (§13): refuse to run code beyond the
 			// ReadOnly guardrails unless the node carries a matching, valid
 			// consent stamp and the operator ceiling permits it.
-			if cerr := consent.Authorize(node, w.engine.allowSystemTools); cerr != nil {
+			def := w.engine.loader.Get(msg.AgentID)
+			if cerr := consent.Authorize(node, w.engine.IsSystemAgentAllowed(def)); cerr != nil {
 				return nil, cerr
 			}
 			return w.engine.RunInlinePython(ctx, node.Code, []byte(renderedInput))
