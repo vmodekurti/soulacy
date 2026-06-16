@@ -44,6 +44,14 @@ type Options struct {
 	RegisteredProviders []string
 	ProviderModels      map[string][]string
 	ConfiguredOnly      bool
+
+	// AuthoritativeModels indicates the ProviderModels map was obtained by a
+	// live probe of each provider (not a stale/baked-in list). When true, a
+	// model that is absent from its provider's list is escalated from a Warn
+	// to a hard Error — the run is guaranteed to 404 at call time, so the
+	// agent should fail to load rather than serve users a broken model
+	// (Story 2 / S1.x).
+	AuthoritativeModels bool
 }
 
 func File(path string, opts Options) (Report, error) {
@@ -189,7 +197,15 @@ func validateLLMFit(report *Report, def *agent.Definition, opts Options) {
 		return
 	}
 	if models := modelsFor(opts, provider); len(models) > 0 && !contains(models, model) {
-		report.add(Warn, "llm.model", fmt.Sprintf("model %q was not found for provider %q", model, provider), "choose one of the currently available models", bestModelAlternatives(models, def))
+		sev := Warn
+		suggestion := "choose one of the currently available models"
+		if opts.AuthoritativeModels {
+			// The model list is from a live probe; the model genuinely isn't
+			// there. Fail the agent rather than let every run 404.
+			sev = Error
+			suggestion = fmt.Sprintf("the model is not available on provider %q — choose a listed model (for Ollama: run `ollama pull %s`)", provider, model)
+		}
+		report.add(sev, "llm.model", fmt.Sprintf("model %q was not found for provider %q", model, provider), suggestion, bestModelAlternatives(models, def))
 	}
 
 	if likelyNeedsToolUse(def) && weakToolModel(provider, model) {
@@ -525,12 +541,12 @@ func weakJSONModel(provider, model string) bool {
 	// These are small or poorly instruction-tuned chat models.
 	weak := []string{
 		"llama3.2:1b", "llama3.2:3b", // tiny llamas
-		"gemma:2b", "gemma2:2b",       // very small gemmas
-		"phi3:mini",                    // 3.8B, weak JSON
-		"mistral:7b",                   // 7B mistral, unreliable JSON
-		"neural-chat",                  // Intel neural chat
-		"stablelm",                     // StableLM
-		"tinyllama",                    // obvious
+		"gemma:2b", "gemma2:2b", // very small gemmas
+		"phi3:mini",   // 3.8B, weak JSON
+		"mistral:7b",  // 7B mistral, unreliable JSON
+		"neural-chat", // Intel neural chat
+		"stablelm",    // StableLM
+		"tinyllama",   // obvious
 	}
 	for _, w := range weak {
 		if strings.Contains(m, w) {

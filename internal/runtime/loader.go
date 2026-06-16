@@ -314,6 +314,22 @@ func (l *Loader) All() []*agent.Definition {
 	return defs
 }
 
+// SetEnabledInMemory flips the Enabled flag on the in-memory definition WITHOUT
+// rewriting SOUL.yaml on disk. Used by boot-time validation (Story 2) to quarantine
+// an agent whose configured model is unavailable — a hot-reload of the file will
+// restore whatever the file says, which is the intended behaviour (fix the file,
+// save, and it comes back). Returns false if the agent ID is unknown.
+func (l *Loader) SetEnabledInMemory(id string, enabled bool) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	d, ok := l.agents[id]
+	if !ok {
+		return false
+	}
+	d.Enabled = enabled
+	return true
+}
+
 // Upsert writes or overwrites an agent definition to disk and reloads it in memory.
 // Used by the GUI and CLI to persist agent changes without touching the filesystem directly.
 //

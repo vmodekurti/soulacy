@@ -865,6 +865,9 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 	// PERF-2: history windowing — cap per-session in-memory History length.
 	engine.SetMaxHistoryTurns(cfg.Runtime.MaxHistoryTurns)
 
+	// S3.2: hard ceiling on any agent's effective max_turns.
+	engine.SetMaxTurnsCeiling(cfg.Runtime.MaxTurnsCeiling)
+
 	return engine
 }
 
@@ -880,9 +883,25 @@ func (a *App) startMessageRouter(ctx context.Context, chanReg *channels.Registry
 	if workerCount <= 0 {
 		workerCount = 100
 	}
+	inbox := chanReg.Inbox()
 	for w := 0; w < workerCount; w++ {
 		go func() {
-			for msg := range chanReg.Inbox() {
+			for {
+				// S2.2 — exit promptly on shutdown. Previously workers ranged
+				// over the inbox channel, which is never closed, so they hung
+				// forever on SIGTERM and the process couldn't drain/exit
+				// cleanly. Selecting on ctx.Done() lets each idle worker return
+				// the moment the app context is cancelled.
+				var msg message.Message
+				select {
+				case <-ctx.Done():
+					return
+				case m, ok := <-inbox:
+					if !ok {
+						return
+					}
+					msg = m
+				}
 				if msg.Channel == "http" {
 					continue // synchronous path
 				}

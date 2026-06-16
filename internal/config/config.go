@@ -213,6 +213,14 @@ type RuntimeConfig struct {
 	PythonBin             string `mapstructure:"python_bin"`   // path to python3 interpreter
 	ToolTimeout           string `mapstructure:"tool_timeout"` // e.g. "30s"
 
+	// MaxTurnsCeiling is a hard server-side cap on an agent's max_turns
+	// (Story 1 / S3.2). A single inbound message can fan out to
+	// depth × max_turns × tool-calls LLM requests; without a ceiling a
+	// misconfigured agent (max_turns: 10000) is a cost/runaway foot-gun.
+	// The engine clamps each agent's effective max_turns to this value.
+	// Zero/negative defaults to 50.
+	MaxTurnsCeiling int `mapstructure:"max_turns_ceiling"`
+
 	// Sandbox controls the per-Python-tool resource caps applied via the
 	// soulacy __exec-sandbox wrapper. Zero values mean "no limit for
 	// that knob"; enabling the sandbox without configuring any limits is
@@ -541,6 +549,7 @@ func Load(cfgPath string) (*Config, string, error) {
 	v.SetDefault("server.gui_enabled", true)
 	v.SetDefault("runtime.max_concurrent_sessions", 100)
 	v.SetDefault("runtime.default_max_turns", 20)
+	v.SetDefault("runtime.max_turns_ceiling", 50)
 	v.SetDefault("runtime.python_bin", "python3")
 	// PRODUCTION_AUDIT → LOW/Config: NotebookLM-style tools regularly take
 	// minutes; the old 30s default silently SIGKILLed them unless every
@@ -641,6 +650,13 @@ func Load(cfgPath string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("unmarshalling config: %w", err)
 	}
 
+	// Story 5 / S8.1: strict fail-fast validation. A bad duration or an
+	// out-of-range numeric must produce a loud startup error, not a silent
+	// fallback to a default that masks the operator's mistake.
+	if err := cfg.Validate(); err != nil {
+		return nil, "", err
+	}
+
 	return cfg, resolvedPath, nil
 }
 
@@ -715,4 +731,3 @@ type SearchConfig struct {
 	Provider string `mapstructure:"provider"`
 	APIKey   string `mapstructure:"api_key"`
 }
-

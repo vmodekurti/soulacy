@@ -46,6 +46,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/agentvalidate"
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/auth/apikeys"
 	"github.com/soulacy/soulacy/internal/builder"
@@ -100,6 +101,7 @@ type Server struct {
 	apiKeyStore     apikeys.Store        // nil until SetAPIKeyStore() is called
 	dlqStore        dlq.Store            // nil until SetDLQStore() is called
 	historyStore    session.HistoryStore // nil until SetHistoryStore() is called
+	agentWatcher    healthReporter       // nil until SetAgentWatcher() is called (S2.13)
 	log             *zap.Logger
 
 	// Tool-catalog TTL cache. See toolCatalog() / InvalidateToolCatalog().
@@ -273,6 +275,17 @@ func (s *Server) SetDLQStore(st dlq.Store) {
 // When nil, /history routes return 503.
 func (s *Server) SetHistoryStore(st session.HistoryStore) {
 	s.historyStore = st
+}
+
+// healthReporter is anything that can report its own liveness — satisfied by
+// runtime.Watcher (S2.13/S2.4). Kept as a local interface to avoid widening the
+// gateway's import surface.
+type healthReporter interface{ Healthy() bool }
+
+// SetAgentWatcher wires the hot-reload watcher so the deep health check can
+// report whether it's still running.
+func (s *Server) SetAgentWatcher(w healthReporter) {
+	s.agentWatcher = w
 }
 
 // rlUserMW returns the per-user RPM middleware, or a no-op when no limiter
@@ -1142,6 +1155,13 @@ func (s *Server) Listen(ctx context.Context) error {
 		return err
 	}
 
+	// Story 2 / S1.x — probe providers and validate every agent's model BEFORE
+	// serving. Agents whose configured model is unavailable are quarantined
+	// (disabled in memory) with a clear log line, so a typo or an un-pulled
+	// Ollama model surfaces at startup instead of as a 404 on the first user
+	// message (or, worse, silently on every cron fire).
+	s.validateAgentsAtBoot(ctx)
+
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 
 	// Start config watcher
@@ -1165,6 +1185,66 @@ func (s *Server) Listen(ctx context.Context) error {
 		_ = s.app.Shutdown()
 	}()
 	return s.app.Listen(addr)
+}
+
+// validateAgentsAtBoot probes each registered provider for its model list and
+// validates every loaded agent against it. Agents with hard errors (model not
+// available on the provider, provider not registered, blocked by
+// allowed_providers) are disabled in memory and logged at ERROR so the operator
+// sees the problem immediately. A provider that fails the probe is logged as a
+// reachability warning but does not by itself disable agents (the model list is
+// simply unavailable for validation). (Story 2 / S1.x)
+func (s *Server) validateAgentsAtBoot(ctx context.Context) {
+	if s.loader == nil || s.llmRouter == nil {
+		return
+	}
+	opts := s.agentValidationOptions(ctx)
+	opts.AuthoritativeModels = true
+
+	// Reachability: a registered provider with no probed model list was
+	// unreachable (bad base_url / down host / bad key). Surface it once.
+	for _, id := range opts.RegisteredProviders {
+		if len(opts.ProviderModels[id]) == 0 {
+			s.log.Warn("provider unreachable at startup — model validation skipped for it; check base_url/api_key/host",
+				zap.String("provider", id))
+		}
+	}
+
+	var disabled, warned int
+	for _, def := range s.loader.All() {
+		if def == nil || !def.Enabled {
+			continue
+		}
+		report := agentvalidate.Definition(def, def.SourcePath, opts, agentvalidate.Report{})
+		if report.Errors > 0 {
+			for _, f := range report.Findings {
+				if f.Severity == agentvalidate.Error {
+					s.log.Error("agent disabled at boot: invalid LLM configuration",
+						zap.String("agent", def.ID),
+						zap.String("field", f.Field),
+						zap.String("problem", f.Message),
+						zap.String("fix", f.Suggestion))
+				}
+			}
+			if s.loader.SetEnabledInMemory(def.ID, false) {
+				disabled++
+			}
+			continue
+		}
+		for _, f := range report.Findings {
+			if f.Severity == agentvalidate.Warn {
+				s.log.Warn("agent config warning",
+					zap.String("agent", def.ID),
+					zap.String("field", f.Field),
+					zap.String("problem", f.Message))
+				warned++
+			}
+		}
+	}
+	if disabled > 0 || warned > 0 {
+		s.log.Info("boot agent validation complete",
+			zap.Int("disabled", disabled), zap.Int("warnings", warned))
+	}
 }
 
 // watchConfig uses fsnotify to monitor config.yaml for changes and reloads it.

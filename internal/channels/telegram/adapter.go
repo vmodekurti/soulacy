@@ -189,7 +189,15 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("telegram: send: %w", err)
 	}
-	return a.sendText(ctx, mustParseInt64(msg.ThreadID), msg.Parts[0].Text)
+	// S2.8 — Telegram rejects messages over 4096 chars. Split long replies so
+	// they arrive as several messages instead of failing the whole send.
+	chatID := mustParseInt64(msg.ThreadID)
+	for _, chunk := range channels.SplitForLimit(msg.Parts[0].Text, 4096) {
+		if err := a.sendText(ctx, chatID, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // sendTyping fires a one-shot "typing" chat action. Telegram displays it
@@ -220,7 +228,12 @@ func (a *Adapter) sendText(ctx context.Context, chatID int64, text string) error
 	if err != nil {
 		return fmt.Errorf("telegram: send: %w", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	// S2.8 — surface API rejections (e.g. 400 message too long, 429 rate limit)
+	// instead of silently swallowing them.
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("telegram: send: API returned status %d", resp.StatusCode)
+	}
 	return nil
 }
 

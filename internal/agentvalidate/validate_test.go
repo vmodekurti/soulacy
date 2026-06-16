@@ -39,6 +39,27 @@ func TestDefinitionFlagsUnavailableModelWithAlternatives(t *testing.T) {
 	}
 }
 
+func TestDefinitionFailsUnavailableModelWhenAuthoritative(t *testing.T) {
+	def := &agent.Definition{
+		ID:      "tool-agent",
+		Trigger: agent.TriggerChannel,
+		LLM:     agent.LLMConfig{Provider: "ollama", Model: "missing-model"},
+	}
+	report := Definition(def, "", Options{
+		Config: &config.Config{LLM: config.LLMConfig{
+			DefaultProvider: "ollama",
+			Providers:       map[string]config.ProviderConfig{"ollama": {Model: "qwen2.5:72b"}},
+		}},
+		RegisteredProviders: []string{"ollama"},
+		ProviderModels:      map[string][]string{"ollama": {"llama3.2:3b", "qwen2.5:72b"}},
+		AuthoritativeModels: true, // live probe → escalate to hard error
+	}, Report{})
+
+	if report.Valid || report.Errors == 0 {
+		t.Fatalf("authoritative model list should make a missing model a hard error, got %+v", report)
+	}
+}
+
 func TestDefinitionFailsUnregisteredProvider(t *testing.T) {
 	def := &agent.Definition{
 		ID:      "agent",

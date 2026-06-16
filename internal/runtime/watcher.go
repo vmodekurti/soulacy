@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -42,17 +43,25 @@ type Watcher struct {
 	// passed to NewWatcher's `pyDirs` argument. May be nil.
 	OnPyChange func()
 
-	mu       sync.Mutex
-	timers   map[string]*time.Timer // debounce per file path
+	mu     sync.Mutex
+	timers map[string]*time.Timer // debounce per file path
+
+	// stopped is set by Stop() so the loop can tell a deliberate shutdown from
+	// an unexpected fsnotify channel close. healthy reflects whether the watch
+	// loop is still running; /health surfaces it (S2.4) so a silently-dead
+	// watcher — which would leave the gateway serving stale agents forever —
+	// becomes visible instead of invisible.
+	stopped atomic.Bool
+	healthy atomic.Bool
 }
 
 // NewWatcher creates and starts a new Watcher.
 //
-//   agentDirs — folders containing SOUL.yaml files (watched recursively;
-//               any subdir created at runtime is auto-added).
-//   pyDirs    — folders containing Python tool files (~/.soulacy/tools/,
-//               agent_dirs/*/tools/). Watched non-recursively; .py changes
-//               trigger OnPyChange instead of the agent reload path.
+//	agentDirs — folders containing SOUL.yaml files (watched recursively;
+//	            any subdir created at runtime is auto-added).
+//	pyDirs    — folders containing Python tool files (~/.soulacy/tools/,
+//	            agent_dirs/*/tools/). Watched non-recursively; .py changes
+//	            trigger OnPyChange instead of the agent reload path.
 //
 // Call Stop() when done to release resources.
 func NewWatcher(loader *Loader, registry AgentRegistry, agentDirs []string, log *zap.Logger, pyDirs ...string) (*Watcher, error) {
@@ -106,15 +115,32 @@ func (wt *Watcher) addRecursive(root string) {
 
 // Start launches the watcher goroutine. Non-blocking.
 func (wt *Watcher) Start() {
+	wt.healthy.Store(true)
 	go wt.loop()
 }
 
 // Stop shuts down the watcher and releases the fsnotify resources.
 func (wt *Watcher) Stop() {
+	wt.stopped.Store(true)
 	_ = wt.w.Close()
 }
 
+// Healthy reports whether the hot-reload watch loop is still running. Returns
+// false after Stop() or if fsnotify died unexpectedly (S2.4).
+func (wt *Watcher) Healthy() bool {
+	return wt.healthy.Load()
+}
+
 func (wt *Watcher) loop() {
+	// On any exit, mark unhealthy. If we did NOT stop deliberately, this is a
+	// silent fsnotify death — log loudly so the operator knows hot-reload is
+	// dead and edits will be ignored until a restart.
+	defer func() {
+		wt.healthy.Store(false)
+		if !wt.stopped.Load() {
+			wt.log.Error("watcher: hot-reload loop exited unexpectedly — SOUL.yaml edits will NOT be picked up until the gateway is restarted")
+		}
+	}()
 	for {
 		select {
 		case event, ok := <-wt.w.Events:

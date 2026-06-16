@@ -237,8 +237,19 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if err := ctx.Err(); err != nil {
 		return fmt.Errorf("discord: send: %w", err)
 	}
-	body, _ := json.Marshal(map[string]string{"content": msg.Parts[0].Text})
-	url := fmt.Sprintf("%s/channels/%s/messages", discordAPI, msg.ThreadID)
+	// S2.8 — Discord rejects messages over 2000 chars. Split long replies so
+	// they arrive as several messages instead of failing the whole send.
+	for _, chunk := range channels.SplitForLimit(msg.Parts[0].Text, 2000) {
+		if err := a.sendChunk(ctx, msg.ThreadID, chunk); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *Adapter) sendChunk(ctx context.Context, channelID, text string) error {
+	body, _ := json.Marshal(map[string]string{"content": text})
+	url := fmt.Sprintf("%s/channels/%s/messages", discordAPI, channelID)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", a.token)
@@ -246,7 +257,10 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if err != nil {
 		return fmt.Errorf("discord: send: %w", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("discord: send: API returned status %d", resp.StatusCode)
+	}
 	return nil
 }
 
