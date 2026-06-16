@@ -360,55 +360,55 @@ func TestAllToolSchemasBuiltinsGate(t *testing.T) {
 
 // TestAllToolSchemasSystemToolsRequireDoubleOptInAndHTTP pins SEC-3 gating.
 // The PRIVILEGED (SYSTEM-partition) tools — shell_exec, write_file — require
-// BOTH the server permit (allowSystemTools) AND the agent "system" capability,
+// BOTH the server permit (allowSystemAgents) AND the agent "system" capability,
 // and are never offered off the http channel. The SAFE read-only tools —
 // read_file — are offered on http regardless of capability.
 func TestAllToolSchemasSystemToolsRequireDoubleOptInAndHTTP(t *testing.T) {
 	cases := []struct {
-		name             string
-		allowSystemTools bool
-		defSystemTools   bool // legacy alias for capabilities: [system]
-		channel          string
-		wantPrivileged   bool // shell_exec + write_file present
-		wantSafe         bool // read_file present
+		name              string
+		allowSystemAgents []string
+		defSystemTools    bool // legacy alias for capabilities: [system]
+		channel           string
+		wantPrivileged    bool // shell_exec + write_file present
+		wantSafe          bool // read_file present
 	}{
 		{
-			name:             "global and agent opt-in on http exposes privileged + safe",
-			allowSystemTools: true,
-			defSystemTools:   true,
-			channel:          "http",
-			wantPrivileged:   true,
-			wantSafe:         true,
+			name:              "global and agent opt-in on http exposes privileged + safe",
+			allowSystemAgents: []string{"*"},
+			defSystemTools:    true,
+			channel:           "http",
+			wantPrivileged:    true,
+			wantSafe:          true,
 		},
 		{
-			name:             "global off blocks privileged but safe remains",
-			allowSystemTools: false,
-			defSystemTools:   true,
-			channel:          "http",
-			wantPrivileged:   false,
-			wantSafe:         true,
+			name:              "global off blocks privileged but safe remains",
+			allowSystemAgents: nil,
+			defSystemTools:    true,
+			channel:           "http",
+			wantPrivileged:    false,
+			wantSafe:          true,
 		},
 		{
-			name:             "no capability blocks privileged but safe remains",
-			allowSystemTools: true,
-			defSystemTools:   false,
-			channel:          "http",
-			wantPrivileged:   false,
-			wantSafe:         true,
+			name:              "no capability blocks privileged but safe remains",
+			allowSystemAgents: []string{"*"},
+			defSystemTools:    false,
+			channel:           "http",
+			wantPrivileged:    false,
+			wantSafe:          true,
 		},
 		{
-			name:             "bot channel blocks everything system",
-			allowSystemTools: true,
-			defSystemTools:   true,
-			channel:          "telegram",
-			wantPrivileged:   false,
-			wantSafe:         false,
+			name:              "bot channel blocks everything system",
+			allowSystemAgents: []string{"*"},
+			defSystemTools:    true,
+			channel:           "telegram",
+			wantPrivileged:    false,
+			wantSafe:          false,
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e := &Engine{allowSystemTools: tc.allowSystemTools}
+			e := &Engine{allowSystemAgents: tc.allowSystemAgents}
 			e.builtins = e.buildBuiltins()
 			names := toolSchemaNameSet(e.allToolSchemas(&agent.Definition{
 				ID:          "sys",
@@ -432,7 +432,7 @@ func TestAllToolSchemasSystemToolsRequireDoubleOptInAndHTTP(t *testing.T) {
 // `capabilities: [system]` declaration is honoured equivalently to the legacy
 // `system_tools: true` flag (SEC-3).
 func TestAllToolSchemasCapabilitiesGrantSystemTools(t *testing.T) {
-	e := &Engine{allowSystemTools: true}
+	e := &Engine{allowSystemAgents: []string{"*"}}
 	e.builtins = e.buildBuiltins()
 	names := toolSchemaNameSet(e.allToolSchemas(&agent.Definition{
 		ID:           "sys",
@@ -704,7 +704,7 @@ func newHandleTestEngine(t *testing.T, def *agent.Definition) (*Engine, *fakeHan
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	return NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil), provider
+	return NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil), provider
 }
 
 func testUserMessage(agentID, sessionID, text string) message.Message {
@@ -839,7 +839,7 @@ func TestHandlePeerAgentDelegation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	// Provider responses in call order:
 	//   0. Caller's first LLM turn → delegates to agent__peer
@@ -1052,7 +1052,7 @@ func (f *fakeCostStore) Record(_ context.Context, agentID, sessionID, provider, 
 	return nil
 }
 
-// TestHandleExecutesSystemTool verifies that when allowSystemTools and def.SystemTools are true,
+// TestHandleExecutesSystemTool verifies that when allowSystemAgents and def.SystemTools are true,
 // the engine can execute OS-level built-in tools like shell_exec and synthesise the final response.
 func TestHandleExecutesSystemTool(t *testing.T) {
 	e, provider := newHandleTestEngine(t, &agent.Definition{
@@ -1064,7 +1064,7 @@ func TestHandleExecutesSystemTool(t *testing.T) {
 		MaxTurns:     3,
 		SystemTools:  true,
 	})
-	e.allowSystemTools = true
+	e.allowSystemAgents = []string{"*"}
 
 	provider.responses = []llm.CompletionResponse{
 		{ToolCalls: []message.ToolCall{{

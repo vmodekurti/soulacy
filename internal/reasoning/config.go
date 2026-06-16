@@ -165,6 +165,13 @@ func LoopConfigFromDefinition(def *agent.Definition, systemPrompt string) (LoopC
 		SystemPrompt: systemPrompt,
 	}
 
+	// SEC-3: System tools (shell_exec, write_file, etc.) are highly parameterized
+	// and are fundamentally incompatible with plan_execute's single "task" argument.
+	// Force the react strategy to prevent the agent from breaking itself.
+	if def.HasCapability("system") {
+		cfg.Strategy = LoopStrategy(StrategyReAct)
+	}
+
 	cfg.MaxSteps = rc.MaxSteps
 	if cfg.MaxSteps <= 0 {
 		cfg.MaxSteps = 8

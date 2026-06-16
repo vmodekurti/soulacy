@@ -112,6 +112,82 @@ func TestResolveWorkspace_EnvOverride(t *testing.T) {
 	}
 }
 
+func TestResolveWorkspace_PointerSelectsCustomLocation(t *testing.T) {
+	home := t.TempDir()
+	custom := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SOULACY_WORKSPACE", "")
+
+	if err := SaveWorkspacePointer(home, custom); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := ResolveWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Legacy || ws.Root != custom {
+		t.Errorf("ws = %+v, want pointer-selected %q", ws, custom)
+	}
+	if ws.ConfigFile != filepath.Join(custom, "config.yaml") {
+		t.Errorf("ConfigFile = %q, want %q", ws.ConfigFile, filepath.Join(custom, "config.yaml"))
+	}
+
+	// Clearing the pointer reverts to the canonical soulspace default.
+	if err := ClearWorkspacePointer(home); err != nil {
+		t.Fatal(err)
+	}
+	ws2, err := ResolveWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws2.Root != filepath.Join(home, ".soulacy", "soulspace") {
+		t.Errorf("after clear, Root = %q, want default soulspace", ws2.Root)
+	}
+}
+
+func TestResolveWorkspace_StalePointerIgnored(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SOULACY_WORKSPACE", "")
+
+	// A pointer naming a non-existent directory must be ignored (fall back to
+	// the default), not silently create a fresh empty workspace at a dead path.
+	dotDir := filepath.Join(home, ".soulacy")
+	if err := os.MkdirAll(dotDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dotDir, "workspace"), []byte("/no/such/dir\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := ResolveWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Root != filepath.Join(dotDir, "soulspace") {
+		t.Errorf("stale pointer should fall back to soulspace, got %q", ws.Root)
+	}
+}
+
+func TestResolveWorkspace_EnvOverridesPointer(t *testing.T) {
+	home := t.TempDir()
+	pointed := t.TempDir()
+	envDir := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := SaveWorkspacePointer(home, pointed); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SOULACY_WORKSPACE", envDir)
+
+	ws, err := ResolveWorkspace()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws.Root != envDir {
+		t.Errorf("env var must win over pointer: Root = %q, want %q", ws.Root, envDir)
+	}
+}
+
 func TestLoad_FreshInstallDefaultsLandInSoulspace(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

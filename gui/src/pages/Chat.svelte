@@ -1,7 +1,7 @@
 <script>
   import { onDestroy, onMount, tick } from 'svelte'
-  import { api, createEventSocket } from '../lib/api.js'
-  import { chatAgentId, chatMessages, chatSending, chatSessionId, connected, chatBranches, chatBranchMessages, chatMetricsBaseline } from '../lib/stores.js'
+  import { api, apiFetch, createEventSocket } from '../lib/api.js'
+  import { chatActiveThreadId, chatThreads, connected } from '../lib/stores.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
   import { entryIdForMessage, nextBranchLabel, entriesToMessages } from '../lib/chatbranch.js'
   import { deltaMetrics, deltaLabel, deltaTitle } from '../lib/chatmetrics.js'
@@ -12,38 +12,129 @@
 
   let metricsRefresh = 0
   let forking = false
+  let activeThread = null
+  let activeRuns = {}
+  let threads = []
+  let visibleMessages = []
+  let isSending = false
+
+  $: activeThread = $chatActiveThreadId ? ($chatThreads[$chatActiveThreadId] || null) : null
+  $: threads = Object.values($chatThreads).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+  $: visibleMessages = activeThread?.messages || []
+  $: isSending = !!activeThread?.sending
+
+  function newChatSessionId() {
+    return `gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+  }
+
+  function newThread(agentId = '') {
+    const now = Date.now()
+    return {
+      id: `thread-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      agentId,
+      sessionId: newChatSessionId(),
+      title: agentId || 'New chat',
+      messages: [],
+      sending: false,
+      branches: [],
+      branchMessages: {},
+      metricsBaseline: {},
+      thinking: null,
+      activeRunKey: '',
+      createdAt: now,
+      updatedAt: now,
+    }
+  }
+
+  function upsertThread(thread) {
+    chatThreads.update(ts => ({ ...ts, [thread.id]: thread }))
+  }
+
+  function updateThread(threadId, fn) {
+    chatThreads.update(ts => {
+      const curr = ts[threadId]
+      if (!curr) return ts
+      return { ...ts, [threadId]: { ...fn(curr), updatedAt: Date.now() } }
+    })
+  }
+
+  function updateActiveThread(fn) {
+    if (!$chatActiveThreadId) return
+    updateThread($chatActiveThreadId, fn)
+  }
+
+  function agentName(id) {
+    const a = agents.find(x => x.id === id)
+    return a?.name || id || 'No agent'
+  }
+
+  function selectThread(id) {
+    if (!id || !$chatThreads[id]) return
+    chatActiveThreadId.set(id)
+    metricsRefresh++
+    scrollBottom()
+  }
+
+  function startThread(agentId = '') {
+    const thread = newThread(agentId || activeThread?.agentId || defaultAgentId())
+    upsertThread(thread)
+    chatActiveThreadId.set(thread.id)
+    metricsRefresh++
+    scrollBottom()
+  }
+
+  function defaultAgentId() {
+    const sys = agents.find(a => a.id === 'system')
+    return sys ? sys.id : (agents[0]?.id || '')
+  }
+
+  function setActiveAgent(agentId) {
+    if (!activeThread) {
+      startThread(agentId)
+      return
+    }
+    updateActiveThread(t => ({
+      ...t,
+      agentId,
+      title: t.messages.length ? t.title : agentName(agentId),
+    }))
+  }
 
   // ── checkpoints & branching (Story 8) ───────────────────────────────
   async function forkAt(mi) {
-    if (forking || $chatSending) return
+    if (forking || isSending || !activeThread) return
     forking = true
     error = null
+    const threadId = activeThread.id
     try {
-      const hist = await api.history.get($chatSessionId)
-      const entryId = entryIdForMessage(hist.entries || [], $chatMessages, mi)
+      const hist = await api.history.get(activeThread.sessionId)
+      const entryId = entryIdForMessage(hist.entries || [], activeThread.messages, mi)
       if (!entryId) {
         error = 'This message has no saved history yet — finish the turn first.'
         return
       }
-      const res = await api.history.fork($chatSessionId, {
-        agent_id: $chatAgentId,
+      const res = await api.history.fork(activeThread.sessionId, {
+        agent_id: activeThread.agentId,
         upto_entry_id: entryId,
       })
 
       // Register branches (current session becomes "main" on first fork).
-      let branches = $chatBranches
+      let branches = activeThread.branches || []
       if (branches.length === 0) {
-        branches = [{ sessionId: $chatSessionId, label: 'main' }]
+        branches = [{ sessionId: activeThread.sessionId, label: 'main' }]
       }
       const label = nextBranchLabel(branches)
       branches = [...branches, { sessionId: res.session_id, label }]
-      chatBranches.set(branches)
 
       // Snapshot the current branch, then switch to the fork.
-      chatBranchMessages.update(m => ({ ...m, [$chatSessionId]: $chatMessages }))
-      const forkedView = $chatMessages.slice(0, mi + 1)
-      chatSessionId.set(res.session_id)
-      chatMessages.set(forkedView)
+      const forkedView = activeThread.messages.slice(0, mi + 1)
+      updateThread(threadId, t => ({
+        ...t,
+        branches,
+        branchMessages: { ...(t.branchMessages || {}), [t.sessionId]: t.messages },
+        sessionId: res.session_id,
+        messages: forkedView,
+      }))
       metricsRefresh++
     } catch (e) {
       error = e.message || 'Fork failed'
@@ -53,18 +144,22 @@
   }
 
   async function switchBranch(sessionId) {
-    if (sessionId === $chatSessionId || $chatSending) return
+    if (!activeThread || sessionId === activeThread.sessionId || isSending) return
     error = null
-    chatBranchMessages.update(m => ({ ...m, [$chatSessionId]: $chatMessages }))
-    let msgs = $chatBranchMessages[sessionId]
+    const threadId = activeThread.id
+    let msgs = activeThread.branchMessages?.[sessionId]
     if (!msgs) {
       try {
         const hist = await api.history.get(sessionId)
         msgs = entriesToMessages(hist.entries)
       } catch { msgs = [] }
     }
-    chatSessionId.set(sessionId)
-    chatMessages.set(msgs || [])
+    updateThread(threadId, t => ({
+      ...t,
+      branchMessages: { ...(t.branchMessages || {}), [t.sessionId]: t.messages },
+      sessionId,
+      messages: msgs || [],
+    }))
     metricsRefresh++
     await scrollBottom()
   }
@@ -75,23 +170,15 @@
   let msgListEl
   let ws        = null
   let stopEvents = false
-  let activeThinking = null
-  let activeRunKey = ''
-
-  function newChatSessionId() {
-    return `gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-  }
+  let confirmRequest = null
 
   // ── load agents once on mount ────────────────────────────────────────
   async function loadAgents() {
     try {
       const res = await api.agents.list()
       agents = (res.agents || []).filter(a => a.enabled)
-      // Pre-select only if nothing is selected yet.
-      // Prefer the "system" agent; fall back to the first enabled agent.
-      if (agents.length && !$chatAgentId) {
-        const sys = agents.find(a => a.id === 'system')
-        chatAgentId.set(sys ? sys.id : agents[0].id)
+      if (agents.length && Object.keys($chatThreads).length === 0) {
+        startThread(defaultAgentId())
       }
     } catch (e) { error = e.message }
   }
@@ -102,19 +189,27 @@
   // runs and updates the store; the component picks it up on remount.
   async function send() {
     const text = input.trim()
-    if (!text || !$chatAgentId || $chatSending) return
-    const runSessionId = $chatSessionId
-    const runAgentId = $chatAgentId
-    activeRunKey = `${runAgentId}|${runSessionId}`
-    activeThinking = { open: true, events: [] }
+    if (!text || !activeThread?.agentId || isSending) return
+    const threadId = activeThread.id
+    const runSessionId = activeThread.sessionId
+    const runAgentId = activeThread.agentId
+    const runKey = `${runAgentId}|${runSessionId}`
+    const thinking = { open: true, events: [] }
+    activeRuns = { ...activeRuns, [runKey]: threadId }
     input = ''
-    chatMessages.update(m => [...m, { role: 'user', text, ts: new Date() }])
-    chatSending.set(true)
+    updateThread(threadId, t => ({
+      ...t,
+      title: t.messages.length ? t.title : snippet(text, 36),
+      messages: [...t.messages, { role: 'user', text, ts: new Date() }],
+      sending: true,
+      thinking,
+      activeRunKey: runKey,
+    }))
     await scrollBottom()
 
     // Pre-turn metrics snapshot for the token delta (Story 9). Cached per
     // session; the first turn fetches (404 → null baseline = "all new").
-    let preTurn = $chatMetricsBaseline[runSessionId] ?? null
+    let preTurn = activeThread.metricsBaseline?.[runSessionId] ?? null
     if (preTurn === null) {
       preTurn = await api.runs.metrics(runSessionId, runAgentId).catch(() => null)
     }
@@ -123,14 +218,20 @@
       const res = await api.chat(runAgentId, text, 'gui-user', null, runSessionId)
       const curr = await api.runs.metrics(runSessionId, runAgentId).catch(() => null)
       const delta = deltaMetrics(preTurn, curr)
-      if (curr) chatMetricsBaseline.update(b => ({ ...b, [runSessionId]: curr }))
-      chatMessages.update(m => [...m, { role: 'assistant', text: res.reply, ts: new Date(), thinking: activeThinking, metrics: delta }])
+      updateThread(threadId, t => ({
+        ...t,
+        metricsBaseline: curr ? { ...(t.metricsBaseline || {}), [runSessionId]: curr } : (t.metricsBaseline || {}),
+        messages: [...t.messages, { role: 'assistant', text: res.reply, ts: new Date(), thinking: t.thinking || thinking, metrics: delta }],
+      }))
     } catch (e) {
-      chatMessages.update(m => [...m, { role: 'system', text: '⚠ ' + e.message, ts: new Date(), thinking: activeThinking }])
+      updateThread(threadId, t => ({
+        ...t,
+        messages: [...t.messages, { role: 'system', text: '⚠ ' + e.message, ts: new Date(), thinking: t.thinking || thinking }],
+      }))
     }
-    activeThinking = null
-    activeRunKey = ''
-    chatSending.set(false)
+    updateThread(threadId, t => ({ ...t, sending: false, thinking: null, activeRunKey: '' }))
+    const { [runKey]: _, ...rest } = activeRuns
+    activeRuns = rest
     metricsRefresh++   // re-fetch the session metrics strip (Story 7)
     await scrollBottom()
   }
@@ -144,15 +245,52 @@
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
+  async function resolveConfirm(approved) {
+    if (!confirmRequest) return
+    try {
+      await apiFetch('/chat/confirm', {
+        method: 'POST',
+        body: JSON.stringify({
+          call_id: confirmRequest.call_id,
+          approved
+        })
+      })
+    } catch (e) {
+      console.error('Failed to confirm tool:', e)
+    } finally {
+      confirmRequest = null
+    }
+  }
+
   function clearChat() {
-    chatMessages.set([])
-    chatSending.set(false)
-    chatSessionId.set(newChatSessionId())
-    chatBranches.set([])
-    chatBranchMessages.set({})
-    chatMetricsBaseline.set({})
-    activeThinking = null
-    activeRunKey = ''
+    if (!activeThread) return
+    const replacement = newThread(activeThread.agentId)
+    chatThreads.update(ts => {
+      const copy = { ...ts }
+      delete copy[activeThread.id]
+      copy[replacement.id] = replacement
+      return copy
+    })
+    chatActiveThreadId.set(replacement.id)
+    metricsRefresh++
+  }
+
+  function closeThread(id, e) {
+    if (e) e.stopPropagation()
+    let nextId = $chatActiveThreadId
+    chatThreads.update(ts => {
+      const copy = { ...ts }
+      delete copy[id]
+      if (nextId === id) {
+        const remaining = Object.values(copy).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+        nextId = remaining.length > 0 ? remaining[0].id : null
+      }
+      return copy
+    })
+    if ($chatActiveThreadId !== nextId) {
+      chatActiveThreadId.set(nextId)
+      metricsRefresh++
+    }
   }
 
   function fmtTime(d) {
@@ -166,8 +304,16 @@
     ws.onmessage = async (e) => {
       try {
         const ev = JSON.parse(e.data)
-        if (!activeThinking || !eventBelongsToActiveRun(ev) || !isThinkingEvent(ev)) return
-        activeThinking.events = [...activeThinking.events, ev].slice(-80)
+        if (ev.type === 'tool_confirm') {
+          confirmRequest = ev.payload
+          return
+        }
+        const threadId = threadIdForRunEvent(ev)
+        if (!threadId || !isThinkingEvent(ev)) return
+        updateThread(threadId, t => {
+          if (!t.thinking) return t
+          return { ...t, thinking: { ...t.thinking, events: [...t.thinking.events, ev].slice(-80) } }
+        })
         await scrollBottom()
       } catch {}
     }
@@ -179,9 +325,9 @@
     ws.onerror = () => ws?.close()
   }
 
-  function eventBelongsToActiveRun(ev) {
-    if (!activeRunKey) return false
-    return `${ev.agent_id || ''}|${ev.session_id || ''}` === activeRunKey
+  function threadIdForRunEvent(ev) {
+    const key = `${ev.agent_id || ''}|${ev.session_id || ''}`
+    return activeRuns[key] || ''
   }
 
   function isThinkingEvent(ev) {
@@ -192,8 +338,7 @@
   function toggleThinking(thinking) {
     if (!thinking) return
     thinking.open = !thinking.open
-    if (thinking === activeThinking) activeThinking = { ...thinking }
-    chatMessages.update(m => [...m])
+    updateActiveThread(t => ({ ...t, messages: [...t.messages] }))
   }
 
   function thinkingSummary(thinking) {
@@ -269,9 +414,13 @@
   }
 
   function voicePush(role, text, opts = {}) {
-    chatMessages.update(m => [...m, { role, text, voice: true, time: new Date(), ...opts }])
+    let idx = -1
+    updateActiveThread(t => {
+      idx = t.messages.length
+      return { ...t, messages: [...t.messages, { role, text, voice: true, ts: new Date(), ...opts }] }
+    })
     scrollBottom()
-    return $chatMessages.length - 1
+    return idx
   }
 
   function handleVoiceEvent(raw) {
@@ -284,18 +433,18 @@
       if (voiceDraftIdx < 0) {
         voiceDraftIdx = voicePush('assistant', e.text)
       } else {
-        chatMessages.update(m => {
-          const copy = [...m]
+        updateActiveThread(t => {
+          const copy = [...t.messages]
           copy[voiceDraftIdx] = { ...copy[voiceDraftIdx], text: copy[voiceDraftIdx].text + e.text }
-          return copy
+          return { ...t, messages: copy }
         })
       }
     } else if (e.kind === 'assistant_done') {
       if (voiceDraftIdx >= 0 && e.text) {
-        chatMessages.update(m => {
-          const copy = [...m]
+        updateActiveThread(t => {
+          const copy = [...t.messages]
           copy[voiceDraftIdx] = { ...copy[voiceDraftIdx], text: e.text }
-          return copy
+          return { ...t, messages: copy }
         })
       }
       voiceDraftIdx = -1
@@ -384,12 +533,39 @@
   })
 </script>
 
+{#if confirmRequest}
+  <div class="confirm-modal-backdrop">
+    <div class="confirm-modal">
+      <h2>Action Required</h2>
+      <p>The agent wants to use the tool <strong>{confirmRequest.tool}</strong>.</p>
+      
+      {#if confirmRequest.reason}
+        <div class="reason-box">
+          <strong>Reason:</strong> {confirmRequest.reason}
+        </div>
+      {/if}
+
+      <div class="args-box">
+        <strong>Arguments:</strong>
+        <pre>{JSON.stringify(confirmRequest.args, null, 2)}</pre>
+      </div>
+
+      <div class="confirm-actions">
+        <button class="btn btn-danger" on:click={() => resolveConfirm(false)}>Deny</button>
+        <button class="btn btn-primary" on:click={() => resolveConfirm(true)}>Approve</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <div class="page">
   <div class="page-header">
     <h1>Chat Tester</h1>
     <div class="controls">
-      <RunMetrics sessionId={$chatSessionId} agentId={$chatAgentId} refreshKey={metricsRefresh} />
-      <select bind:value={$chatAgentId} style="width:min(220px, 100%)" disabled={!agents.length}>
+      {#if activeThread}
+        <RunMetrics sessionId={activeThread.sessionId} agentId={activeThread.agentId} refreshKey={metricsRefresh} />
+      {/if}
+      <select value={activeThread?.agentId || ''} on:change={(e) => setActiveAgent(e.currentTarget.value)} style="width:min(220px, 100%)" disabled={!agents.length || isSending}>
         {#if !agents.length}
           <option value="">No enabled agents</option>
         {:else}
@@ -398,6 +574,7 @@
           {/each}
         {/if}
       </select>
+      <button class="btn-secondary" on:click={() => startThread()} disabled={!agents.length}>New chat tab</button>
       <button class="btn-secondary" on:click={clearChat}>Clear</button>
       <button class="voice-btn {voiceState}"
               on:click={voiceClick}
@@ -418,11 +595,28 @@
     <div class="banner err">⚠ {error}</div>
   {/if}
 
-  {#if $chatBranches.length > 0}
+  {#if threads.length > 0}
+    <div class="threads" role="tablist" aria-label="Parallel chats">
+      {#each threads as t (t.id)}
+        <div class="thread-chip" class:active={t.id === $chatActiveThreadId}
+             role="tab" tabindex="0" aria-selected={t.id === $chatActiveThreadId}
+             on:click={() => selectThread(t.id)}
+             on:keydown={(e) => { if(e.key === 'Enter') selectThread(t.id) }}
+             title="{agentName(t.agentId)} · {t.sessionId}">
+          <span class="thread-title">{t.title || agentName(t.agentId)}</span>
+          <span class="thread-agent">{agentName(t.agentId)}</span>
+          {#if t.sending}<span class="thread-dot" aria-label="Running"></span>{/if}
+          <button class="thread-close" on:click|stopPropagation={(e) => closeThread(t.id, e)} aria-label="Close tab">✕</button>
+        </div>
+      {/each}
+    </div>
+  {/if}
+
+  {#if activeThread?.branches?.length > 0}
     <div class="branches" role="tablist" aria-label="Conversation branches">
-      {#each $chatBranches as b (b.sessionId)}
-        <button class="branch-chip" class:active={b.sessionId === $chatSessionId}
-                role="tab" aria-selected={b.sessionId === $chatSessionId}
+      {#each activeThread.branches as b (b.sessionId)}
+        <button class="branch-chip" class:active={b.sessionId === activeThread.sessionId}
+                role="tab" aria-selected={b.sessionId === activeThread.sessionId}
                 on:click={() => switchBranch(b.sessionId)}
                 title="Switch to {b.label}">
           ⑂ {b.label}
@@ -434,20 +628,20 @@
   <div class="chat-wrap">
     <!-- Message list -->
     <div class="messages" bind:this={msgListEl}>
-      {#if $chatMessages.length === 0}
+      {#if visibleMessages.length === 0}
         <div class="empty">
-          {#if $chatAgentId}
-            Chatting with <strong>{$chatAgentId}</strong>.<br>Type a message below.
+          {#if activeThread?.agentId}
+            Chatting with <strong>{agentName(activeThread.agentId)}</strong>.<br>Type a message below.
           {:else}
             Select an agent above to start chatting.
           {/if}
         </div>
       {:else}
-        {#each $chatMessages as msg, mi}
+        {#each visibleMessages as msg, mi}
           <div class="msg-row" class:user={msg.role==='user'} class:sys={msg.role==='system'}>
             <div class="bubble">
               {#if msg.role === 'user' || msg.role === 'assistant'}
-                <button class="fork-btn" on:click={() => forkAt(mi)} disabled={forking || $chatSending}
+                <button class="fork-btn" on:click={() => forkAt(mi)} disabled={forking || isSending}
                         title="Fork the conversation from this message"
                         aria-label="Fork conversation from message {mi + 1}">⑂</button>
               {/if}
@@ -489,23 +683,23 @@
             </div>
           </div>
         {/each}
-        {#if $chatSending}
+        {#if isSending}
           <div class="msg-row">
             <div class="bubble">
               <div class="typing"><span/><span/><span/></div>
-              {#if activeThinking}
+              {#if activeThread?.thinking}
                 <div class="thinking open">
-                  <button class="thinking-head" type="button" on:click={() => toggleThinking(activeThinking)}>
-                    <span class="chev">{activeThinking.open ? '▾' : '▸'}</span>
+                  <button class="thinking-head" type="button" on:click={() => toggleThinking(activeThread.thinking)}>
+                    <span class="chev">{activeThread.thinking.open ? '▾' : '▸'}</span>
                     <span class="thinking-title">Thinking</span>
-                    <span class="thinking-meta">{thinkingSummary(activeThinking)}</span>
+                    <span class="thinking-meta">{thinkingSummary(activeThread.thinking)}</span>
                   </button>
-                  {#if activeThinking.open}
+                  {#if activeThread.thinking.open}
                     <div class="thinking-body">
-                      {#if activeThinking.events.length === 0}
+                      {#if activeThread.thinking.events.length === 0}
                         <div class="thinking-empty">Waiting for the first runtime event…</div>
                       {:else}
-                        {#each activeThinking.events as ev}
+                        {#each activeThread.thinking.events as ev}
                           <div class="think-event {eventClass(ev.type)}">
                             <div class="think-main">
                               <span class="think-type">{ev.type}</span>
@@ -534,12 +728,12 @@
         on:keydown={onKeydown}
         placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
         rows="2"
-        disabled={$chatSending || !$chatAgentId}
+        disabled={isSending || !activeThread?.agentId}
       ></textarea>
       <button class="send-btn btn-primary"
               on:click={send}
-              disabled={$chatSending || !$chatAgentId || !input.trim()}>
-        {$chatSending ? '…' : '↑'}
+              disabled={isSending || !activeThread?.agentId || !input.trim()}>
+        {isSending ? '…' : '↑'}
       </button>
     </div>
   </div>
@@ -568,6 +762,81 @@
   }
   .banner      { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; flex-shrink: 0; }
   .err         { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
+
+  .threads {
+    display: flex;
+    gap: .5rem;
+    overflow-x: auto;
+    padding-bottom: .1rem;
+    flex-shrink: 0;
+  }
+  .thread-chip {
+    min-width: 150px;
+    max-width: 240px;
+    min-height: 42px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 10px 24px;
+    grid-template-rows: auto auto;
+    column-gap: .45rem;
+    align-items: center;
+    padding: .45rem .45rem .45rem .65rem;
+    background: #171a2c;
+    border: 1px solid #262b48;
+    border-radius: 8px;
+    color: #c8cadf;
+    text-align: left;
+    cursor: pointer;
+  }
+  .thread-chip:hover:not(.active) { background: #1c2036; border-color: #343a5f; }
+  .thread-chip.active {
+    background: rgba(108, 99, 255, .14);
+    border-color: rgba(108, 99, 255, .45);
+  }
+  .thread-close {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    background: transparent;
+    border: none;
+    color: #7f86ab;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    width: 20px;
+    height: 20px;
+    border-radius: 4px;
+  }
+  .thread-close:hover {
+    color: #fff;
+    background: rgba(255, 255, 255, 0.1);
+  }
+  .thread-title,
+  .thread-agent {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .thread-title {
+    grid-column: 1;
+    font-size: .8rem;
+    font-weight: 650;
+  }
+  .thread-agent {
+    grid-column: 1;
+    color: #7f86ab;
+    font-size: .68rem;
+  }
+  .thread-dot {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #36d399;
+    box-shadow: 0 0 0 3px rgba(54, 211, 153, .12);
+  }
 
   .chat-wrap {
     flex: 1; min-height: 0;
@@ -731,4 +1000,32 @@
     cursor: help; white-space: nowrap;
   }
   .tok-delta:hover { color: #8b85ff; }
+
+  /* ── Confirm Modal ─────────────────────────────────────────────── */
+  .confirm-modal-backdrop {
+    position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(10, 12, 24, 0.8); backdrop-filter: blur(4px);
+    z-index: 1000; display: flex; align-items: center; justify-content: center;
+  }
+  .confirm-modal {
+    background: #1c1f35; border: 1px solid #2a2f4a; border-radius: 8px;
+    padding: 1.5rem; max-width: 500px; width: 90%;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+    display: flex; flex-direction: column; gap: 1rem;
+  }
+  .confirm-modal h2 { margin: 0; color: #fff; font-size: 1.25rem; }
+  .confirm-modal p { margin: 0; color: #a1a7c4; font-size: 0.95rem; }
+  .reason-box, .args-box {
+    background: #131526; padding: 0.75rem; border-radius: 6px;
+    font-size: 0.85rem; color: #c8cadf; border: 1px solid #1a1e36;
+  }
+  .args-box pre {
+    margin: 0.5rem 0 0 0; white-space: pre-wrap; word-wrap: break-word;
+    color: #a3d9a5; font-family: monospace; font-size: 0.8rem;
+  }
+  .confirm-actions {
+    display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;
+  }
+  .btn-danger { background: rgba(220, 53, 69, 0.2); color: #ff6b81; border: 1px solid rgba(220, 53, 69, 0.4); }
+  .btn-danger:hover { background: rgba(220, 53, 69, 0.3); }
 </style>

@@ -131,11 +131,11 @@ type Engine struct {
 	// land in the actionlog. Set via SetFailureNotifier.
 	failureNotifier FailureNotifier
 
-	// allowSystemTools enables the OS-level built-in tools (shell_exec,
-	// run_script, install_library, read_file, write_file, list_dir).
-	// Set from config.Runtime.AllowSystemTools (default true). All agents
-	// receive these tools when enabled — no per-agent opt-in required.
-	allowSystemTools bool
+	// allowSystemAgents is the list of agent IDs allowed to access the OS-level
+	// built-in tools (shell_exec, run_script, install_library, write_file,
+	// download_file). Set from config.Runtime.AllowSystemAgents.
+	// An agent must be listed here AND declare the "system" capability.
+	allowSystemAgents []string
 
 	// vectorStore, when non-nil, backs the semantic_memory_search built-in.
 	// Powered by sqlite-vec in the same archive DB as the long-term memory.
@@ -346,7 +346,7 @@ func NewEngine(
 	ollamaAPIKey string,
 	mcpClient *mcp.Client,
 	knowledgeSvc *knowledge.Service,
-	allowSystemTools bool,
+	allowSystemAgents []string,
 	vectorStore *memory.VectorStore,
 	pluginProvider PluginToolProvider,
 ) *Engine {
@@ -354,21 +354,21 @@ func NewEngine(
 		sink = noopSink{}
 	}
 	e := &Engine{
-		loader:           loader,
-		llmRouter:        router,
-		memory:           mem,
-		archive:          archive,
-		pythonBin:        pythonBin,
-		toolTimeout:      toolTimeout,
-		log:              log,
-		sink:             sink,
-		skillLoader:      skillLoader,
-		ollamaAPIKey:     ollamaAPIKey,
-		mcpClient:        mcpClient,
-		knowledge:        knowledgeSvc,
-		allowSystemTools: allowSystemTools,
-		vectorStore:      vectorStore,
-		pluginProvider:   pluginProvider,
+		loader:            loader,
+		llmRouter:         router,
+		memory:            mem,
+		archive:           archive,
+		pythonBin:         pythonBin,
+		toolTimeout:       toolTimeout,
+		log:               log,
+		sink:              sink,
+		skillLoader:       skillLoader,
+		ollamaAPIKey:      ollamaAPIKey,
+		mcpClient:         mcpClient,
+		knowledge:         knowledgeSvc,
+		allowSystemAgents: allowSystemAgents,
+		vectorStore:       vectorStore,
+		pluginProvider:    pluginProvider,
 	}
 	e.broker = newConfirmBroker()
 	e.builtins = e.buildBuiltins()
@@ -667,6 +667,35 @@ func (e *Engine) maybeConfirm(ctx context.Context, def *agent.Definition, call m
 	}
 }
 
+func (e *Engine) dynamicConfirm(ctx context.Context, def *agent.Definition, call message.ToolCall, reason string) error {
+	sender, ok := confirmSenderFrom(ctx)
+	if !ok {
+		// No confirm channel in this context. Since the guardrail demanded confirmation but we can't get it, we must DENY for safety.
+		e.log.Warn("guardrail required confirmation but no confirm channel in context — denying",
+			zap.String("tool", call.Name))
+		return fmt.Errorf("guardrail required confirmation, but no GUI available to confirm: %s", reason)
+	}
+
+	callID := uuid.New().String()
+	resultCh := sender(ConfirmRequest{
+		CallID: callID,
+		Tool:   call.Name,
+		Args:   call.Arguments,
+		Reason: reason,
+	})
+
+	select {
+	case approved := <-resultCh:
+		if !approved {
+			e.logAudit(ctx, def, call, "", time.Now(), true, nil)
+			return fmt.Errorf("tool %q was denied by the user (guardrail flag: %s)", call.Name, reason)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // logAudit records a tool call to the audit logger (no-op when auditLog is nil).
 func (e *Engine) logAudit(ctx context.Context, def *agent.Definition, call message.ToolCall, result string, start time.Time, denied bool, err error) {
 	if e.auditLog == nil {
@@ -713,7 +742,7 @@ func (e *Engine) Builtins() []BuiltinTool {
 	// advertised when the server permits system tools at all. Whether a GIVEN
 	// agent may actually call them additionally requires the "system"
 	// capability — enforced per-agent in systemToolsFor at dispatch time.
-	if e.allowSystemTools {
+	if len(e.allowSystemAgents) > 0 {
 		all := e.buildSystemTools()
 		for _, b := range all {
 			if isPrivilegedSystemTool(b.Name) {
@@ -740,7 +769,7 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// can opt out of all built-ins via `builtins: []` in SOUL.yaml.
 	tools = append(tools, BuiltinTool{
 		Name:        "web_search",
-		Description: "Search the web for current, up-to-date information. Use for facts, news, prices, or anything beyond the model's training data. Returns titles, URLs, and content snippets. Supports Ollama, Tavily, and Serper backends.",
+		Description: "Search the web for current, up-to-date information. Use for facts, news, prices, or anything beyond the model's training data. Returns a JSON object {\"query\":..., \"result_count\":N, \"results\":[{\"title\",\"url\",\"content\"},...]}. Supports Ollama, Tavily, and Serper backends.",
 		Gate:        "",
 		Parameters: map[string]any{
 			"type": "object",
@@ -795,17 +824,24 @@ func (e *Engine) appendSkillBuiltins(tools []BuiltinTool) []BuiltinTool {
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name": map[string]any{
+				"skill_name": map[string]any{
 					"type":        "string",
 					"description": "The skill name as listed in the available_skills catalog",
 				},
+				"name": map[string]any{
+					"type":        "string",
+					"description": "Legacy alias for skill_name",
+				},
 			},
-			"required": []string{"name"},
+			"required": []string{"skill_name"},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			name := argString(args, "name")
+			name := argString(args, "skill_name")
 			if name == "" {
-				return "", fmt.Errorf("read_skill: name is required")
+				name = argString(args, "name")
+			}
+			if name == "" {
+				return "", fmt.Errorf("read_skill: skill_name is required")
 			}
 			s := e.skillLoader.Get(name)
 			if s == nil {
@@ -1006,14 +1042,28 @@ func (e *Engine) safeSystemTools() []BuiltinTool {
 	return out
 }
 
+// IsSystemAgentAllowed checks if the given agent is explicitly allowed by the server
+// to access destructive OS-level tools. It checks the global allowSystemAgents list.
+func (e *Engine) IsSystemAgentAllowed(def *agent.Definition) bool {
+	if def == nil || e.allowSystemAgents == nil {
+		return false
+	}
+	for _, id := range e.allowSystemAgents {
+		if id == "*" || id == "all" || id == def.ID {
+			return true
+		}
+	}
+	return false
+}
+
 // systemToolsFor returns the OS-level built-ins this agent may use. The SAFE
 // partition is always included; the privileged SYSTEM partition is added only
-// when the server permits system tools AND the agent has the "system"
+// when the server permits system tools for this agent AND the agent has the "system"
 // capability (SEC-3 double opt-in). When privileged tools are excluded the
 // caller still won't dispatch them — gating is centralised here.
 func (e *Engine) systemToolsFor(def *agent.Definition) []BuiltinTool {
 	all := e.buildSystemTools()
-	allowPrivileged := e.allowSystemTools && def != nil && def.HasCapability("system")
+	allowPrivileged := e.IsSystemAgentAllowed(def) && def.HasCapability("system")
 	out := make([]BuiltinTool, 0, len(all))
 	for _, b := range all {
 		if isPrivilegedSystemTool(b.Name) && !allowPrivileged {
@@ -1046,6 +1096,41 @@ func (e *Engine) buildSystemTools() []BuiltinTool {
 }
 
 // webSearch routes the query to the configured search provider.
+// searchResultItem is one normalized web_search hit.
+type searchResultItem struct {
+	Title   string `json:"title"`
+	URL     string `json:"url"`
+	Content string `json:"content"`
+}
+
+// marshalSearchResults renders web_search output as a JSON object string —
+// {"query":..., "result_count":N, "results":[{title,url,content},...]} — rather
+// than prose. A structured shape is the contract downstream Studio flow/python
+// nodes rely on (they do inputs["var"]["results"]); LLM agents read the JSON
+// equally well. An empty result set still returns a valid object with results:[]
+// so callers can branch on result_count without special-casing a "no results"
+// sentence. Content is truncated to keep payloads bounded.
+func marshalSearchResults(query string, items []searchResultItem) (string, error) {
+	if items == nil {
+		items = []searchResultItem{}
+	}
+	for i := range items {
+		items[i].Content = strings.TrimSpace(items[i].Content)
+		if len(items[i].Content) > 600 {
+			items[i].Content = items[i].Content[:600] + "…"
+		}
+	}
+	b, err := json.Marshal(map[string]any{
+		"query":        query,
+		"result_count": len(items),
+		"results":      items,
+	})
+	if err != nil {
+		return "", fmt.Errorf("web_search: encode results: %w", err)
+	}
+	return string(b), nil
+}
+
 func (e *Engine) webSearch(ctx context.Context, args map[string]any) (string, error) {
 	provider, _ := e.getSearchConfig()
 	provider = strings.ToLower(provider)
@@ -1117,20 +1202,11 @@ func (e *Engine) tavilyWebSearch(ctx context.Context, args map[string]any) (stri
 	if err := json.Unmarshal(body, &out); err != nil {
 		return "", fmt.Errorf("web_search (tavily): decode response: %w", err)
 	}
-	if len(out.Results) == 0 {
-		return fmt.Sprintf("No web results found for %q.", query), nil
+	items := make([]searchResultItem, 0, len(out.Results))
+	for _, r := range out.Results {
+		items = append(items, searchResultItem{Title: r.Title, URL: r.URL, Content: r.Content})
 	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Web search results for %q:\n", query))
-	for i, r := range out.Results {
-		content := strings.TrimSpace(r.Content)
-		if len(content) > 600 {
-			content = content[:600] + "…"
-		}
-		sb.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n   %s\n", i+1, r.Title, r.URL, content))
-	}
-	return sb.String(), nil
+	return marshalSearchResults(query, items)
 }
 
 // serperWebSearch implements the web_search tool via Serper API.
@@ -1188,20 +1264,11 @@ func (e *Engine) serperWebSearch(ctx context.Context, args map[string]any) (stri
 	if err := json.Unmarshal(body, &out); err != nil {
 		return "", fmt.Errorf("web_search (serper): decode response: %w", err)
 	}
-	if len(out.Organic) == 0 {
-		return fmt.Sprintf("No web results found for %q.", query), nil
+	items := make([]searchResultItem, 0, len(out.Organic))
+	for _, r := range out.Organic {
+		items = append(items, searchResultItem{Title: r.Title, URL: r.Link, Content: r.Snippet})
 	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Web search results for %q:\n", query))
-	for i, r := range out.Organic {
-		snippet := strings.TrimSpace(r.Snippet)
-		if len(snippet) > 600 {
-			snippet = snippet[:600] + "…"
-		}
-		sb.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n   %s\n", i+1, r.Title, r.Link, snippet))
-	}
-	return sb.String(), nil
+	return marshalSearchResults(query, items)
 }
 
 // ollamaWebSearch implements the built-in web_search tool via the Ollama Web
@@ -1253,22 +1320,12 @@ func (e *Engine) ollamaWebSearch(ctx context.Context, args map[string]any) (stri
 	if err := json.Unmarshal(body, &out); err != nil {
 		return "", fmt.Errorf("web_search: decode response: %w", err)
 	}
-	if len(out.Results) == 0 {
-		return fmt.Sprintf("No web results found for %q.", query), nil
+	items := make([]searchResultItem, 0, len(out.Results))
+	for _, r := range out.Results {
+		items = append(items, searchResultItem{Title: r.Title, URL: r.URL, Content: r.Content})
 	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Web search results for %q:\n", query))
-	for i, r := range out.Results {
-		content := strings.TrimSpace(r.Content)
-		if len(content) > 600 {
-			content = content[:600] + "…"
-		}
-		sb.WriteString(fmt.Sprintf("\n%d. %s\n   %s\n   %s\n", i+1, r.Title, r.URL, content))
-	}
-	return sb.String(), nil
+	return marshalSearchResults(query, items)
 }
-
 
 // Handle processes an inbound message and returns the agent's reply.
 // It is safe to call concurrently from multiple goroutines.
@@ -1714,6 +1771,14 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		for _, tc := range resp.ToolCalls {
 			aj, _ := json.Marshal(tc.Arguments)
 			name := normalizeToolCallName(tc.Name)
+
+			// Stateful tools should not trigger the loop breaker since their
+			// execution environment or underlying files may have changed.
+			if name == "shell_exec" || name == "run_script" || name == "http_request" {
+				allDup = false
+				break
+			}
+
 			seenMu.Lock()
 			_, ok := seen[name+"|"+string(aj)]
 			seenMu.Unlock()
@@ -2373,61 +2438,55 @@ func (e *Engine) buildContext(def *agent.Definition, sess *Session, incoming mes
 // with the tool's arguments as keyword arguments, capture stdout as the result.
 func (e *Engine) executeToolCalls(ctx context.Context, def *agent.Definition, sessionID string, calls []message.ToolCall, seen map[string]string, seenMu *sync.Mutex) []message.ToolResult {
 	results := make([]message.ToolResult, len(calls))
-	var wg sync.WaitGroup
 
-	for i, call := range calls {
-		wg.Add(1)
-		go func(idx int, tc message.ToolCall) {
-			defer wg.Done()
-			tc = normalizeToolCall(tc)
-			e.sink.Emit(message.Event{
-				Type: "tool.call", AgentID: def.ID, SessionID: sessionID,
-				Payload: tc, Timestamp: time.Now().UTC(),
-			})
+	for i, tc := range calls {
+		tc = normalizeToolCall(tc)
+		e.sink.Emit(message.Event{
+			Type: "tool.call", AgentID: def.ID, SessionID: sessionID,
+			Payload: tc, Timestamp: time.Now().UTC(),
+		})
 
-			// Anti-loop guard: if this exact tool+args was already run this turn,
-			// don't run it again — hand back the prior result and tell the model
-			// to move on.
-			argsJSON, _ := json.Marshal(tc.Arguments)
-			key := tc.Name + "|" + string(argsJSON)
-			seenMu.Lock()
-			prev, dup := seen[key]
-			seenMu.Unlock()
+		// Anti-loop guard: if this exact tool+args was already run this turn,
+		// don't run it again — hand back the prior result and tell the model
+		// to move on.
+		argsJSON, _ := json.Marshal(tc.Arguments)
+		key := tc.Name + "|" + string(argsJSON)
+		seenMu.Lock()
+		prev, dup := seen[key]
+		seenMu.Unlock()
 
-			var result string
-			isErr := false
-			if dup {
-				result = fmt.Sprintf(
-					"NOTE: you already called %s with these arguments this run; do not call it again. "+
-						"Use the result below and proceed to the next step.\n\n%s", tc.Name, prev)
+		var result string
+		isErr := false
+		if dup {
+			result = fmt.Sprintf(
+				"NOTE: you already called %s with these arguments this run; do not call it again. "+
+					"Use the result below and proceed to the next step.\n\n%s", tc.Name, prev)
+		} else {
+			// Per-tool timing + outcome counter. (PRODUCTION_AUDIT →
+			// MED/Observability)
+			toolStart := time.Now()
+			var err error
+			result, err = e.runTool(ctx, def, sessionID, tc)
+			metrics.ToolCallDuration.WithLabelValues(tc.Name).Observe(time.Since(toolStart).Seconds())
+			if err != nil {
+				result = fmt.Sprintf("error: %v", err)
+				isErr = true
+				metrics.ToolCallsTotal.WithLabelValues(tc.Name, "error").Inc()
 			} else {
-				// Per-tool timing + outcome counter. (PRODUCTION_AUDIT →
-				// MED/Observability)
-				toolStart := time.Now()
-				var err error
-				result, err = e.runTool(ctx, def, sessionID, tc)
-				metrics.ToolCallDuration.WithLabelValues(tc.Name).Observe(time.Since(toolStart).Seconds())
-				if err != nil {
-					result = fmt.Sprintf("error: %v", err)
-					isErr = true
-					metrics.ToolCallsTotal.WithLabelValues(tc.Name, "error").Inc()
-				} else {
-					metrics.ToolCallsTotal.WithLabelValues(tc.Name, "success").Inc()
-				}
-				seenMu.Lock()
-				seen[key] = result
-				seenMu.Unlock()
+				metrics.ToolCallsTotal.WithLabelValues(tc.Name, "success").Inc()
 			}
+			seenMu.Lock()
+			seen[key] = result
+			seenMu.Unlock()
+		}
 
-			results[idx] = message.ToolResult{CallID: tc.ID, Name: tc.Name, Content: result, IsError: isErr}
+		results[i] = message.ToolResult{CallID: tc.ID, Name: tc.Name, Content: result, IsError: isErr}
 
-			e.sink.Emit(message.Event{
-				Type: "tool.result", AgentID: def.ID, SessionID: sessionID,
-				Payload: results[idx], Timestamp: time.Now().UTC(),
-			})
-		}(i, call)
+		e.sink.Emit(message.Event{
+			Type: "tool.result", AgentID: def.ID, SessionID: sessionID,
+			Payload: results[i], Timestamp: time.Now().UTC(),
+		})
 	}
-	wg.Wait()
 	return results
 }
 
@@ -2588,6 +2647,22 @@ print(result if isinstance(result, str) else json.dumps(result))
 			continue
 		}
 
+		// Deterministic path-based guardrail for privileged system tools
+		if isPrivilegedSystemTool(b.Name) {
+			action, reason, err := e.deterministicGuardrail(ctx, def, sessionID, call)
+			if err != nil {
+				return "", err
+			}
+			if action == GuardrailActionDeny {
+				e.log.Warn("guardrail denied tool execution", zap.String("tool", call.Name), zap.String("reason", reason))
+				return "", fmt.Errorf("guardrail denied execution: %s", reason)
+			} else if action == GuardrailActionConfirm {
+				if err := e.dynamicConfirm(ctx, def, call, reason); err != nil {
+					return "", err
+				}
+			}
+		}
+
 		// Confirmation gate: pause and ask the user before executing tools
 		// that are listed in def.ConfirmTools (or "*" for all built-ins).
 		if err := e.maybeConfirm(ctx, def, call); err != nil {
@@ -2614,6 +2689,9 @@ print(result if isinstance(result, str) else json.dumps(result))
 		}
 	}
 	if toolDef == nil {
+		if isPrivilegedSystemTool(call.Name) {
+			return "", fmt.Errorf("tool %q requires the 'system' capability in the agent's SOUL.yaml and server-level authorization (allow_system_agents)", call.Name)
+		}
 		return "", fmt.Errorf("tool %q not defined in agent %q", call.Name, def.ID)
 	}
 
@@ -3576,4 +3654,87 @@ func flattenParts(parts []message.Part) string {
 		}
 	}
 	return sb.String()
+}
+
+const (
+	GuardrailActionSafe    = "SAFE"
+	GuardrailActionConfirm = "CONFIRM"
+	GuardrailActionDeny    = "DENY"
+)
+
+// isPathSafe determines if a given target path is within the agent's safe sandbox
+// (e.g. /tmp or the engine's active data directory).
+func isPathSafe(targetPath string, dataDir string) bool {
+	if targetPath == "" {
+		return false
+	}
+	cleanPath := filepath.Clean(targetPath)
+	
+	// Always allow /tmp
+	if strings.HasPrefix(cleanPath, "/tmp/") || cleanPath == "/tmp" {
+		return true
+	}
+	
+	// Allow if within the designated DataDir
+	if dataDir != "" {
+		cleanDataDir := filepath.Clean(dataDir)
+		if strings.HasPrefix(cleanPath, cleanDataDir+"/") || cleanPath == cleanDataDir {
+			return true
+		}
+	}
+	
+	return false
+}
+
+// deterministicGuardrail enforces a static, rules-based security boundary for privileged tools.
+// It relies on path isolation (sandbox) rather than LLM intent classification, resulting
+// in faster execution, zero hallucination risk, and predictable user prompts.
+func (e *Engine) deterministicGuardrail(ctx context.Context, def *agent.Definition, sessionID string, call message.ToolCall) (string, string, error) {
+	ws, _ := os.Getwd()
+
+	switch call.Name {
+	case "write_file", "replace_file_content", "download_file":
+		// Find the target path in the arguments
+		var targetPath string
+		if p, ok := call.Arguments["path"].(string); ok {
+			targetPath = p
+		} else if p, ok := call.Arguments["target_file"].(string); ok {
+			targetPath = p
+		} else if p, ok := call.Arguments["destination"].(string); ok {
+			targetPath = p
+		}
+
+		if targetPath != "" && isPathSafe(targetPath, ws) {
+			return GuardrailActionSafe, "", nil
+		}
+		return GuardrailActionConfirm, fmt.Sprintf("Writing to file outside workspace: %s", targetPath), nil
+
+	case "run_script":
+		var targetPath string
+		if p, ok := call.Arguments["path"].(string); ok {
+			targetPath = p
+		}
+
+		if targetPath != "" && isPathSafe(targetPath, ws) {
+			return GuardrailActionSafe, "", nil
+		}
+		return GuardrailActionConfirm, fmt.Sprintf("Executing script outside workspace: %s", targetPath), nil
+
+	case "install_library":
+		// Installing global/environment packages always requires confirmation
+		return GuardrailActionConfirm, "Installing environment libraries requires confirmation.", nil
+
+	case "shell_exec":
+		// Arbitrary shell commands are too risky to blindly allow without a strict whitelist.
+		// Always prompt the user for confirmation.
+		var cmd string
+		if c, ok := call.Arguments["command"].(string); ok {
+			cmd = c
+		}
+		return GuardrailActionConfirm, fmt.Sprintf("Executing arbitrary shell command: %s", cmd), nil
+
+	default:
+		// Any other privileged tool defaults to CONFIRM
+		return GuardrailActionConfirm, fmt.Sprintf("Privileged system action requires confirmation: %s", call.Name), nil
+	}
 }

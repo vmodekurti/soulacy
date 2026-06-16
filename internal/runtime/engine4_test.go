@@ -1275,7 +1275,7 @@ func TestRunAgentCall_DepthLimitExceeded(t *testing.T) {
 
 	mem, _ := memory.NewFileStore(t.TempDir())
 	router := llm.NewRouter("test")
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	// Inject maximum depth into context.
 	ctx := withAgentCallDepth(context.Background(), maxAgentCallDepth)
@@ -1899,7 +1899,7 @@ func TestAllToolSchemas_IncludesPeerAgentSchemas(t *testing.T) {
 
 	mem, _ := memory.NewFileStore(t.TempDir())
 	router := llm.NewRouter("test")
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	schemas := e.allToolSchemas(caller, "http")
 	names := toolSchemaNameSet(schemas)

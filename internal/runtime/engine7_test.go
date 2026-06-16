@@ -229,7 +229,7 @@ func TestBuildSystemPrefix_AgentCatalogWhenPeersDeclared(t *testing.T) {
 		t.Fatalf("memory store: %v", err)
 	}
 	router := llm.NewRouter("test")
-	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	caller := &agent.Definition{
 		ID:           "caller-e7",
@@ -752,7 +752,7 @@ func TestFlattenParts_OnlyNonTextParts(t *testing.T) {
 // Builtins() returns system tools as well.
 func TestBuiltins_SystemToolsIncluded(t *testing.T) {
 	e := newMinimalEngine(t)
-	e.allowSystemTools = true
+	e.allowSystemAgents = []string{"*"}
 	builtins := e.Builtins()
 
 	nameSet := make(map[string]bool)
@@ -774,7 +774,7 @@ func TestBuiltins_SystemToolsIncluded(t *testing.T) {
 // permit. This is an intentional behaviour change introduced by SEC-3.
 func TestBuiltins_SystemToolsExcludedWhenDisabled(t *testing.T) {
 	e := newMinimalEngine(t)
-	e.allowSystemTools = false
+	e.allowSystemAgents = nil
 	builtins := e.Builtins()
 
 	nameSet := make(map[string]bool)

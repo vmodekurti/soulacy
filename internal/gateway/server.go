@@ -25,6 +25,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -70,6 +71,7 @@ import (
 	"github.com/soulacy/soulacy/internal/webui"
 	"github.com/soulacy/soulacy/internal/workboard"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	"strconv"
 )
@@ -1142,6 +1144,11 @@ func (s *Server) Listen(ctx context.Context) error {
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.Server.Host, s.cfg.Server.Port)
 
+	// Start config watcher
+	if s.cfgPath != "" {
+		go s.watchConfig(ctx)
+	}
+
 	// Start TLS if configured
 	if s.cfg.Server.TLSCert != "" && s.cfg.Server.TLSKey != "" {
 		s.log.Info("gateway listening with TLS", zap.String("addr", addr))
@@ -1158,4 +1165,55 @@ func (s *Server) Listen(ctx context.Context) error {
 		_ = s.app.Shutdown()
 	}()
 	return s.app.Listen(addr)
+}
+
+// watchConfig uses fsnotify to monitor config.yaml for changes and reloads it.
+func (s *Server) watchConfig(ctx context.Context) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		s.log.Warn("gateway: failed to start config watcher", zap.Error(err))
+		return
+	}
+	defer watcher.Close()
+
+	cfgDir := filepath.Dir(s.cfgPath)
+	cfgFile := filepath.Base(s.cfgPath)
+
+	if err := watcher.Add(cfgDir); err != nil {
+		s.log.Warn("gateway: failed to watch config directory", zap.String("dir", cfgDir), zap.Error(err))
+		return
+	}
+
+	// Debounce timer
+	var timer *time.Timer
+	delay := 100 * time.Millisecond
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			s.log.Warn("gateway: config watcher error", zap.Error(err))
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if filepath.Base(event.Name) != cfgFile {
+				continue
+			}
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+				if timer != nil {
+					timer.Stop()
+				}
+				timer = time.AfterFunc(delay, func() {
+					if err := s.ReloadConfig(); err != nil {
+						s.log.Error("gateway: failed to hot-reload config", zap.Error(err))
+					}
+				})
+			}
+		}
+	}
 }

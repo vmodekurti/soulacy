@@ -298,7 +298,7 @@ func newTestGatewayWithLLM(t *testing.T, apiKey string) (*Server, *fakeLLMProvid
 	if err != nil {
 		t.Fatalf("memory store: %v", err)
 	}
-	engine := runtime.NewEngine(loader, router, mem, nil, "", 0, zap.NewNop(), nil, nil, "", nil, nil, false, nil, nil)
+	engine := runtime.NewEngine(loader, router, mem, nil, "", 0, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 	sched := scheduler.New(nil, loader, zap.NewNop(), nil)
 	return New(
 		cfg,

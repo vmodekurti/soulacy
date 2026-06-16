@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -254,10 +256,10 @@ func (s *Server) handlePatchConfig(c *fiber.Ctx) error {
 	})
 }
 
+// readRawConfig parses a YAML file into a generic map.
 func readRawConfig(path string) (map[string]any, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		// If file doesn't exist yet, start with empty map
 		if os.IsNotExist(err) {
 			return map[string]any{}, nil
 		}
@@ -273,6 +275,46 @@ func readRawConfig(path string) (map[string]any, error) {
 	return m, nil
 }
 
+// ReloadConfig reads config.yaml from disk and applies hot-reloadable changes
+// to the running gateway (e.g. MCP servers).
+func (s *Server) ReloadConfig() error {
+	if s.cfgPath == "" {
+		return nil
+	}
+	newCfg, _, err := config.Load(s.cfgPath)
+	if err != nil {
+		return err
+	}
+
+	s.cfg = newCfg
+
+	// Hot-reload MCP servers
+	if s.mcp != nil {
+		current := s.mcp.ServersSnapshot()
+		// Remove deleted servers
+		for _, cur := range current {
+			if _, exists := newCfg.MCP.Servers[cur.ID]; !exists {
+				_ = s.mcp.RemoveServer(cur.ID)
+			}
+		}
+		// Add/Update existing servers
+		for id, srvCfg := range newCfg.MCP.Servers {
+			_ = s.mcp.AddServer(id, mcp.ServerConfig{
+				Transport: srvCfg.Transport,
+				Command:   srvCfg.Command,
+				Args:      srvCfg.Args,
+				Env:       srvCfg.Env,
+				URL:       srvCfg.URL,
+				Headers:   srvCfg.Headers,
+			})
+		}
+	}
+
+	s.log.Info("config.yaml reloaded")
+	return nil
+}
+
+// writeRawConfig safely writes a map back to a YAML file.
 func writeRawConfig(path string, m map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err

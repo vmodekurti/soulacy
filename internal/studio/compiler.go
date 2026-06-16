@@ -120,7 +120,7 @@ const canonicalExample = `{
         "output": "search", "x": 0, "y": 0 },
       { "id": "pick_top_articles", "kind": "python",
         "description": "Parse the search results and keep the top 5 as {title,url}",
-        "code": "def run(inputs):\n    res = inputs.get('search', {})\n    items = res.get('results') or res.get('items') or []\n    return [{'title': it.get('title', ''), 'url': it.get('url') or it.get('link', '')} for it in items[:5]]",
+        "code": "def run(inputs):\n    try:\n        res = inputs.get('search', {})\n        if not isinstance(res, dict):\n            res = {}\n        items = res.get('results') or res.get('items') or []\n        return [{'title': it.get('title', ''), 'url': it.get('url') or it.get('link', '')} for it in items[:5] if isinstance(it, dict)]\n    except Exception as e:\n        return []",
         "output": "articles", "x": 220, "y": 0 },
       { "id": "have_articles", "kind": "branch",
         "description": "Continue only if at least one article was found",
@@ -128,11 +128,11 @@ const canonicalExample = `{
         "outputs": [ { "name": "hot" }, { "name": "quiet" } ], "x": 440, "y": 0 },
       { "id": "write_digest", "kind": "agent", "agent": "summarizer",
         "description": "Summarize the articles into a 5-bullet digest",
-        "input": "Write a 5-bullet AI digest \u2014 one bullet per article: a one-sentence takeaway then the link.\n{{ toJson .articles }}",
+        "input": "You are an expert AI news curator. Your task is to write a concise, 5-bullet AI digest based on the provided articles. For each article, write a single clear sentence summarizing the takeaway, followed immediately by the URL. Do not include any introductory text or fluff. Output strictly as a markdown bulleted list.\n\nSource Articles:\n{{ toJson .articles }}",
         "output": "digest", "x": 660, "y": -80 },
       { "id": "say_quiet", "kind": "agent", "agent": "notifier",
         "description": "Send a short 'nothing notable today' note",
-        "input": "Reply exactly: No notable AI news today.",
+        "input": "Reply exactly with this fallback message: No notable AI news today. Enjoy the quiet!",
         "output": "note", "x": 660, "y": 80 }
     ],
     "edges": [
@@ -167,14 +167,16 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- flow.nodes[].kind is one of: tool, agent, branch, python. tool nodes set \"tool\"; agent nodes set \"agent\"; python nodes set \"code\" (inline Python); branch nodes set none of these.\n")
 	sb.WriteString("- Every flow must have an entry node and edges that terminate at \"end\".\n")
 	sb.WriteString("- Prefer at least one tool node (to fetch/act) and one agent node (to reason/summarize).\n")
+	sb.WriteString("- PRODUCTION MINDSET: Treat every intent as a production workload. Handle empty states, edge cases, and failure modes explicitly (e.g., using a branch node to check if an API returned data before proceeding to processing it).\n")
 	sb.WriteString("- Build REAL multi-node graphs. Emit MULTIPLE tool and agent nodes when the intent has multiple steps; multiple agent (kind=agent) nodes are peers that hand off to each other.\n")
 	sb.WriteString("- Use a branch node (kind=branch, no tool/agent) whenever the work forks on a CONDITION. A branch node fans out 2+ edges; put a Go-template predicate in edge.if (over flow vars, e.g. \"{{ gt (len .stories) 0 }}\"). Edges from a node are tried IN ORDER; the first whose if is truthy wins, so leave the LAST/fallback edge's if empty.\n")
 	sb.WriteString("- When a node fans out to multiple targets, you MAY declare typed ports: set nodes[].outputs / inputs to lists of {\"name\":...,\"type\"?:...} and wire edges with from_port / to_port. A named from_port MUST be one of the From node's declared outputs; a named to_port MUST be one of the To node's declared inputs. Omit ports entirely for simple linear hops.\n\n")
 	sb.WriteString("- Use a python node (kind=python) ONLY for glue the available tools can't do: shelling out to a local CLI the user says is installed, parsing a tool's raw output, reshaping data, or calling an external command. Put the script in nodes[].code as a function `def run(inputs):` where `inputs` is a dict of the node's rendered input (JSON) and the value you RETURN becomes the node's output. Always prefer an existing tool or agent when one fits; reach for python only for the gaps, and keep the code minimal. Do NOT invent tool names for capabilities that don't exist — write a python node instead.\n\n")
 	sb.WriteString("- CRITICAL — every node MUST carry its REAL instruction derived from the intent, never a placeholder or empty field:\n")
 	sb.WriteString("    * tool nodes: set \"input\" to the tool's arguments as a JSON object built from the intent. A search/web tool node MUST contain the actual query, e.g. {\"query\":\"latest AI research articles\",\"num_results\":10}. Never leave a tool node's input empty when it takes arguments.\n")
-	sb.WriteString("    * agent nodes: set \"input\" to the full, concrete task prompt for that agent (what to do, with which data) — not a one-word label. Inject an upstream output with {{ toJson .var }} for a JSON value, or {{ .var }} for a plain string.\n")
-	sb.WriteString("    * python nodes: write COMPLETE, runnable code in \"code\" that actually performs the step. NEVER a stub, `pass`, `...`, TODO, or `return inputs`. The code automatically receives ALL prior node outputs as the `inputs` dict (keyed by each node's output var), so read e.g. inputs.get(\"articles\"). Always define def run(inputs).\n")
+	sb.WriteString("    * agent nodes: set \"input\" to the full, concrete, highly specific task prompt for that agent (what to do, with which data, what persona to adopt, edge case rules, explicit output format) — not a one-word label or 1-sentence stub. Inject an upstream output with {{ toJson .var }} for a JSON value, or {{ .var }} for a plain string.\n")
+	sb.WriteString("    * python nodes: write COMPLETE, robust, runnable code in \"code\". NEVER a stub, `pass`, `...`, TODO, or `return inputs`. The code automatically receives ALL prior node outputs as the `inputs` dict (keyed by each node's output var), so read e.g. inputs.get(\"articles\"). Code MUST include try/except blocks, defensive dictionary lookups (.get()), type checking, and fallback values. Never blindly index into dicts/lists. Always define def run(inputs).\n")
+	sb.WriteString("- TOOL OUTPUT CONTRACT — the web_search tool returns a JSON OBJECT: {\"query\":\"...\",\"result_count\":N,\"results\":[{\"title\":\"...\",\"url\":\"...\",\"content\":\"...\"}]}. A python node consuming it MUST read the dict, e.g. `data = inputs.get(\"<search_var>\", {})` then `for it in data.get(\"results\", []): it[\"title\"], it[\"url\"], it[\"content\"]`. Defensive code only: treat a non-dict value as empty (e.g. `if not isinstance(data, dict): data = {}`) so a missing or error result never crashes the node.\n")
 	sb.WriteString("    * Pull concrete values straight from the user's words: if they ask for \"top 10 AI articles\", the query is about AI articles and the count is 10 — bake that in, do not leave it generic.\n")
 	sb.WriteString("- Give every node a meaningful \"output\" var name so downstream nodes can reference it (e.g. \"articles\", \"notebook_id\", \"audio_url\").\n")
 	sb.WriteString("- Give every node a one-line \"description\" stating concretely what THAT node does (e.g. \"Search the web for today's AI news\", \"Keep the top 5 articles as {title,url}\") — not a vague label. The node ids should also read as verbs (search_ai_news, pick_top_articles), not generic names like node1.\n")

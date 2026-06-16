@@ -122,6 +122,7 @@ Quick start:
 		buildEvalCmd(),      // sy eval — evaluation framework
 		buildRegistryCmd(),  // sy registry — review + manage skill sources (E26)
 		buildSecretsCmd(),   // sy secrets — manage the gateway-global secrets store
+		buildMCPCmd(),       // sy mcp — manage MCP servers
 		buildVersionCmd(),
 	)
 	return root
@@ -900,6 +901,11 @@ func apiCall(method, path string, body []byte) ([]byte, error) {
 	defer resp.Body.Close()
 
 	data, _ := io.ReadAll(resp.Body)
+
+	if warning := resp.Header.Get("X-Soulacy-Warning"); warning != "" {
+		fmt.Fprintf(os.Stderr, "\n\033[1;33m%s\033[0m\n\n", warning)
+	}
+
 	if resp.StatusCode >= 400 {
 		return nil, fmt.Errorf("gateway error %d: %s", resp.StatusCode, string(data))
 	}

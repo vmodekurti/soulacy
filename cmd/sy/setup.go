@@ -122,6 +122,9 @@ func runSetupWizard() error {
 		LogLevel:    "info",
 		DataDir:     setupDataDir(home),
 	}
+
+	// ── Workspace location (default: ~/.soulacy/soulspace) ─────────────────
+	chooseWorkspaceLocation(cfg, home)
 	cfg.ConfigPath = filepath.Join(cfg.DataDir, "config.yaml")
 
 	// ── Check for existing config ──────────────────────────────────────────
@@ -170,6 +173,18 @@ func runSetupWizard() error {
 	if err := createDataDirs(cfg); err != nil {
 		return fmt.Errorf("create dirs: %w", err)
 	}
+
+	// Persist a non-default workspace location so the gateway resolves it on
+	// every boot (env vars don't survive launchctl/systemd). The canonical
+	// ~/.soulacy/soulspace needs no pointer.
+	if cfg.DataDir == defaultWorkspace(home) {
+		_ = config.ClearWorkspacePointer(home)
+	} else if err := config.SaveWorkspacePointer(home, cfg.DataDir); err != nil {
+		fmt.Printf("  %s Could not record workspace location: %v\n", yellow("!"), err)
+		fmt.Printf("  %s Set %s so the gateway finds it.\n", gray("→"),
+			cyan("SOULACY_WORKSPACE="+cfg.DataDir))
+	}
+
 	installExampleAgent(cfg)
 
 	printSuccess(cfg)
@@ -543,6 +558,7 @@ func printSummary(cfg *setupConfig) {
 	}
 	fmt.Printf("  %-20s %s\n", "Python", cfg.PythonBin)
 	fmt.Printf("  %-20s %s\n", "Log level", cfg.LogLevel)
+	fmt.Printf("  %-20s %s\n", "Workspace", cfg.DataDir)
 	fmt.Printf("  %-20s %s\n", "Config file", cfg.ConfigPath)
 
 	channels := []string{"http (always on)"}
@@ -750,11 +766,53 @@ func fetchOllamaModels(baseURL string) []string {
 	return names
 }
 
-// setupDataDir picks the workspace root for new setups: the organized
-// soulspace layout unless a legacy flat ~/.soulacy already exists.
+// defaultWorkspace is the canonical workspace root for new installs. It is
+// ALWAYS ~/.soulacy/soulspace — the wizard offers an override, but this is the
+// default every time.
+func defaultWorkspace(home string) string {
+	return filepath.Join(home, ".soulacy", config.SoulspaceDirName)
+}
+
+// setupDataDir picks the default workspace root the wizard pre-fills: an
+// existing resolved workspace (so re-running setup keeps the current location,
+// including a pointer-selected custom one), else the canonical soulspace path.
 func setupDataDir(home string) string {
-	if ws, err := config.ResolveWorkspace(); err == nil {
+	if ws, err := config.ResolveWorkspace(); err == nil && ws.Root != "" {
 		return ws.Root
 	}
-	return filepath.Join(home, ".soulacy")
+	return defaultWorkspace(home)
+}
+
+// expandPath resolves "~", "~/x", and relative paths to an absolute path so the
+// operator can type a natural location at the prompt.
+func expandPath(p, home string) string {
+	p = strings.TrimSpace(p)
+	switch {
+	case p == "":
+		return p
+	case p == "~":
+		return home
+	case strings.HasPrefix(p, "~/"):
+		return filepath.Join(home, p[2:])
+	}
+	if !filepath.IsAbs(p) {
+		if abs, err := filepath.Abs(p); err == nil {
+			return abs
+		}
+	}
+	return filepath.Clean(p)
+}
+
+// chooseWorkspaceLocation prompts for where the workspace should live, defaulting
+// to ~/.soulacy/soulspace. A non-default choice is persisted as a pointer file
+// after the config is written so the gateway finds it on every boot.
+func chooseWorkspaceLocation(cfg *setupConfig, home string) {
+	fmt.Printf("  %s Where should Soulacy store its workspace?\n", dim("Location"))
+	fmt.Printf("  %s\n", gray("Holds config.yaml, agents, data, logs, and secrets — everything."))
+	fmt.Printf("  %s\n", gray("Press Enter for the default, or type an absolute path."))
+	chosen := expandPath(prompt("  Workspace", cfg.DataDir), home)
+	if chosen != "" {
+		cfg.DataDir = chosen
+	}
+	fmt.Println()
 }

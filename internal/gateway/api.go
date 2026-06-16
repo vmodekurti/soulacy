@@ -272,6 +272,10 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 		s.log.Warn("scheduler registration failed", zap.String("agent", def.ID), zap.Error(err))
 	}
 
+	if def.HasCapability("system") {
+		c.Set("X-Soulacy-Warning", "WARNING: This agent has been granted 'system' capabilities. It has raw access to shell execution and file writing. Ensure you fully trust the agent's prompt to avoid local machine compromise.")
+	}
+
 	return c.Status(fiber.StatusCreated).JSON(def)
 }
 
@@ -313,6 +317,10 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	s.scheduler.DeregisterAgent(id)
 	if err := s.scheduler.RegisterAgent(&updates); err != nil {
 		s.log.Warn("scheduler re-registration failed", zap.String("agent", id), zap.Error(err))
+	}
+
+	if updates.HasCapability("system") {
+		c.Set("X-Soulacy-Warning", "WARNING: This agent has been granted 'system' capabilities. It has raw access to shell execution and file writing. Ensure you fully trust the agent's prompt to avoid local machine compromise.")
 	}
 
 	return c.JSON(updates)
@@ -520,6 +528,20 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	// agent's declared run_timeout if set, otherwise the gateway default.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), resolveRunTimeout(def))
 	defer cancel()
+
+	// Inject confirm sender so synchronous GUI chats can still receive tool confirmation
+	// requests over the global WebSocket event stream.
+	ctx = runtime.WithConfirmSender(ctx, func(req runtime.ConfirmRequest) <-chan bool {
+		resultCh := s.engine.Broker().Register(req.CallID)
+		s.hub.Emit(message.Event{
+			Type:      "tool_confirm",
+			AgentID:   msg.AgentID,
+			SessionID: msg.SessionID,
+			Payload:   req,
+			Timestamp: time.Now().UTC(),
+		})
+		return resultCh
+	})
 
 	reply, err := s.engine.Handle(ctx, msg)
 	if err != nil {
