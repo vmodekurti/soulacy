@@ -270,6 +270,7 @@ func (a *App) wireGateway(d gatewayDeps, stack *closerStack) *gateway.Server {
 	} else {
 		fsWatcher.OnPyChange = srv.InvalidateToolCatalog
 		fsWatcher.Start()
+		srv.SetAgentWatcher(fsWatcher) // S2.13 — expose watcher liveness in deep health
 		stack.push("file-watcher", func() error { fsWatcher.Stop(); return nil })
 	}
 

@@ -91,6 +91,33 @@ func (s *Server) handleHealth(c *fiber.Ctx) error {
 		deps["knowledge"] = "disabled"
 	}
 
+	// S2.13 — deep health (?deep=1) probes things a shallow 200-OK hides:
+	// channel adapter connection state and the hot-reload watcher. A gateway
+	// that returns "ok" while Slack is disconnected and the watcher is dead is
+	// a lie that bites at 2am.
+	if c.QueryBool("deep", false) {
+		if s.channels != nil {
+			for id, st := range s.channels.Statuses() {
+				if st.Connected {
+					deps["channel:"+id] = "connected"
+				} else {
+					detail := st.Detail
+					if detail == "" {
+						detail = "disconnected"
+					}
+					deps["channel:"+id] = "error: " + detail
+				}
+			}
+		}
+		if s.agentWatcher != nil {
+			if s.agentWatcher.Healthy() {
+				deps["hot_reload_watcher"] = "ok"
+			} else {
+				deps["hot_reload_watcher"] = "error: watcher not running"
+			}
+		}
+	}
+
 	status := "ok"
 	for _, v := range deps {
 		if strings.HasPrefix(v, "error:") || v == "timeout" {

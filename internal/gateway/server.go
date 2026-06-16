@@ -101,6 +101,7 @@ type Server struct {
 	apiKeyStore     apikeys.Store        // nil until SetAPIKeyStore() is called
 	dlqStore        dlq.Store            // nil until SetDLQStore() is called
 	historyStore    session.HistoryStore // nil until SetHistoryStore() is called
+	agentWatcher    healthReporter       // nil until SetAgentWatcher() is called (S2.13)
 	log             *zap.Logger
 
 	// Tool-catalog TTL cache. See toolCatalog() / InvalidateToolCatalog().
@@ -274,6 +275,17 @@ func (s *Server) SetDLQStore(st dlq.Store) {
 // When nil, /history routes return 503.
 func (s *Server) SetHistoryStore(st session.HistoryStore) {
 	s.historyStore = st
+}
+
+// healthReporter is anything that can report its own liveness — satisfied by
+// runtime.Watcher (S2.13/S2.4). Kept as a local interface to avoid widening the
+// gateway's import surface.
+type healthReporter interface{ Healthy() bool }
+
+// SetAgentWatcher wires the hot-reload watcher so the deep health check can
+// report whether it's still running.
+func (s *Server) SetAgentWatcher(w healthReporter) {
+	s.agentWatcher = w
 }
 
 // rlUserMW returns the per-user RPM middleware, or a no-op when no limiter
