@@ -1755,6 +1755,26 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		// through to the non-streaming code path, so the drain below is a no-op.
 		streamCB := streamCallback(ctx)
 		wantStream := def.StreamReply && streamCB != nil && len(tools) == 0
+
+		// Story 4 / S5.1 — proactively keep the prompt within the model's
+		// context window. Reserve room for the completion, then trim the oldest
+		// non-system turns until the estimated prompt fits. This turns a
+		// silent-overflow 400 into graceful, oldest-first truncation.
+		ctxLimit := modelContextLimit(def.LLM.Provider, def.LLM.Model)
+		reserveOut := def.LLM.MaxTokens
+		if reserveOut <= 0 {
+			reserveOut = 1024
+		}
+		inputBudget := ctxLimit - reserveOut
+		if trimmed, dropped := trimMessagesToFit(chatMsgs, tools, inputBudget); dropped > 0 {
+			chatMsgs = trimmed
+			e.log.Warn("engine: trimmed history to fit context window",
+				zap.String("agent", msg.AgentID),
+				zap.String("model", model),
+				zap.Int("dropped_messages", dropped),
+				zap.Int("input_budget_tokens", inputBudget))
+		}
+
 		req := llm.CompletionRequest{
 			Model:       def.LLM.Model,
 			Messages:    chatMsgs,
@@ -1780,6 +1800,19 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		llmStart := time.Now()
 
 		resp, err := e.llmRouter.Complete(ctx, def.LLM.Provider, req)
+		// Story 4 / S5.1 — reactive recovery: if the provider still rejects the
+		// prompt as too large (our estimate was optimistic, or the model's real
+		// window is smaller than our table), aggressively halve the non-system
+		// history and retry ONCE before giving up.
+		if err != nil && isContextExceededErr(err) && ctx.Err() == nil {
+			if shrunk, dropped := trimMessagesToFit(chatMsgs, tools, estimateTokens(chatMsgs, tools)/2); dropped > 0 {
+				e.log.Warn("engine: provider reported context exceeded — retrying with trimmed history",
+					zap.String("agent", msg.AgentID), zap.Int("dropped_messages", dropped))
+				chatMsgs = shrunk
+				req.Messages = chatMsgs
+				resp, err = e.llmRouter.Complete(ctx, def.LLM.Provider, req)
+			}
+		}
 		// Prometheus: per-call duration + outcome counter + token counts.
 		// (PRODUCTION_AUDIT → MED/Observability)
 		llmProviderLabel := def.LLM.Provider
