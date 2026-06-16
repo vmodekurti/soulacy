@@ -731,4 +731,3 @@ type SearchConfig struct {
 	Provider string `mapstructure:"provider"`
 	APIKey   string `mapstructure:"api_key"`
 }
-
