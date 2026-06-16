@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -1788,12 +1789,25 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		metrics.LLMCallDuration.WithLabelValues(llmProviderLabel, model).Observe(time.Since(llmStart).Seconds())
 		if err != nil {
 			metrics.LLMCallsTotal.WithLabelValues(llmProviderLabel, model, "error").Inc()
+			// Story 3 — name the clock that fired. A bare "context deadline
+			// exceeded" leaves the operator guessing whether it was the agent's
+			// run_timeout, a tool timeout, or provider slowness. When the run
+			// context is already done, the run_timeout (or shutdown) is the
+			// cause, not the provider.
+			outErr := fmt.Errorf("engine: llm call: %w", err)
+			if ctxErr := ctx.Err(); ctxErr != nil || errors.Is(err, context.DeadlineExceeded) {
+				if errors.Is(ctxErr, context.Canceled) {
+					outErr = fmt.Errorf("engine: run cancelled (shutdown or caller cancel) during llm call: %w", err)
+				} else {
+					outErr = fmt.Errorf("engine: agent run_timeout exceeded while waiting on the LLM provider %q (model %q); raise the agent's run_timeout or check provider latency: %w", llmProviderLabel, model, err)
+				}
+			}
 			e.sink.Emit(message.Event{
 				Type: "error", AgentID: msg.AgentID, SessionID: msg.SessionID,
-				Payload:   map[string]any{"stage": "llm", "error": err.Error()},
+				Payload:   map[string]any{"stage": "llm", "error": outErr.Error()},
 				Timestamp: time.Now().UTC(),
 			})
-			return message.Message{}, fmt.Errorf("engine: llm call: %w", err)
+			return message.Message{}, outErr
 		}
 		metrics.LLMCallsTotal.WithLabelValues(llmProviderLabel, model, "success").Inc()
 		if resp.InputTokens > 0 {
