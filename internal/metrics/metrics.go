@@ -125,6 +125,16 @@ var (
 		},
 		[]string{"agent", "outcome"},
 	)
+	// AgentPanicsTotal counts panics recovered inside engine.Handle (S2.1).
+	// A non-zero value means a run hit a bug that would previously have
+	// crashed the whole process; alert on any increase.
+	AgentPanicsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "soulacy_agent_panics_total",
+			Help: "Panics recovered inside engine.Handle (would otherwise crash the process).",
+		},
+		[]string{"agent"},
+	)
 
 	// Actionlog + worker pool gauges
 
@@ -163,7 +173,7 @@ func init() {
 		HTTPRequestDuration, HTTPRequestsTotal,
 		LLMCallDuration, LLMCallsTotal, LLMInputTokens, LLMOutputTokens,
 		ToolCallDuration, ToolCallsTotal,
-		AgentRunDuration, AgentRunsTotal,
+		AgentRunDuration, AgentRunsTotal, AgentPanicsTotal,
 		ActionlogQueueDepth, ActionlogBatchSize, ActionlogDropsTotal,
 		WorkerPoolActiveRuns,
 		ChannelInboxDropsTotal,

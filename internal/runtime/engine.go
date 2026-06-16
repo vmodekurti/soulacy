@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -1374,6 +1375,29 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 				defer cancel()
 				e.failureNotifier.NotifyFailure(notifyCtx, d, msg, err.Error())
 			}
+		}
+	}()
+
+	// S2.1 — Panic isolation. Channel- and cron-driven runs execute in bare
+	// worker goroutines (internal/app/wire_subsystems.go) that are NOT behind
+	// Fiber's recover middleware, so an un-recovered panic in a tool handler,
+	// provider decode, or any helper would crash the entire process — taking
+	// down every channel, the scheduler, and all in-flight HTTP requests with
+	// it. This recover converts a panic into an ordinary run error. It is
+	// registered AFTER the metrics/DLQ/notifier defer above so it runs FIRST
+	// during unwind: it sets the named return `err`, which the outer defer then
+	// observes to record the "error" outcome, push to the DLQ, and fire the
+	// failure notifier — exactly as for a normal error.
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			e.log.Error("engine: recovered panic in Handle",
+				zap.String("agent", msg.AgentID),
+				zap.String("session", msg.SessionID),
+				zap.Any("panic", r),
+				zap.ByteString("stack", stack))
+			metrics.AgentPanicsTotal.WithLabelValues(msg.AgentID).Inc()
+			err = fmt.Errorf("engine: recovered panic: %v", r)
 		}
 	}()
 
