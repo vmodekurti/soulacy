@@ -148,7 +148,6 @@ func (a *App) Run(parent context.Context) error {
 		}
 	}
 
-
 	// ── MCP client (connects to configured MCP servers; tools auto-injected into every agent) ──
 	mcpServers := make(map[string]mcp.ServerConfig, len(cfg.MCP.Servers))
 	for id, sc := range cfg.MCP.Servers {
@@ -293,6 +292,10 @@ func (a *App) Run(parent context.Context) error {
 	// previous gateway process didn't finish. Bounded to the last hour;
 	// synchronous HTTP + cron triggers are skipped.
 	replayIncompleteRuns(actionBackend, chanReg, log)
+
+	// S2.2 — stop the session-eviction sweep goroutine on shutdown so it
+	// doesn't leak across restarts.
+	stack.push("session-eviction", func() error { engine.StopSessionEviction(); return nil })
 
 	// ── Message Router — bounded worker pool draining the shared inbox ──────
 	a.startMessageRouter(ctx, chanReg, loader, engine)
