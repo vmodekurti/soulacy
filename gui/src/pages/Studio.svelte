@@ -11,6 +11,7 @@
   // thin client that calls the gateway directly through the GUI's
   // authenticated `api` session (studioApi.js keeps the same `bridge` shape).
   import { bridge } from '../lib/studio/studioApi.js'
+  import { editAgent } from '../lib/stores.js'
   import { toFlow, kindMeta } from '../lib/studio/graph.js'
   import Palette from '../lib/studio/Palette.svelte'
   import Inspector from '../lib/studio/Inspector.svelte'
@@ -799,8 +800,10 @@ def run(inputs):
     saveError = ''
     try {
       const res = await bridge.save(workflow, acceptPrivilegedExposure, grants)
-      const id = (res && res.agentId) || '(unknown)'
+      const id = res.agentId
       saveMsg = `Saved as disabled agent ${id} — enable it from the Agents page.`
+      $editAgent = res.agentId
+      window.location.hash = '#agents'
       consent = null
     } catch (e) {
       // 409 fallback: server demands consent even though plan didn't (or the
@@ -1003,7 +1006,7 @@ def run(inputs):
 
   // Load a saved agent's workflow back onto the canvas for editing. Re-saving
   // (with the same name → same id) upserts the agent.
-  async function editAgent(a) {
+  async function loadAgentForEdit(a) {
     if (!a || !a.id || library.busyId) return
     library = { ...library, busyId: a.id, error: '' }
     try {
@@ -1797,7 +1800,7 @@ def run(inputs):
             <ul class="picker-list">
               {#each library.agents as a (a.id)}
                 <li class="picker-item lib-item">
-                  <button class="picker-main" type="button" on:click={() => editAgent(a)} disabled={!!library.busyId} title="Edit this workflow">
+                  <button class="picker-main" type="button" on:click={() => loadAgentForEdit(a)} disabled={!!library.busyId} title="Edit this workflow">
                     <span class="picker-name">
                       {a.name || a.id}
                       <span class="agent-badge {a.enabled ? 'on' : 'off'}">{a.enabled ? 'enabled' : 'disabled'}</span>
@@ -1805,7 +1808,7 @@ def run(inputs):
                     <span class="picker-desc">{a.description || (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's'))}</span>
                   </button>
                   <div class="lib-actions">
-                    <button class="btn btn-sm" type="button" on:click={() => editAgent(a)} disabled={!!library.busyId}>
+                    <button class="btn btn-sm" type="button" on:click={() => loadAgentForEdit(a)} disabled={!!library.busyId}>
                       {library.busyId === a.id ? '…' : 'Edit'}
                     </button>
                     <button class="btn btn-sm" type="button" on:click={() => deleteAgentWorkflow(a)} disabled={!!library.busyId} title="Delete this agent">

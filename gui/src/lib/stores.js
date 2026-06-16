@@ -21,6 +21,9 @@ export const authRequired = writable(false)
 // Agent to pre-select when navigating to the Activity page (set by "Watch" buttons).
 export const activityAgent = writable('')
 
+// Agent to pre-select when navigating to the Agents page (set by Studio after save).
+export const editAgent = writable('')
+
 // Chat page — persisted across navigation so in-flight requests survive unmount.
 // chatThreads is keyed by a UI thread id. Each thread owns its agent, runtime
 // session, visible messages, branch state, and per-session metrics baseline.
