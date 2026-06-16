@@ -673,7 +673,7 @@ func (e *Engine) dynamicConfirm(ctx context.Context, def *agent.Definition, call
 		// No confirm channel in this context. Since the guardrail demanded confirmation but we can't get it, we must DENY for safety.
 		e.log.Warn("guardrail required confirmation but no confirm channel in context — denying",
 			zap.String("tool", call.Name))
-		return fmt.Errorf("Guardrail required confirmation, but no GUI available to confirm: %s", reason)
+		return fmt.Errorf("guardrail required confirmation, but no GUI available to confirm: %s", reason)
 	}
 
 	callID := uuid.New().String()
@@ -2655,7 +2655,7 @@ print(result if isinstance(result, str) else json.dumps(result))
 			}
 			if action == GuardrailActionDeny {
 				e.log.Warn("guardrail denied tool execution", zap.String("tool", call.Name), zap.String("reason", reason))
-				return "", fmt.Errorf("Guardrail denied execution: %s", reason)
+				return "", fmt.Errorf("guardrail denied execution: %s", reason)
 			} else if action == GuardrailActionConfirm {
 				if err := e.dynamicConfirm(ctx, def, call, reason); err != nil {
 					return "", err

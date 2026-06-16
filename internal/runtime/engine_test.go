@@ -1074,7 +1074,6 @@ func TestHandleExecutesSystemTool(t *testing.T) {
 				"command": "echo hello",
 			},
 		}}},
-		{Content: "SAFE"},
 		{Content: "Command output was hello"},
 	}
 
@@ -1088,11 +1087,11 @@ func TestHandleExecutesSystemTool(t *testing.T) {
 	}
 
 	reqs := provider.requestsSnapshot()
-	if len(reqs) != 3 {
-		t.Fatalf("expected 3 provider calls, got %d", len(reqs))
+	if len(reqs) != 2 {
+		t.Fatalf("expected 2 provider calls, got %d", len(reqs))
 	}
-	if !chatMessagesContain(reqs[2].Messages, "tool", "hello") {
-		t.Fatalf("third request missing tool result 'hello': %#v", reqs[2].Messages)
+	if !chatMessagesContain(reqs[1].Messages, "tool", "hello") {
+		t.Fatalf("second request missing tool result 'hello': %#v", reqs[1].Messages)
 	}
 }
 
