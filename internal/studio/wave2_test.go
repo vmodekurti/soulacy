@@ -136,6 +136,15 @@ func TestToAgentDefinition_CarriesFieldsDisabled(t *testing.T) {
 	if def.Workflow.Entry != "fetch" {
 		t.Errorf("workflow entry = %q, want fetch", def.Workflow.Entry)
 	}
+	if def.MaxTurns != 15 {
+		t.Errorf("max_turns = %d, want 15", def.MaxTurns)
+	}
+	if def.Memory.MaxTokens != 8000 {
+		t.Errorf("memory max_tokens = %d, want 8000", def.Memory.MaxTokens)
+	}
+	if def.LLM.Temperature != 0.7 {
+		t.Errorf("llm temperature = %v, want 0.7", def.LLM.Temperature)
+	}
 }
 
 func TestToAgentDefinition_EmptyNameError(t *testing.T) {

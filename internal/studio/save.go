@@ -67,6 +67,11 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		// Disabled by construction: a Studio save stages an agent for the
 		// operator to review and enable.
 		Enabled: false,
+		MaxTurns: 15,
+		Memory:   agent.MemoryPolicy{MaxTokens: 8000},
+		LLM: agent.LLMConfig{
+			Temperature: 0.7,
+		},
 		Workflow: &agent.WorkflowSpec{
 			Nodes:             draft.Flow.Nodes,
 			Edges:             draft.Flow.Edges,
@@ -80,8 +85,12 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	// flow tool node naming `shell_exec`/`write_file` must classify the
 	// agent Privileged exactly as if it had been listed in `builtins:`; a
 	// flow agent node naming a peer feeds transitive peer detection.
-	if builtins := flowBuiltins(draft.Flow); len(builtins) > 0 {
+	builtins, mcpTools := flowTools(draft.Flow)
+	if len(builtins) > 0 {
 		def.Builtins = &builtins
+	}
+	if len(mcpTools) > 0 {
+		def.MCPTools = &mcpTools
 	}
 	if peers := flowPeers(draft.Flow); len(peers) > 0 {
 		def.Agents = peers
@@ -109,21 +118,23 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	return def, nil
 }
 
-// flowBuiltins collects the distinct, non-empty tool names from a flow's
-// tool nodes, in first-seen order, so they can populate def.Builtins for
-// tier classification. Agent and branch nodes are ignored.
-func flowBuiltins(flow Flow) []string {
+// flowTools collects the distinct, non-empty tool names from a flow's
+// tool nodes, in first-seen order, separating them into builtins and MCP tools.
+func flowTools(flow Flow) (builtins []string, mcpTools []string) {
 	seen := map[string]bool{}
-	var out []string
 	for _, n := range flow.Nodes {
 		tool := strings.TrimSpace(n.Tool)
 		if tool == "" || seen[tool] {
 			continue
 		}
 		seen[tool] = true
-		out = append(out, tool)
+		if strings.HasPrefix(tool, "mcp__") {
+			mcpTools = append(mcpTools, tool)
+		} else {
+			builtins = append(builtins, tool)
+		}
 	}
-	return out
+	return builtins, mcpTools
 }
 
 // flowPeers collects the distinct, non-empty peer agent ids referenced by a
@@ -186,11 +197,16 @@ var systemBuiltins = map[string]bool{
 // the Agents list and grounds any LLM/agent steps it contains.
 func buildSystemPrompt(draft Draft) string {
 	var b strings.Builder
-	name := strings.TrimSpace(draft.Name)
-	if name == "" {
-		name = "this workflow"
+	if prompt := strings.TrimSpace(draft.SystemPrompt); prompt != "" {
+		b.WriteString(prompt)
+		b.WriteString("\n\n")
+	} else {
+		name := strings.TrimSpace(draft.Name)
+		if name == "" {
+			name = "this workflow"
+		}
+		fmt.Fprintf(&b, "You are %q, an automation agent created in Soulacy Studio. ", name)
 	}
-	fmt.Fprintf(&b, "You are %q, an automation agent created in Soulacy Studio. ", name)
 	b.WriteString("You execute a fixed workflow graph: each step runs in order and its output feeds the next according to the edges. Follow the graph faithfully and do not invent steps or take actions outside it.\n\n")
 
 	b.WriteString("Trigger: ")
