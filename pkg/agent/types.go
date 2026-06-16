@@ -340,6 +340,14 @@ type Definition struct {
 	// New SOUL.yaml should prefer `capabilities: [system]`.
 	SystemTools bool `yaml:"system_tools,omitempty" json:"system_tools,omitempty"`
 
+	// AllowShell is an explicit, readable opt-in for the OS-level "system"
+	// built-ins (Story 6). It is an alias for `capabilities: [system]` /
+	// `system_tools: true` and exists so a SOUL.yaml author can grant shell
+	// access with an obvious flag name. As with the other gates, it still
+	// requires the server-level permit (runtime.allow_system_agents) — both
+	// must agree. Default (false) keeps shell_exec and friends OFF.
+	AllowShell bool `yaml:"allow_shell,omitempty" json:"allow_shell,omitempty"`
+
 	// Capabilities is the per-agent list of privileged capabilities this agent
 	// has been granted (SEC-3). Currently the only recognised value is:
 	//
@@ -647,13 +655,14 @@ func (d *Definition) ResolvedRunTimeout(fallback time.Duration) time.Duration {
 }
 
 // HasCapability reports whether the agent has been granted the named
-// capability (SEC-3). The legacy `system_tools: true` flag is honoured as an
-// alias for the "system" capability so pre-SEC-3 SOUL.yaml keeps working.
+// capability (SEC-3). The legacy `system_tools: true` flag and the readable
+// `allow_shell: true` flag (Story 6) are both honoured as aliases for the
+// "system" capability so old and new SOUL.yaml keep working.
 func (d *Definition) HasCapability(cap string) bool {
 	if d == nil {
 		return false
 	}
-	if cap == "system" && d.SystemTools {
+	if cap == "system" && (d.SystemTools || d.AllowShell) {
 		return true
 	}
 	for _, c := range d.Capabilities {
