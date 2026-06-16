@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte'
   import { api } from '../lib/api.js'
-  import { apiKey } from '../lib/stores.js'
+  import { apiKey, editAgent } from '../lib/stores.js'
   import ChipPicker from '../lib/ChipPicker.svelte'
   import FilePicker from '../lib/FilePicker.svelte'
 
@@ -120,6 +120,13 @@
       const res = await api.agents.list()
       agents = res.agents || []
       error  = null
+      if ($editAgent) {
+        const found = agents.find(a => a.id === $editAgent)
+        if (found) {
+          select(found)
+        }
+        $editAgent = ''
+      }
     } catch (e) { error = e.message }
   }
 

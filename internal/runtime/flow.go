@@ -12,16 +12,27 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/studio/consent"
+	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 	"go.uber.org/zap"
 )
 
 // runFlow executes the spec's graph form for one trigger message.
+type triggerInput map[string]any
+
+func (t triggerInput) String() string {
+	if text, ok := t["text"].(string); ok {
+		return text
+	}
+	return ""
+}
+
 func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, runID string) (json.RawMessage, error) {
 	g, err := reasoning.CompileFlow(*w.spec.FlowSpec())
 	if err != nil {
@@ -30,7 +41,9 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	agentID := msg.AgentID
 
 	vars := map[string]interface{}{
-		"trigger": flattenParts(msg.Parts),
+		"trigger": triggerInput{
+			"text": flattenParts(msg.Parts),
+		},
 	}
 
 	hooks := reasoning.FlowHooks{}
@@ -83,11 +96,46 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		if node.Kind == sdkr.FlowNodeAgent {
 			tool = "agent__" + node.Agent
 		}
-		out, rerr := w.engine.RunTool(ctx, tool, renderedInput)
+		
+		tc := message.ToolCall{
+			ID:        "flow-" + node.ID,
+			Name:      tool,
+			Arguments: map[string]any{},
+		}
+		if renderedInput != "" {
+			if node.Kind == sdkr.FlowNodeAgent {
+				if strings.HasPrefix(strings.TrimSpace(renderedInput), "{") {
+					if err := json.Unmarshal([]byte(renderedInput), &tc.Arguments); err != nil {
+						tc.Arguments["message"] = renderedInput
+					}
+				} else {
+					tc.Arguments["message"] = renderedInput
+				}
+			} else {
+				if err := json.Unmarshal([]byte(renderedInput), &tc.Arguments); err != nil {
+					return nil, fmt.Errorf("workflow: tool args for %q not valid JSON: %w", tool, err)
+				}
+			}
+		}
+		
+		var def *agent.Definition
+		if w.engine.loader != nil {
+			def = w.engine.loader.Get(msg.AgentID)
+		}
+		if def == nil {
+			def = &agent.Definition{}
+		}
+		outStr, rerr := w.engine.runTool(ctx, def, msg.SessionID, tc)
 		if rerr != nil {
 			return nil, rerr
 		}
-		return unwrapToolJSON(out), nil
+		
+		outBytes := []byte(outStr)
+		if json.Valid(outBytes) {
+			return unwrapToolJSON(outBytes), nil
+		}
+		wrapped, _ := json.Marshal(outStr)
+		return json.RawMessage(wrapped), nil
 	}
 
 	out, err := reasoning.RunFlow(ctx, g, vars, runNode, hooks)

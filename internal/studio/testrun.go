@@ -106,6 +106,16 @@ const liveNotSupportedNote = "live execution of an unsaved draft is not supporte
 // An invalid flow (fails reasoning.CompileFlow) is an error; a valid flow
 // always yields a TestResult. Mode=="live" is a valid request that runs
 // nothing real and returns a clear not-supported note.
+type triggerInput map[string]any
+
+func (t triggerInput) String() string {
+	if text, ok := t["text"].(string); ok {
+		return text
+	}
+	return ""
+}
+
+
 func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) (TestResult, error) {
 	if opts == nil {
 		opts = &TestOptions{}
@@ -166,7 +176,11 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 		return out, nil
 	}
 
-	vars := map[string]any{"trigger": input}
+	vars := map[string]any{
+		"trigger": triggerInput{
+			"text": input,
+		},
+	}
 	result, err := reasoning.RunFlow(ctx, g, vars, run, reasoning.FlowHooks{})
 	if err != nil {
 		return TestResult{}, fmt.Errorf("studio: test run: %w", err)
