@@ -283,12 +283,72 @@ ok "Installed: $BIN_DIR/sy"
 # internal/webui/dist, embedded in the gateway binary), so it works out of the
 # box with zero extra install steps and no <workspace>/plugins/studio directory.
 
-# ── 4. PATH check ───────────────────────────────────────────────────────────
-if ! echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
-    warn "$BIN_DIR is NOT on your PATH yet."
-    warn "  Add this to your shell rc (~/.zshrc, ~/.bashrc):"
-    warn "      export PATH=\"$BIN_DIR:\$PATH\""
-    warn "  Then open a new terminal, or run:  export PATH=\"$BIN_DIR:\$PATH\""
+# ── 4. PATH setup — make the CLI work out of the box ─────────────────────────
+# A child process can't mutate the parent shell's PATH, so for the *current*
+# terminal the user still has to start a new shell (or source their rc). What we
+# CAN do is (a) make soulacy/sy available for the rest of THIS install run (so
+# the setup wizard below works), and (b) idempotently append the PATH line to
+# the right shell rc file(s) so every NEW terminal has the CLI automatically —
+# no manual editing required.
+PATH_MARKER="# added by soulacy installer"
+PATH_RC_UPDATED=0  # set to 1 when we append the PATH line to a shell rc
+
+append_path_to_rc() {
+    # $1 = rc file path.
+    #   return 0 → line newly appended
+    #   return 2 → already present (idempotent no-op)
+    #   return 1 → could not write
+    local rc="$1"
+    [ -e "$rc" ] || { touch "$rc" 2>/dev/null || return 1; }
+    # Idempotent: don't double-add on re-install/upgrade.
+    if grep -qF "$PATH_MARKER" "$rc" 2>/dev/null || grep -qsF "$BIN_DIR" "$rc" 2>/dev/null; then
+        return 2
+    fi
+    printf '\n# Soulacy CLI (soulacy, sy) %s\nexport PATH="%s:$PATH"\n' \
+        "$PATH_MARKER" "$BIN_DIR" >> "$rc" || return 1
+    return 0
+}
+
+if echo "$PATH" | tr ':' '\n' | grep -qx "$BIN_DIR"; then
+    : # already on PATH (e.g. SOULACY_PREFIX=/usr/local) — nothing to do
+else
+    # Decide which rc files to write. Cover the user's login shell, and on macOS
+    # also zsh (the OS default) so a future bash→zsh switch still works.
+    case "$(basename "${SHELL:-sh}")" in
+        zsh)  RC_TARGETS="$HOME/.zshrc" ;;
+        bash) RC_TARGETS="$HOME/.bash_profile $HOME/.bashrc" ;;
+        *)    RC_TARGETS="$HOME/.profile" ;;
+    esac
+    if [ "$(uname -s)" = "Darwin" ]; then
+        case " $RC_TARGETS " in *" $HOME/.zshrc "*) ;; *) RC_TARGETS="$RC_TARGETS $HOME/.zshrc" ;; esac
+    fi
+
+    ADDED_RCS=""    # files we appended to this run
+    PRESENT_RCS=""  # files that already had it (re-install/upgrade)
+    for rc in $RC_TARGETS; do
+        append_path_to_rc "$rc"; rc_rc=$?
+        case "$rc_rc" in
+            0) ADDED_RCS="$ADDED_RCS ${rc/#$HOME/~}" ;;
+            2) PRESENT_RCS="$PRESENT_RCS ${rc/#$HOME/~}" ;;
+        esac
+    done
+
+    # Make the CLI usable for the remainder of this install run.
+    export PATH="$BIN_DIR:$PATH"
+
+    if [ -n "$ADDED_RCS" ]; then
+        PATH_RC_UPDATED=1
+        ok "Added $BIN_DIR to PATH in:$ADDED_RCS"
+        warn "Already-open terminals won't see it until you open a new one (or 'source' the rc above)."
+    elif [ -n "$PRESENT_RCS" ]; then
+        # Upgrade case: rc already wired, but the running shell that launched the
+        # installer may still be stale — flag it so Next Steps reminds them.
+        PATH_RC_UPDATED=1
+        ok "PATH already configured in:$PRESENT_RCS"
+    else
+        warn "$BIN_DIR is not on PATH and I couldn't update your shell rc automatically."
+        warn "  Add this line manually:  export PATH=\"$BIN_DIR:\$PATH\""
+    fi
 fi
 
 # ── 5. Optional: macOS auto-start (only when not piped + on macOS) ──────────
@@ -352,7 +412,14 @@ fi
 printf "${BOLD}Next steps${NC}\n"
 printf "──────────\n"
 STEP=1
-if [ "$ON_PATH" -eq 0 ]; then
+if [ "$PATH_RC_UPDATED" -eq 1 ]; then
+    # We already wired PATH into the shell rc — the only thing left is to use a
+    # shell that has loaded it.
+    printf "  ${BOLD}%d.${NC} Open a ${BOLD}new terminal${NC} (your PATH was set up automatically),\n" "$STEP"
+    printf "     or run this once in THIS terminal:\n"
+    printf "       ${YELLOW}export PATH=\"%s:\$PATH\"${NC}\n\n" "$BIN_DIR"
+    STEP=$((STEP+1))
+elif [ "$ON_PATH" -eq 0 ]; then
     printf "  ${BOLD}%d.${NC} Add the install dir to PATH for this shell:\n" "$STEP"
     printf "       ${YELLOW}export PATH=\"%s:\$PATH\"${NC}\n" "$BIN_DIR"
     printf "     And for future shells, append the same line to ~/.zshrc or ~/.bashrc.\n\n"
