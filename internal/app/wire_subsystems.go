@@ -865,6 +865,9 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 	// PERF-2: history windowing — cap per-session in-memory History length.
 	engine.SetMaxHistoryTurns(cfg.Runtime.MaxHistoryTurns)
 
+	// S3.2: hard ceiling on any agent's effective max_turns.
+	engine.SetMaxTurnsCeiling(cfg.Runtime.MaxTurnsCeiling)
+
 	return engine
 }
 

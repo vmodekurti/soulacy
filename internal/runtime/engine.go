@@ -105,7 +105,6 @@ type Engine struct {
 	searchProvider   string
 	searchAPIKey     string
 
-
 	// mcpClient routes MCP tool calls to configured external MCP servers.
 	// All tools from connected servers are offered to every agent, namespaced
 	// as mcp__<server>__<tool>. May be nil if no servers are configured.
@@ -226,12 +225,18 @@ type Engine struct {
 	// leading system message (index 0) is always preserved. Set via
 	// SetMaxHistoryTurns; <=0 falls back to defaultMaxHistoryTurns.
 	maxHistoryTurns int
+
+	// maxTurnsCeiling is a hard server-side cap on any agent's effective
+	// max_turns (Story 1 / S3.2). Set via SetMaxTurnsCeiling; <=0 falls back
+	// to defaultMaxTurnsCeiling.
+	maxTurnsCeiling int
 }
 
 const (
 	defaultSessionTTL      = 24 * time.Hour
 	defaultMaxSessions     = 10000
 	defaultMaxHistoryTurns = 100
+	defaultMaxTurnsCeiling = 50
 )
 
 // PluginToolProvider is satisfied by *plugins.Loader. Defined locally to
@@ -409,7 +414,6 @@ func (e *Engine) getSearchConfig() (string, string) {
 	defer e.searchProviderMu.RUnlock()
 	return e.searchProvider, e.searchAPIKey
 }
-
 
 // SetSSRF configures SSRF protection for the HTTP-fetching built-in tools.
 func (e *Engine) SetSSRF(enabled bool, allowedHosts []string) {
@@ -1679,6 +1683,27 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	if maxTurns <= 0 {
 		maxTurns = 10
 	}
+	// S3.2 — clamp to the server-side ceiling so a misconfigured agent
+	// (max_turns: 10000) can't self-authorise a runaway, cost-heavy loop.
+	if ceiling := e.turnsCeiling(); maxTurns > ceiling {
+		e.log.Warn("engine: clamping max_turns to server ceiling",
+			zap.String("agent", msg.AgentID),
+			zap.Int("requested", maxTurns),
+			zap.Int("ceiling", ceiling))
+		maxTurns = ceiling
+	}
+
+	// S3.1 — per-run token/cost budget. We accumulate token usage and call
+	// count as the loop runs and check them BEFORE each LLM call, halting with
+	// a terminal reply the moment the next call would exceed the cap. This is
+	// the only thing standing between a runaway loop / prompt injection / deep
+	// peer recursion and a surprise bill.
+	var budgetTokens, budgetCalls int
+	if def.Budget != nil {
+		budgetTokens = def.Budget.MaxTokens
+		budgetCalls = def.Budget.MaxLLMCalls
+	}
+	var usedTokens, usedCalls int
 
 	model := def.LLM.Model
 	if model == "" {
@@ -1694,6 +1719,33 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 
 	var finalContent string
 	for turn := 0; turn < maxTurns; turn++ {
+		// S3.1 — budget gate. Check BEFORE issuing the call so we never spend
+		// past the cap. When exceeded we stop the loop and let the
+		// final-synthesis / current finalContent path return what we have,
+		// with a clear terminal note appended below.
+		if reason := budgetExceeded(budgetTokens, usedTokens, budgetCalls, usedCalls); reason != "" {
+			e.log.Warn("engine: run budget exceeded — halting",
+				zap.String("agent", msg.AgentID),
+				zap.String("reason", reason),
+				zap.Int("used_tokens", usedTokens),
+				zap.Int("budget_tokens", budgetTokens),
+				zap.Int("used_calls", usedCalls),
+				zap.Int("budget_calls", budgetCalls))
+			metrics.AgentBudgetHaltsTotal.WithLabelValues(msg.AgentID).Inc()
+			e.sink.Emit(message.Event{
+				Type: "warn", AgentID: msg.AgentID, SessionID: msg.SessionID,
+				Payload:   map[string]any{"stage": "budget", "reason": reason},
+				Timestamp: time.Now().UTC(),
+			})
+			note := "\n\n⚠ Run halted: " + reason + ". Increase the agent's budget block or simplify the task."
+			if strings.TrimSpace(finalContent) == "" {
+				finalContent = "I had to stop before finishing: " + reason + "."
+			} else {
+				finalContent += note
+			}
+			break
+		}
+		usedCalls++
 		// Enable streaming on the final-turn request when the agent opted in
 		// AND the caller attached a token callback. We only stream when there
 		// are no tools (streaming + tool calls requires careful merging that
@@ -1753,6 +1805,8 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		// Task #32 — record per-call token usage in the cost store.
 		e.recordUsage(ctx, msg.AgentID, msg.SessionID, llmProviderLabel, model,
 			resp.InputTokens, resp.OutputTokens)
+		// S3.1 — accumulate run usage for the budget gate at the top of the loop.
+		usedTokens += resp.InputTokens + resp.OutputTokens
 
 		// Drain the streaming channel, delivering tokens to the caller's
 		// callback and accumulating them into resp.Content. If the provider
@@ -2276,6 +2330,37 @@ func (e *Engine) historyCap() int {
 		return defaultMaxHistoryTurns
 	}
 	return e.maxHistoryTurns
+}
+
+// SetMaxTurnsCeiling configures the hard server-side cap on any agent's
+// effective max_turns (Story 1 / S3.2). n<=0 falls back to
+// defaultMaxTurnsCeiling (50). Safe to call once at startup.
+func (e *Engine) SetMaxTurnsCeiling(n int) {
+	if n <= 0 {
+		n = defaultMaxTurnsCeiling
+	}
+	e.maxTurnsCeiling = n
+}
+
+// turnsCeiling returns the effective max_turns ceiling.
+func (e *Engine) turnsCeiling() int {
+	if e.maxTurnsCeiling <= 0 {
+		return defaultMaxTurnsCeiling
+	}
+	return e.maxTurnsCeiling
+}
+
+// budgetExceeded reports the first per-run budget dimension that would be
+// violated by issuing another LLM call, or "" when the run is within budget.
+// A zero limit means "no cap for that dimension". (Story 1 / S3.1)
+func budgetExceeded(tokenLimit, usedTokens, callLimit, usedCalls int) string {
+	if tokenLimit > 0 && usedTokens >= tokenLimit {
+		return fmt.Sprintf("token budget reached (%d/%d)", usedTokens, tokenLimit)
+	}
+	if callLimit > 0 && usedCalls >= callLimit {
+		return fmt.Sprintf("LLM-call budget reached (%d/%d)", usedCalls, callLimit)
+	}
+	return ""
 }
 
 // appendHistoryLocked appends msgs to sess.History and then trims the history
@@ -3693,12 +3778,12 @@ func isPathSafe(targetPath string, dataDir string) bool {
 		return false
 	}
 	cleanPath := filepath.Clean(targetPath)
-	
+
 	// Always allow /tmp
 	if strings.HasPrefix(cleanPath, "/tmp/") || cleanPath == "/tmp" {
 		return true
 	}
-	
+
 	// Allow if within the designated DataDir
 	if dataDir != "" {
 		cleanDataDir := filepath.Clean(dataDir)
@@ -3706,7 +3791,7 @@ func isPathSafe(targetPath string, dataDir string) bool {
 			return true
 		}
 	}
-	
+
 	return false
 }
 

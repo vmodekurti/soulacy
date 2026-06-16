@@ -188,6 +188,25 @@ type ScheduleOutput struct {
 
 // Definition is the parsed representation of a SOUL.yaml file.
 // This is the single source of truth for an agent's behaviour.
+// BudgetConfig bounds resource consumption for a single agent run
+// (Story 1 / S3.1). All limits are per-run unless noted; zero means "no limit
+// for that dimension".
+//
+//	budget:
+//	  max_tokens: 200000      # total prompt+completion tokens across the run
+//	  max_llm_calls: 40       # hard cap on Router.Complete invocations
+type BudgetConfig struct {
+	// MaxTokens caps cumulative prompt+completion tokens for the whole run
+	// (summed across every turn and every peer-recursion level reached
+	// through this run). Checked before each LLM call.
+	MaxTokens int `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+
+	// MaxLLMCalls caps the number of Router.Complete calls in a single run —
+	// a model-agnostic backstop against runaway loops that the token cap
+	// might not catch quickly enough (e.g. many tiny calls).
+	MaxLLMCalls int `yaml:"max_llm_calls,omitempty" json:"max_llm_calls,omitempty"`
+}
+
 type Definition struct {
 	// --- Identity ---
 	ID          string            `yaml:"id"                json:"id"`
@@ -371,6 +390,15 @@ type Definition struct {
 	MaxTurns    int  `yaml:"max_turns"    json:"max_turns"`
 	StreamReply bool `yaml:"stream_reply" json:"stream_reply"`
 	Enabled     bool `yaml:"enabled"      json:"enabled"`
+
+	// Budget caps token (and, by extension, cost) consumption for a single
+	// run (Story 1 / S3.1). The engine checks cumulative usage against this
+	// budget BEFORE every LLM call; when the cap would be exceeded it halts
+	// the run with a terminal "budget exceeded" reply rather than letting a
+	// runaway loop, prompt injection, or deep peer recursion silently drain
+	// API credits. Absent/zero = no per-run cap (server-level ceilings still
+	// apply).
+	Budget *BudgetConfig `yaml:"budget,omitempty" json:"budget,omitempty"`
 
 	// NotifyOnFailure tells the engine where to post a heads-up when a run
 	// errors. Useful for cron-driven agents whose only audience is the

@@ -135,6 +135,16 @@ var (
 		},
 		[]string{"agent"},
 	)
+	// AgentBudgetHaltsTotal counts runs halted by the per-run token/call
+	// budget gate (S3.1). A rising value points at a runaway agent, a prompt
+	// injection, or a budget set too low for the task.
+	AgentBudgetHaltsTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "soulacy_agent_budget_halts_total",
+			Help: "Runs halted because they hit their per-run token or LLM-call budget.",
+		},
+		[]string{"agent"},
+	)
 
 	// Actionlog + worker pool gauges
 
@@ -173,7 +183,7 @@ func init() {
 		HTTPRequestDuration, HTTPRequestsTotal,
 		LLMCallDuration, LLMCallsTotal, LLMInputTokens, LLMOutputTokens,
 		ToolCallDuration, ToolCallsTotal,
-		AgentRunDuration, AgentRunsTotal, AgentPanicsTotal,
+		AgentRunDuration, AgentRunsTotal, AgentPanicsTotal, AgentBudgetHaltsTotal,
 		ActionlogQueueDepth, ActionlogBatchSize, ActionlogDropsTotal,
 		WorkerPoolActiveRuns,
 		ChannelInboxDropsTotal,
