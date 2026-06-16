@@ -1429,8 +1429,8 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	if !def.Enabled {
 		return message.Message{}, fmt.Errorf("engine: agent %q is disabled", msg.AgentID)
 	}
-	if def.ID == SystemAgentID && msg.Channel != "http" {
-		return message.Message{}, fmt.Errorf("engine: system agent is only available on http channel")
+	if def.ID == SystemAgentID && msg.Channel != "http" && msg.Channel != "internal" {
+		return message.Message{}, fmt.Errorf("engine: system agent is only available on http/internal channel")
 	}
 
 	// Router short-circuit. Kind=="router" agents have no LLM loop — they

@@ -63,10 +63,11 @@ type Flow struct {
 
 // Draft is the workflow the compiler produces.
 type Draft struct {
-	Name     string   `json:"name"`
-	Trigger  Trigger  `json:"trigger"`
-	Channels []string `json:"channels,omitempty"`
-	Flow     Flow     `json:"flow"`
+	Name         string   `json:"name"`
+	SystemPrompt string   `json:"system_prompt,omitempty"`
+	Trigger      Trigger  `json:"trigger"`
+	Channels     []string `json:"channels,omitempty"`
+	Flow         Flow     `json:"flow"`
 }
 
 // Question is one clarifying question. Options, when present, suggest a
@@ -110,6 +111,7 @@ type Result struct {
 // handoff, and named ports as the norm, not the exception.
 const canonicalExample = `{
   "name": "Weekday AI Digest",
+  "system_prompt": "You are a specialized AI news curator. You wake up every weekday morning to compile a brief, high-signal digest of the latest artificial intelligence research and product news. You execute your workflow methodically: searching the web, filtering out noise, and delegating the final synthesis to your summarizer agent. Your tone is professional and concise. When encountering empty search results or errors, you gracefully emit a fallback message rather than failing. Stick strictly to the defined workflow steps.",
   "trigger": { "type": "schedule", "config": { "cron": "0 8 * * 1-5" } },
   "channels": ["telegram"],
   "flow": {
@@ -172,6 +174,7 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- Use a branch node (kind=branch, no tool/agent) whenever the work forks on a CONDITION. A branch node fans out 2+ edges; put a Go-template predicate in edge.if (over flow vars, e.g. \"{{ gt (len .stories) 0 }}\"). Edges from a node are tried IN ORDER; the first whose if is truthy wins, so leave the LAST/fallback edge's if empty.\n")
 	sb.WriteString("- When a node fans out to multiple targets, you MAY declare typed ports: set nodes[].outputs / inputs to lists of {\"name\":...,\"type\"?:...} and wire edges with from_port / to_port. A named from_port MUST be one of the From node's declared outputs; a named to_port MUST be one of the To node's declared inputs. Omit ports entirely for simple linear hops.\n\n")
 	sb.WriteString("- Use a python node (kind=python) ONLY for glue the available tools can't do: shelling out to a local CLI the user says is installed, parsing a tool's raw output, reshaping data, or calling an external command. Put the script in nodes[].code as a function `def run(inputs):` where `inputs` is a dict of the node's rendered input (JSON) and the value you RETURN becomes the node's output. Always prefer an existing tool or agent when one fits; reach for python only for the gaps, and keep the code minimal. Do NOT invent tool names for capabilities that don't exist — write a python node instead.\n\n")
+	sb.WriteString("- system_prompt: Write a rich, conversational system prompt for the overarching agent (2-4 sentences). Give it a clear persona, define its goal based on the intent, and instruct it to faithfully execute the steps in the graph. Do NOT write a mechanical list of steps (the framework will attach those automatically); write the persona and domain instructions.\n")
 	sb.WriteString("- CRITICAL — every node MUST carry its REAL instruction derived from the intent, never a placeholder or empty field:\n")
 	sb.WriteString("    * tool nodes: set \"input\" to the tool's arguments as a JSON object built from the intent. A search/web tool node MUST contain the actual query, e.g. {\"query\":\"latest AI research articles\",\"num_results\":10}. Never leave a tool node's input empty when it takes arguments.\n")
 	sb.WriteString("    * agent nodes: set \"input\" to the full, concrete, highly specific task prompt for that agent (what to do, with which data, what persona to adopt, edge case rules, explicit output format) — not a one-word label or 1-sentence stub. Inject an upstream output with {{ toJson .var }} for a JSON value, or {{ .var }} for a plain string.\n")

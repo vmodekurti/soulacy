@@ -12,19 +12,22 @@ import (
 // host execution is involved — a scope-of-action line.
 func TestToAgentDefinition_WellDefinedPrompt(t *testing.T) {
 	draft := Draft{
-		Name:     "Daily Digest",
-		Trigger:  Trigger{Type: "schedule", Config: map[string]any{"cron": "0 7 * * *"}},
-		Channels: []string{"slack"},
+		Name:         "Daily Digest",
+		SystemPrompt: "You are the mighty Daily Digest bot.",
+		Trigger:      Trigger{Type: "schedule", Config: map[string]any{"cron": "0 7 * * *"}},
+		Channels:     []string{"slack"},
 		Flow: Flow{
 			Entry: "curate",
 			Nodes: []sdkr.FlowNode{
 				{ID: "curate", Kind: sdkr.FlowNodeAgent, Agent: "curator", Output: "urls"},
 				{ID: "pipeline", Kind: sdkr.FlowNodePython, Code: "import subprocess\n", Output: "audio"},
+				{ID: "search", Kind: sdkr.FlowNodeTool, Tool: "mcp__github__search"},
 				{ID: "notify", Kind: sdkr.FlowNodeTool, Tool: "channel.send"},
 			},
 			Edges: []sdkr.FlowEdge{
 				{From: "curate", To: "pipeline"},
-				{From: "pipeline", To: "notify"},
+				{From: "pipeline", To: "search"},
+				{From: "search", To: "notify"},
 				{From: "notify", To: "end"},
 			},
 		},
@@ -34,10 +37,10 @@ func TestToAgentDefinition_WellDefinedPrompt(t *testing.T) {
 		t.Fatalf("ToAgentDefinition: %v", err)
 	}
 	p := def.SystemPrompt
-	if strings.Contains(p, "Studio-authored workflow agent.") || len(p) < 80 {
-		t.Fatalf("prompt looks like a placeholder: %q", p)
+	if !strings.HasPrefix(p, "You are the mighty Daily Digest bot.\n\n") {
+		t.Fatalf("prompt did not inject draft.SystemPrompt:\n%s", p)
 	}
-	for _, want := range []string{"Daily Digest", "cron", "0 7 * * *", "curator", "Python", "channel.send", "slack", "Steps:"} {
+	for _, want := range []string{"cron", "0 7 * * *", "curator", "Python", "channel.send", "slack", "Steps:"} {
 		if !strings.Contains(p, want) {
 			t.Fatalf("prompt missing %q.\n---\n%s", want, p)
 		}
@@ -52,5 +55,13 @@ func TestToAgentDefinition_WellDefinedPrompt(t *testing.T) {
 	}
 	if !strings.Contains(def.Description, "step") {
 		t.Fatalf("Description should summarize steps, got %q", def.Description)
+	}
+	
+	// Tool classification
+	if def.Builtins == nil || len(*def.Builtins) != 1 || (*def.Builtins)[0] != "channel.send" {
+		t.Errorf("expected Builtins to contain [channel.send], got %v", def.Builtins)
+	}
+	if def.MCPTools == nil || len(*def.MCPTools) != 1 || (*def.MCPTools)[0] != "mcp__github__search" {
+		t.Errorf("expected MCPTools to contain [mcp__github__search], got %v", def.MCPTools)
 	}
 }
