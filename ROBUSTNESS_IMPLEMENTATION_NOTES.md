@@ -1,36 +1,85 @@
 # Robustness Hardening — Implementation Notes
 
 Branch: `robustness/operability-hardening`. All changes build (`go build ./...`)
-and ship with tests. Each item below is one commit.
+and ship with tests. Every item below is one (or more) commit.
 
 ## Landed (with tests)
 
-| Story | Commit | What changed | Tests |
-|-------|--------|--------------|-------|
-| **S2.1 Panic isolation** | `0b10f00` | `recover()` inside `engine.Handle` converts a panic on the channel/cron worker path (which Fiber's recover does *not* cover) into a normal run error; records `soulacy_agent_panics_total`; preserves DLQ + failure-notifier behaviour. | `engine_panic_test.go` |
-| **Story 5 / S8.1 Config validation** | `c494f52` | `Config.Validate()` runs at the end of `Load()`: parses every string duration (`tool_timeout`, `session_ttl`, `jwt_*_ttl`, `nats_ack_wait`) and range-checks numerics (port, max_turns vs ceiling, sessions, chunk overlap<size, pool workers, sandbox rlimits). `tool_timeout: 120` (missing `s`) now errors at startup naming the field. | `validate_test.go` |
-| **Story 1 / S3.1 Cost budget** | `d0e5fc7` | New `budget:` block in SOUL.yaml (`max_tokens`, `max_llm_calls`). Engine accumulates usage and checks **before every `Router.Complete`**; halts with a terminal reply + `soulacy_agent_budget_halts_total` when exceeded. | `engine_budget_test.go` |
-| **S3.2 max_turns ceiling** | `d0e5fc7` | `runtime.max_turns_ceiling` (default 50); engine clamps any agent's effective `max_turns` to it. | `engine_budget_test.go` |
-| **Story 3 Timeout attribution** | `aa863a6` | LLM-call errors now name the clock that fired: run cancelled (shutdown) vs `run_timeout` exceeded waiting on provider X/model Y, with remediation. (`run_timeout` already floors unset/0 to the 5m worker default.) | covered via build + existing run tests |
-| **Story 6 Secure defaults** | `630a71b` | `allow_shell: true` agent flag as a readable alias for `capabilities: [system]`. Default keeps shell built-ins OFF. (SEC-3 per-agent gate and SEC-4 non-localhost+empty-key bind refusal were already implemented.) | `allowshell_test.go` |
+| Story | What changed | Key files |
+|-------|--------------|-----------|
+| **S2.1 Panic isolation** | `recover()` in `engine.Handle` converts a panic on the channel/cron worker path (not covered by Fiber's recover) into a normal run error; metric `soulacy_agent_panics_total`. | `internal/runtime/engine.go` |
+| **Story 5 / S8.1 Config validation** | `Config.Validate()` at boot: parses every duration, range-checks numerics; `tool_timeout: 120` now errors instead of silently → 30s. Adds `runtime.max_turns_ceiling`. | `internal/config/validate.go` |
+| **Story 1 / S3.1 Cost budget** | SOUL.yaml `budget:` block (`max_tokens`, `max_llm_calls`) checked before every LLM call; halts with a terminal reply; metric `soulacy_agent_budget_halts_total`. | `internal/runtime/engine.go`, `pkg/agent/types.go` |
+| **S3.2 max_turns ceiling** | Engine clamps any agent's `max_turns` to `runtime.max_turns_ceiling` (default 50). | `internal/runtime/engine.go` |
+| **Story 3 Timeout attribution** | LLM errors name the clock: run cancelled (shutdown) vs `run_timeout` exceeded on provider/model. | `internal/runtime/engine.go` |
+| **Story 6 Secure defaults** | `allow_shell: true` agent flag as a readable alias for `capabilities: [system]`. (SEC-3 gate + SEC-4 bind refusal already existed.) | `pkg/agent/types.go` |
+| **Story 2 / S1.x Provider+model validation** | Boot probe of each provider's `Models()`; agents with an unavailable model are quarantined (disabled in memory) with an `ollama pull X`-style log; unreachable providers warned. Cron agents auto-disable after N consecutive failures. | `internal/gateway/server.go`, `internal/agentvalidate/validate.go`, `internal/runtime/loader.go`, `internal/scheduler/scheduler.go` |
+| **Story 4 / S5.1 Context management** | Per-model context-window table + chars/4 estimator; oldest-first history trim before each call (preserves system block, no orphan tool-results); on a provider context-exceeded 400, halve history and retry once. | `internal/runtime/context_window.go`, `internal/runtime/engine.go` |
+| **S2.8 Channel send chunking** | `SplitForLimit` chunks replies over Telegram 4096 / Discord 2000 (rune-safe, prefers line breaks); adapters surface API status≥400. | `internal/channels/chunk.go`, `…/telegram/adapter.go`, `…/discord/adapter.go` |
+| **S2.4 Watcher liveness** | Hot-reload watcher tracks health and logs loudly if its fsnotify loop dies; `Healthy()` for deep health. | `internal/runtime/watcher.go` |
+| **S2.13 Deep health** | `GET /health?deep=1` reports channel adapter connection state + watcher health, so it can't return `ok` while a socket is dead. | `internal/gateway/api.go`, `server.go` |
+| **S2.2 Graceful shutdown** | Workers select on `ctx.Done()` instead of ranging the never-closed inbox (no more shutdown hang); session-eviction goroutine registered on the shutdown stack. | `internal/app/wire.go`, `wire_subsystems.go` |
 
 New Prometheus metrics: `soulacy_agent_panics_total`, `soulacy_agent_budget_halts_total`.
 
-## Already implemented in the codebase (verified — no work needed)
+## Already implemented in the codebase (verified — not re-done)
 
-- **SEC-4** non-localhost + empty `api_key` → refuse to start (`gateway/server.go checkAuthBindSafety`, `authbind_test.go`).
-- **SEC-3** system/shell built-ins gated behind per-agent `capabilities:[system]` + server permit.
-- SQLite **WAL + busy_timeout=30s**, crash-recovery **replay** of incomplete runs (`app/recover.go`), scheduler **missed-fire catch-up**, transactional KB ingest, correct subprocess stderr-drain.
+- SEC-4: non-localhost + empty `api_key` refusal (`checkAuthBindSafety`).
+- SEC-3: system/shell built-ins gated behind per-agent `capabilities:[system]`.
+- WAL + `busy_timeout=30s`; crash-recovery replay (`app/recover.go`); scheduler missed-fire catch-up; transactional KB ingest; correct subprocess stderr-drain; file-watcher already on the shutdown stack.
 
-## Remaining (recommended as individual passes — larger/riskier)
+## How to test (this environment needs a couple of one-time setup steps)
 
-1. **Story 2 / S1.x — Provider/model boot validation.** `agentvalidate` already validates models *when* the provider model list is populated; make it mandatory by probing each provider's `Models()` at startup, failing agents (not the gateway) on a bad model with `ollama pull X` guidance, and auto-disabling cron agents after N consecutive failures. *Touches:* gateway startup wiring, `agentvalidate`, `scheduler`.
-2. **S2.2 — Graceful shutdown & goroutine lifecycle.** Close the inbox on shutdown; register the session-eviction ticker and file-watcher goroutines on the closer stack; bounded drain. *Touches:* `app/wire.go` `Run()` (1.3k lines) + `channels.Registry` — highest regression risk; do behind the smoke tests in `improvements.md` TEST-2/3.
-3. **Story 4 — Token-aware context management.** Per-model context table; estimate tokens for system+tools+history pre-call; trim oldest history to fit; on a 400 context-exceeded, auto-trim and retry once. *Touches:* engine loop + a new token-estimate/model-limits helper.
-4. **S2.13 / S2.4 / S2.8 — Health depth, watcher supervision, channel send chunking.** Deep `/health` that calls each adapter's `Status()` + DB/provider ping; supervise the watcher goroutine (restart on fsnotify close); per-platform outbound chunking (Telegram 4096 / Discord 2000) + bounded send retry with auth-vs-transient classification. *Touches:* `gateway/api.go`, `runtime/watcher.go`, each `channels/*/adapter.go`.
+CGO + sqlite-vec needs `sqlite3.h`. Reuse the header vendored in the
+mattn/go-sqlite3 module so you don't have to fetch the amalgamation:
 
-## Build/test notes for this environment
+```bash
+# 1. One-time: point CGO at a dir containing sqlite3.h
+MATTN=$(go env GOMODCACHE)/github.com/mattn/go-sqlite3@v1.14.22
+mkdir -p /tmp/sqlite-inc
+cp "$MATTN/sqlite3-binding.h" /tmp/sqlite-inc/sqlite3.h
+cp "$MATTN/sqlite3ext.h"      /tmp/sqlite-inc/sqlite3ext.h
+export CGO_CFLAGS="-I/tmp/sqlite-inc"
 
-CGO + sqlite-vec needs `sqlite3.h`; reuse the mattn/go-sqlite3 vendored header:
-`CGO_CFLAGS="-I<dir-with-sqlite3.h>"`. The embedded GUI needs `internal/webui/dist/`
-to exist (gitignored placeholder is fine for backend-only builds).
+# 2. The embedded GUI needs a dist dir to exist (placeholder is fine for backend):
+mkdir -p internal/webui/dist && touch internal/webui/dist/.gitkeep
+
+# 3. Build everything
+go build ./...
+```
+
+Then run the tests:
+
+```bash
+# All the new/changed packages at once
+go test ./internal/config/ ./pkg/agent/ ./internal/runtime/ \
+        ./internal/agentvalidate/ ./internal/scheduler/ \
+        ./internal/channels/... ./internal/gateway/ ./internal/app/
+
+# Targeted: each story's regression tests
+go test ./internal/runtime/        -run 'TestHandleRecoversPanic'            -v  # S2.1 panic isolation
+go test ./internal/config/         -run 'TestValidate'                      -v  # S8.1 config validation
+go test ./internal/runtime/        -run 'TestBudget|TestTurnsCeiling'       -v  # S3.1/S3.2 budget + ceiling
+go test ./internal/agentvalidate/  -run 'TestDefinitionFailsUnavailableModelWhenAuthoritative' -v  # S1.x model validation
+go test ./internal/scheduler/      -run 'TestCronAutoDisable'               -v  # S2.2/S7.2 cron auto-disable
+go test ./internal/runtime/        -run 'TestModelContextLimit|TestTrim|TestIsContextExceeded' -v  # S5.1 context mgmt
+go test ./internal/channels/       -run 'TestSplitForLimit'                 -v  # S2.8 send chunking
+go test ./internal/runtime/        -run 'TestSessionEvictionStopsCleanly'   -v  # S2.2 shutdown/no-leak
+go test ./pkg/agent/               -run 'TestAllowShell'                    -v  # Story 6 secure default
+
+# Race detector over the concurrency-sensitive changes
+go test -race ./internal/runtime/ -run 'TestSessionEvictionStopsCleanly|TestHandleRecoversPanic|TestBudget'
+```
+
+Manual smoke checks once a gateway is running locally:
+
+```bash
+# Deep health surfaces channel + watcher state (S2.13)
+curl -s 'http://127.0.0.1:18789/health?deep=1' | jq
+
+# Config validation refuses a bad duration (S8.1)
+SOULACY_RUNTIME_TOOL_TIMEOUT=120 soulacy serve   # expect a startup error naming runtime.tool_timeout
+
+# Budget halt (S3.1): set a tiny budget in an agent's SOUL.yaml and watch it stop
+#   budget: { max_llm_calls: 1 }
+```
