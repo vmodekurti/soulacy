@@ -38,6 +38,12 @@ DATA_DIR="${DATA_DIR:-$HOME/.soulacy}"     # host dir mounted for persistence ("
 DATA_MOUNT="${DATA_MOUNT:-/home/soulacy/.soulacy}"  # mount point inside container
 API_KEY="${API_KEY:-}"                     # auth key; blank = auto-generate
 HEALTH_PATH="${HEALTH_PATH:-/api/v1/health}" # path polled to confirm readiness ("" to skip)
+# Where the gateway should reach Ollama. Inside a container `localhost` is the
+# container itself, so a host-side Ollama must be addressed via the host. On
+# Docker Desktop (macOS/Windows) that's host.docker.internal; on Linux the
+# --add-host below maps it to the host gateway. Set to "" to skip entirely
+# (e.g. cloud-only LLMs, or Ollama running in its own container/network).
+OLLAMA_HOST="${OLLAMA_HOST:-host.docker.internal:11434}"  # host:port or full URL, or "" to skip
 RESTART_POLICY="${RESTART_POLICY:-unless-stopped}"
 DO_BUILD="${DO_BUILD:-ask}"                # yes | no | ask
 ASSUME_YES="${ASSUME_YES:-0}"             # 1 = no prompts
@@ -57,7 +63,7 @@ die()   { _DIED=1; printf "%s ✗ %s %s\n" "$R" "$N" "$*" >&2; exit 1; }
 
 usage() {
   cat <<EOF
-${B}deploy.sh${N} — interactive Docker deploy
+${B}docker-deploy.sh${N} — interactive Docker deploy
 
 Usage: $0 [options]
 
@@ -72,6 +78,8 @@ Options:
   --data-dir DIR         Host dir to persist (empty=none) (default: $DATA_DIR)
   --api-key KEY          Auth key (empty = auto-generate)
   --health-path PATH     Readiness probe path (empty=none)(default: $HEALTH_PATH)
+  --ollama-host HOST     Ollama host:port or URL the gateway should call
+                         (empty=skip; default: $OLLAMA_HOST)
   --no-build             Run existing image, skip build
   --build                Force a build
   -y, --yes              Accept defaults, no prompts
@@ -96,6 +104,7 @@ while [ $# -gt 0 ]; do
     --data-dir)       DATA_DIR="$2"; shift 2 ;;
     --api-key)        API_KEY="$2"; shift 2 ;;
     --health-path)    HEALTH_PATH="$2"; shift 2 ;;
+    --ollama-host)    OLLAMA_HOST="$2"; shift 2 ;;
     --no-build)       DO_BUILD="no"; shift ;;
     --build)          DO_BUILD="yes"; shift ;;
     -y|--yes)         ASSUME_YES=1; shift ;;
@@ -176,6 +185,16 @@ ask HOST_PORT      "Host port (open in browser)" "$HOST_PORT"
 ask CONTAINER_PORT "Container port (app listens)" "$CONTAINER_PORT"
 ask BIND_HOST      "In-container bind address"   "$BIND_HOST"
 ask DATA_DIR       "Host data dir (blank = none)" "$DATA_DIR"
+ask OLLAMA_HOST    "Ollama host:port the gateway calls (blank = cloud only)" "$OLLAMA_HOST"
+
+# Normalize the Ollama target into a base URL the gateway env var expects.
+OLLAMA_URL=""
+if [ -n "$OLLAMA_HOST" ]; then
+  case "$OLLAMA_HOST" in
+    http://*|https://*) OLLAMA_URL="$OLLAMA_HOST" ;;
+    *)                  OLLAMA_URL="http://$OLLAMA_HOST" ;;
+  esac
+fi
 
 # API key handling: by default the gateway generates its own key on first run
 # (written into config.yaml) and authenticates with THAT — the SOULACY_SERVER_API_KEY
@@ -274,6 +293,14 @@ RUN_ARGS=(
 )
 if [ -n "$DATA_DIR" ]; then
   RUN_ARGS+=( --volume "${DATA_DIR}:${DATA_MOUNT}" )
+fi
+if [ -n "$OLLAMA_URL" ]; then
+  RUN_ARGS+=( --env "SOULACY_LLM_PROVIDERS_OLLAMA_BASE_URL=${OLLAMA_URL}" )
+  # On Linux, host.docker.internal isn't built in — map it to the host gateway.
+  # On Docker Desktop (macOS/Windows) this is a harmless no-op.
+  case "$OLLAMA_URL" in
+    *host.docker.internal*) RUN_ARGS+=( --add-host "host.docker.internal:host-gateway" ) ;;
+  esac
 fi
 
 info "Starting container ..."
@@ -374,6 +401,9 @@ fi
 printf '\n%s%s──────────────────────────────────────────────%s\n' "$B" "$G" "$N"
 printf '%s  Deployed:%s   %s\n' "$B" "$N" "$APP_NAME"
 printf '%s  URL:%s        %s%s%s\n' "$B" "$N" "$C" "$URL" "$N"
+if [ -n "$OLLAMA_URL" ]; then
+  printf '%s  Ollama:%s     %s\n' "$B" "$N" "$OLLAMA_URL"
+fi
 if [ -n "$API_KEY" ]; then
   printf '%s  API key:%s    %s\n' "$B" "$N" "$API_KEY"
 else

@@ -101,9 +101,19 @@ docker build -t soulacy .
 docker run -d --name soulacy \
   -p 9000:18789 \
   -e SOULACY_SERVER_HOST=0.0.0.0 \
+  -e SOULACY_LLM_PROVIDERS_OLLAMA_BASE_URL=http://host.docker.internal:11434 \
   -v ~/.soulacy:/home/soulacy/.soulacy \
   soulacy
 ```
+
+> **Reaching a host-side Ollama:** inside the container `localhost` is the
+> container itself, so a local Ollama on your machine is *not* at
+> `localhost:11434` from the gateway's view. Point it at the host with
+> `SOULACY_LLM_PROVIDERS_OLLAMA_BASE_URL=http://host.docker.internal:11434`
+> (shown above). On Linux also add `--add-host host.docker.internal:host-gateway`.
+> Cloud LLM providers (OpenAI, Anthropic, etc.) need none of this — outbound
+> internet works by default. `scripts/docker-deploy.sh` handles all of this via
+> its `--ollama-host` flag (defaulting to `host.docker.internal:11434`).
 
 Open [http://localhost:9000](http://localhost:9000). The gateway generates an API
 key on first run and stores it in the mounted config; read it back with:
