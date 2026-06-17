@@ -32,6 +32,7 @@ import (
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/studio"
 	"github.com/soulacy/soulacy/internal/studio/consent"
+	"github.com/soulacy/soulacy/pkg/agent"
 )
 
 // routerLLM adapts the gateway's *llm.Router to studio.LLM. It routes to
@@ -280,6 +281,46 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	}
 	if err := s.loader.Upsert(dir, &def); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Auto-stub any missing peer agents referenced in the workflow.
+	// We use the Draft's NewAgents array to populate full profiles (SystemPrompt, Description).
+	// We save these auto-generated agents as Enabled: true with safe defaults so they do not
+	// fail the main workflow execution when it delegates to them.
+	if def.Workflow != nil {
+		newAgentsMap := make(map[string]studio.NewAgent)
+		for _, na := range req.Workflow.NewAgents {
+			newAgentsMap[na.ID] = na
+		}
+		for _, node := range def.Workflow.Nodes {
+			if node.Kind == "agent" && node.Agent != "" {
+				if existing := s.loader.Get(node.Agent); existing == nil {
+					stub := agent.Definition{
+						ID:          node.Agent,
+						Name:        node.Agent,
+						Description: "Auto-generated from workflow",
+						Enabled:     true,
+						MaxTurns:    15,
+						Memory:      agent.MemoryPolicy{MaxTokens: 8000},
+						LLM: agent.LLMConfig{
+							Provider:    s.cfg.LLM.DefaultProvider,
+							Temperature: 0.7,
+						},
+					}
+					if na, ok := newAgentsMap[node.Agent]; ok {
+						if na.Name != "" {
+							stub.Name = na.Name
+						}
+						if na.Description != "" {
+							stub.Description = na.Description
+						}
+						stub.SystemPrompt = na.SystemPrompt
+					}
+					// Ignore errors here; best-effort stubbing.
+					_ = s.loader.Upsert(dir, &stub)
+				}
+			}
+		}
 	}
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{

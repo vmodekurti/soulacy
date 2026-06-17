@@ -2815,6 +2815,43 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	})
 }
 
+// handleDeleteProvider removes a provider from config.yaml
+func (s *Server) handleDeleteProvider(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if id == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "provider id is required")
+	}
+	if s.cfgPath == "" {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "config file path unknown — cannot persist")
+	}
+
+	raw, err := readRawConfig(s.cfgPath)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+
+	llmMap := getOrCreateMap(raw, "llm")
+	provsMap := getOrCreateMap(llmMap, "providers")
+
+	// Check if it exists
+	if _, ok := provsMap[id]; !ok {
+		return s.errMsg(c, fiber.StatusNotFound, "provider not found")
+	}
+
+	delete(provsMap, id)
+
+	if err := writeRawConfig(s.cfgPath, raw); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Mirror to live config
+	if s.cfg.LLM.Providers != nil {
+		delete(s.cfg.LLM.Providers, id)
+	}
+
+	return c.JSON(fiber.Map{"message": "Provider deleted."})
+}
+
 // --- Skills ---
 
 // handleListSkills returns the catalog of all loaded Agent Skills.

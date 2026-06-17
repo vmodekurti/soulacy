@@ -61,13 +61,22 @@ type Flow struct {
 	Entry string          `json:"entry,omitempty"`
 }
 
+// NewAgent defines a full profile for an agent the model invented.
+type NewAgent struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Description  string `json:"description"`
+	SystemPrompt string `json:"system_prompt"`
+}
+
 // Draft is the workflow the compiler produces.
 type Draft struct {
-	Name         string   `json:"name"`
-	SystemPrompt string   `json:"system_prompt,omitempty"`
-	Trigger      Trigger  `json:"trigger"`
-	Channels     []string `json:"channels,omitempty"`
-	Flow         Flow     `json:"flow"`
+	Name         string     `json:"name"`
+	SystemPrompt string     `json:"system_prompt,omitempty"`
+	Trigger      Trigger    `json:"trigger"`
+	Channels     []string   `json:"channels,omitempty"`
+	Flow         Flow       `json:"flow"`
+	NewAgents    []NewAgent `json:"new_agents,omitempty"`
 }
 
 // Question is one clarifying question. Options, when present, suggest a
@@ -183,7 +192,8 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("    * Pull concrete values straight from the user's words: if they ask for \"top 10 AI articles\", the query is about AI articles and the count is 10 — bake that in, do not leave it generic.\n")
 	sb.WriteString("- Give every node a meaningful \"output\" var name so downstream nodes can reference it (e.g. \"articles\", \"notebook_id\", \"audio_url\").\n")
 	sb.WriteString("- Give every node a one-line \"description\" stating concretely what THAT node does (e.g. \"Search the web for today's AI news\", \"Keep the top 5 articles as {title,url}\") — not a vague label. The node ids should also read as verbs (search_ai_news, pick_top_articles), not generic names like node1.\n")
-	sb.WriteString("- Only reference agents/tools that appear in the Available lists below. Do NOT invent agent or tool names. If the intent needs reasoning and no suitable agent exists, do the work in a python node or a tool you DO have, rather than inventing a peer agent.\n\n")
+	sb.WriteString("- If the intent needs reasoning and no suitable agent exists in the Available agents list, you MAY invent a new peer agent. If you do, you MUST provide its full definition in a `new_agents` array at the top level of your output JSON (alongside `flow`), including its `id`, `name`, `description`, and `system_prompt`.\n")
+	sb.WriteString("- Do NOT invent tool names. Do the work in a python node or an existing tool if no tool exists.\n\n")
 
 	if len(catalog.Agents) > 0 {
 		sb.WriteString("Available agents: ")

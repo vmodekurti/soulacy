@@ -131,6 +131,7 @@ export const api = {
     models:         (id)        => apiFetch(`/providers/${id}/models`),
     setModel:       (id, model) => apiFetch(`/providers/${id}/model`, { method: 'POST', body: JSON.stringify({ model }) }),
     setCredentials: (id, body)  => apiFetch(`/providers/${id}`,        { method: 'POST', body: JSON.stringify(body) }),
+    delete:         (id)        => apiFetch(`/providers/${id}`,        { method: 'DELETE' }),
   },
 
   config: {

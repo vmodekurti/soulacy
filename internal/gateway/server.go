@@ -654,6 +654,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/providers/:id/models", s.rbacMW(rbac.ResourceProviders, rbac.ActionRead), s.handleListModels)
 	api.Post("/providers/:id/model", s.rbacMW(rbac.ResourceProviders, rbac.ActionWrite), s.handleSetProviderModel)
 	api.Post("/providers/:id", s.rbacMW(rbac.ResourceProviders, rbac.ActionWrite), s.handleSetProviderCredentials)
+	api.Delete("/providers/:id", s.rbacMW(rbac.ResourceProviders, rbac.ActionWrite), s.handleDeleteProvider)
 
 	// Skills (Agent Skills format — agentskills.io)
 	api.Get("/skills", s.rbacMW(rbac.ResourceSkills, rbac.ActionRead), s.handleListSkills)
