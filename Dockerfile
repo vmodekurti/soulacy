@@ -34,13 +34,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY go.mod go.sum ./
+# go.mod has a local replace (github.com/soulacy/soulacy/sdk => ./sdk), so
+# `go mod download` must be able to read the replacement module's go.mod.
+# Copy just that file first to keep this layer cacheable.
+COPY sdk/go.mod ./sdk/go.mod
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 COPY . .
 # Inject the Svelte build so the gateway binary embeds the GUI.
-COPY --from=gui /src/gui/dist /src/internal/webui/dist
+# gui/vite.config.js sets build.outDir to ../internal/webui/dist, so the gui
+# stage emits the bundle at /src/internal/webui/dist (not /src/gui/dist).
+COPY --from=gui /src/internal/webui/dist /src/internal/webui/dist
 
 ENV CGO_ENABLED=1
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -76,7 +82,11 @@ VOLUME ["/home/soulacy/.soulacy"]
 USER soulacy
 WORKDIR /home/soulacy
 
-ENV SOULACY_CONFIG_PATH=/home/soulacy/.soulacy/config.yaml
+# NOTE: do NOT pin SOULACY_CONFIG_PATH to an explicit file here. Doing so forces
+# explicit-file config mode, and a missing file becomes a hard startup error —
+# which defeats the first-run bootstrap that *creates* config.yaml. With the var
+# unset, config loading searches ~/.soulacy (the mounted volume), tolerates a
+# missing file on first run, and writes a fresh config.yaml + API key there.
 
 EXPOSE 18789
 
