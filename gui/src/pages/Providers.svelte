@@ -272,6 +272,19 @@
     }
   }
 
+  async function deleteProvider(providerId) {
+    if (!confirm(`Are you sure you want to delete ${providerId}?`)) return
+    error = ''; notice = ''
+    try {
+      const res = await api.providers.delete(providerId)
+      notice = res.message || `Deleted provider ${providerId}.`
+      restartNeeded = false
+      await load()
+    } catch (e) {
+      error = e.message
+    }
+  }
+
   onMount(load)
 
   const PROVIDER_ICONS = {
@@ -340,7 +353,10 @@
                 <span class="warn-badge" title="Configured in config.yaml but not yet registered. Restart the gateway.">restart needed</span>
               {/if}
             </div>
-            <button class="icon-btn-edit" title="Edit credentials" on:click={() => openAdd(id)}>✎</button>
+            <div class="pv-actions">
+              <button class="icon-btn-edit" title="Edit credentials" on:click={() => openAdd(id)}>✎</button>
+              <button class="icon-btn-delete" title="Delete provider" on:click={() => deleteProvider(id)}>🗑️</button>
+            </div>
           </div>
 
           <div class="pv-body">
@@ -653,11 +669,13 @@
     font-size: .65rem; padding: .12rem .45rem; border-radius: 999px;
     background: rgba(240,180,80,.18); color: #f0c060; font-weight: 600;
   }
-  .icon-btn-edit {
-    margin-left: auto; background: none; color: #6b7294;
+  .pv-actions { margin-left: auto; display: flex; gap: .25rem; }
+  .icon-btn-edit, .icon-btn-delete {
+    background: none; color: #6b7294;
     padding: .2rem .4rem; border-radius: 4px; font-size: .9rem;
   }
   .icon-btn-edit:hover { color: #e8eaf6; background: #1a1e36; }
+  .icon-btn-delete:hover { color: #f06060; background: rgba(240,96,96,.1); }
 
   .modal-bg {
     position: fixed; inset: 0; background: rgba(0,0,0,.65);
