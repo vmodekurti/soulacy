@@ -133,6 +133,40 @@ func TestInjectProviderKey_NoLLMBlock(t *testing.T) {
 	}
 }
 
+func TestInjectProviderBaseURL(t *testing.T) {
+	body := `
+llm:
+  providers:
+    custom:
+      api_key: "sk-custom"
+`
+	got := injectProviderBaseURL(body, "custom", "http://localhost:11434")
+	if !strings.Contains(got, `base_url: "http://localhost:11434"`) {
+		t.Fatalf("expected base_url injected, got:\n%s", got)
+	}
+
+	// Should not overwrite api_key
+	if !strings.Contains(got, `api_key: "sk-custom"`) {
+		t.Fatalf("expected api_key preserved, got:\n%s", got)
+	}
+
+	// If it already has base_url, it should replace it
+	bodyWithBaseURL := `
+llm:
+  providers:
+    custom:
+      base_url: "http://old.com"
+      api_key: "sk-custom"
+`
+	gotReplaced := injectProviderBaseURL(bodyWithBaseURL, "custom", "http://new.com")
+	if !strings.Contains(gotReplaced, `base_url: "http://new.com"`) {
+		t.Fatalf("expected base_url replaced, got:\n%s", gotReplaced)
+	}
+	if strings.Contains(gotReplaced, `http://old.com`) {
+		t.Fatalf("expected old base_url removed, got:\n%s", gotReplaced)
+	}
+}
+
 func TestMaskKey(t *testing.T) {
 	cases := map[string]string{
 		"":                        "",
