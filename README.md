@@ -60,24 +60,82 @@ cd soulacy
 ./install.sh                  # same behavior; will offer LaunchAgent setup on macOS
 ```
 
+### Docker — guided deploy script (recommended)
+
+From a checkout, [`scripts/docker-deploy.sh`](scripts/docker-deploy.sh) builds the image, runs
+the container, publishes a host port, waits for the gateway to become healthy,
+and prints the URL plus the real API key. Every parameter can be entered
+interactively, passed as a flag, or set via an environment variable.
+
+```bash
+git clone https://github.com/vmodekurti/soulacy
+cd soulacy
+./scripts/docker-deploy.sh                       # interactive — prompts for each setting
+./scripts/docker-deploy.sh --yes                 # accept defaults, no prompts
+./scripts/docker-deploy.sh --host-port 9000      # publish on a different host port
+```
+
+When it finishes it prints a summary like:
+
+```
+  Deployed:   soulacy
+  URL:        http://localhost:9000
+  API key:    sy_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+  Logs:       docker logs -f soulacy
+  Shell:      docker exec -it soulacy bash
+  Stop:       docker rm -f soulacy
+```
+
+Useful flags: `--host-port`, `--container-port`, `--name`, `--data-dir`,
+`--api-key`, `--no-build`, `--yes`. Run `./scripts/docker-deploy.sh --help` for the
+full list.
+
+### Docker — lightweight (SQLite, zero dependencies)
+
+Build the image, then run it. Note two requirements: bind to `0.0.0.0` inside
+the container (otherwise the published port can't reach the gateway), and choose
+your host port via the left side of `-p`.
+
+```bash
+docker build -t soulacy .
+docker run -d --name soulacy \
+  -p 9000:18789 \
+  -e SOULACY_SERVER_HOST=0.0.0.0 \
+  -v ~/.soulacy:/home/soulacy/.soulacy \
+  soulacy
+```
+
+Open [http://localhost:9000](http://localhost:9000). The gateway generates an API
+key on first run and stores it in the mounted config; read it back with:
+
+```bash
+docker exec soulacy sh -c 'grep api_key ~/.soulacy/config.yaml'
+```
+
 ### Docker — full stack (Postgres + Qdrant + GUI)
 
 ```bash
 curl -O https://raw.githubusercontent.com/vmodekurti/soulacy/main/docker-compose.yml
 curl -O https://raw.githubusercontent.com/vmodekurti/soulacy/main/.env.example
-cp .env.example .env   # edit your LLM key and API key
+cp .env.example .env   # set POSTGRES_PASSWORD, your LLM key, and SOULACY_PORT
 docker compose up
 ```
 
-Open [http://localhost:18789](http://localhost:18789).
+The compose file publishes `${SOULACY_PORT:-18789}` on the host — set
+`SOULACY_PORT` in `.env` to change it. Open
+[http://localhost:18789](http://localhost:18789) (or your chosen port).
 
-### Docker — lightweight (SQLite, zero dependencies)
+### Running CLI commands against a container
+
+The image bundles the `sy` CLI. There's no SSH — use `docker exec`:
 
 ```bash
-docker run -p 18789:18789 \
-  -v ~/.soulacy:/home/soulacy/.soulacy \
-  ghcr.io/vmodekurti/soulacy:latest
+docker exec -it soulacy bash        # interactive shell inside the container
+docker exec -it soulacy sy status   # run a single CLI command
 ```
+
+Inside the container `sy` auto-discovers the gateway and its API key from the
+mounted config, so no flags are needed.
 
 ### Python SDK (experimental)
 
