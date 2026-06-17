@@ -2804,6 +2804,7 @@ print(result if isinstance(result, str) else json.dumps(result))
 		}
 
 		// Deterministic path-based guardrail for privileged system tools
+		guardrailConfirmed := false
 		if isPrivilegedSystemTool(b.Name) {
 			action, reason, err := e.deterministicGuardrail(ctx, def, sessionID, call)
 			if err != nil {
@@ -2816,13 +2817,22 @@ print(result if isinstance(result, str) else json.dumps(result))
 				if err := e.dynamicConfirm(ctx, def, call, reason); err != nil {
 					return "", err
 				}
+				// The guardrail already obtained an explicit user approval for
+				// this exact call. Skip the static ConfirmTools gate below so the
+				// operator isn't prompted twice for one tool call: the two gates
+				// mint independent call_ids, and the second prompt's pending
+				// approval would otherwise never be resolved, hanging the run.
+				guardrailConfirmed = true
 			}
 		}
 
-		// Confirmation gate: pause and ask the user before executing tools
-		// that are listed in def.ConfirmTools (or "*" for all built-ins).
-		if err := e.maybeConfirm(ctx, def, call); err != nil {
-			return "", err
+		// Confirmation gate: pause and ask the user before executing tools that
+		// are listed in def.ConfirmTools (or "*" for all built-ins). Skipped when
+		// the guardrail above already confirmed this exact call.
+		if !guardrailConfirmed {
+			if err := e.maybeConfirm(ctx, def, call); err != nil {
+				return "", err
+			}
 		}
 
 		tstart := time.Now()
