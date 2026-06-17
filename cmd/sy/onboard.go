@@ -152,8 +152,12 @@ func runOnboardWizard() error {
 	fmt.Println()
 	if confirm("  Add or change an LLM provider key?", false) {
 		choice := promptChoices("Provider:", []string{
-			"OpenAI (paste API key)",
-			"Anthropic (paste API key)",
+			"OpenAI",
+			"Anthropic",
+			"Google (Gemini)",
+			"Groq",
+			"OpenRouter",
+			"Custom (OpenAI-compatible)",
 			"Skip",
 		})
 		switch choice {
@@ -161,6 +165,14 @@ func runOnboardWizard() error {
 			runProviderSetup(cfgPath, "openai", "https://api.openai.com/v1")
 		case 1:
 			runProviderSetup(cfgPath, "anthropic", "https://api.anthropic.com/v1")
+		case 2:
+			runProviderSetup(cfgPath, "google", "https://generativelanguage.googleapis.com/v1beta")
+		case 3:
+			runProviderSetup(cfgPath, "groq", "https://api.groq.com/openai/v1")
+		case 4:
+			runProviderSetup(cfgPath, "openrouter", "https://openrouter.ai/api/v1")
+		case 5:
+			runProviderSetup(cfgPath, "custom", "")
 		}
 	}
 	fmt.Println()
@@ -230,7 +242,18 @@ func loadOrFreshConfig(ws config.Paths) *config.Config {
 // llm.providers.<id>.api_key. Doesn't change default_provider unless the
 // operator confirms.
 func runProviderSetup(cfgPath, providerID, baseURL string) {
-	fmt.Printf("  %s Provider base URL: %s\n", dim("Endpoint:"), gray(baseURL))
+	if providerID == "custom" {
+		providerID = prompt("  Provider ID (e.g. vllm, together)", "")
+		if providerID == "" {
+			fmt.Printf("  %s No provider ID entered. Nothing changed.\n", yellow("→"))
+			return
+		}
+		baseURL = prompt("  Base URL (e.g. https://api.together.xyz/v1)", "")
+	}
+
+	if baseURL != "" {
+		fmt.Printf("  %s Provider base URL: %s\n", dim("Endpoint:"), gray(baseURL))
+	}
 	key := prompt("  Paste API key (or blank to skip)", "")
 	if key == "" {
 		fmt.Printf("  %s No key entered. Nothing changed.\n", yellow("→"))
@@ -239,6 +262,11 @@ func runProviderSetup(cfgPath, providerID, baseURL string) {
 	if err := patchProviderKey(cfgPath, providerID, key); err != nil {
 		fmt.Printf("  %s Patch failed: %v\n", red("✗"), err)
 		return
+	}
+	if baseURL != "" {
+		if err := patchProviderBaseURL(cfgPath, providerID, baseURL); err != nil {
+			fmt.Printf("  %s Base URL patch failed: %v\n", red("✗"), err)
+		}
 	}
 	fmt.Printf("  %s Wrote llm.providers.%s.api_key (masked: %s)\n",
 		green("✓"), providerID, maskKey(key))
@@ -430,6 +458,45 @@ func injectProviderKey(body, providerID, apiKey string) string {
 		tail = "\n"
 	}
 	return body + tail + fmt.Sprintf("\nllm:\n  providers:\n    %s:\n      api_key: %q\n", providerID, apiKey)
+}
+
+// injectProviderBaseURL rewrites llm.providers.<id>.base_url.
+// It assumes the provider block already exists (since patchProviderKey is called first).
+func injectProviderBaseURL(body, providerID, baseURL string) string {
+	provBlock := "\n    " + providerID + ":"
+	if !strings.Contains(body, provBlock) {
+		return body // should not happen if patchProviderKey succeeded
+	}
+	pIdx := strings.Index(body, provBlock) + 1
+	endIdx := findBlockEnd(body, pIdx+len(providerID)+4)
+	inside := body[pIdx:endIdx]
+	keyTok := "\n      base_url:"
+	if kIdx := strings.Index(inside, keyTok); kIdx >= 0 {
+		abs := pIdx + kIdx + 1
+		lineEnd := abs
+		for lineEnd < len(body) && body[lineEnd] != '\n' {
+			lineEnd++
+		}
+		return body[:abs] + fmt.Sprintf("      base_url: %q", baseURL) + body[lineEnd:]
+	}
+	// Insert base_url right after the provider block header line.
+	eol := pIdx
+	for eol < len(body) && body[eol] != '\n' {
+		eol++
+	}
+	return body[:eol] + fmt.Sprintf("\n      base_url: %q", baseURL) + body[eol:]
+}
+
+func patchProviderBaseURL(path, providerID, baseURL string) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	patched := injectProviderBaseURL(string(body), providerID, baseURL)
+	if patched == string(body) {
+		return nil
+	}
+	return os.WriteFile(path, []byte(patched), 0o600)
 }
 
 // findBlockEnd returns the byte index of the first character of the

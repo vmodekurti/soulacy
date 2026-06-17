@@ -396,16 +396,16 @@ if [ "$CONFIG_EXISTS" -eq 0 ] && { [ -t 0 ] || [ -c /dev/tty ]; }; then
     export PATH="$BIN_DIR:$PATH"
     SETUP_RC=0
     if [ -t 0 ]; then
-        "$BIN_DIR/sy" setup || SETUP_RC=$?
+        "$BIN_DIR/sy" onboard || SETUP_RC=$?
     else
         # stdin is a pipe (curl | bash) — feed the wizard from the terminal.
-        "$BIN_DIR/sy" setup < /dev/tty || SETUP_RC=$?
+        "$BIN_DIR/sy" onboard < /dev/tty || SETUP_RC=$?
     fi
     if [ "$SETUP_RC" -eq 0 ]; then
         # Re-detect: setup just wrote the config.
         { [ -f "$CONFIG_LEGACY" ] || [ -f "$CONFIG_WORKSPACE" ]; } && CONFIG_EXISTS=1
     else
-        warn "Setup did not complete — re-run it any time with:  sy setup"
+        warn "Setup did not complete — re-run it any time with:  sy onboard"
     fi
 fi
 
