@@ -54,8 +54,9 @@ func buildOnboardCmd() *cobra.Command {
   1. Confirm the workspace path (~/.soulacy/soulspace by default).
   2. Choose loopback or expose (loopback = local-only; expose = LAN/remote).
   3. Pick an LLM provider (Ollama auto-detect / OpenAI / Anthropic / skip).
-  4. Optionally adopt a starter agent so the GUI isn't empty on first open.
-  5. Optionally install a daemon so soulacy starts on login.
+  4. Set up web search (Ollama / Tavily / Serper) for the web_search tool.
+  5. Optionally adopt a starter agent so the GUI isn't empty on first open.
+  6. Optionally install a daemon so soulacy starts on login.
 
 Re-running ` + "`sy onboard`" + ` is safe: each step shows the current value and lets
 you skip without changing anything. The wizard never deletes data.`,
@@ -177,8 +178,35 @@ func runOnboardWizard() error {
 	}
 	fmt.Println()
 
-	// ── Step 4: Starter agent ──────────────────────────────────────────────
-	printStep(4, "Starter agent")
+	// ── Step 4: Web search ─────────────────────────────────────────────────
+	printStep(4, "Web search")
+	currentSearch := cfg.Search.Provider
+	if currentSearch == "" {
+		currentSearch = "ollama"
+	}
+	fmt.Printf("  %s %s\n", dim("Current provider:"), cyan(currentSearch))
+	fmt.Printf("  %s The built-in web_search tool lets agents fetch live, up-to-date information.\n", gray("→"))
+	fmt.Println()
+	if confirm("  Set up or change web search?", false) {
+		choice := promptChoices("Web search provider:", []string{
+			"Ollama (hosted web search API — needs an ollama.com key)",
+			"Tavily (search API built for LLMs)",
+			"Serper (Google results via serper.dev)",
+			"Skip",
+		})
+		switch choice {
+		case 0:
+			runWebSearchSetup(cfgPath, "ollama")
+		case 1:
+			runWebSearchSetup(cfgPath, "tavily")
+		case 2:
+			runWebSearchSetup(cfgPath, "serper")
+		}
+	}
+	fmt.Println()
+
+	// ── Step 5: Starter agent ──────────────────────────────────────────────
+	printStep(5, "Starter agent")
 	agentCount := countAgentsOnDisk(ws)
 	if agentCount > 0 {
 		fmt.Printf("  %s %d agent(s) on disk. Skipping.\n", green("✓"), agentCount)
@@ -195,8 +223,8 @@ func runOnboardWizard() error {
 	}
 	fmt.Println()
 
-	// ── Step 5: Daemon install ─────────────────────────────────────────────
-	printStep(5, "Auto-start on login")
+	// ── Step 6: Daemon install ─────────────────────────────────────────────
+	printStep(6, "Auto-start on login")
 	switch runtime.GOOS {
 	case "darwin":
 		fmt.Printf("  %s On macOS this installs a LaunchAgent.\n", gray("→"))
@@ -277,6 +305,98 @@ func runProviderSetup(cfgPath, providerID, baseURL string) {
 			fmt.Printf("  %s Default provider: %s\n", green("✓"), providerID)
 		}
 	}
+}
+
+// runWebSearchSetup sets search.provider and (optionally) search.api_key under
+// the top-level `search:` block in config.yaml. The built-in web_search tool
+// reads these at boot (see internal/app/wire.go). A blank key is fine: the
+// gateway falls back to the provider's env var (OLLAMA_API_KEY / TAVILY_API_KEY
+// / SERPER_API_KEY) at runtime, and the Ollama backend additionally reuses the
+// key from llm.providers.ollama if one is already configured.
+func runWebSearchSetup(cfgPath, provider string) {
+	if err := patchSearchProvider(cfgPath, provider); err != nil {
+		fmt.Printf("  %s Couldn't set search provider: %v\n", red("✗"), err)
+		return
+	}
+	fmt.Printf("  %s Web search provider: %s\n", green("✓"), provider)
+
+	var keyEnv, keyHint string
+	switch provider {
+	case "ollama":
+		keyEnv, keyHint = "OLLAMA_API_KEY", "Create a key at https://ollama.com/settings/keys (or reuse your Ollama provider key)"
+	case "tavily":
+		keyEnv, keyHint = "TAVILY_API_KEY", "Create a key at https://app.tavily.com"
+	case "serper":
+		keyEnv, keyHint = "SERPER_API_KEY", "Create a key at https://serper.dev"
+	default:
+		keyEnv = "the provider's API key env var"
+	}
+	if keyHint != "" {
+		fmt.Printf("  %s %s\n", dim("Key:"), gray(keyHint))
+	}
+	key := prompt("  Paste API key (blank to use the "+keyEnv+" env var instead)", "")
+	if key == "" {
+		fmt.Printf("  %s No key written. web_search will read $%s at runtime if set.\n", yellow("→"), keyEnv)
+		return
+	}
+	if err := patchSearchAPIKey(cfgPath, key); err != nil {
+		fmt.Printf("  %s Couldn't write search key: %v\n", red("✗"), err)
+		return
+	}
+	fmt.Printf("  %s Wrote search.api_key (masked: %s)\n", green("✓"), maskKey(key))
+}
+
+// patchSearchProvider upserts search.provider (unquoted scalar).
+func patchSearchProvider(path, provider string) error {
+	return patchSearchField(path, "provider", provider, false)
+}
+
+// patchSearchAPIKey upserts search.api_key (quoted, since keys can contain
+// characters YAML would otherwise choke on).
+func patchSearchAPIKey(path, apiKey string) error {
+	return patchSearchField(path, "api_key", apiKey, true)
+}
+
+// patchSearchField writes `<key>: <value>` under the top-level `search:` block,
+// creating the block (appended at EOF) if it doesn't exist yet, and inserting
+// the key if the block exists but lacks it. Best-effort textual edit, matching
+// the style of the other onboarding patchers.
+func patchSearchField(path, key, value string, quote bool) error {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	val := value
+	if quote {
+		val = fmt.Sprintf("%q", value)
+	}
+	s := string(body)
+
+	hasBlock := strings.HasPrefix(s, "search:") || strings.Contains(s, "\nsearch:")
+	if !hasBlock {
+		tail := ""
+		if len(s) > 0 && s[len(s)-1] != '\n' {
+			tail = "\n"
+		}
+		s += tail + fmt.Sprintf("\nsearch:\n  %s: %s\n", key, val)
+		return os.WriteFile(path, []byte(s), 0o600)
+	}
+
+	// Block exists: replace the key line if present.
+	patched := replaceKeyLine(s, "search", key, val)
+	if patched == s {
+		// Key absent under search: insert it right after the `search:` header.
+		start := 0
+		if idx := strings.Index(s, "\nsearch:"); idx >= 0 {
+			start = idx + 1
+		}
+		eol := start
+		for eol < len(s) && s[eol] != '\n' {
+			eol++
+		}
+		patched = s[:eol] + fmt.Sprintf("\n  %s: %s", key, val) + s[eol:]
+	}
+	return os.WriteFile(path, []byte(patched), 0o600)
 }
 
 // ollamaUp returns true when a HEAD/GET to localhost:11434 succeeds in
