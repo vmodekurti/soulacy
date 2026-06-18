@@ -32,6 +32,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net/http"
 	"os"
@@ -41,6 +42,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 
 	"github.com/soulacy/soulacy/internal/config"
 )
@@ -348,55 +350,22 @@ func runWebSearchSetup(cfgPath, provider string) {
 
 // patchSearchProvider upserts search.provider (unquoted scalar).
 func patchSearchProvider(path, provider string) error {
-	return patchSearchField(path, "provider", provider, false)
-}
-
-// patchSearchAPIKey upserts search.api_key (quoted, since keys can contain
-// characters YAML would otherwise choke on).
-func patchSearchAPIKey(path, apiKey string) error {
-	return patchSearchField(path, "api_key", apiKey, true)
-}
-
-// patchSearchField writes `<key>: <value>` under the top-level `search:` block,
-// creating the block (appended at EOF) if it doesn't exist yet, and inserting
-// the key if the block exists but lacks it. Best-effort textual edit, matching
-// the style of the other onboarding patchers.
-func patchSearchField(path, key, value string, quote bool) error {
-	body, err := os.ReadFile(path)
+	doc, root, err := loadConfigDoc(path)
 	if err != nil {
 		return err
 	}
-	val := value
-	if quote {
-		val = fmt.Sprintf("%q", value)
-	}
-	s := string(body)
+	setScalar(ensureMapping(root, "search"), "provider", provider, 0)
+	return saveConfigDoc(path, doc)
+}
 
-	hasBlock := strings.HasPrefix(s, "search:") || strings.Contains(s, "\nsearch:")
-	if !hasBlock {
-		tail := ""
-		if len(s) > 0 && s[len(s)-1] != '\n' {
-			tail = "\n"
-		}
-		s += tail + fmt.Sprintf("\nsearch:\n  %s: %s\n", key, val)
-		return os.WriteFile(path, []byte(s), 0o600)
+// patchSearchAPIKey upserts search.api_key (double-quoted).
+func patchSearchAPIKey(path, apiKey string) error {
+	doc, root, err := loadConfigDoc(path)
+	if err != nil {
+		return err
 	}
-
-	// Block exists: replace the key line if present.
-	patched := replaceKeyLine(s, "search", key, val)
-	if patched == s {
-		// Key absent under search: insert it right after the `search:` header.
-		start := 0
-		if idx := strings.Index(s, "\nsearch:"); idx >= 0 {
-			start = idx + 1
-		}
-		eol := start
-		for eol < len(s) && s[eol] != '\n' {
-			eol++
-		}
-		patched = s[:eol] + fmt.Sprintf("\n  %s: %s", key, val) + s[eol:]
-	}
-	return os.WriteFile(path, []byte(patched), 0o600)
+	setScalar(ensureMapping(root, "search"), "api_key", apiKey, yaml.DoubleQuotedStyle)
+	return saveConfigDoc(path, doc)
 }
 
 // ollamaUp returns true when a HEAD/GET to localhost:11434 succeeds in
@@ -461,189 +430,137 @@ llm:
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-// ── Textual patches to config.yaml ──────────────────────────────────────────
+// ── config.yaml edits via the yaml.v3 Node API ──────────────────────────────
 //
-// Same philosophy as internal/config.patchConfigAPIKey: a YAML round-trip
-// via viper would reformat the file and strip operator comments. We do
-// targeted line-level edits so the file looks "lived in."
+// We parse config.yaml into a yaml.Node tree, mutate the specific keys, and
+// re-marshal. yaml.v3 preserves comments attached to surviving nodes, so the
+// file stays "lived in" while edits are structurally correct — no fragile
+// string offsets that could write a value into the wrong provider block.
 
-func patchServerHost(path, host string) error {
-	body, err := os.ReadFile(path)
+// loadConfigDoc reads path and returns the document node plus its root mapping.
+// A missing-or-empty file yields a fresh empty mapping so callers can populate it.
+func loadConfigDoc(path string) (*yaml.Node, *yaml.Node, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	patched := replaceKeyLine(string(body), "server", "host", fmt.Sprintf("%q", host))
-	if patched == string(body) {
-		return nil
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, nil, err
 	}
-	return os.WriteFile(path, []byte(patched), 0o600)
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}
+		return &doc, root, nil
+	}
+	return &doc, doc.Content[0], nil
 }
 
-func patchProviderKey(path, providerID, apiKey string) error {
-	body, err := os.ReadFile(path)
+// saveConfigDoc marshals doc with 2-space indentation (matching the template)
+// and writes it back at 0600 (the file contains api keys).
+func saveConfigDoc(path string, doc *yaml.Node) error {
+	var buf bytes.Buffer
+	enc := yaml.NewEncoder(&buf)
+	enc.SetIndent(2)
+	if err := enc.Encode(doc); err != nil {
+		return err
+	}
+	if err := enc.Close(); err != nil {
+		return err
+	}
+	return os.WriteFile(path, buf.Bytes(), 0o600)
+}
+
+// yamlMapValue returns the value node paired with key in mapping m, or nil.
+func yamlMapValue(m *yaml.Node, key string) *yaml.Node {
+	if m == nil || m.Kind != yaml.MappingNode {
+		return nil
+	}
+	for i := 0; i+1 < len(m.Content); i += 2 {
+		if m.Content[i].Value == key {
+			return m.Content[i+1]
+		}
+	}
+	return nil
+}
+
+// setScalar sets m[key] to a scalar string with the given style (use 0 for a
+// plain/unquoted scalar, yaml.DoubleQuotedStyle to force quotes). The key/value
+// pair is created if absent and updated in place otherwise — so re-running with
+// an unchanged value can never produce a duplicate key.
+func setScalar(m *yaml.Node, key, value string, style yaml.Style) {
+	if v := yamlMapValue(m, key); v != nil {
+		v.Kind = yaml.ScalarNode
+		v.Tag = "!!str"
+		v.Value = value
+		v.Style = style
+		return
+	}
+	m.Content = append(m.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value, Style: style},
+	)
+}
+
+// ensureMapping returns m[key] as a mapping node, creating it if absent.
+func ensureMapping(m *yaml.Node, key string) *yaml.Node {
+	if v := yamlMapValue(m, key); v != nil {
+		if v.Kind != yaml.MappingNode {
+			v.Kind = yaml.MappingNode
+			v.Tag = "!!map"
+			v.Value = ""
+			v.Content = nil
+		}
+		return v
+	}
+	child := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	m.Content = append(m.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		child,
+	)
+	return child
+}
+
+func patchServerHost(path, host string) error {
+	doc, root, err := loadConfigDoc(path)
 	if err != nil {
 		return err
 	}
-	// Look for an existing `<providerID>:` block under `providers:` and
-	// replace/insert its `api_key:` line. If the block doesn't exist,
-	// append a minimal one at the end of the file under llm.providers.
-	patched := injectProviderKey(string(body), providerID, apiKey)
-	if patched == string(body) {
-		return nil
+	setScalar(ensureMapping(root, "server"), "host", host, yaml.DoubleQuotedStyle)
+	return saveConfigDoc(path, doc)
+}
+
+// patchProviderKey sets llm.providers.<id>.api_key, creating the llm,
+// providers, and provider blocks as needed.
+func patchProviderKey(path, providerID, apiKey string) error {
+	doc, root, err := loadConfigDoc(path)
+	if err != nil {
+		return err
 	}
-	return os.WriteFile(path, []byte(patched), 0o600)
+	providers := ensureMapping(ensureMapping(root, "llm"), "providers")
+	setScalar(ensureMapping(providers, providerID), "api_key", apiKey, yaml.DoubleQuotedStyle)
+	return saveConfigDoc(path, doc)
+}
+
+// patchProviderBaseURL sets llm.providers.<id>.base_url on the named provider
+// only — sibling providers are never touched.
+func patchProviderBaseURL(path, providerID, baseURL string) error {
+	doc, root, err := loadConfigDoc(path)
+	if err != nil {
+		return err
+	}
+	providers := ensureMapping(ensureMapping(root, "llm"), "providers")
+	setScalar(ensureMapping(providers, providerID), "base_url", baseURL, yaml.DoubleQuotedStyle)
+	return saveConfigDoc(path, doc)
 }
 
 func patchDefaultProvider(path, providerID string) error {
-	body, err := os.ReadFile(path)
+	doc, root, err := loadConfigDoc(path)
 	if err != nil {
 		return err
 	}
-	patched := replaceKeyLine(string(body), "llm", "default_provider", providerID)
-	if patched == string(body) {
-		return nil
-	}
-	return os.WriteFile(path, []byte(patched), 0o600)
-}
-
-// replaceKeyLine finds `<key>:` inside the `<parent>:` block (at any
-// indentation > 0) and replaces the value. If the key doesn't exist
-// under the parent, returns body unchanged.
-func replaceKeyLine(body, parent, key, value string) string {
-	parentTag := "\n" + parent + ":"
-	pIdx := strings.Index(body, parentTag)
-	if pIdx < 0 && !strings.HasPrefix(body, parent+":") {
-		return body
-	}
-	if pIdx < 0 {
-		pIdx = 0
-	} else {
-		pIdx++ // skip leading \n
-	}
-	// Find end of parent's block: next top-level key (line starting with [a-z]) or EOF.
-	endIdx := findBlockEnd(body, pIdx+len(parent)+1)
-	inside := body[pIdx:endIdx]
-	keyTok := "\n  " + key + ":"
-	kIdx := strings.Index(inside, keyTok)
-	if kIdx < 0 {
-		return body // key not present; don't auto-insert (caller can decide)
-	}
-	abs := pIdx + kIdx + 1 // skip newline
-	// Walk to end of that line.
-	lineEnd := abs
-	for lineEnd < len(body) && body[lineEnd] != '\n' {
-		lineEnd++
-	}
-	return body[:abs] + "  " + key + ": " + value + body[lineEnd:]
-}
-
-// injectProviderKey rewrites llm.providers.<id>.api_key, inserting the
-// provider block if needed. Best-effort textual edit.
-func injectProviderKey(body, providerID, apiKey string) string {
-	provBlock := "\n    " + providerID + ":"
-	// Easy case: providers.<id> block already exists.
-	if strings.Contains(body, provBlock) {
-		// Locate api_key inside it.
-		pIdx := strings.Index(body, provBlock) + 1
-		endIdx := findBlockEnd(body, pIdx+len(providerID)+4) // crude — next 4-space-indent peer
-		inside := body[pIdx:endIdx]
-		keyTok := "\n      api_key:"
-		if kIdx := strings.Index(inside, keyTok); kIdx >= 0 {
-			abs := pIdx + kIdx + 1
-			lineEnd := abs
-			for lineEnd < len(body) && body[lineEnd] != '\n' {
-				lineEnd++
-			}
-			return body[:abs] + fmt.Sprintf("      api_key: %q", apiKey) + body[lineEnd:]
-		}
-		// Insert api_key right after the provider block header line.
-		eol := pIdx
-		for eol < len(body) && body[eol] != '\n' {
-			eol++
-		}
-		return body[:eol] + fmt.Sprintf("\n      api_key: %q", apiKey) + body[eol:]
-	}
-	// Harder case: providers block exists but no <id>.
-	if idx := strings.Index(body, "providers:"); idx >= 0 {
-		eol := idx
-		for eol < len(body) && body[eol] != '\n' {
-			eol++
-		}
-		insert := fmt.Sprintf("\n    %s:\n      api_key: %q", providerID, apiKey)
-		return body[:eol] + insert + body[eol:]
-	}
-	// Hardest case: no llm.providers block at all. Append one.
-	tail := ""
-	if len(body) > 0 && body[len(body)-1] != '\n' {
-		tail = "\n"
-	}
-	return body + tail + fmt.Sprintf("\nllm:\n  providers:\n    %s:\n      api_key: %q\n", providerID, apiKey)
-}
-
-// injectProviderBaseURL rewrites llm.providers.<id>.base_url.
-// It assumes the provider block already exists (since patchProviderKey is called first).
-func injectProviderBaseURL(body, providerID, baseURL string) string {
-	provBlock := "\n    " + providerID + ":"
-	if !strings.Contains(body, provBlock) {
-		return body // should not happen if patchProviderKey succeeded
-	}
-	pIdx := strings.Index(body, provBlock) + 1
-	endIdx := findBlockEnd(body, pIdx+len(providerID)+4)
-	inside := body[pIdx:endIdx]
-	keyTok := "\n      base_url:"
-	if kIdx := strings.Index(inside, keyTok); kIdx >= 0 {
-		abs := pIdx + kIdx + 1
-		lineEnd := abs
-		for lineEnd < len(body) && body[lineEnd] != '\n' {
-			lineEnd++
-		}
-		return body[:abs] + fmt.Sprintf("      base_url: %q", baseURL) + body[lineEnd:]
-	}
-	// Insert base_url right after the provider block header line.
-	eol := pIdx
-	for eol < len(body) && body[eol] != '\n' {
-		eol++
-	}
-	return body[:eol] + fmt.Sprintf("\n      base_url: %q", baseURL) + body[eol:]
-}
-
-func patchProviderBaseURL(path, providerID, baseURL string) error {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		return err
-	}
-	patched := injectProviderBaseURL(string(body), providerID, baseURL)
-	if patched == string(body) {
-		return nil
-	}
-	return os.WriteFile(path, []byte(patched), 0o600)
-}
-
-// findBlockEnd returns the byte index of the first character of the
-// line that ends the current YAML block (i.e. the next non-indented
-// non-blank line). Used to scope textual edits to a single block.
-func findBlockEnd(body string, from int) int {
-	i := from
-	for i < len(body) {
-		// Advance to start of next line.
-		for i < len(body) && body[i] != '\n' {
-			i++
-		}
-		if i >= len(body) {
-			return len(body)
-		}
-		i++ // past the \n
-		if i >= len(body) {
-			return len(body)
-		}
-		// If next line starts with a letter at column 0, that's a new
-		// top-level key — block ended on the previous line.
-		c := body[i]
-		if c != ' ' && c != '\t' && c != '#' && c != '\n' {
-			return i
-		}
-	}
-	return len(body)
+	setScalar(ensureMapping(root, "llm"), "default_provider", providerID, 0)
+	return saveConfigDoc(path, doc)
 }
 
 // ── Cosmetic helpers ────────────────────────────────────────────────────────

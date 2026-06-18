@@ -1,169 +1,176 @@
-// onboard_test.go — table-driven tests for the textual-patch helpers in
-// onboard.go. These helpers do best-effort string surgery on config.yaml
-// to preserve operator comments and edits — any regression here means
-// `sy onboard` silently corrupts someone's hand-edited config, which is
-// worse than failing loudly. So we cover the three shapes patchKey can
-// be in (key exists / key missing / parent block missing) and the
-// edge cases for maskKey.
+// onboard_test.go — tests for the config.yaml patch helpers in onboard.go.
+// These edit config.yaml via the yaml.v3 Node API so `sy onboard` can add a
+// provider/key without corrupting an operator's hand-edited config. The
+// critical invariants: edits land on the RIGHT key/provider (never a sibling),
+// re-running with the same value never duplicates a key, and comments survive.
 
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
-func TestReplaceKeyLine(t *testing.T) {
-	cases := []struct {
-		name   string
-		body   string
-		parent string
-		key    string
-		value  string
-		want   string
-	}{
-		{
-			name: "replace existing value, preserve trailing comment",
-			body: `server:
-  host: "127.0.0.1"
-  port: 18789
-
-llm:
-  default_provider: ollama
-`,
-			parent: "server",
-			key:    "host",
-			value:  `"0.0.0.0"`,
-			want: `server:
-  host: "0.0.0.0"
-  port: 18789
-
-llm:
-  default_provider: ollama
-`,
-		},
-		{
-			name: "key not present under parent: body unchanged",
-			body: `server:
-  port: 18789
-`,
-			parent: "server",
-			key:    "host",
-			value:  `"127.0.0.1"`,
-			want: `server:
-  port: 18789
-`,
-		},
-		{
-			name: "parent block missing: body unchanged",
-			body: `llm:
-  default_provider: openai
-`,
-			parent: "server",
-			key:    "host",
-			value:  `"127.0.0.1"`,
-			want: `llm:
-  default_provider: openai
-`,
-		},
+// writeTemp writes body to a temp config.yaml and returns its path.
+func writeTemp(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatalf("write temp config: %v", err)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := replaceKeyLine(tc.body, tc.parent, tc.key, tc.value)
-			if got != tc.want {
-				t.Errorf("got:\n%s\nwant:\n%s", got, tc.want)
-			}
-		})
-	}
+	return p
 }
 
-func TestInjectProviderKey_ExistingProviderBlock(t *testing.T) {
-	body := `llm:
-  default_provider: openai
-  providers:
-    openai:
-      api_key: "old-key"
-    ollama:
-      base_url: "http://localhost:11434"
-`
-	got := injectProviderKey(body, "openai", "new-key")
-	if !strings.Contains(got, `api_key: "new-key"`) {
-		t.Fatalf("expected new key in body:\n%s", got)
+// parseConfig reads and unmarshals a patched file into a generic map so tests
+// can assert on the resulting structure (not on exact text formatting).
+func parseConfig(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
 	}
-	if strings.Contains(got, `"old-key"`) {
-		t.Fatalf("old key not replaced:\n%s", got)
+	var m map[string]any
+	if err := yaml.Unmarshal(data, &m); err != nil {
+		t.Fatalf("patched config no longer parses as YAML: %v\n---\n%s", err, data)
 	}
+	return m
 }
 
-func TestInjectProviderKey_MissingProviderBlock(t *testing.T) {
-	body := `llm:
-  default_provider: openai
+func providerMap(t *testing.T, m map[string]any, id string) map[string]any {
+	t.Helper()
+	llm, ok := m["llm"].(map[string]any)
+	if !ok {
+		t.Fatalf("llm block missing or wrong type: %#v", m["llm"])
+	}
+	provs, ok := llm["providers"].(map[string]any)
+	if !ok {
+		t.Fatalf("llm.providers missing or wrong type: %#v", llm["providers"])
+	}
+	p, ok := provs[id].(map[string]any)
+	if !ok {
+		t.Fatalf("provider %q missing or wrong type: %#v", id, provs[id])
+	}
+	return p
+}
+
+const baseConfig = `# Soulacy gateway configuration.
+server:
+  host: 127.0.0.1
+  port: 18789
+  api_key: "sy_existing"
+llm:
+  default_provider: ollama
   providers:
     ollama:
       base_url: "http://localhost:11434"
+      # Pull this with: ollama pull llama3.3:70b
+      model: "llama3.3:70b"
+log:
+  level: info
 `
-	got := injectProviderKey(body, "anthropic", "sk-ant-test")
-	if !strings.Contains(got, "anthropic:") {
-		t.Fatalf("expected new anthropic block:\n%s", got)
+
+// The regression that motivated this refactor: setting google's base_url must
+// NOT overwrite the ollama provider's base_url.
+func TestPatchProviderBaseURL_DoesNotTouchSiblings(t *testing.T) {
+	p := writeTemp(t, baseConfig)
+	if err := patchProviderKey(p, "google", ""); err != nil {
+		t.Fatalf("patchProviderKey: %v", err)
 	}
-	if !strings.Contains(got, `api_key: "sk-ant-test"`) {
-		t.Fatalf("expected api_key under anthropic:\n%s", got)
+	if err := patchProviderBaseURL(p, "google", "https://generativelanguage.googleapis.com/v1beta"); err != nil {
+		t.Fatalf("patchProviderBaseURL: %v", err)
 	}
-	// Old ollama block must survive untouched.
-	if !strings.Contains(got, "base_url: \"http://localhost:11434\"") {
-		t.Fatalf("ollama block damaged by patch:\n%s", got)
+	m := parseConfig(t, p)
+
+	google := providerMap(t, m, "google")
+	if got := google["base_url"]; got != "https://generativelanguage.googleapis.com/v1beta" {
+		t.Errorf("google.base_url = %v; want the gemini URL", got)
+	}
+	ollama := providerMap(t, m, "ollama")
+	if got := ollama["base_url"]; got != "http://localhost:11434" {
+		t.Errorf("ollama.base_url was clobbered: got %v; want http://localhost:11434", got)
+	}
+	if got := ollama["model"]; got != "llama3.3:70b" {
+		t.Errorf("ollama.model changed unexpectedly: got %v", got)
 	}
 }
 
-func TestInjectProviderKey_NoLLMBlock(t *testing.T) {
-	body := `server:
-  host: "127.0.0.1"
-  port: 18789
-`
-	got := injectProviderKey(body, "openai", "sk-test")
-	if !strings.Contains(got, "llm:") {
-		t.Fatalf("expected new llm block appended:\n%s", got)
+func TestPatchProviderKey_AddsAndReplaces(t *testing.T) {
+	p := writeTemp(t, baseConfig)
+	if err := patchProviderKey(p, "openai", "sk-test"); err != nil {
+		t.Fatalf("add: %v", err)
 	}
-	if !strings.Contains(got, `api_key: "sk-test"`) {
-		t.Fatalf("expected api_key:\n%s", got)
+	if got := providerMap(t, parseConfig(t, p), "openai")["api_key"]; got != "sk-test" {
+		t.Fatalf("openai.api_key = %v; want sk-test", got)
 	}
-	// Pre-existing server block must survive.
-	if !strings.Contains(got, "host: \"127.0.0.1\"") {
-		t.Fatalf("server block damaged by append:\n%s", got)
+	// Replace existing.
+	if err := patchProviderKey(p, "openai", "sk-new"); err != nil {
+		t.Fatalf("replace: %v", err)
+	}
+	if got := providerMap(t, parseConfig(t, p), "openai")["api_key"]; got != "sk-new" {
+		t.Fatalf("openai.api_key = %v; want sk-new", got)
 	}
 }
 
-func TestInjectProviderBaseURL(t *testing.T) {
-	body := `
-llm:
-  providers:
-    custom:
-      api_key: "sk-custom"
-`
-	got := injectProviderBaseURL(body, "custom", "http://localhost:11434")
-	if !strings.Contains(got, `base_url: "http://localhost:11434"`) {
-		t.Fatalf("expected base_url injected, got:\n%s", got)
+func TestPatchDefaultProvider(t *testing.T) {
+	p := writeTemp(t, baseConfig)
+	if err := patchDefaultProvider(p, "google"); err != nil {
+		t.Fatalf("patchDefaultProvider: %v", err)
 	}
+	llm := parseConfig(t, p)["llm"].(map[string]any)
+	if got := llm["default_provider"]; got != "google" {
+		t.Errorf("default_provider = %v; want google", got)
+	}
+}
 
-	// Should not overwrite api_key
-	if !strings.Contains(got, `api_key: "sk-custom"`) {
-		t.Fatalf("expected api_key preserved, got:\n%s", got)
+func TestPatchServerHost(t *testing.T) {
+	p := writeTemp(t, baseConfig)
+	if err := patchServerHost(p, "0.0.0.0"); err != nil {
+		t.Fatalf("patchServerHost: %v", err)
 	}
+	srv := parseConfig(t, p)["server"].(map[string]any)
+	if got := srv["host"]; got != "0.0.0.0" {
+		t.Errorf("server.host = %v; want 0.0.0.0", got)
+	}
+	if got := srv["api_key"]; got != "sy_existing" {
+		t.Errorf("server.api_key was disturbed: %v", got)
+	}
+}
 
-	// If it already has base_url, it should replace it
-	bodyWithBaseURL := `
-llm:
-  providers:
-    custom:
-      base_url: "http://old.com"
-      api_key: "sk-custom"
-`
-	gotReplaced := injectProviderBaseURL(bodyWithBaseURL, "custom", "http://new.com")
-	if !strings.Contains(gotReplaced, `base_url: "http://new.com"`) {
-		t.Fatalf("expected base_url replaced, got:\n%s", gotReplaced)
+// Re-running the search patchers with the same value must not duplicate keys
+// (the bug that produced "mapping key already defined").
+func TestPatchSearch_NoDuplicateOnRepeat(t *testing.T) {
+	p := writeTemp(t, baseConfig)
+	for i := 0; i < 3; i++ {
+		if err := patchSearchProvider(p, "ollama"); err != nil {
+			t.Fatalf("patchSearchProvider #%d: %v", i, err)
+		}
+		if err := patchSearchAPIKey(p, "k123"); err != nil {
+			t.Fatalf("patchSearchAPIKey #%d: %v", i, err)
+		}
 	}
-	if strings.Contains(gotReplaced, `http://old.com`) {
-		t.Fatalf("expected old base_url removed, got:\n%s", gotReplaced)
+	m := parseConfig(t, p) // would fail to parse if a key were duplicated
+	search, ok := m["search"].(map[string]any)
+	if !ok {
+		t.Fatalf("search block missing: %#v", m["search"])
+	}
+	if search["provider"] != "ollama" || search["api_key"] != "k123" {
+		t.Errorf("unexpected search block: %#v", search)
+	}
+}
+
+// Comments on surviving nodes should be preserved through edits.
+func TestPatch_PreservesComments(t *testing.T) {
+	p := writeTemp(t, baseConfig)
+	if err := patchDefaultProvider(p, "google"); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+	data, _ := os.ReadFile(p)
+	if !strings.Contains(string(data), "Pull this with: ollama pull") {
+		t.Errorf("inline comment was stripped:\n%s", data)
 	}
 }
 
