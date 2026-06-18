@@ -471,8 +471,8 @@ func saveConfigDoc(path string, doc *yaml.Node) error {
 	return os.WriteFile(path, buf.Bytes(), 0o600)
 }
 
-// mapValue returns the value node paired with key in mapping m, or nil.
-func mapValue(m *yaml.Node, key string) *yaml.Node {
+// yamlMapValue returns the value node paired with key in mapping m, or nil.
+func yamlMapValue(m *yaml.Node, key string) *yaml.Node {
 	if m == nil || m.Kind != yaml.MappingNode {
 		return nil
 	}
@@ -489,7 +489,7 @@ func mapValue(m *yaml.Node, key string) *yaml.Node {
 // pair is created if absent and updated in place otherwise — so re-running with
 // an unchanged value can never produce a duplicate key.
 func setScalar(m *yaml.Node, key, value string, style yaml.Style) {
-	if v := mapValue(m, key); v != nil {
+	if v := yamlMapValue(m, key); v != nil {
 		v.Kind = yaml.ScalarNode
 		v.Tag = "!!str"
 		v.Value = value
@@ -504,7 +504,7 @@ func setScalar(m *yaml.Node, key, value string, style yaml.Style) {
 
 // ensureMapping returns m[key] as a mapping node, creating it if absent.
 func ensureMapping(m *yaml.Node, key string) *yaml.Node {
-	if v := mapValue(m, key); v != nil {
+	if v := yamlMapValue(m, key); v != nil {
 		if v.Kind != yaml.MappingNode {
 			v.Kind = yaml.MappingNode
 			v.Tag = "!!map"
