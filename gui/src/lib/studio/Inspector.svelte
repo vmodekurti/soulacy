@@ -13,6 +13,14 @@
   export let onChange = () => {} // (patch) => void; patch merged into workflow
   // (index, patch) => void; patch merged into the draft edge at flow.edges[index].
   export let onEdgeChange = () => {}
+  // ({from,to,fromPort,toPort}) => void; append a new edge to the draft.
+  export let onAddEdge = () => {}
+  // (index) => void; remove the draft edge at flow.edges[index].
+  export let onEdgeDelete = () => {}
+  // (nodeId) => void; make nodeId the flow's entry/start node (trigger target).
+  export let onSetEntry = () => {}
+  // (nodeId) => void; make nodeId the flow's output node (its result is delivered).
+  export let onSetOutput = () => {}
   // M6 (S6.3): (nodeId, instruction) => void; asks the backend to refine the
   // selected node and replace the current workflow with the returned one.
   export let onRefine = () => {}
@@ -168,6 +176,65 @@
     else next.delete(id)
     onChange({ channels: Array.from(next) })
   }
+
+  // ── Edge wiring helpers (rewire / add connections) ──────────────────────────
+  $: flowNodes = (workflow && workflow.flow && Array.isArray(workflow.flow.nodes))
+    ? workflow.flow.nodes : []
+  $: nodeIds = flowNodes.map((n) => n.id)
+  // Friendly label for a node id (tool/agent name), so the connection dropdowns
+  // read as "read_skill (skill_1)" instead of a bare id.
+  function nodeLabel(id) {
+    const n = flowNodes.find((x) => x.id === id)
+    if (!n) return id
+    const name = n.tool || n.agent || ''
+    return name && name !== id ? `${name} (${id})` : id
+  }
+  // Is the currently-selected node the flow's entry/start node?
+  $: isEntryNode = !!(node && workflow && workflow.flow && workflow.flow.entry === node.id)
+  // Is it the flow's designated output node (its result is delivered to channels)?
+  $: isOutputNode = !!(node && workflow && workflow.flow && workflow.flow.output === node.id)
+
+  // Declared ports for a node by direction ('in' | 'out'); empty when the node
+  // uses the implicit single handle (then we just offer the default).
+  function portsOf(id, dir) {
+    const n = flowNodes.find((x) => x.id === id)
+    if (!n) return []
+    const arr = dir === 'out' ? n.outputs : n.inputs
+    return Array.isArray(arr) ? arr.map((p) => p.name).filter(Boolean) : []
+  }
+
+  // Retarget one end of the selected edge. Changing the node resets that end's
+  // port (ports are node-specific) so we never keep a stale/invalid port.
+  function retargetEdge(end, value) {
+    if (!selectedEdge) return
+    const patch = end === 'from'
+      ? { from: value, fromPort: '' }
+      : { to: value, toPort: '' }
+    onEdgeChange(selectedEdge.index, patch)
+  }
+
+  // Special endpoints for the connection form so ANY connector can be wired
+  // without dragging on the canvas: Trigger as a source (sets the entry) and
+  // Output as a target (sets the output node).
+  const TRIGGER_OPT = '__trigger__'
+  const OUTPUT_OPT = '__output__'
+  // Source options: Trigger + every node. Target options: every node + Output.
+  $: sourceOptions = [{ id: TRIGGER_OPT, label: '▶ Trigger (start)' }, ...flowNodes.map((n) => ({ id: n.id, label: nodeLabel(n.id) }))]
+  $: targetOptions = [...flowNodes.map((n) => ({ id: n.id, label: nodeLabel(n.id) })), { id: OUTPUT_OPT, label: '◆ Output (channels)' }]
+
+  // New-connection draft for the "Add connection" form (no node selected).
+  let newEdge = { from: '', to: '' }
+  function submitNewEdge() {
+    const { from, to } = newEdge
+    if (!from || !to || from === to) return
+    // Trigger → node sets the entry; node → Output sets the output node;
+    // anything else is a normal stored edge. All three persist with Save.
+    if (from === TRIGGER_OPT && to === OUTPUT_OPT) return
+    if (from === TRIGGER_OPT) { onSetEntry(to); newEdge = { from: '', to: '' }; return }
+    if (to === OUTPUT_OPT) { onSetOutput(from); newEdge = { from: '', to: '' }; return }
+    onAddEdge({ from, to })
+    newEdge = { from: '', to: '' }
+  }
 </script>
 
 <aside class="inspector" aria-label="Node inspector">
@@ -175,11 +242,40 @@
 
   {#if selectedEdge}
     <!-- Selected edge: editable `if` predicate + read-only endpoints/ports. -->
-    <p class="insp-hint">Editing a connection. The predicate decides when this branch is taken; leave it empty for the fallback (“else”) leg.</p>
-    <dl class="fields">
-      <dt>from</dt><dd>{selectedEdge.edge.from || '—'}{#if selectedEdge.edge.fromPort} <span class="port">·{selectedEdge.edge.fromPort}</span>{/if}</dd>
-      <dt>to</dt><dd>{selectedEdge.edge.to || '—'}{#if selectedEdge.edge.toPort} <span class="port">·{selectedEdge.edge.toPort}</span>{/if}</dd>
-    </dl>
+    <p class="insp-hint">Editing a connection. Re-point either end to reroute the flow; the predicate decides when this branch is taken (leave it empty for the fallback “else” leg).</p>
+
+    <label class="field-label" for="edge-from">from (source node)</label>
+    <select id="edge-from" value={selectedEdge.edge.from || ''}
+      on:change={(e) => retargetEdge('from', e.target.value)}>
+      {#each nodeIds as id}
+        <option value={id} disabled={id === selectedEdge.edge.to}>{nodeLabel(id)}</option>
+      {/each}
+    </select>
+    {#if portsOf(selectedEdge.edge.from, 'out').length}
+      <label class="field-label" for="edge-fromport">from port</label>
+      <select id="edge-fromport" value={selectedEdge.edge.fromPort || ''}
+        on:change={(e) => onEdgeChange(selectedEdge.index, { fromPort: e.target.value })}>
+        <option value="">(default)</option>
+        {#each portsOf(selectedEdge.edge.from, 'out') as p}<option value={p}>{p}</option>{/each}
+      </select>
+    {/if}
+
+    <label class="field-label" for="edge-to">to (target node)</label>
+    <select id="edge-to" value={selectedEdge.edge.to || ''}
+      on:change={(e) => retargetEdge('to', e.target.value)}>
+      {#each nodeIds as id}
+        <option value={id} disabled={id === selectedEdge.edge.from}>{nodeLabel(id)}</option>
+      {/each}
+    </select>
+    {#if portsOf(selectedEdge.edge.to, 'in').length}
+      <label class="field-label" for="edge-toport">to port</label>
+      <select id="edge-toport" value={selectedEdge.edge.toPort || ''}
+        on:change={(e) => onEdgeChange(selectedEdge.index, { toPort: e.target.value })}>
+        <option value="">(default)</option>
+        {#each portsOf(selectedEdge.edge.to, 'in') as p}<option value={p}>{p}</option>{/each}
+      </select>
+    {/if}
+
     <label class="field-label" for="edge-if">if (predicate)</label>
     <input
       id="edge-if"
@@ -189,6 +285,7 @@
       on:input={(e) => onEdgeChange(selectedEdge.index, { if: e.target.value })}
     />
     <p class="insp-hint">Writes back to the draft so Test / Save / Validate use this condition.</p>
+    <button type="button" class="btn danger sm" on:click={() => onEdgeDelete(selectedEdge.index)}>Delete connection</button>
   {:else if node}
     <!-- Selected node: editable configuration. Each field writes back to the
          draft on blur/change so Test / Save / Validate use the edited values. -->
@@ -196,6 +293,26 @@
       <dt>id</dt><dd>{node.id}</dd>
       <dt>kind</dt><dd>{node.kind || '—'}</dd>
     </dl>
+
+    <!-- Entry/start node: the trigger always flows into the entry node, so this
+         is how you "connect" the trigger to a given node. -->
+    {#if isEntryNode}
+      <p class="insp-entry">★ Start node — the trigger enters here.</p>
+    {:else}
+      <button type="button" class="btn sm" on:click={() => onSetEntry(node.id)}>
+        Make this the start node
+      </button>
+      <p class="insp-hint">The trigger feeds the start node. Set this to route the trigger here.</p>
+    {/if}
+
+    {#if isOutputNode}
+      <p class="insp-entry">◆ Output node — this node's result is delivered to the channels.</p>
+    {:else}
+      <button type="button" class="btn sm" on:click={() => onSetOutput(node.id)}>
+        Make this the output node
+      </button>
+      <p class="insp-hint">The output node's result is what gets sent to the output channels (or drag this node onto the output box).</p>
+    {/if}
 
     <label class="field-label" for="node-desc">what this node does</label>
     <input id="node-desc" type="text" placeholder="e.g. Search the web for today's AI news"
@@ -439,9 +556,31 @@
                 value={e.if || ''}
                 on:input={(ev) => onEdgeChange(index, { if: ev.target.value })}
               />
+              <button type="button" class="edge-del" title="Delete connection"
+                on:click={() => onEdgeDelete(index)} aria-label="Delete connection">×</button>
             </li>
           {/each}
         </ul>
+      {/if}
+
+      <!-- Add ANY connection by picking source + target. Includes the Trigger
+           (as a source) and Output (as a target) so every connector is wireable
+           here without dragging — and every choice persists with Save. -->
+      {#if nodeIds.length >= 1}
+        <div class="edge-add">
+          <select aria-label="New connection source" bind:value={newEdge.from}>
+            <option value="" disabled>from…</option>
+            {#each sourceOptions as o}<option value={o.id} disabled={o.id === newEdge.to}>{o.label}</option>{/each}
+          </select>
+          <span class="edge-arrow">→</span>
+          <select aria-label="New connection target" bind:value={newEdge.to}>
+            <option value="" disabled>to…</option>
+            {#each targetOptions as o}<option value={o.id} disabled={o.id === newEdge.from}>{o.label}</option>{/each}
+          </select>
+          <button type="button" class="btn sm" on:click={submitNewEdge}
+            disabled={!newEdge.from || !newEdge.to || newEdge.from === newEdge.to}>Connect</button>
+        </div>
+        <p class="insp-hint">Pick any source → any target (Trigger and Output included). Saved with the workflow. You can also drag on the canvas.</p>
       {/if}
     </section>
   {:else}
@@ -466,6 +605,7 @@
   }
   .insp-empty { font-size: 12px; color: var(--text-muted); }
   .insp-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 12px; }
+  .insp-entry { font-size: 12px; color: var(--accent); font-weight: 600; margin: 0 0 12px; }
   .sub {
     margin: 18px 0 8px;
     font-size: 12px;
@@ -657,4 +797,45 @@
   }
   .edge-arrow { color: var(--text-muted); }
   .edge-if { width: 100%; }
+
+  /* Inline delete on each edge row + the add-connection form. */
+  .edge-row { position: relative; }
+  .edge-del {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 15px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 4px;
+    border-radius: 4px;
+  }
+  .edge-del:hover { background: var(--error); color: #fff; }
+  .edge-add {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 10px;
+    flex-wrap: wrap;
+  }
+  .edge-add select { flex: 1 1 auto; min-width: 64px; }
+
+  /* Lightweight buttons used by the edge tools (Inspector has no global .btn). */
+  .btn {
+    border: 1px solid var(--border);
+    background: var(--bg-elev-2);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .btn:hover:not(:disabled) { filter: brightness(1.1); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn.sm { padding: 4px 8px; font-size: 11px; }
+  .btn.danger { border-color: var(--error); color: var(--error); }
+  .btn.danger:hover:not(:disabled) { background: var(--error); color: #fff; }
 </style>

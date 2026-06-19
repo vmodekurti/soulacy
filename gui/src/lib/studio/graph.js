@@ -245,31 +245,40 @@ export function toFlow(workflow, validation = null) {
     })
   }
 
-  // ── Channels as an OUTPUT node fed by terminal nodes ─────────────────────
+  // ── OUTPUT node: the flow's result delivered to channels ─────────────────
+  // Shown when channels are configured OR an explicit output node is set. The
+  // result comes from the explicit output node when designated (drag a node →
+  // output); otherwise from the terminal node(s) — no outgoing real edge — which
+  // is the default.
   const channels = (workflow && Array.isArray(workflow.channels)) ? workflow.channels : []
-  if (channels.length) {
-    // Terminal = node with no outgoing real edge (or edge.to is end/"").
-    const hasRealOut = new Set()
-    rawEdges.forEach((e) => { if (!TERMINAL.has(e.to)) hasRealOut.add(e.from) })
-    const terminals = rawNodes.filter((n) => !hasRealOut.has(n.id))
+  const explicitOutput = (flow.output && ids.has(flow.output)) ? flow.output : ''
+  if (channels.length || explicitOutput) {
+    let sources
+    if (explicitOutput) {
+      sources = rawNodes.filter((n) => n.id === explicitOutput)
+    } else {
+      const hasRealOut = new Set()
+      rawEdges.forEach((e) => { if (!TERMINAL.has(e.to)) hasRealOut.add(e.from) })
+      sources = rawNodes.filter((n) => !hasRealOut.has(n.id))
+    }
 
     let maxX = X0
     nodes.forEach((nd) => { if (nd.position.x > maxX) maxX = nd.position.x })
-    const avgY = terminals.length
-      ? terminals.reduce((s, n) => {
+    const avgY = sources.length
+      ? sources.reduce((s, n) => {
           const nd = nodes.find((x) => x.id === n.id)
           return s + (nd ? nd.position.y : Y0)
-        }, 0) / terminals.length
+        }, 0) / sources.length
       : Y0
 
     nodes.push({
       id: '__output__',
       type: 'studioOutput',
       position: { x: maxX + COL_W, y: avgY },
-      data: { channels },
+      data: { channels, explicit: !!explicitOutput },
       selectable: false,
     })
-    terminals.forEach((t, i) => {
+    sources.forEach((t, i) => {
       edges.push({
         id: 'e-' + t.id + '-output-' + i,
         source: t.id,

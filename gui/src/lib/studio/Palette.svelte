@@ -30,16 +30,42 @@
     }))
   }
   function toolItems(c) {
+    // Builtins + Python tools. MCP tools live in their own group below.
     const t = (c && c.tools) || {}
     const py = t.python_tools || []
-    const mcp = t.mcp_tools || []
     const builtins = t.builtins || []
     const items = []
     builtins.forEach((x) => items.push({ label: x.name, sub: 'builtin', drag: { kind: 'tool', name: x.name } }))
     py.forEach((x) => items.push({ label: x.name, sub: 'python', drag: { kind: 'tool', name: x.name } }))
-    mcp.forEach((x) => {
+    return items
+  }
+
+  // Skills — drop one to add a read_skill step pre-pointed at that skill. The
+  // Studio canvas turns a {kind:'skill'} payload into a read_skill tool node.
+  function skillItems(c) {
+    const raw = (c && c.skills && (c.skills.skills || c.skills)) || []
+    const list = Array.isArray(raw) ? raw : []
+    return list.map((s) => {
+      const name = (typeof s === 'string') ? s : (s.name || s.id || 'skill')
+      const sub = (typeof s === 'object' && s.description) ? s.description : 'skill'
+      return { label: name, sub, drag: { kind: 'skill', name } }
+    })
+  }
+
+  // MCP servers — the callable MCP tools (from the tool catalog) grouped under
+  // their server, plus any configured server that currently exposes no tools so
+  // it's still visible. MCP tools drop as ordinary tool nodes.
+  function mcpItems(c) {
+    const tools = (c && c.tools && c.tools.mcp_tools) || []
+    const items = tools.map((x) => {
       const name = x.name || x.full_name
-      items.push({ label: name, sub: 'mcp · ' + (x.server || ''), drag: { kind: 'tool', name } })
+      return { label: name, sub: x.server ? 'server: ' + x.server : 'mcp', drag: { kind: 'tool', name } }
+    })
+    const seen = new Set(tools.map((x) => x.server).filter(Boolean))
+    const servers = (c && c.mcp && (c.mcp.servers || c.mcp)) || []
+    ;(Array.isArray(servers) ? servers : []).forEach((s) => {
+      const sid = (typeof s === 'string') ? s : (s.id || s.name)
+      if (sid && !seen.has(sid)) items.push({ label: sid, sub: 'server · no tools loaded' })
     })
     return items
   }
@@ -71,6 +97,23 @@
     })
   }
 
+  // Per-section collapse state, keyed by group key. Sections start expanded.
+  let collapsed = {}
+  function toggleGroup(key) {
+    collapsed = { ...collapsed, [key]: !collapsed[key] }
+  }
+
+  // Shorten a long description to a concise, one-line-ish summary for the
+  // palette. Prefers the first sentence when short; otherwise hard-truncates.
+  // The full text stays available via the element's title (hover) tooltip.
+  function concise(text, max = 90) {
+    if (!text) return ''
+    const t = String(text).trim().replace(/\s+/g, ' ')
+    const dot = t.indexOf('. ')
+    if (dot > 0 && dot <= max) return t.slice(0, dot + 1)
+    return t.length > max ? t.slice(0, max - 1).trimEnd() + '…' : t
+  }
+
   // Begin an HTML5 drag carrying the item's node payload. The Studio canvas
   // listens for `application/studio-node` and creates the node on drop.
   function startDrag(e, drag) {
@@ -81,6 +124,8 @@
 
   $: agents = error ? [] : agentItems(catalog)
   $: tools = error ? [] : toolItems(catalog)
+  $: skills = error ? [] : skillItems(catalog)
+  $: mcp = error ? [] : mcpItems(catalog)
   $: providers = error ? [] : providerItems(catalog)
   $: channels = error ? [] : channelItems(catalog)
 
@@ -94,6 +139,8 @@
   $: groups = [
     { key: 'agents', icon: '🤖', title: 'Agents', items: agents, empty: 'No agents' },
     { key: 'tools', icon: '🛠️', title: 'Tools', items: tools, empty: 'No tools' },
+    { key: 'skills', icon: '📚', title: 'Skills', items: skills, empty: 'No skills installed' },
+    { key: 'mcp', icon: '🔌', title: 'MCP servers', items: mcp, empty: 'No MCP servers' },
     { key: 'providers', icon: '🧠', title: 'Providers', items: providers, empty: 'No providers' },
     { key: 'channels', icon: '📡', title: 'Channels', items: channels, empty: 'No channels' },
   ]
@@ -106,30 +153,35 @@
   <!-- Blocks: synthetic palette items not backed by the catalog. A Custom
        Python block lets you drop an inline script step onto the canvas. -->
   <section class="group">
-    <h3 class="group-head">
+    <button type="button" class="group-head" on:click={() => toggleGroup('blocks')} aria-expanded={!collapsed['blocks']}>
       <span class="group-icon" aria-hidden="true">🧩</span>
       Blocks
-    </h3>
-    <ul class="group-list">
-      <li
-        class="item draggable"
-        draggable="true"
-        on:dragstart={(e) => startDrag(e, { kind: 'python' })}
-        title="Drag onto the canvas — a custom Python step you can edit in the Inspector"
-      >
-        <span class="item-label">🐍 Custom Python</span>
-        <span class="item-sub">inline script</span>
-      </li>
-    </ul>
+      <span class="group-toggle" aria-hidden="true">{collapsed['blocks'] ? '▸' : '▾'}</span>
+    </button>
+    {#if !collapsed['blocks']}
+      <ul class="group-list">
+        <li
+          class="item draggable"
+          draggable="true"
+          on:dragstart={(e) => startDrag(e, { kind: 'python' })}
+          title="Drag onto the canvas — a custom Python step you can edit in the Inspector"
+        >
+          <span class="item-label">🐍 Custom Python</span>
+          <span class="item-sub">inline script</span>
+        </li>
+      </ul>
+    {/if}
   </section>
 
   {#each groups as g (g.key)}
     <section class="group">
-      <h3 class="group-head">
+      <button type="button" class="group-head" on:click={() => toggleGroup(g.key)} aria-expanded={!collapsed[g.key]}>
         <span class="group-icon" aria-hidden="true">{g.icon}</span>
         {g.title}
         <span class="group-count">{g.items.length}</span>
-      </h3>
+        <span class="group-toggle" aria-hidden="true">{collapsed[g.key] ? '▸' : '▾'}</span>
+      </button>
+      {#if !collapsed[g.key]}
       <ul class="group-list">
         {#if error}
           <li class="item item-error">{error}</li>
@@ -147,10 +199,10 @@
               on:keydown={(e) => { if (it.hasWorkflow && onOpenAgent && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenAgent(it.agentId) } }}
               role={it.hasWorkflow ? 'button' : undefined}
               tabindex={it.hasWorkflow ? 0 : undefined}
-              title={it.hasWorkflow ? 'Click to edit this workflow · drag to add a handoff step' : (it.drag ? 'Drag onto the canvas' : '')}
+              title={it.sub ? it.sub : (it.hasWorkflow ? 'Click to edit this workflow · drag to add a handoff step' : (it.drag ? 'Drag onto the canvas' : ''))}
             >
               <span class="item-label">{it.label}</span>
-              {#if it.sub}<span class="item-sub">{it.sub}</span>{/if}
+              {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
               {#if it.hasWorkflow && onDeleteAgent}
                 <button
                   class="item-del"
@@ -163,6 +215,7 @@
           {/each}
         {/if}
       </ul>
+      {/if}
     </section>
   {/each}
 
@@ -230,16 +283,26 @@
   .palette-status.status-ok { color: var(--ok); }
   .palette-status.status-warn { color: var(--warn); }
   .palette-status.status-error { color: var(--error); }
-  .group { margin-bottom: 18px; }
+  .group { margin-bottom: 14px; }
+  /* Clickable section header (collapse/expand). Reset native button styling so
+     it reads as the old <h3> header. */
   .group-head {
     display: flex;
     align-items: center;
     gap: 8px;
+    width: 100%;
     margin: 0 0 8px;
+    padding: 2px 0;
     font-size: 13px;
     font-weight: 600;
     color: var(--text);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
   }
+  .group-head:hover { color: var(--accent); }
+  .group-toggle { margin-left: 6px; font-size: 10px; color: var(--text-muted); }
   .group-icon { font-size: 14px; }
   .group-count {
     margin-left: auto;
@@ -285,7 +348,18 @@
   .item:hover { border-color: var(--accent); transform: translateX(2px); }
   .item:active { cursor: grabbing; }
   .item-label { font-size: 13px; color: var(--text); word-break: break-word; }
-  .item-sub { margin-top: 2px; font-size: 11px; color: var(--text-muted); word-break: break-word; }
+  .item-sub {
+    margin-top: 2px;
+    font-size: 11px;
+    color: var(--text-muted);
+    word-break: break-word;
+    /* Safety net: even after concise() truncation, never let a description grow
+       past two lines and dominate the palette. Full text shows on hover. */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
   .item-empty, .item-error {
     cursor: default;
     color: var(--text-muted);
