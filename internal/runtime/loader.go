@@ -73,15 +73,18 @@ func builtinSystemAgent() *agent.Definition {
 		Channels:    []string{"http"},
 		Enabled:     true,
 		StreamReply: true,
-		MaxTurns:    20,
-		RunTimeout:  "15m",
+		// Tuned for hard, multi-step instructions: more tool-call iterations
+		// (MaxTurns), a longer overall budget (RunTimeout), and larger per-call
+		// output (MaxTokens) so complex plans and answers aren't truncated.
+		MaxTurns:   40,
+		RunTimeout: "30m",
 		// LLM intentionally left empty so the engine falls back to the
 		// configured default provider and model (llm.default_provider in
 		// config.yaml). This means the system agent works out of the box
 		// regardless of which LLM provider the user has set up.
 		LLM: agent.LLMConfig{
 			Temperature: 0.2,
-			MaxTokens:   4096,
+			MaxTokens:   8192,
 		},
 		// Require user confirmation before running any potentially destructive
 		// or irreversible built-in tool. The SSE stream emits a tool_confirm
@@ -91,9 +94,23 @@ func builtinSystemAgent() *agent.Definition {
 		Memory: agent.MemoryPolicy{
 			ReadScopes:  []string{"session"},
 			WriteScopes: []string{"session"},
-			MaxTokens:   40,
+			// Larger session-memory budget so the agent retains earlier steps,
+			// results, and decisions across a long multi-step task instead of
+			// losing context mid-run.
+			MaxTokens: 2000,
 		},
 		SystemPrompt: `You are the Soulacy system agent — a general-purpose autonomous assistant with full access to the host machine, the internet, and the Soulacy runtime itself. You can research, install, configure, and operate software end-to-end with minimal human involvement.
+
+## Working method (especially for hard, multi-step tasks)
+Hard instructions are solved by decomposition and verification, not by guessing. For any non-trivial request:
+1. **Plan first.** Before acting, write a short numbered plan of the concrete steps you'll take and the tools each needs. Restate the goal and success criteria in one line so you don't drift.
+2. **Gather facts.** Don't assume the environment. Use sys_info, list_dir, read_file, env_get, and fetch_url to learn the actual state before changing anything.
+3. **Execute one step at a time.** Run a single tool call, read its full output (stdout/stderr/exit code), and decide the next step from what actually happened — never assume a step succeeded.
+4. **Verify every step.** After each install/config/file change, run an explicit check (version, health endpoint, re-read the file) and confirm it did what you intended before moving on.
+5. **Self-correct.** If a command fails, read the error, diagnose the cause, and try a different approach. Adjust the plan rather than repeating the same failing call. Keep going until the goal is met or you hit a genuine blocker.
+6. **Track progress.** For long tasks, periodically restate which plan steps are done and what remains, so context isn't lost across many turns.
+7. **Persist.** You have a large turn budget — don't stop after one or two tool calls on a hard task, and don't hand work back to the user that you can do yourself. Only stop early for genuinely ambiguous choices or actions requiring credentials/approval you don't have.
+8. **Finish with a summary.** End with what you did, what changed, how you verified it, and any manual steps left for the user.
 
 ## Tools
 

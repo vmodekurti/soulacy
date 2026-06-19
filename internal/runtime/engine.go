@@ -1514,6 +1514,13 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 			Type: "message.out", AgentID: msg.AgentID, SessionID: msg.SessionID,
 			Payload: reply, Timestamp: time.Now().UTC(),
 		})
+		// Workflow agents bypass finalizeReply, so persist the episodic record
+		// here too. The workflow IS the active feature, so it qualifies for the
+		// auto-default (saves unless a brain_memory block opts out).
+		e.writeEpisodic(def, msg.AgentID, flattenParts(msg.Parts), replyText, true)
+		// Record the turn so follow-ups in this session carry conversation
+		// context (flowHistoryTranscript reads it on the next run).
+		e.recordWorkflowTurn(ctx, msg, replyText)
 		runOutcome = "success"
 		return reply, nil
 	}
@@ -1609,12 +1616,26 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// block with a strategy run through the E15 reasoning Loop instead of the
 	// classic tool loop below. Agents without one are untouched — the ok=false
 	// branch falls straight through to the existing path.
+	//
+	// Guard: only enter the reasoning loop when a real backend exists for the
+	// agent's effective provider. react/plan_execute only have backends for
+	// Anthropic / OpenAI-compatible / Ollama; for everything else (e.g.
+	// google/gemini) DefaultBackendFor would silently fall back to local Ollama
+	// and fail. In that case we degrade to the classic tool loop, which works
+	// with every provider.
 	if loopCfg, ok := reasoning.LoopConfigFromDefinition(def, sysPrefix); ok {
-		reply, rerr := e.handleWithReasoning(ctx, def, sess, msg, loopCfg)
-		if rerr == nil {
-			runOutcome = "success"
+		if e.reasoningBackendAvailable(def) {
+			reply, rerr := e.handleWithReasoning(ctx, def, sess, msg, loopCfg)
+			if rerr == nil {
+				runOutcome = "success"
+			}
+			return reply, rerr
 		}
-		return reply, rerr
+		e.log.Warn("reasoning strategy requested but no backend for the agent's provider; using classic tool loop instead",
+			zap.String("agent", def.ID),
+			zap.String("strategy", def.Reasoning.Strategy),
+			zap.String("provider", e.effectiveProvider(def)))
+		// fall through to the classic loop below
 	}
 
 	// Build context messages
@@ -1980,6 +2001,98 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	return reply, nil
 }
 
+// flowHistoryMaxMsgs caps how many recent chat messages a workflow run pulls
+// in for conversation continuity (~6 turns = 12 user/assistant messages).
+const flowHistoryMaxMsgs = 12
+
+// flowHistoryTranscript returns a compact "User:/Assistant:" transcript of the
+// last maxMsgs messages for the session, used to give a workflow's entry agent
+// the prior turns so follow-ups resolve without the user restating context.
+// Empty when there's no history yet.
+func (e *Engine) flowHistoryTranscript(sessionID, agentID string, maxMsgs int) string {
+	if sessionID == "" {
+		return ""
+	}
+	sess := e.getOrCreateSession(sessionID, agentID)
+	sess.mu.Lock()
+	hist := sess.History
+	if maxMsgs > 0 && len(hist) > maxMsgs {
+		hist = hist[len(hist)-maxMsgs:]
+	}
+	cp := make([]llm.ChatMessage, len(hist))
+	copy(cp, hist)
+	sess.mu.Unlock()
+
+	var b strings.Builder
+	for _, m := range cp {
+		content := strings.TrimSpace(m.Content)
+		if content == "" {
+			continue
+		}
+		role := "User"
+		if m.Role == "assistant" {
+			role = "Assistant"
+		} else if m.Role != "user" {
+			continue // skip system/tool turns in the user-facing transcript
+		}
+		b.WriteString(role)
+		b.WriteString(": ")
+		b.WriteString(content)
+		b.WriteString("\n")
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// recordWorkflowTurn persists a workflow agent's user+assistant turn to the
+// in-memory session history (so the next turn's flowHistoryTranscript sees it)
+// and the durable conversation store. Workflow agents bypass finalizeReply, so
+// without this they'd never accumulate conversational context.
+func (e *Engine) recordWorkflowTurn(ctx context.Context, msg message.Message, replyText string) {
+	userText := flattenParts(msg.Parts)
+	sess := e.getOrCreateSession(msg.SessionID, msg.AgentID)
+	sess.mu.Lock()
+	e.appendHistoryLocked(sess,
+		llm.ChatMessage{Role: "user", Content: userText},
+		llm.ChatMessage{Role: "assistant", Content: replyText},
+	)
+	sess.mu.Unlock()
+
+	if e.historyStore != nil {
+		if err := e.historyStore.Append(ctx, session.ConversationEntry{
+			SessionID: msg.SessionID, AgentID: msg.AgentID, Role: "user", Content: userText,
+		}); err != nil {
+			e.log.Warn("history store: append workflow user turn failed", zap.Error(err))
+		}
+		if err := e.historyStore.Append(ctx, session.ConversationEntry{
+			SessionID: msg.SessionID, AgentID: msg.AgentID, Role: "assistant", Content: replyText,
+		}); err != nil {
+			e.log.Warn("history store: append workflow assistant turn failed", zap.Error(err))
+		}
+	}
+}
+
+// writeEpisodic persists a task→reply pair as an episodic brain memory record.
+// It fires when the brain store is wired AND episodic memory is "on" for the
+// agent: either episodic is explicitly enabled, or NO brain_memory block was
+// configured and the calling subsystem is active (featureActive) — the
+// auto-default shared by reasoning loops (strategy set) and workflows (always
+// active in the workflow branch). A no-op otherwise.
+func (e *Engine) writeEpisodic(def *agent.Definition, agentID, taskInput, finalContent string, featureActive bool) {
+	if e.brainStore == nil || def == nil {
+		return
+	}
+	bm := def.BrainMemory
+	noBrainCfg := !bm.Episodic.Enabled && !bm.Semantic.Enabled && !bm.Procedural.Enabled
+	episodicOn := bm.Episodic.Enabled || (featureActive && noBrainCfg)
+	if !episodicOn {
+		return
+	}
+	rec := agentmemory.ResultToEpisodicRecord(agentID, taskInput, finalContent, nil)
+	if err := e.brainStore.Write(rec); err != nil {
+		e.log.Warn("brain memory write failed", zap.String("agent", agentID), zap.Error(err))
+	}
+}
+
 // finalizeReply is the shared tail of a successful run — classic loop and
 // reasoning loop (Story 16) both end here so the persistence contract stays
 // identical: append the assistant turn to in-memory session history, persist
@@ -2002,19 +2115,9 @@ func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess 
 		e.log.Warn("memory write failed (reply)", zap.String("agent", msg.AgentID), zap.Error(err))
 	}
 
-	// RL-09: persist task + reply as an episodic brain memory record.
-	// Fires when brainStore is wired and either (a) episodic is explicitly enabled,
-	// or (b) reasoning is enabled and brain_memory wasn't configured (auto-default).
-	episodicOn := def.BrainMemory.Episodic.Enabled ||
-		(def.Reasoning.Strategy != "" && !def.BrainMemory.Episodic.Enabled &&
-			!def.BrainMemory.Semantic.Enabled && !def.BrainMemory.Procedural.Enabled)
-	if e.brainStore != nil && episodicOn {
-		taskInput := flattenParts(msg.Parts)
-		rec := agentmemory.ResultToEpisodicRecord(msg.AgentID, taskInput, finalContent, nil)
-		if err := e.brainStore.Write(rec); err != nil {
-			e.log.Warn("brain memory write failed", zap.String("agent", msg.AgentID), zap.Error(err))
-		}
-	}
+	// RL-09: persist task + reply as an episodic brain memory record. The
+	// reasoning loop's "feature active" signal is a configured strategy.
+	e.writeEpisodic(def, msg.AgentID, flattenParts(msg.Parts), finalContent, def.Reasoning.Strategy != "")
 
 	reply := message.Message{
 		ID:        msg.ID, // correlate reply to request
@@ -3589,6 +3692,28 @@ func (e *Engine) runAgentCall(ctx context.Context, callerDef *agent.Definition, 
 // (PRODUCTION_AUDIT → MEDIUM/Engine)
 func uuidShort() string {
 	return uuid.New().String()
+}
+
+// effectiveProvider resolves the provider an agent will actually use: its
+// configured llm.provider, or the gateway default when unset.
+func (e *Engine) effectiveProvider(def *agent.Definition) string {
+	p := def.LLM.Provider
+	if p == "" && e.llmRouter != nil {
+		p = e.llmRouter.DefaultProvider()
+	}
+	return p
+}
+
+// reasoningBackendAvailable reports whether a real reasoning backend exists for
+// the agent's effective provider. When false, the engine uses the classic tool
+// loop instead of routing to a (likely absent) local Ollama. A custom backend
+// factory (tests, embedders) always counts as available — it supplies the
+// backend directly, bypassing provider-based resolution.
+func (e *Engine) reasoningBackendAvailable(def *agent.Definition) bool {
+	if e.reasoningBackendFactory != nil {
+		return true
+	}
+	return reasoning.BackendAvailable(e.effectiveProvider(def), e.reasoningKeys)
 }
 
 // providerIsOllama reports whether the agent resolves to the Ollama provider
