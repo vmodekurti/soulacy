@@ -105,6 +105,15 @@ func trimMessagesToFit(msgs []llm.ChatMessage, tools []llm.ToolSchema, inputBudg
 			dropped++
 		}
 	}
+	// Final guard: a surviving history that STARTS with a tool result is an
+	// orphan — its assistant function-call turn was trimmed away. Sending a
+	// function response with no preceding function call makes strict providers
+	// (e.g. Gemini) reject the whole request with a 400. Drop leading orphans
+	// even down to empty; better to lose the result than to fail the call.
+	for len(rest) > 0 && rest[0].Role == "tool" {
+		rest = rest[1:]
+		dropped++
+	}
 	out := append(append([]llm.ChatMessage(nil), system...), rest...)
 	return out, dropped
 }

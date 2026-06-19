@@ -2,13 +2,13 @@
 //
 // Gemini's :generateContent endpoint shape:
 //
-//   * Roles: "user" and "model" (no "system" — system_instruction is a
+//   - Roles: "user" and "model" (no "system" — system_instruction is a
 //     top-level field, similar to Anthropic's `system`).
-//   * Content is a list of "parts": text, functionCall, functionResponse,
+//   - Content is a list of "parts": text, functionCall, functionResponse,
 //     inlineData (for images/audio).
-//   * Tool results travel as a user-role message with a functionResponse part
+//   - Tool results travel as a user-role message with a functionResponse part
 //     keyed by the function name.
-//   * Structured outputs: a top-level generationConfig.responseSchema field
+//   - Structured outputs: a top-level generationConfig.responseSchema field
 //     (JSON Schema subset) plus responseMimeType="application/json".
 //
 // Spec: https://ai.google.dev/api/generate-content
@@ -41,9 +41,64 @@ func NewGeminiProvider(baseURL, apiKey, model string) *GeminiProvider {
 	return NewGeminiProviderWithOptions(baseURL, apiKey, model, 0, "")
 }
 
+// dropOrphanFunctionResponses removes functionResponse parts that are NOT
+// immediately preceded by a model turn containing a functionCall. Gemini
+// rejects the whole request ("function response turn comes immediately after a
+// function call turn", HTTP 400) when a function response stands alone — which
+// happens when upstream context-window trimming drops a function-call turn but
+// keeps its (often large) result. A turn left with no parts after stripping is
+// removed entirely.
+func dropOrphanFunctionResponses(contents []map[string]any) []map[string]any {
+	hasFunctionCall := func(turn map[string]any) bool {
+		if turn == nil || turn["role"] != "model" {
+			return false
+		}
+		parts, _ := turn["parts"].([]map[string]any)
+		for _, p := range parts {
+			if _, ok := p["functionCall"]; ok {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]map[string]any, 0, len(contents))
+	for _, turn := range contents {
+		parts, _ := turn["parts"].([]map[string]any)
+		hasFR := false
+		for _, p := range parts {
+			if _, ok := p["functionResponse"]; ok {
+				hasFR = true
+				break
+			}
+		}
+		if !hasFR {
+			out = append(out, turn)
+			continue
+		}
+		if len(out) > 0 && hasFunctionCall(out[len(out)-1]) {
+			out = append(out, turn) // properly paired — keep as-is
+			continue
+		}
+		// Orphan: strip the functionResponse parts, keep any other parts.
+		kept := make([]map[string]any, 0, len(parts))
+		for _, p := range parts {
+			if _, ok := p["functionResponse"]; ok {
+				continue
+			}
+			kept = append(kept, p)
+		}
+		if len(kept) > 0 {
+			turn["parts"] = kept
+			out = append(out, turn)
+		}
+	}
+	return out
+}
+
 // NewGeminiProviderWithOptions creates a GeminiProvider with extended settings.
-//   thinkingBudget: 0=off (default), -1=auto, N=token budget for reasoning
-//   safetyLevel:    ""|"default"=Gemini defaults, "off"=BLOCK_NONE, "strict"=BLOCK_LOW_AND_ABOVE
+//
+//	thinkingBudget: 0=off (default), -1=auto, N=token budget for reasoning
+//	safetyLevel:    ""|"default"=Gemini defaults, "off"=BLOCK_NONE, "strict"=BLOCK_LOW_AND_ABOVE
 func NewGeminiProviderWithOptions(baseURL, apiKey, model string, thinkingBudget int, safetyLevel string) *GeminiProvider {
 	if baseURL == "" {
 		baseURL = "https://generativelanguage.googleapis.com"
@@ -152,6 +207,10 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 			i++
 		}
 	}
+
+	// Drop orphaned function responses BEFORE merging so any resulting
+	// same-role adjacency is cleaned up by the merge pass below.
+	contents = dropOrphanFunctionResponses(contents)
 
 	// Post-process contents to satisfy Gemini's strict alternation rules:
 	//   1. Merge consecutive same-role turns into one (two model turns in a row
