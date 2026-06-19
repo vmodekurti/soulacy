@@ -126,6 +126,9 @@ type FlowSpec struct {
 	Edges []FlowEdge `yaml:"edges,omitempty" json:"edges,omitempty"`
 	// Entry is the starting node id (default: first node).
 	Entry string `yaml:"entry,omitempty" json:"entry,omitempty"`
+	// Output is the id of the node whose result becomes the flow's final output
+	// (delivered to channels). Empty = the last node executed (default).
+	Output string `yaml:"output,omitempty" json:"output,omitempty"`
 	// MaxNodeExecutions is the global safety budget across the whole run
 	// (default 100). Exceeding it aborts the flow.
 	MaxNodeExecutions int `yaml:"max_node_executions,omitempty" json:"max_node_executions,omitempty"`

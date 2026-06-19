@@ -159,10 +159,19 @@
         if (addParallelToolCalls !== null) body.parallel_tool_calls = addParallelToolCalls
       }
       const res = await api.providers.setCredentials(targetId, body)
-      notice = res.message || 'Saved.'
       restartNeeded = false
       showAdd = false
       await load()
+      // Save-first, then list: if the provider is now live in the router, pull
+      // its real models right away so the user can pick one without a separate
+      // click. If it needs a restart to register, skip the lookup (it would
+      // fail) and just confirm the save.
+      if ((registered || []).includes(targetId)) {
+        notice = `${res.message || 'Saved.'} Select a model below to finish.`
+        await listModels(targetId)
+      } else {
+        notice = res.message || 'Saved.'
+      }
     } catch (e) {
       error = e.message
     } finally {

@@ -579,12 +579,14 @@ func (a *App) wireQueue(stack *closerStack) (queue.Backend, error) {
 // fatal) and returns nil. The vault's Close registers on stack.
 func (a *App) wireCredentialVault(ws config.Paths, stack *closerStack) credentials.Vault {
 	log := a.log
-	localKMS, kmsErr := credentials.NewLocalKMS()
+	vaultPath := ws.CredentialsDB()
+	// Persist the master secret next to the vault so credentials survive
+	// restarts even without a hardware machine id (e.g. in containers).
+	localKMS, kmsErr := credentials.NewLocalKMSWithStore(filepath.Dir(vaultPath))
 	if kmsErr != nil {
 		log.Warn("credential vault KMS init failed, vault disabled", zap.Error(kmsErr))
 		return nil
 	}
-	vaultPath := ws.CredentialsDB()
 	cv, cvErr := credentials.NewSQLiteVault(vaultPath, localKMS)
 	if cvErr != nil {
 		log.Warn("credential vault unavailable", zap.String("path", vaultPath), zap.Error(cvErr))

@@ -98,6 +98,22 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
 	}
 
+	// Ground the compiler in the REAL installed skills (authoritative, from the
+	// live loader) so it maps loose references ("yahoo finance") to the actual
+	// skill name ("yfinance") instead of inventing one. Server-side population
+	// means this works regardless of what the GUI sent in the catalog.
+	if s.skillLoader != nil {
+		req.Catalog.Skills = req.Catalog.Skills[:0]
+		for _, sk := range s.skillLoader.All() {
+			if sk == nil || strings.TrimSpace(sk.Name) == "" {
+				continue
+			}
+			req.Catalog.Skills = append(req.Catalog.Skills, studio.CatalogSkill{
+				Name: sk.Name, Description: sk.Description,
+			})
+		}
+	}
+
 	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)

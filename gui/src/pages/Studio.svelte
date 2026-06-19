@@ -299,6 +299,29 @@ def run(inputs):
     return id
   }
 
+  // Make a node the flow's entry/start node. The trigger always flows into the
+  // entry node, so this is how the user "connects" the trigger to a given node.
+  function setEntry(nodeId) {
+    if (!nodeId || !workflow || !workflow.flow) return
+    const flow = workflow.flow
+    workflow = { ...workflow, flow: { ...flow, nodes: bakePositions(flow.nodes), entry: nodeId } }
+    plan = null
+    rebuildGraph()
+    scheduleValidate()
+  }
+
+  // Designate a node as the flow's output: its result becomes what's delivered
+  // to the output channels (the runtime returns this node's result). Dragging a
+  // node onto the output box, or the Inspector button, both call this.
+  function setOutput(nodeId) {
+    if (!nodeId || !workflow || !workflow.flow) return
+    const flow = workflow.flow
+    workflow = { ...workflow, flow: { ...flow, nodes: bakePositions(flow.nodes), output: nodeId } }
+    plan = null
+    rebuildGraph()
+    scheduleValidate()
+  }
+
   // Snapshot current on-screen node positions into x/y on the raw nodes.
   // graph.js auto-lays-out only when EVERY node lacks x/y, so baking existing
   // positions before appending a positioned node keeps the compiled layout from
@@ -327,15 +350,19 @@ def run(inputs):
       return
     }
 
-    // Agent / tool / python -> a new flow node at the drop point.
-    const id = uniqueNodeId(drag.kind)
+    // Agent / tool / python / skill -> a new flow node at the drop point.
+    // A skill becomes a `read_skill` tool node pre-pointed at the skill name
+    // (read_skill takes a skill_name argument), so it's runnable immediately.
+    const isSkill = drag.kind === 'skill'
+    const id = uniqueNodeId(isSkill ? 'skill' : drag.kind)
     const node = {
       id,
-      kind: drag.kind,
+      kind: isSkill ? 'tool' : drag.kind,
       ...(drag.kind === 'tool' ? { tool: drag.name } : {}),
+      ...(isSkill ? { tool: 'read_skill', description: 'Read skill: ' + drag.name } : {}),
       ...(drag.kind === 'agent' ? { agent: drag.name } : {}),
       ...(drag.kind === 'python' ? { code: PYTHON_STARTER } : {}),
-      input: '',
+      input: isSkill ? JSON.stringify({ skill_name: drag.name }) : '',
       output: '',
       inputs: [],
       outputs: [],
@@ -448,11 +475,21 @@ def run(inputs):
   async function generate() {
     const text = intent.trim()
     if (!text || compiling) return
+    // Regenerating from an edited prompt replaces the whole canvas (including any
+    // manual rewiring). Confirm when there's existing work to lose.
+    if (workflow && workflow.flow && (workflow.flow.nodes || []).length) {
+      let ok = true
+      try { ok = window.confirm('Regenerate from this prompt? It replaces the current workflow on the canvas.') } catch (_) { ok = true }
+      if (!ok) return
+    }
     compiling = true
     compileError = ''
     try {
       const data = await bridge.compile(text, Object.keys(answers).length ? answers : undefined, compactCatalog(catalog))
       applyCompile(data)
+      // Remember the prompt on the draft so it persists through save/load and
+      // the box stays populated for further edits.
+      if (workflow) workflow = { ...workflow, intent: text }
     } catch (e) {
       compileError = e.message || 'compile failed'
     } finally {
@@ -500,6 +537,9 @@ def run(inputs):
   function setWorkflow(wf, { name } = {}) {
     workflow = wf || null
     if (workflow && name && !workflow.name) workflow = { ...workflow, name }
+    // Restore the generating prompt into the intent box so the user can see and
+    // edit the original instruction, then Generate to re-create the workflow.
+    if (workflow && typeof workflow.intent === 'string') intent = workflow.intent
     questions = []
     notes = []
     suggestions = []
@@ -559,6 +599,89 @@ def run(inputs):
     selectedNode = n.data.node
   }
 
+  // ── Visual edge wiring ────────────────────────────────────────────────────
+  // The framing START/SINK chips (__trigger__/__output__) are synthetic — they
+  // aren't real flow nodes. The OUTPUT sink can't be wired by hand, but the
+  // TRIGGER can: dragging from it to a node sets that node as the entry, so the
+  // trigger behaves like a normal, re-pointable connector.
+  const TRIGGER_ID = '__trigger__'
+  const OUTPUT_ID = '__output__'
+  const isFramingId = (id) => typeof id === 'string' && id.startsWith('__')
+
+  function realNodeIds() {
+    return new Set(((workflow && workflow.flow && workflow.flow.nodes) || []).map((n) => n.id))
+  }
+
+  // Predicate xyflow calls DURING a drag to allow/reject a connection (gives the
+  // user live valid/invalid feedback). Reject self-loops, framing nodes, unknown
+  // nodes, and exact duplicates so invalid edges can't be drawn.
+  function isValidConnection(conn) {
+    const c = (conn && conn.connection) || conn || {}
+    const { source, target, sourceHandle, targetHandle } = c
+    if (!source || !target) return false
+    if (source === target) return false
+    // Trigger → any real node is allowed (re-points the entry).
+    if (source === TRIGGER_ID) return realNodeIds().has(target)
+    // Any real node → output is allowed (designates the flow's output node).
+    if (target === OUTPUT_ID) return realNodeIds().has(source)
+    if (isFramingId(source) || isFramingId(target)) return false
+    const ids = realNodeIds()
+    if (!ids.has(source) || !ids.has(target)) return false
+    return !edgeExists(source, target, sourceHandle, targetHandle)
+  }
+
+  function edgeExists(from, to, fromPort, toPort) {
+    const edges = (workflow && workflow.flow && workflow.flow.edges) || []
+    return edges.some((e) =>
+      e.from === from && e.to === to &&
+      (e.fromPort || '') === (fromPort || '') &&
+      (e.toPort || '') === (toPort || ''))
+  }
+
+  // A connection was drawn on the canvas — append it as a real flow edge.
+  function onConnect(event) {
+    const c = (event && event.detail && (event.detail.connection || event.detail)) || null
+    if (!c) return
+    // Dragging from the trigger re-points the entry rather than adding an edge.
+    if (c.source === TRIGGER_ID) { setEntry(c.target); return }
+    // Dragging a node onto the output box designates it as the flow's output.
+    if (c.target === OUTPUT_ID) { setOutput(c.source); return }
+    addEdge({ from: c.source, to: c.target, fromPort: c.sourceHandle, toPort: c.targetHandle })
+  }
+
+  // Append a new flow edge (shared by the canvas connect handler and the
+  // Inspector "Add connection" button). Validates, dedupes, bakes positions.
+  function addEdge(spec) {
+    if (!workflow || !workflow.flow || !spec) return
+    const { from, to } = spec
+    const fromPort = spec.fromPort || ''
+    const toPort = spec.toPort || ''
+    if (!from || !to || from === to) return
+    if (isFramingId(from) || isFramingId(to)) return
+    const ids = realNodeIds()
+    if (!ids.has(from) || !ids.has(to)) return
+    if (edgeExists(from, to, fromPort, toPort)) return
+    const flow = workflow.flow
+    const edges = Array.isArray(flow.edges) ? flow.edges : []
+    const newEdge = { from, to, if: '' }
+    if (fromPort) newEdge.fromPort = fromPort
+    if (toPort) newEdge.toPort = toPort
+    const nextEdges = [...edges, newEdge]
+    workflow = { ...workflow, flow: { ...flow, nodes: bakePositions(flow.nodes), edges: nextEdges } }
+    selectedNode = null
+    selectedEdge = { index: nextEdges.length - 1, edge: nextEdges[nextEdges.length - 1] }
+    plan = null
+    rebuildGraph()
+    scheduleValidate()
+  }
+
+  // Snapshot live canvas node positions into the draft before plan/save so
+  // drag-repositioning persists with the saved workflow.
+  function commitGraphPositions() {
+    if (!workflow || !workflow.flow) return
+    workflow = { ...workflow, flow: { ...workflow.flow, nodes: bakePositions(workflow.flow.nodes) } }
+  }
+
   // Edge click -> select it for `if`-predicate editing. The xyflow edge carries
   // our data.index (ordinal in flow.edges) so we can read/write the right slot.
   function onEdgeClick(event) {
@@ -566,6 +689,15 @@ def run(inputs):
     const idx = e && e.data && Number.isInteger(e.data.index) ? e.data.index : -1
     if (idx < 0 || !workflow || !workflow.flow || !Array.isArray(workflow.flow.edges)) {
       selectedEdge = null
+      // Framing edges (trigger→entry, node→output) are derived, not stored, so
+      // they can't be deleted — explain how to change them instead of silently
+      // ignoring the click.
+      const id = e && typeof e.id === 'string' ? e.id : ''
+      if (id.startsWith('e-trigger-')) {
+        toast('The trigger always feeds the start node — it can’t be deleted. Drag the trigger to another block, or use “Make this the start node”, to re-point it.')
+      } else if (id.includes('-output-')) {
+        toast('Output links come from your Output Channels, not a stored edge. Click empty canvas, then uncheck Output Channels in the Inspector to remove them.')
+      }
       return
     }
     selectedNode = null
@@ -777,6 +909,7 @@ def run(inputs):
     saving = true
     saveError = ''
     saveMsg = ''
+    commitGraphPositions()   // keep drag-repositioned layout in the saved draft
     try {
       const p = await bridge.plan(workflow)
       plan = p || null
@@ -1446,6 +1579,8 @@ def run(inputs):
             {edges}
             {nodeTypes}
             fitView
+            {isValidConnection}
+            on:connect={onConnect}
             on:nodeclick={onNodeClick}
             on:edgeclick={onEdgeClick}
             on:paneclick={() => { selectedNode = null; selectedEdge = null }}
@@ -1740,6 +1875,10 @@ def run(inputs):
       channels={channelOptions}
       onChange={applyFraming}
       onEdgeChange={applyEdgePatch}
+      onAddEdge={addEdge}
+      onEdgeDelete={deleteEdge}
+      onSetEntry={setEntry}
+      onSetOutput={setOutput}
       onRefine={refineNode}
       {refineState}
       onDelete={deleteNode}

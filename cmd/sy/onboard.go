@@ -33,11 +33,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -45,6 +47,11 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/soulacy/soulacy/internal/config"
+	// Imported for its init(): registers the built-in LLM provider factories
+	// (ollama/openai/anthropic/gemini/google) into the global registry so
+	// onboard can build a client and query live models.
+	_ "github.com/soulacy/soulacy/internal/llm"
+	"github.com/soulacy/soulacy/sdk/registry"
 )
 
 func buildOnboardCmd() *cobra.Command {
@@ -167,9 +174,11 @@ func runOnboardWizard() error {
 		case 0:
 			runProviderSetup(cfgPath, "openai", "https://api.openai.com/v1")
 		case 1:
-			runProviderSetup(cfgPath, "anthropic", "https://api.anthropic.com/v1")
+			// No /v1 suffix: the Anthropic client appends /v1/... itself.
+			runProviderSetup(cfgPath, "anthropic", "https://api.anthropic.com")
 		case 2:
-			runProviderSetup(cfgPath, "google", "https://generativelanguage.googleapis.com/v1beta")
+			// No /v1beta suffix: the Gemini client appends /v1beta/... itself.
+			runProviderSetup(cfgPath, "google", "https://generativelanguage.googleapis.com")
 		case 3:
 			runProviderSetup(cfgPath, "groq", "https://api.groq.com/openai/v1")
 		case 4:
@@ -300,6 +309,11 @@ func runProviderSetup(cfgPath, providerID, baseURL string) {
 	}
 	fmt.Printf("  %s Wrote llm.providers.%s.api_key (masked: %s)\n",
 		green("✓"), providerID, maskKey(key))
+
+	// Live model listing: use the key we just stored to query the provider's
+	// real catalogue and let the operator pick the model to use.
+	selectProviderModel(cfgPath, providerID, baseURL, key)
+
 	if confirm(fmt.Sprintf("  Make %s the default provider?", providerID), false) {
 		if err := patchDefaultProvider(cfgPath, providerID); err != nil {
 			fmt.Printf("  %s Patch failed: %v\n", red("✗"), err)
@@ -307,6 +321,84 @@ func runProviderSetup(cfgPath, providerID, baseURL string) {
 			fmt.Printf("  %s Default provider: %s\n", green("✓"), providerID)
 		}
 	}
+}
+
+// selectProviderModel queries the provider for its available models and lets
+// the operator pick one, persisting the choice to llm.providers.<id>.model.
+// On any failure (network, auth, empty list) it degrades gracefully to a
+// free-text prompt so onboarding never dead-ends.
+func selectProviderModel(cfgPath, providerID, baseURL, apiKey string) {
+	fmt.Printf("  %s Fetching available models…\n", gray("→"))
+	models, err := fetchProviderModels(providerID, baseURL, apiKey)
+	if err != nil || len(models) == 0 {
+		if err != nil {
+			fmt.Printf("  %s Couldn't list models automatically: %v\n", yellow("⚠"), err)
+		} else {
+			fmt.Printf("  %s Provider returned no models.\n", yellow("⚠"))
+		}
+		if m := prompt("  Model to use (blank to skip)", ""); m != "" {
+			applyProviderModel(cfgPath, providerID, m)
+		}
+		return
+	}
+
+	sort.Strings(models)
+	options := append(append([]string{}, models...), "Enter manually", "Skip")
+	idx := promptChoices("  Select a model:", options)
+	switch idx {
+	case len(options) - 1: // Skip
+		fmt.Printf("  %s No model selected.\n", yellow("→"))
+	case len(options) - 2: // Enter manually
+		if m := prompt("  Model to use", ""); m != "" {
+			applyProviderModel(cfgPath, providerID, m)
+		}
+	default:
+		applyProviderModel(cfgPath, providerID, models[idx])
+	}
+}
+
+// applyProviderModel writes the chosen model and reports the outcome.
+func applyProviderModel(cfgPath, providerID, model string) {
+	if err := patchProviderModel(cfgPath, providerID, model); err != nil {
+		fmt.Printf("  %s Couldn't write model: %v\n", red("✗"), err)
+		return
+	}
+	fmt.Printf("  %s Model: %s\n", green("✓"), model)
+}
+
+// fetchProviderModels builds a transient provider client from the given
+// credentials and returns its live model list. Known providers use their own
+// factory; any other id is treated as an OpenAI-compatible endpoint.
+func fetchProviderModels(providerID, baseURL, apiKey string) ([]string, error) {
+	cfg := map[string]any{"api_key": apiKey}
+	if baseURL != "" {
+		cfg["base_url"] = baseURL
+	}
+	factory := providerID
+	switch providerID {
+	case "ollama", "openai", "anthropic", "gemini", "google":
+		// use the provider's own factory
+	default:
+		// groq, openrouter, vllm, together, custom, … speak the OpenAI API
+		factory = "openai"
+		cfg["id"] = providerID
+	}
+
+	p, ok, err := registry.NewProvider(factory, cfg)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || p == nil {
+		if p, ok, err = registry.NewProvider("openai", cfg); err != nil {
+			return nil, err
+		} else if !ok || p == nil {
+			return nil, fmt.Errorf("no client available for provider %q", providerID)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	return p.Models(ctx)
 }
 
 // runWebSearchSetup sets search.provider and (optionally) search.api_key under
@@ -551,6 +643,17 @@ func patchProviderBaseURL(path, providerID, baseURL string) error {
 	}
 	providers := ensureMapping(ensureMapping(root, "llm"), "providers")
 	setScalar(ensureMapping(providers, providerID), "base_url", baseURL, yaml.DoubleQuotedStyle)
+	return saveConfigDoc(path, doc)
+}
+
+// patchProviderModel sets llm.providers.<id>.model on the named provider only.
+func patchProviderModel(path, providerID, model string) error {
+	doc, root, err := loadConfigDoc(path)
+	if err != nil {
+		return err
+	}
+	providers := ensureMapping(ensureMapping(root, "llm"), "providers")
+	setScalar(ensureMapping(providers, providerID), "model", model, yaml.DoubleQuotedStyle)
 	return saveConfigDoc(path, doc)
 }
 

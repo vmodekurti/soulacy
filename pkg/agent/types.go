@@ -434,6 +434,12 @@ type Definition struct {
 	// of the free-form LLM loop.
 	Workflow *WorkflowSpec `yaml:"workflow,omitempty" json:"workflow,omitempty"`
 
+	// StudioIntent is the natural-language prompt that generated this agent's
+	// workflow in Studio. Persisted so the Studio editor can show the original
+	// prompt and let the user edit it and re-generate. Studio-only metadata; the
+	// runtime does not use it.
+	StudioIntent string `yaml:"studio_intent,omitempty" json:"studio_intent,omitempty"`
+
 	// RunTimeout caps the total wall-clock duration of one full agent run
 	// (across all LLM turns and tool calls). Go duration syntax: "5m", "30m",
 	// "1h". Empty = use the gateway default (15m). Bump this for agents that

@@ -30,16 +30,19 @@ function hoistConsent(err) {
 }
 
 export const bridge = {
-  // Read-only catalog: agents + tools + providers + channels, fetched in
-  // parallel with the user's own session (no more host relay).
+  // Read-only catalog: agents + tools + providers + channels + skills + mcp,
+  // fetched in parallel with the user's own session (no more host relay).
+  // Skills and MCP are best-effort: a failure there must not blank the palette.
   catalog: async () => {
-    const [agents, tools, providers, channels] = await Promise.all([
+    const [agents, tools, providers, channels, skills, mcp] = await Promise.all([
       api.agents.list(),
       api.tools.catalog(),
       api.providers.list(),
       api.channels.list(),
+      api.skills.list().catch(() => ({ skills: [] })),
+      api.mcp.list().catch(() => ({ servers: [] })),
     ])
-    return { agents, tools, providers, channels }
+    return { agents, tools, providers, channels, skills, mcp }
   },
 
   compile: (intent, answers, catalog) =>

@@ -34,16 +34,31 @@ func (t triggerInput) String() string {
 }
 
 func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, runID string) (json.RawMessage, error) {
-	g, err := reasoning.CompileFlow(*w.spec.FlowSpec())
+	spec := w.spec.FlowSpec()
+	g, err := reasoning.CompileFlow(*spec)
 	if err != nil {
 		return nil, fmt.Errorf("workflow graph: %w", err)
 	}
 	agentID := msg.AgentID
 
+	// Conversation continuity: pull a compact transcript of recent turns for
+	// this session so the flow's entry agent can resolve follow-up references
+	// ("its price", "that company") without the user restating context. Empty
+	// on the first turn. Exposed to every node as {{.history}} and auto-prepended
+	// to the entry agent's message below.
+	history := w.engine.flowHistoryTranscript(msg.SessionID, msg.AgentID, flowHistoryMaxMsgs)
+	entryID := spec.Entry
+	if entryID == "" {
+		if len(spec.Nodes) > 0 {
+			entryID = spec.Nodes[0].ID
+		}
+	}
+
 	vars := map[string]interface{}{
 		"trigger": triggerInput{
 			"text": flattenParts(msg.Parts),
 		},
+		"history": history,
 	}
 
 	hooks := reasoning.FlowHooks{}
@@ -96,7 +111,7 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		if node.Kind == sdkr.FlowNodeAgent {
 			tool = "agent__" + node.Agent
 		}
-		
+
 		tc := message.ToolCall{
 			ID:        "flow-" + node.ID,
 			Name:      tool,
@@ -105,19 +120,35 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		if renderedInput != "" {
 			if node.Kind == sdkr.FlowNodeAgent {
 				if strings.HasPrefix(strings.TrimSpace(renderedInput), "{") {
-					if err := json.Unmarshal([]byte(renderedInput), &tc.Arguments); err != nil {
+					if args, perr := parseToolArgs(renderedInput); perr == nil {
+						tc.Arguments = args
+					} else {
 						tc.Arguments["message"] = renderedInput
 					}
 				} else {
 					tc.Arguments["message"] = renderedInput
 				}
 			} else {
-				if err := json.Unmarshal([]byte(renderedInput), &tc.Arguments); err != nil {
-					return nil, fmt.Errorf("workflow: tool args for %q not valid JSON: %w", tool, err)
+				args, perr := parseToolArgs(renderedInput)
+				if perr != nil {
+					return nil, fmt.Errorf("workflow: tool args for %q not valid JSON: %w", tool, perr)
 				}
+				tc.Arguments = args
 			}
 		}
-		
+
+		// Entry agent gets the conversation history prepended to its message so
+		// follow-ups resolve against prior turns. Only the entry node — downstream
+		// agents act on this turn's extracted intent, not the raw transcript.
+		if node.Kind == sdkr.FlowNodeAgent && node.ID == entryID && history != "" {
+			base, _ := tc.Arguments["message"].(string)
+			if base == "" {
+				base = flattenParts(msg.Parts)
+			}
+			tc.Arguments["message"] = "Conversation so far (context for resolving follow-up references; " +
+				"do not answer it directly):\n" + history + "\n\nUser's new message: " + base
+		}
+
 		var def *agent.Definition
 		if w.engine.loader != nil {
 			def = w.engine.loader.Get(msg.AgentID)
@@ -129,7 +160,7 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		if rerr != nil {
 			return nil, rerr
 		}
-		
+
 		outBytes := []byte(outStr)
 		if json.Valid(outBytes) {
 			return unwrapToolJSON(outBytes), nil
@@ -144,7 +175,97 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 			zap.String("run_id", runID), zap.Error(err))
 		return nil, err
 	}
+
+	// If the graph designates an explicit output node, its result becomes the
+	// flow's final output (what gets delivered to channels) — rather than the
+	// last-executed node's. RunFlow mutates `vars` in place, so each node's
+	// output is available here by its output-var name. Falls back to `out` when
+	// the output node has no var or produced nothing.
+	if outID := spec.Output; outID != "" {
+		for _, n := range spec.Nodes {
+			if n.ID == outID && n.Output != "" {
+				if v, ok := vars[n.Output]; ok {
+					if b, jerr := json.Marshal(v); jerr == nil {
+						return json.RawMessage(b), nil
+					}
+				}
+			}
+		}
+	}
 	return out, nil
+}
+
+// parseToolArgs unmarshals a flow node's rendered input into a tool-args map.
+// Node inputs are produced by text/template substitution (e.g. {{.search_query}}
+// inside a JSON template), so an upstream agent's output containing a raw newline
+// lands unescaped inside a JSON string literal and breaks json.Unmarshal. When
+// the first parse fails, we escape bare control characters inside string literals
+// and retry once before giving up — returning the ORIGINAL error so the message
+// reflects the real defect, not the repaired text.
+func parseToolArgs(in string) (map[string]any, error) {
+	args := map[string]any{}
+	if err := json.Unmarshal([]byte(in), &args); err == nil {
+		return args, nil
+	} else if repaired := repairJSONControlChars(in); repaired != in {
+		args = map[string]any{}
+		if err2 := json.Unmarshal([]byte(repaired), &args); err2 == nil {
+			return args, nil
+		}
+		return nil, err
+	} else {
+		return nil, err
+	}
+}
+
+// repairJSONControlChars escapes literal newline, carriage-return, and tab
+// characters that appear INSIDE JSON string literals (which are invalid JSON).
+// Control characters outside string literals — the structural whitespace between
+// tokens — are left untouched. Returns the input unchanged when no repair was
+// needed, so callers can detect a no-op.
+func repairJSONControlChars(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inStr := false
+	esc := false
+	changed := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !inStr {
+			if c == '"' {
+				inStr = true
+			}
+			b.WriteByte(c)
+			continue
+		}
+		if esc {
+			b.WriteByte(c)
+			esc = false
+			continue
+		}
+		switch c {
+		case '\\':
+			b.WriteByte(c)
+			esc = true
+		case '"':
+			b.WriteByte(c)
+			inStr = false
+		case '\n':
+			b.WriteString(`\n`)
+			changed = true
+		case '\r':
+			b.WriteString(`\r`)
+			changed = true
+		case '\t':
+			b.WriteString(`\t`)
+			changed = true
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if !changed {
+		return s
+	}
+	return b.String()
 }
 
 // unwrapToolJSON undoes RunTool's string wrapping when the tool's textual

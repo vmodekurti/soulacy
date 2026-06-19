@@ -25,6 +25,7 @@ func HasWorkflow(def agent.Definition) bool {
 func FromAgentDefinition(def agent.Definition) Draft {
 	d := Draft{
 		Name:     def.Name,
+		Intent:   def.StudioIntent,
 		Trigger:  Trigger{Type: triggerTypeFromKind(def.Trigger)},
 		Channels: append([]string(nil), def.Channels...),
 	}
@@ -36,9 +37,10 @@ func FromAgentDefinition(def agent.Definition) Draft {
 	}
 	if def.Workflow != nil {
 		d.Flow = Flow{
-			Nodes: append(def.Workflow.Nodes[:0:0], def.Workflow.Nodes...),
-			Edges: append(def.Workflow.Edges[:0:0], def.Workflow.Edges...),
-			Entry: def.Workflow.Entry,
+			Nodes:  append(def.Workflow.Nodes[:0:0], def.Workflow.Nodes...),
+			Edges:  append(def.Workflow.Edges[:0:0], def.Workflow.Edges...),
+			Entry:  def.Workflow.Entry,
+			Output: def.Workflow.Output,
 		}
 	}
 	return d
