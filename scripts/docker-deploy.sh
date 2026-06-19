@@ -36,7 +36,23 @@ CONTAINER_PORT="${CONTAINER_PORT:-18789}"  # port the app listens on inside
 BIND_HOST="${BIND_HOST:-0.0.0.0}"          # in-container bind addr (0.0.0.0 so the published port is reachable)
 DATA_DIR="${DATA_DIR:-$HOME/.soulacy}"     # host dir mounted for persistence ("" to skip)
 DATA_MOUNT="${DATA_MOUNT:-/home/soulacy/.soulacy}"  # mount point inside container
+# The skill loader also scans the cross-client location ~/.agents/skills, which
+# lives OUTSIDE ~/.soulacy. Without this mount, skills installed there live only
+# in the container layer and are lost on every redeploy. Persist it too. Set to
+# "" to skip.
+AGENTS_DIR="${AGENTS_DIR:-$HOME/.agents}"   # host dir for cross-client skills/agents ("" to skip)
+AGENTS_MOUNT="${AGENTS_MOUNT:-/home/soulacy/.agents}"  # mount point inside container
 API_KEY="${API_KEY:-}"                     # auth key; blank = auto-generate
+# LLM provider API keys, passed into the container as
+# SOULACY_LLM_PROVIDERS_<PROVIDER>_API_KEY so they are supplied fresh on every
+# boot. This bypasses the encrypted credential vault, whose machine-id-derived
+# key is ephemeral inside containers (vault entries would not survive restarts).
+#
+# Provide one or more "<provider>=<key>" pairs, e.g. "google=AIza... openai=sk-...".
+# Accepted via the PROVIDER_KEYS env var (space-separated) or repeatable
+# --provider-key flags. Provider names are case-insensitive (google, openai,
+# anthropic, ollama, …) and are upper-cased into the env var name.
+PROVIDER_KEYS="${PROVIDER_KEYS:-}"         # space-separated "<provider>=<key>" pairs; blank = none
 HEALTH_PATH="${HEALTH_PATH:-/api/v1/health}" # path polled to confirm readiness ("" to skip)
 # Where the gateway should reach Ollama. Inside a container `localhost` is the
 # container itself, so a host-side Ollama must be addressed via the host. On
@@ -77,6 +93,8 @@ Options:
   --bind-host ADDR       In-container bind address        (default: $BIND_HOST)
   --data-dir DIR         Host dir to persist (empty=none) (default: $DATA_DIR)
   --api-key KEY          Auth key (empty = auto-generate)
+  --provider-key P=KEY   LLM provider API key, e.g. google=AIza... or openai=sk-...
+                         Repeatable. Passed as SOULACY_LLM_PROVIDERS_<P>_API_KEY.
   --health-path PATH     Readiness probe path (empty=none)(default: $HEALTH_PATH)
   --ollama-host HOST     Ollama host:port or URL the gateway should call
                          (empty=skip; default: $OLLAMA_HOST)
@@ -103,6 +121,7 @@ while [ $# -gt 0 ]; do
     --bind-host)      BIND_HOST="$2"; shift 2 ;;
     --data-dir)       DATA_DIR="$2"; shift 2 ;;
     --api-key)        API_KEY="$2"; shift 2 ;;
+    --provider-key)   PROVIDER_KEYS="${PROVIDER_KEYS:+$PROVIDER_KEYS }$2"; shift 2 ;;
     --health-path)    HEALTH_PATH="$2"; shift 2 ;;
     --ollama-host)    OLLAMA_HOST="$2"; shift 2 ;;
     --no-build)       DO_BUILD="no"; shift ;;
@@ -293,6 +312,17 @@ RUN_ARGS=(
 )
 if [ -n "$DATA_DIR" ]; then
   RUN_ARGS+=( --volume "${DATA_DIR}:${DATA_MOUNT}" )
+  # Pin the workspace to the mounted volume. This makes skills, agents, memory,
+  # and config always resolve to persistent storage — independent of HOME or any
+  # stale ~/.soulacy/workspace pointer — so nothing installed through the
+  # supported paths can be lost on a redeploy.
+  RUN_ARGS+=( --env "SOULACY_WORKSPACE=${DATA_MOUNT}/soulspace" )
+fi
+# Persist the cross-client skills/agents location too (~/.agents). The skill
+# loader also scans it, so skills installed there must survive a redeploy.
+if [ -n "$AGENTS_DIR" ]; then
+  mkdir -p "$AGENTS_DIR" 2>/dev/null || true
+  RUN_ARGS+=( --volume "${AGENTS_DIR}:${AGENTS_MOUNT}" )
 fi
 if [ -n "$OLLAMA_URL" ]; then
   RUN_ARGS+=( --env "SOULACY_LLM_PROVIDERS_OLLAMA_BASE_URL=${OLLAMA_URL}" )
@@ -301,6 +331,23 @@ if [ -n "$OLLAMA_URL" ]; then
   case "$OLLAMA_URL" in
     *host.docker.internal*) RUN_ARGS+=( --add-host "host.docker.internal:host-gateway" ) ;;
   esac
+fi
+
+# LLM provider API keys → env vars. Injecting them on each run keeps the key
+# present even though the container's credential vault is ephemeral (its
+# machine-id-derived encryption key doesn't survive container restarts).
+if [ -n "$PROVIDER_KEYS" ]; then
+  for pair in $PROVIDER_KEYS; do
+    name="${pair%%=*}"          # provider id, e.g. google
+    key="${pair#*=}"            # the api key
+    if [ -z "$name" ] || [ "$name" = "$pair" ] || [ -z "$key" ]; then
+      die "Bad --provider-key '$pair' — expected <provider>=<key>, e.g. google=AIza..."
+    fi
+    # Upper-case the provider id for the env var name (bash 3.2 compatible).
+    upper="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    RUN_ARGS+=( --env "SOULACY_LLM_PROVIDERS_${upper}_API_KEY=${key}" )
+    info "Provider key set: ${name} → SOULACY_LLM_PROVIDERS_${upper}_API_KEY"
+  done
 fi
 
 info "Starting container ..."
