@@ -18,6 +18,9 @@ type WorkflowSpec struct {
 	Nodes []reasoning.FlowNode `yaml:"nodes,omitempty" json:"nodes,omitempty"`
 	Edges []reasoning.FlowEdge `yaml:"edges,omitempty" json:"edges,omitempty"`
 	Entry string               `yaml:"entry,omitempty" json:"entry,omitempty"`
+	// Output is the node id whose result is the flow's final output (default:
+	// last executed node).
+	Output string `yaml:"output,omitempty" json:"output,omitempty"`
 	// MaxNodeExecutions is the global safety budget (default 100).
 	MaxNodeExecutions int `yaml:"max_node_executions,omitempty" json:"max_node_executions,omitempty"`
 }
@@ -32,6 +35,7 @@ func (w *WorkflowSpec) FlowSpec() *reasoning.FlowSpec {
 		Nodes:             w.Nodes,
 		Edges:             w.Edges,
 		Entry:             w.Entry,
+		Output:            w.Output,
 		MaxNodeExecutions: w.MaxNodeExecutions,
 	}
 }

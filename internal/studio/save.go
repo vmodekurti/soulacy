@@ -64,9 +64,10 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		Trigger:      mapTrigger(draft.Trigger.Type),
 		Channels:     append([]string(nil), draft.Channels...),
 		SystemPrompt: buildSystemPrompt(draft),
+		StudioIntent: strings.TrimSpace(draft.Intent),
 		// Disabled by construction: a Studio save stages an agent for the
 		// operator to review and enable.
-		Enabled: false,
+		Enabled:  false,
 		MaxTurns: 15,
 		Memory:   agent.MemoryPolicy{MaxTokens: 8000},
 		LLM: agent.LLMConfig{
@@ -76,6 +77,7 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 			Nodes:             draft.Flow.Nodes,
 			Edges:             draft.Flow.Edges,
 			Entry:             draft.Flow.Entry,
+			Output:            draft.Flow.Output,
 			MaxNodeExecutions: 0,
 		},
 	}

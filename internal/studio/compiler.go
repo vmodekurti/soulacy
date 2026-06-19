@@ -31,9 +31,19 @@ type LLM interface {
 // grounds the draft in real agents/tools/providers instead of inventing
 // names. All fields are optional.
 type Catalog struct {
-	Agents    []string `json:"agents,omitempty"`
-	Tools     []string `json:"tools,omitempty"`
-	Providers []string `json:"providers,omitempty"`
+	Agents    []string       `json:"agents,omitempty"`
+	Tools     []string       `json:"tools,omitempty"`
+	Providers []string       `json:"providers,omitempty"`
+	Skills    []CatalogSkill `json:"skills,omitempty"`
+}
+
+// CatalogSkill is an installed Agent Skill the model may reference via a
+// read_skill node. Name is the EXACT skill name to put in skill_name; the
+// Description lets the model map a loose reference in the intent ("yahoo
+// finance", "stock data") to the right installed skill ("yfinance").
+type CatalogSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
 }
 
 // Request is the POST /api/v1/studio/compile body.
@@ -56,9 +66,10 @@ type Trigger struct {
 // Flow is the graph form, mirroring the sdk/reasoning JSON shapes so the
 // draft round-trips straight into reasoning.CompileFlow.
 type Flow struct {
-	Nodes []sdkr.FlowNode `json:"nodes"`
-	Edges []sdkr.FlowEdge `json:"edges,omitempty"`
-	Entry string          `json:"entry,omitempty"`
+	Nodes  []sdkr.FlowNode `json:"nodes"`
+	Edges  []sdkr.FlowEdge `json:"edges,omitempty"`
+	Entry  string          `json:"entry,omitempty"`
+	Output string          `json:"output,omitempty"` // node id whose result is the flow's output (default: last node)
 }
 
 // NewAgent defines a full profile for an agent the model invented.
@@ -73,6 +84,7 @@ type NewAgent struct {
 type Draft struct {
 	Name         string     `json:"name"`
 	SystemPrompt string     `json:"system_prompt,omitempty"`
+	Intent       string     `json:"intent,omitempty"` // the prompt that generated this workflow (Studio editor)
 	Trigger      Trigger    `json:"trigger"`
 	Channels     []string   `json:"channels,omitempty"`
 	Flow         Flow       `json:"flow"`
@@ -193,7 +205,30 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- Give every node a meaningful \"output\" var name so downstream nodes can reference it (e.g. \"articles\", \"notebook_id\", \"audio_url\").\n")
 	sb.WriteString("- Give every node a one-line \"description\" stating concretely what THAT node does (e.g. \"Search the web for today's AI news\", \"Keep the top 5 articles as {title,url}\") — not a vague label. The node ids should also read as verbs (search_ai_news, pick_top_articles), not generic names like node1.\n")
 	sb.WriteString("- If the intent needs reasoning and no suitable agent exists in the Available agents list, you MAY invent a new peer agent. If you do, you MUST provide its full definition in a `new_agents` array at the top level of your output JSON (alongside `flow`), including its `id`, `name`, `description`, and `system_prompt`.\n")
-	sb.WriteString("- Do NOT invent tool names. Do the work in a python node or an existing tool if no tool exists.\n\n")
+	sb.WriteString("- Do NOT invent tool names. Do the work in a python node or an existing tool if no tool exists.\n")
+	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), DO NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name and description, then emit a tool node with \"tool\":\"read_skill\" and \"input\":{\"skill_name\":\"<EXACT installed skill name>\"} (e.g. a request for \"yahoo finance\" → {\"skill_name\":\"yfinance\"}). Only reference skills that appear in the Available skills list; if none matches, do the work with an existing tool or a python node instead of inventing a read_skill.\n\n")
+
+	if len(catalog.Skills) > 0 {
+		sb.WriteString("Available skills (use the EXACT name in read_skill's skill_name):\n")
+		for _, sk := range catalog.Skills {
+			name := strings.TrimSpace(sk.Name)
+			if name == "" {
+				continue
+			}
+			desc := strings.TrimSpace(sk.Description)
+			if len(desc) > 200 {
+				desc = desc[:200] + "…"
+			}
+			sb.WriteString("- ")
+			sb.WriteString(name)
+			if desc != "" {
+				sb.WriteString(" — ")
+				sb.WriteString(desc)
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
 
 	if len(catalog.Agents) > 0 {
 		sb.WriteString("Available agents: ")
