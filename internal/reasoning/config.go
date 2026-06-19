@@ -18,6 +18,31 @@ type ProviderKeys struct {
 	// and set a custom BaseURL on the returned backend if needed.
 }
 
+// BackendAvailable reports whether a REAL reasoning backend exists for the
+// given (already-resolved) provider. The reasoning strategies (react /
+// plan_execute) only have native backends for Anthropic, the OpenAI-compatible
+// family, and local Ollama. Every other provider — notably google/gemini — has
+// no backend, and DefaultBackendFor silently falls back to Ollama for them. The
+// engine calls this BEFORE entering the reasoning loop: when it returns false,
+// the agent must use the classic tool loop (which works for every provider)
+// rather than being routed to a (likely absent) local Ollama.
+//
+// Cloud providers require their API key to count as available; Ollama is local
+// and always considered available (it's an explicit local choice).
+func BackendAvailable(provider string, keys ProviderKeys) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "anthropic":
+		return keys.AnthropicKey != ""
+	case "openai", "groq", "together", "openrouter", "mistral", "deepseek", "vllm":
+		return keys.OpenAIKey != ""
+	case "ollama":
+		return true
+	default:
+		// google / gemini / grok / any unknown provider: no reasoning backend.
+		return false
+	}
+}
+
 // DefaultBackendFor returns the right LLMBackend for the agent, derived
 // entirely from def.LLM.Provider — no extra field in SOUL.yaml needed.
 //
