@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/mcp"
-	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
@@ -52,6 +52,11 @@ func (s *Server) safeConfigView() fiber.Map {
 		serverAPIKey = "***"
 	}
 
+	searchAPIKey := ""
+	if cfg.Search.APIKey != "" {
+		searchAPIKey = "***"
+	}
+
 	return fiber.Map{
 		"server": fiber.Map{
 			"host":        cfg.Server.Host,
@@ -81,11 +86,19 @@ func (s *Server) safeConfigView() fiber.Map {
 				"provider": cfg.LLM.Studio.Provider,
 				"model":    cfg.LLM.Studio.Model,
 			},
+			"reasoner": fiber.Map{
+				"provider": cfg.LLM.Reasoner.Provider,
+				"model":    cfg.LLM.Reasoner.Model,
+			},
 		},
 		"log": fiber.Map{
 			"level":  cfg.Log.Level,
 			"format": cfg.Log.Format,
 			"file":   cfg.Log.File,
+		},
+		"search": fiber.Map{
+			"provider": cfg.Search.Provider,
+			"api_key":  searchAPIKey,
 		},
 		"agent_dirs":     cfg.AgentDirs,
 		"skill_dirs":     cfg.SkillDirs,
@@ -195,6 +208,12 @@ type PatchableConfig struct {
 			Provider string `json:"provider" yaml:"provider"`
 			Model    string `json:"model" yaml:"model"`
 		} `json:"studio" yaml:"studio"`
+		// Reasoner overrides the provider/model the ReAct/Plan-Execute loop uses
+		// (llm.reasoner). Empty strings fall back to each agent's own model.
+		Reasoner *struct {
+			Provider string `json:"provider" yaml:"provider"`
+			Model    string `json:"model" yaml:"model"`
+		} `json:"reasoner" yaml:"reasoner"`
 	} `json:"llm" yaml:"llm"`
 
 	Log *struct {
@@ -202,6 +221,14 @@ type PatchableConfig struct {
 		Format string `json:"format" yaml:"format"`
 		File   string `json:"file" yaml:"file"`
 	} `json:"log" yaml:"log"`
+
+	// Search configures the built-in web_search tool. APIKey of "***" is the
+	// redacted placeholder echoed by the GUI and is skipped on write so it
+	// never overwrites the real key on disk.
+	Search *struct {
+		Provider string `json:"provider" yaml:"provider"`
+		APIKey   string `json:"api_key" yaml:"api_key"`
+	} `json:"search" yaml:"search"`
 
 	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDirs []string `json:"skill_dirs" yaml:"skill_dirs"`
@@ -366,6 +393,21 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 			st := getOrCreateMap(llm, "studio")
 			st["provider"] = patch.LLM.Studio.Provider
 			st["model"] = patch.LLM.Studio.Model
+		}
+		if patch.LLM.Reasoner != nil {
+			rs := getOrCreateMap(llm, "reasoner")
+			rs["provider"] = patch.LLM.Reasoner.Provider
+			rs["model"] = patch.LLM.Reasoner.Model
+		}
+	}
+	if patch.Search != nil {
+		sr := getOrCreateMap(dst, "search")
+		if patch.Search.Provider != "" {
+			sr["provider"] = patch.Search.Provider
+		}
+		// "***" is the redacted placeholder the GUI echoes back; never persist it.
+		if patch.Search.APIKey != "" && patch.Search.APIKey != "***" {
+			sr["api_key"] = patch.Search.APIKey
 		}
 	}
 	if patch.Log != nil {

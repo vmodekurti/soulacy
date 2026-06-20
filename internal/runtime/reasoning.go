@@ -23,6 +23,7 @@ package runtime
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/soulacy/soulacy/internal/metrics"
@@ -35,6 +36,14 @@ import (
 // Called from internal/app at boot; safe to call before traffic starts.
 func (e *Engine) SetReasoningKeys(keys reasoning.ProviderKeys) {
 	e.reasoningKeys = keys
+}
+
+// SetReasonerOverride sets the optional global llm.reasoner provider/model used
+// by the reasoning loop for every agent. Empty strings clear the override (the
+// loop then uses each agent's own llm.provider/model). Called at boot.
+func (e *Engine) SetReasonerOverride(provider, model string) {
+	e.reasonerProvider = strings.TrimSpace(provider)
+	e.reasonerModel = strings.TrimSpace(model)
 }
 
 // SetReasoningBackendFactory overrides how the engine builds the reasoning
@@ -118,7 +127,7 @@ func (e *Engine) handleWithReasoning(ctx context.Context, def *agent.Definition,
 	if e.reasoningBackendFactory != nil {
 		backend = e.reasoningBackendFactory(def)
 	} else {
-		backend = reasoning.DefaultBackendFor(def, e.reasoningKeys)
+		backend = reasoning.DefaultBackendFor(e.reasoningDef(def), e.reasoningKeys)
 	}
 	executor := reasoningToolExecutor{e: e, def: def, sessionID: msg.SessionID}
 	loop := reasoning.New(loopCfg, backend, executor)

@@ -798,7 +798,14 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 	engine.SetReasoningKeys(reasoning.ProviderKeys{
 		AnthropicKey: providerKeyFor(cfg, "anthropic", "ANTHROPIC_API_KEY"),
 		OpenAIKey:    providerKeyFor(cfg, "openai", "OPENAI_API_KEY"),
+		// Fall back the reasoning loop's Ollama backend to the SAME endpoint the
+		// chat path uses (env-resolved llm.providers.ollama.base_url), so ReAct
+		// reaches Ollama instead of an unreachable localhost inside a container.
+		OllamaBaseURL: cfg.LLM.Providers["ollama"].BaseURL,
 	})
+	// Optional global llm.reasoner override: run the reasoning loop on a strong
+	// model regardless of the agent's chat model.
+	engine.SetReasonerOverride(cfg.LLM.Reasoner.Provider, cfg.LLM.Reasoner.Model)
 
 	// PRODUCTION_AUDIT → F1 (2026-05-27): host-enforced rlimits on every
 	// Python tool subprocess via the soulacy __exec-sandbox wrapper.

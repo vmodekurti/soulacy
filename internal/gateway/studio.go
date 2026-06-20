@@ -114,6 +114,28 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 		}
 	}
 
+	// Ground the compiler in the live, CONNECTED MCP servers and their tools
+	// (authoritative, server-side) so it can wire an MCP tool when the intent
+	// names a server or a capability one provides. Grouped by server, order
+	// preserved as snapshotMCPTools returns them.
+	mcpBySrv := map[string]int{}
+	req.Catalog.MCP = nil
+	for _, mt := range s.snapshotMCPTools() {
+		idx, ok := mcpBySrv[mt.Server]
+		if !ok {
+			idx = len(req.Catalog.MCP)
+			mcpBySrv[mt.Server] = idx
+			req.Catalog.MCP = append(req.Catalog.MCP, studio.CatalogMCPServer{Server: mt.Server})
+		}
+		// Use the FULL callable name (mcp__<server>__<tool>): that is what a tool
+		// node's "tool" must be so the engine can resolve it AND so flowTools
+		// classifies it as an MCP tool (mcp__ prefix) rather than a builtin.
+		// Emitting the bare name is exactly why generated flows referenced
+		// non-existent tools like "notebook_create".
+		req.Catalog.MCP[idx].Tools = append(req.Catalog.MCP[idx].Tools,
+			studio.CatalogMCPTool{Name: mt.FullName, Description: mt.Description})
+	}
+
 	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)

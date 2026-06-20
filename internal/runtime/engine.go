@@ -210,6 +210,13 @@ type Engine struct {
 	// from def.LLM.Provider via reasoning.DefaultBackendFor.
 	reasoningBackendFactory func(*agent.Definition) reasoning.LLMBackend
 
+	// reasonerProvider/reasonerModel are the optional global llm.reasoner
+	// override: when set, the reasoning loop runs on this provider/model for
+	// every agent (planning wants a strong model), regardless of the agent's
+	// own chat model. Empty = use the agent's llm.provider/model.
+	reasonerProvider string
+	reasonerModel    string
+
 	// ── PERF-1: session eviction ────────────────────────────────────────────
 	// sessionTTL bounds how long an idle session is retained before the sweep
 	// reclaims it. maxSessions caps the live session count. Both are set via
@@ -3713,7 +3720,31 @@ func (e *Engine) reasoningBackendAvailable(def *agent.Definition) bool {
 	if e.reasoningBackendFactory != nil {
 		return true
 	}
-	return reasoning.BackendAvailable(e.effectiveProvider(def), e.reasoningKeys)
+	prov := e.effectiveProvider(def)
+	if e.reasonerProvider != "" {
+		prov = e.reasonerProvider // global llm.reasoner override
+	}
+	return reasoning.BackendAvailable(prov, e.reasoningKeys)
+}
+
+// reasoningDef returns the agent definition to use when resolving the reasoning
+// backend. With a global llm.reasoner override configured it returns a shallow
+// copy with the reasoner provider/model substituted (and base_url cleared so the
+// new provider's default / OllamaBaseURL fallback applies), so reasoning runs on
+// the operator's chosen model regardless of the agent's chat model.
+func (e *Engine) reasoningDef(def *agent.Definition) *agent.Definition {
+	if e.reasonerProvider == "" && e.reasonerModel == "" {
+		return def
+	}
+	cp := *def
+	if e.reasonerProvider != "" {
+		cp.LLM.Provider = e.reasonerProvider
+		cp.LLM.BaseURL = ""
+	}
+	if e.reasonerModel != "" {
+		cp.LLM.Model = e.reasonerModel
+	}
+	return &cp
 }
 
 // providerIsOllama reports whether the agent resolves to the Ollama provider
