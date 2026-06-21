@@ -512,6 +512,14 @@ def run(inputs):
     }
   }
 
+  // Friendly label for the compiler's recommended execution mode.
+  function recoLabel(mode) {
+    if (mode === 'react') return 'ReAct (reasoning loop)'
+    if (mode === 'plan_execute') return 'Plan-Execute'
+    if (mode === 'workflow') return 'Workflow (fixed flow)'
+    return mode || 'Workflow'
+  }
+
   function applyCompile(data) {
     workflow = (data && data.workflow) || null
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
@@ -1467,6 +1475,22 @@ def run(inputs):
         </div>
       {/if}
 
+      {#if workflow && workflow.recommendation && workflow.recommendation.mode}
+        <div class="strip strip-reco" title="Suggested execution model for this agent">
+          <span class="strip-label">Recommended: {recoLabel(workflow.recommendation.mode)}</span>
+          <span>{workflow.recommendation.rationale}</span>
+          {#if workflow.recommendation.mode !== 'workflow'}
+            <span class="reco-how">
+              Studio still draws a fixed flow, and the agent runs it as-is until you switch modes.
+              To use <strong>{recoLabel(workflow.recommendation.mode)}</strong>, edit the agent's SOUL.yaml:
+              remove the <code>workflow:</code> block and add
+              <code>reasoning:&nbsp;strategy:&nbsp;{workflow.recommendation.mode}</code>.
+              The agent then drives its tools dynamically instead of following the frozen graph.
+            </span>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Validation strip (M3): non-blocking ok / N errors / N warnings. -->
       {#if workflow && validation}
         {#if validation.ok && !validation.warnings.length}
@@ -2232,6 +2256,15 @@ def run(inputs):
   }
   .strip-error { background: rgba(255, 107, 129, 0.12); color: var(--error); }
   .strip-ok { background: rgba(54, 211, 153, 0.12); color: var(--ok); }
+  .strip-reco { background: rgba(124, 122, 255, 0.12); color: var(--text); }
+  .strip-reco .reco-how { flex-basis: 100%; color: var(--text-muted); line-height: 1.5; }
+  .strip-reco code {
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0 4px;
+    font-size: 11px;
+  }
   .strip-warn { background: rgba(245, 167, 66, 0.12); color: var(--warn, #f5a742); }
   .v-count {
     font-weight: 700;

@@ -167,6 +167,7 @@ func runOnboardWizard() error {
 			"Google (Gemini)",
 			"Groq",
 			"OpenRouter",
+			"NVIDIA NIM",
 			"Custom (OpenAI-compatible)",
 			"Skip",
 		})
@@ -184,6 +185,9 @@ func runOnboardWizard() error {
 		case 4:
 			runProviderSetup(cfgPath, "openrouter", "https://openrouter.ai/api/v1")
 		case 5:
+			// NVIDIA NIM / API catalog — OpenAI-compatible.
+			runProviderSetup(cfgPath, "nvidia", "https://integrate.api.nvidia.com/v1")
+		case 6:
 			runProviderSetup(cfgPath, "custom", "")
 		}
 	}

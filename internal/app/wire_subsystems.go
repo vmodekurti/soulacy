@@ -798,7 +798,31 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 	engine.SetReasoningKeys(reasoning.ProviderKeys{
 		AnthropicKey: providerKeyFor(cfg, "anthropic", "ANTHROPIC_API_KEY"),
 		OpenAIKey:    providerKeyFor(cfg, "openai", "OPENAI_API_KEY"),
+		NvidiaKey:    providerKeyFor(cfg, "nvidia", "NVIDIA_API_KEY"),
+		// Fall back the reasoning loop's Ollama backend to the SAME endpoint the
+		// chat path uses (env-resolved llm.providers.ollama.base_url), so ReAct
+		// reaches Ollama instead of an unreachable localhost inside a container.
+		OllamaBaseURL: cfg.LLM.Providers["ollama"].BaseURL,
 	})
+	// Optional global llm.reasoner override: run the reasoning loop on a strong
+	// model regardless of the agent's chat model.
+	engine.SetReasonerOverride(cfg.LLM.Reasoner.Provider, cfg.LLM.Reasoner.Model)
+
+	// Canonical install-path hints for agent shell tools (shell_exec / run_script),
+	// so agents install skills/plugins/MCP servers/packages into the PERSISTENT
+	// workspace volume and register them in the REAL config.yaml — instead of
+	// guessing and writing to ephemeral paths (e.g. $HOME, the CWD) that vanish
+	// on restart. Surfaced to the system agent's prompt too (buildSystemPrefix).
+	if ws, werr := config.ResolveWorkspace(); werr == nil {
+		engine.SetAgentShellEnv([]string{
+			"SOULACY_WORKSPACE=" + ws.Root,
+			"SOULACY_CONFIG_FILE=" + ws.ConfigFile,
+			"SOULACY_AGENTS_DIR=" + ws.Agents,
+			"SOULACY_SKILLS_DIR=" + ws.Skills,
+			"SOULACY_PLUGINS_DIR=" + ws.Plugins,
+			"SOULACY_MCP_DIR=" + filepath.Join(ws.Root, "mcp-servers"),
+		})
+	}
 
 	// PRODUCTION_AUDIT → F1 (2026-05-27): host-enforced rlimits on every
 	// Python tool subprocess via the soulacy __exec-sandbox wrapper.

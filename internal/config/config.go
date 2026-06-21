@@ -429,6 +429,20 @@ type LLMConfig struct {
 	//	    provider: anthropic
 	//	    model: claude-opus-4-8
 	Studio StudioLLMConfig `mapstructure:"studio"`
+
+	// Reasoner optionally overrides which provider/model the multi-step
+	// reasoning loop (ReAct / Plan-Execute) uses for its think/plan/reflect
+	// calls — independent of the model an agent uses to chat. Planning needs
+	// reliable structured-JSON output, so operators can point it at a stronger
+	// model than the agent runs on. Empty fields fall back to the agent's own
+	// llm.provider/model. Only providers with a reasoning backend are honored
+	// (anthropic / openai-compatible / ollama).
+	//
+	//	llm:
+	//	  reasoner:
+	//	    provider: anthropic
+	//	    model: claude-opus-4-8
+	Reasoner StudioLLMConfig `mapstructure:"reasoner"`
 }
 
 // StudioLLMConfig overrides the provider/model used for Studio workflow

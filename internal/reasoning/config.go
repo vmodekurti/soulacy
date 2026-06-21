@@ -14,8 +14,17 @@ import (
 type ProviderKeys struct {
 	AnthropicKey string
 	OpenAIKey    string
+	// NvidiaKey is the NVIDIA NIM / API-catalog key (OpenAI-compatible endpoint).
+	NvidiaKey string
 	// GroqKey / TogetherKey etc. are just OpenAI-compatible — put them in OpenAIKey
 	// and set a custom BaseURL on the returned backend if needed.
+
+	// OllamaBaseURL is the configured Ollama endpoint (from llm.providers.ollama
+	// .base_url, env-resolved). It is the fallback when an agent doesn't set its
+	// own llm.base_url — without it the reasoning loop's Ollama backend defaults
+	// to localhost:11434, which is unreachable from inside a container even when
+	// the chat path correctly uses host.docker.internal. Empty = library default.
+	OllamaBaseURL string
 }
 
 // BackendAvailable reports whether a REAL reasoning backend exists for the
@@ -35,6 +44,8 @@ func BackendAvailable(provider string, keys ProviderKeys) bool {
 		return keys.AnthropicKey != ""
 	case "openai", "groq", "together", "openrouter", "mistral", "deepseek", "vllm":
 		return keys.OpenAIKey != ""
+	case "nvidia":
+		return keys.NvidiaKey != ""
 	case "ollama":
 		return true
 	default:
@@ -118,9 +129,28 @@ func DefaultBackendFor(def *agent.Definition, keys ProviderKeys) LLMBackend {
 		}
 		return b
 
+	case "nvidia":
+		ep := baseURL
+		if ep == "" {
+			ep = "https://integrate.api.nvidia.com/v1"
+		}
+		b := newOpenAICompatibleBackend(ep, keys.NvidiaKey, model)
+		if model != "" {
+			b.ThinkModel = model
+			b.PlanReflectModel = model
+		}
+		return b
+
 	default:
-		// ollama + any unknown provider
-		b := NewOllamaBackend(baseURL)
+		// ollama + any unknown provider. Fall back to the configured Ollama
+		// endpoint when the agent didn't set its own base_url, so the loop
+		// reaches the same Ollama the chat path uses (e.g. host.docker.internal)
+		// instead of defaulting to an unreachable localhost.
+		ob := baseURL
+		if ob == "" {
+			ob = strings.TrimSpace(keys.OllamaBaseURL)
+		}
+		b := NewOllamaBackend(ob)
 		if model != "" {
 			// Use the declared model for Think (hot path).
 			// Plan/Reflect keep qwen2.5:72b for better JSON structure unless the
@@ -128,7 +158,7 @@ func DefaultBackendFor(def *agent.Definition, keys ProviderKeys) LLMBackend {
 			b.ThinkModel = model
 			if isLargeQwen(model) {
 				b.PlanReflectModel = model
-			} else if !ollamaHasModel(baseURL, "qwen2.5:72b") {
+			} else if !ollamaHasModel(ob, "qwen2.5:72b") {
 				b.PlanReflectModel = model
 			}
 		}

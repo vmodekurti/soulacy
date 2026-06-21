@@ -31,10 +31,31 @@ type LLM interface {
 // grounds the draft in real agents/tools/providers instead of inventing
 // names. All fields are optional.
 type Catalog struct {
-	Agents    []string       `json:"agents,omitempty"`
-	Tools     []string       `json:"tools,omitempty"`
-	Providers []string       `json:"providers,omitempty"`
-	Skills    []CatalogSkill `json:"skills,omitempty"`
+	Agents    []string           `json:"agents,omitempty"`
+	Tools     []string           `json:"tools,omitempty"`
+	Providers []string           `json:"providers,omitempty"`
+	Skills    []CatalogSkill     `json:"skills,omitempty"`
+	MCP       []CatalogMCPServer `json:"mcp,omitempty"`
+}
+
+// CatalogMCPServer is one connected MCP server and the tools it exposes, so the
+// model can wire MCP tools when the intent names a server or a capability it
+// provides ("use the github mcp", "create a notebook").
+type CatalogMCPServer struct {
+	Server string           `json:"server"`
+	Tools  []CatalogMCPTool `json:"tools,omitempty"`
+}
+
+// CatalogMCPTool is one callable MCP tool. Name is the EXACT value to put in a
+// tool node's "tool" field; Description lets the model map a loose reference to
+// the right tool.
+type CatalogMCPTool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	// Params is a compact argument hint (e.g. "title*:string, summary:string",
+	// required marked with *) so the model passes the tool's REAL keyword
+	// arguments instead of inventing names like "name".
+	Params string `json:"params,omitempty"`
 }
 
 // CatalogSkill is an installed Agent Skill the model may reference via a
@@ -80,15 +101,26 @@ type NewAgent struct {
 	SystemPrompt string `json:"system_prompt"`
 }
 
+// Recommendation is the compiler's assessment of which execution model best
+// fits the intent. It's advisory: the compiler still emits a workflow graph so
+// the editor has something to show, but the recommendation tells the user when
+// a reasoning strategy (react/plan_execute) would serve the task better than a
+// frozen graph — e.g. when steps depend on values only known at run time.
+type Recommendation struct {
+	Mode      string `json:"mode"`      // workflow | react | plan_execute
+	Rationale string `json:"rationale"` // 1–2 sentences explaining the pick
+}
+
 // Draft is the workflow the compiler produces.
 type Draft struct {
-	Name         string     `json:"name"`
-	SystemPrompt string     `json:"system_prompt,omitempty"`
-	Intent       string     `json:"intent,omitempty"` // the prompt that generated this workflow (Studio editor)
-	Trigger      Trigger    `json:"trigger"`
-	Channels     []string   `json:"channels,omitempty"`
-	Flow         Flow       `json:"flow"`
-	NewAgents    []NewAgent `json:"new_agents,omitempty"`
+	Name           string          `json:"name"`
+	SystemPrompt   string          `json:"system_prompt,omitempty"`
+	Intent         string          `json:"intent,omitempty"` // the prompt that generated this workflow (Studio editor)
+	Trigger        Trigger         `json:"trigger"`
+	Channels       []string        `json:"channels,omitempty"`
+	Flow           Flow            `json:"flow"`
+	NewAgents      []NewAgent      `json:"new_agents,omitempty"`
+	Recommendation *Recommendation `json:"recommendation,omitempty"`
 }
 
 // Question is one clarifying question. Options, when present, suggest a
@@ -206,7 +238,9 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- Give every node a one-line \"description\" stating concretely what THAT node does (e.g. \"Search the web for today's AI news\", \"Keep the top 5 articles as {title,url}\") — not a vague label. The node ids should also read as verbs (search_ai_news, pick_top_articles), not generic names like node1.\n")
 	sb.WriteString("- If the intent needs reasoning and no suitable agent exists in the Available agents list, you MAY invent a new peer agent. If you do, you MUST provide its full definition in a `new_agents` array at the top level of your output JSON (alongside `flow`), including its `id`, `name`, `description`, and `system_prompt`.\n")
 	sb.WriteString("- Do NOT invent tool names. Do the work in a python node or an existing tool if no tool exists.\n")
-	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), DO NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name and description, then emit a tool node with \"tool\":\"read_skill\" and \"input\":{\"skill_name\":\"<EXACT installed skill name>\"} (e.g. a request for \"yahoo finance\" → {\"skill_name\":\"yfinance\"}). Only reference skills that appear in the Available skills list; if none matches, do the work with an existing tool or a python node instead of inventing a read_skill.\n\n")
+	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), DO NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name and description, then emit a tool node with \"tool\":\"read_skill\" and \"input\":{\"skill_name\":\"<EXACT installed skill name>\"} (e.g. a request for \"yahoo finance\" → {\"skill_name\":\"yfinance\"}). Only reference skills that appear in the Available skills list; if none matches, do the work with an existing tool or a python node instead of inventing a read_skill.\n")
+	sb.WriteString("- MCP SERVERS: connected MCP servers and the tools they expose are listed under \"Available MCP servers\" below. When the intent names a server or a capability one provides (e.g. \"use the github mcp\", \"create a notebook in notebooklm\", \"open a Linear issue\"), emit a tool node whose \"tool\" is the EXACT MCP tool name from that list, with \"input\" set to that tool's arguments built from the intent. Match loose references to the closest listed MCP tool by name + description. Do NOT invent MCP tool names; if no listed MCP tool fits, use another existing tool or a python node.\n")
+	sb.WriteString("- EXECUTION MODE: judge which execution model best fits the intent and include a top-level \"recommendation\": {\"mode\":\"workflow|react|plan_execute\", \"rationale\":\"<1-2 sentences>\"}. Pick \"workflow\" for a fixed, deterministic pipeline — the same steps in the same order every run, knowable up front (e.g. \"each morning search X, summarize, post to Telegram\"); the graph you emit IS the artifact. Pick \"react\" when steps DEPEND on intermediate results or the task is exploratory/decision-heavy — an id from one tool feeds the next, the number or choice of tool calls varies per run, or the user says \"manage\", \"research and then\", \"figure out\" (most multi-step MCP jobs like driving NotebookLM are react); a frozen graph is brittle, so the agent should loop think→act→observe. Pick \"plan_execute\" for long, multi-phase jobs worth decomposing first. ALWAYS still emit a best-effort flow, but set the recommendation honestly even when it is not \"workflow\".\n\n")
 
 	if len(catalog.Skills) > 0 {
 		sb.WriteString("Available skills (use the EXACT name in read_skill's skill_name):\n")
@@ -228,6 +262,48 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 			sb.WriteString("\n")
 		}
 		sb.WriteString("\n")
+	}
+
+	if len(catalog.MCP) > 0 {
+		sb.WriteString("Available MCP servers and their tools (use the EXACT tool name in a tool node):\n")
+		for _, srv := range catalog.MCP {
+			name := strings.TrimSpace(srv.Server)
+			if name == "" {
+				continue
+			}
+			sb.WriteString("- ")
+			sb.WriteString(name)
+			if len(srv.Tools) == 0 {
+				sb.WriteString(" (connected; no tools exposed)")
+			}
+			sb.WriteString("\n")
+			for _, t := range srv.Tools {
+				tn := strings.TrimSpace(t.Name)
+				if tn == "" {
+					continue
+				}
+				desc := strings.TrimSpace(t.Description)
+				// MCP descriptions carry the usage/workflow hints the model needs to
+				// pick the right tool + sequence (e.g. "add_source action", "poll
+				// status until completed"), so keep them generous, not 1-line.
+				if len(desc) > 400 {
+					desc = desc[:400] + "…"
+				}
+				sb.WriteString("    • ")
+				sb.WriteString(tn)
+				if p := strings.TrimSpace(t.Params); p != "" {
+					sb.WriteString("(")
+					sb.WriteString(p)
+					sb.WriteString(")")
+				}
+				if desc != "" {
+					sb.WriteString(" — ")
+					sb.WriteString(desc)
+				}
+				sb.WriteString("\n")
+			}
+		}
+		sb.WriteString("\nFor an MCP tool node, set \"input\" to a JSON object using ONLY the argument names shown in that tool's (parentheses) — required args are marked with *. Do NOT invent argument names (e.g. don't pass \"name\" when the tool lists \"title\").\n\n")
 	}
 
 	if len(catalog.Agents) > 0 {

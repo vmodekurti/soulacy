@@ -52,22 +52,26 @@
     })
   }
 
-  // MCP servers — the callable MCP tools (from the tool catalog) grouped under
-  // their server, plus any configured server that currently exposes no tools so
-  // it's still visible. MCP tools drop as ordinary tool nodes.
-  function mcpItems(c) {
+  // MCP servers — return one entry PER SERVER, each carrying its callable tools.
+  // The palette renders these as collapsible subsections (collapsed by default)
+  // so a server exposing dozens of tools doesn't bloat the section; you expand a
+  // server to reveal and drag its individual tools. Configured servers with no
+  // tools loaded still appear (count 0) so you know they're wired up.
+  function mcpServers(c) {
     const tools = (c && c.tools && c.tools.mcp_tools) || []
-    const items = tools.map((x) => {
+    const byServer = new Map()
+    tools.forEach((x) => {
       const name = x.name || x.full_name
-      return { label: name, sub: x.server ? 'server: ' + x.server : 'mcp', drag: { kind: 'tool', name } }
+      const server = x.server || 'mcp'
+      if (!byServer.has(server)) byServer.set(server, [])
+      byServer.get(server).push({ label: name, sub: '', drag: { kind: 'tool', name } })
     })
-    const seen = new Set(tools.map((x) => x.server).filter(Boolean))
     const servers = (c && c.mcp && (c.mcp.servers || c.mcp)) || []
     ;(Array.isArray(servers) ? servers : []).forEach((s) => {
       const sid = (typeof s === 'string') ? s : (s.id || s.name)
-      if (sid && !seen.has(sid)) items.push({ label: sid, sub: 'server · no tools loaded' })
+      if (sid && !byServer.has(sid)) byServer.set(sid, [])
     })
-    return items
+    return Array.from(byServer.entries()).map(([id, srvTools]) => ({ id, tools: srvTools }))
   }
   function providerItems(c) {
     const providers = (c && c.providers && c.providers.providers) || {}
@@ -103,6 +107,13 @@
     collapsed = { ...collapsed, [key]: !collapsed[key] }
   }
 
+  // Per-MCP-server expand state, keyed by server id. Servers start COLLAPSED so
+  // the MCP section stays compact; click a server to reveal its tools.
+  let srvOpen = {}
+  function toggleServer(id) {
+    srvOpen = { ...srvOpen, [id]: !srvOpen[id] }
+  }
+
   // Shorten a long description to a concise, one-line-ish summary for the
   // palette. Prefers the first sentence when short; otherwise hard-truncates.
   // The full text stays available via the element's title (hover) tooltip.
@@ -125,7 +136,7 @@
   $: agents = error ? [] : agentItems(catalog)
   $: tools = error ? [] : toolItems(catalog)
   $: skills = error ? [] : skillItems(catalog)
-  $: mcp = error ? [] : mcpItems(catalog)
+  $: mcp = error ? [] : mcpServers(catalog)
   $: providers = error ? [] : providerItems(catalog)
   $: channels = error ? [] : channelItems(catalog)
 
@@ -187,6 +198,39 @@
           <li class="item item-error">{error}</li>
         {:else if g.items.length === 0}
           <li class="item item-empty">{g.empty}</li>
+        {:else if g.key === 'mcp'}
+          {#each g.items as srv (srv.id)}
+            <li class="mcp-server">
+              <button
+                type="button"
+                class="group-head mcp-server-head"
+                on:click={() => toggleServer(srv.id)}
+                aria-expanded={!!srvOpen[srv.id]}
+              >
+                <span class="item-label">🔌 {srv.id}</span>
+                <span class="group-count">{srv.tools.length}</span>
+                <span class="group-toggle" aria-hidden="true">{srvOpen[srv.id] ? '▾' : '▸'}</span>
+              </button>
+              {#if srvOpen[srv.id]}
+                <ul class="group-list mcp-tool-list">
+                  {#if srv.tools.length === 0}
+                    <li class="item item-empty">no tools loaded</li>
+                  {:else}
+                    {#each srv.tools as it}
+                      <li
+                        class="item draggable"
+                        draggable="true"
+                        on:dragstart={(e) => startDrag(e, it.drag)}
+                        title="Drag onto the canvas"
+                      >
+                        <span class="item-label">{it.label}</span>
+                      </li>
+                    {/each}
+                  {/if}
+                </ul>
+              {/if}
+            </li>
+          {/each}
         {:else}
           {#each g.items as it}
             <li
@@ -322,6 +366,20 @@
     display: flex;
     flex-direction: column;
     gap: 6px;
+  }
+  /* MCP server subsections: a compact collapsible header per server, with its
+     tools nested and slightly indented when expanded. */
+  .mcp-server { list-style: none; }
+  .mcp-server-head {
+    width: 100%;
+    padding: 4px 2px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .mcp-tool-list {
+    margin: 6px 0 2px 14px;
+    padding-left: 8px;
+    border-left: 1px solid var(--border);
   }
   .item {
     display: flex;

@@ -61,8 +61,21 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ── Stage 3: Runtime ─────────────────────────────────────────────────────────
 FROM debian:bookworm-slim AS runtime
 
+# Runtime + agent tooling. soulacy itself only needs libsqlite3 + ca-certificates;
+# everything else is so the system agent's shell_exec tasks — cloning repos,
+# installing MCP servers and pip/npm packages, unzipping archives, building
+# native extensions, inspecting JSON — work out of the box instead of failing
+# with "command not found". This is one layer for cache/size; trim packages you
+# don't need (build-essential and nodejs are the largest). Inline comments are
+# intentionally NOT used inside the install list: backslash-continuation joins
+# the lines, so a '#' would comment out every package after it.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        libsqlite3-0 ca-certificates python3 python3-pip curl \
+        libsqlite3-0 ca-certificates \
+        python3 python3-pip python3-dev python3-venv pipx \
+        nodejs npm \
+        git curl wget unzip zip tar xz-utils \
+        build-essential pkg-config \
+        jq ripgrep less file procps \
     && rm -rf /var/lib/apt/lists/*
 
 # Python SDK — agents written in Python work without any extra setup.
@@ -87,6 +100,25 @@ WORKDIR /home/soulacy
 # which defeats the first-run bootstrap that *creates* config.yaml. With the var
 # unset, config loading searches ~/.soulacy (the mounted volume), tolerates a
 # missing file on first run, and writes a fresh config.yaml + API key there.
+
+# Canonical install-path hints, available to EVERY process in the container
+# (docker exec, the `sy` CLI, and agent shell tools), so nothing has to guess
+# where things live. For the standard soulspace layout (a fresh data volume)
+# these paths are deterministic and match what the engine computes at runtime.
+#
+# Two deliberate omissions:
+#  - SOULACY_CONFIG_PATH is NOT set: the config loader reads it, and pinning it
+#    to a file breaks first-run bootstrap (see the note above). The hint below
+#    is named SOULACY_CONFIG_FILE precisely because the loader ignores it.
+#  - SOULACY_WORKSPACE is NOT set: the workspace resolver reads it and pinning
+#    it would override legacy-layout detection. The engine still injects the
+#    correctly-resolved paths into agent shell tools at runtime, so accuracy is
+#    preserved even on non-default layouts.
+ENV SOULACY_CONFIG_FILE=/home/soulacy/.soulacy/soulspace/config.yaml \
+    SOULACY_AGENTS_DIR=/home/soulacy/.soulacy/soulspace/agents \
+    SOULACY_SKILLS_DIR=/home/soulacy/.soulacy/soulspace/skills \
+    SOULACY_PLUGINS_DIR=/home/soulacy/.soulacy/soulspace/plugins \
+    SOULACY_MCP_DIR=/home/soulacy/.soulacy/soulspace/mcp-servers
 
 EXPOSE 18789
 
