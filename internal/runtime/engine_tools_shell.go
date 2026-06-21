@@ -17,6 +17,22 @@ import (
 	"time"
 )
 
+// SetAgentShellEnv sets extra KEY=VALUE entries exposed to shell_exec /
+// run_script subprocesses (canonical install-path hints). Called at boot.
+func (e *Engine) SetAgentShellEnv(extra []string) {
+	e.agentShellEnv = extra
+}
+
+// shellEnviron returns the environment for an agent shell subprocess: the
+// process env plus the canonical-path hints. Returns nil (inherit unchanged)
+// when no extras are configured, preserving prior behaviour.
+func (e *Engine) shellEnviron() []string {
+	if len(e.agentShellEnv) == 0 {
+		return nil
+	}
+	return append(os.Environ(), e.agentShellEnv...)
+}
+
 // buildShellTools returns the shell-domain OS-level built-in tools. Extracted
 // from buildSystemTools (ARCH-2) — identical definitions, no behaviour change.
 func (e *Engine) buildShellTools() []BuiltinTool {
@@ -68,6 +84,7 @@ func (e *Engine) buildShellTools() []BuiltinTool {
 				defer cancel()
 				cmd := exec.CommandContext(tctx, "/bin/sh", "-c", command)
 				cmd.Dir = workDir
+				cmd.Env = e.shellEnviron()
 				var out bytes.Buffer
 				cmd.Stdout = &out
 				cmd.Stderr = &out
@@ -143,6 +160,7 @@ func (e *Engine) buildShellTools() []BuiltinTool {
 				defer cancel()
 				cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
 				cmd.Dir = workDir
+				cmd.Env = e.shellEnviron()
 				var out bytes.Buffer
 				cmd.Stdout = &out
 				cmd.Stderr = &out
@@ -215,6 +233,7 @@ func (e *Engine) buildShellTools() []BuiltinTool {
 				tctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 				defer cancel()
 				cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
+				cmd.Env = e.shellEnviron()
 				var out bytes.Buffer
 				cmd.Stdout = &out
 				cmd.Stderr = &out

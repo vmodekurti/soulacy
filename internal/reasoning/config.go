@@ -14,6 +14,8 @@ import (
 type ProviderKeys struct {
 	AnthropicKey string
 	OpenAIKey    string
+	// NvidiaKey is the NVIDIA NIM / API-catalog key (OpenAI-compatible endpoint).
+	NvidiaKey string
 	// GroqKey / TogetherKey etc. are just OpenAI-compatible — put them in OpenAIKey
 	// and set a custom BaseURL on the returned backend if needed.
 
@@ -42,6 +44,8 @@ func BackendAvailable(provider string, keys ProviderKeys) bool {
 		return keys.AnthropicKey != ""
 	case "openai", "groq", "together", "openrouter", "mistral", "deepseek", "vllm":
 		return keys.OpenAIKey != ""
+	case "nvidia":
+		return keys.NvidiaKey != ""
 	case "ollama":
 		return true
 	default:
@@ -119,6 +123,18 @@ func DefaultBackendFor(def *agent.Definition, keys ProviderKeys) LLMBackend {
 			ep = "https://api.together.xyz/v1"
 		}
 		b := newOpenAICompatibleBackend(ep, keys.OpenAIKey, model)
+		if model != "" {
+			b.ThinkModel = model
+			b.PlanReflectModel = model
+		}
+		return b
+
+	case "nvidia":
+		ep := baseURL
+		if ep == "" {
+			ep = "https://integrate.api.nvidia.com/v1"
+		}
+		b := newOpenAICompatibleBackend(ep, keys.NvidiaKey, model)
 		if model != "" {
 			b.ThinkModel = model
 			b.PlanReflectModel = model

@@ -1559,6 +1559,10 @@ type mcpToolView struct {
 	Name        string `json:"name"`
 	Server      string `json:"server"`
 	Description string `json:"description"`
+	// Params is a compact hint of the tool's argument names (required marked
+	// with *), e.g. "title*:string, description:string" — so a caller (notably
+	// the Studio compiler) passes the RIGHT keyword arguments instead of guessing.
+	Params string `json:"params,omitempty"`
 }
 type builtinToolView struct {
 	Name        string `json:"name"`
@@ -1661,6 +1665,7 @@ func (s *Server) snapshotMCPTools() []mcpToolView {
 			mcps = append(mcps, mcpToolView{
 				FullName: t.FullName, Name: t.Name,
 				Server: srv.ID, Description: t.Description,
+				Params: t.Params,
 			})
 		}
 	}

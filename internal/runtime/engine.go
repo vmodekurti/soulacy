@@ -217,6 +217,14 @@ type Engine struct {
 	reasonerProvider string
 	reasonerModel    string
 
+	// agentShellEnv holds extra KEY=VALUE entries appended to the environment of
+	// shell_exec / run_script subprocesses, so agents can locate the canonical,
+	// PERSISTENT install locations (SOULACY_WORKSPACE, SOULACY_CONFIG_FILE,
+	// SOULACY_SKILLS_DIR, SOULACY_PLUGINS_DIR, SOULACY_MCP_DIR) instead of
+	// guessing and writing to ephemeral paths. nil = inherit the process env
+	// unchanged (keeps tests/behaviour identical when unset).
+	agentShellEnv []string
+
 	// ── PERF-1: session eviction ────────────────────────────────────────────
 	// sessionTTL bounds how long an idle session is retained before the sweep
 	// reclaims it. maxSessions caps the live session count. Both are set via
@@ -2648,8 +2656,45 @@ func (e *Engine) buildSystemPrefix(def *agent.Definition) string {
 				catalog
 		}
 	}
+	// System-capable agents have shell access and are the ones that try to
+	// "install" things. Teach them the framework's own commands + canonical
+	// PERSISTENT paths so they stop reinventing the wheel with raw shell and
+	// stop writing to ephemeral locations / stray config files.
+	if def.HasCapability("system") {
+		systemPrompt += "\n\n" + systemAgentToolingGuide
+	}
 	return systemPrompt
 }
+
+// systemAgentToolingGuide is appended to the system prompt of every
+// system-capable agent. It points the model at the `sy` CLI and the canonical,
+// persistent install locations (exposed to shell_exec as env vars) so it uses
+// the framework instead of hand-rolling clone/pip/config edits that land in the
+// wrong place and vanish on restart.
+const systemAgentToolingGuide = `## Installing & registering capabilities (IMPORTANT)
+
+Prefer the soulacy ` + "`sy`" + ` CLI over raw shell — it installs into the right
+PERSISTENT location and registers the capability for you. Reinventing this with
+git clone / pip / hand-written config lands in ephemeral paths that are lost on
+restart and are never loaded.
+
+- Install a SKILL:        ` + "`sy skill install <./dir | slug | github.com/user/repo>`" + `
+- Add an MCP SERVER:      ` + "`sy mcp add ...`" + ` (or edit the mcp.servers block of the
+                          live config file — see paths below — never create a new one)
+- Create an AGENT:        ` + "`sy agent create <SOUL.yaml>`" + `
+
+Canonical paths are available to your shell as environment variables (use them;
+do NOT guess paths like /home/user or your current directory):
+
+- $SOULACY_CONFIG_FILE — the ONLY config the gateway reads. Edit this in place to
+  register MCP servers; never write a new config.yaml elsewhere.
+- $SOULACY_SKILLS_DIR, $SOULACY_PLUGINS_DIR, $SOULACY_MCP_DIR, $SOULACY_AGENTS_DIR —
+  persistent homes (on the mounted volume) for each artifact type.
+- $SOULACY_WORKSPACE — the workspace root containing all of the above.
+
+Anything installed OUTSIDE these paths (e.g. into $HOME or a temp dir) is lost on
+the next restart. When in doubt, install under $SOULACY_WORKSPACE and register via
+the ` + "`sy`" + ` command for that artifact type.`
 
 // buildContext assembles the message slice handed to the LLM provider for
 // one turn. Conservative correctness model:

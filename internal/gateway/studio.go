@@ -133,7 +133,7 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 		// Emitting the bare name is exactly why generated flows referenced
 		// non-existent tools like "notebook_create".
 		req.Catalog.MCP[idx].Tools = append(req.Catalog.MCP[idx].Tools,
-			studio.CatalogMCPTool{Name: mt.FullName, Description: mt.Description})
+			studio.CatalogMCPTool{Name: mt.FullName, Description: mt.Description, Params: mt.Params})
 	}
 
 	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)

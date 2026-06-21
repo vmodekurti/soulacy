@@ -4,7 +4,6 @@
   import Dashboard  from './pages/Dashboard.svelte'
   import Builder    from './pages/Builder.svelte'
   import Studio     from './pages/Studio.svelte'
-  import Flow       from './pages/Flow.svelte'
   import Agents     from './pages/Agents.svelte'
   import Chat       from './pages/Chat.svelte'
   import Memory     from './pages/Memory.svelte'
@@ -42,7 +41,6 @@
     { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'    },
     { id: 'builder',   icon: '✦', label: 'Build',       group: 'main'    },
     { id: 'studio',    icon: '🎬', label: 'Studio',      group: 'main'    },
-    { id: 'flow',      icon: '⌘', label: 'Flow',        group: 'main'    },
     { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'    },
     { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'    },
     { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'    },
@@ -360,8 +358,6 @@
       <Builder />
     {:else if page === 'studio'}
       <Studio />
-    {:else if page === 'flow'}
-      <Flow />
     {:else if page === 'agents'}
       <Agents />
     {:else if page === 'templates'}

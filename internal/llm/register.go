@@ -83,4 +83,22 @@ func init() {
 	}
 	registry.MustRegisterProvider("gemini", gemini)
 	registry.MustRegisterProvider("google", gemini)
+
+	// nvidia — NVIDIA NIM / API catalog (OpenAI-compatible). Defaults base_url to
+	// the hosted NVIDIA endpoint; point it at a local NIM container by setting
+	// base_url. Keys: api_key (required, "nvapi-…"), base_url, model.
+	registry.MustRegisterProvider("nvidia", func(cfg map[string]any) (sdkllm.Provider, error) {
+		apiKey := cfgmap.Str(cfg, "api_key", "")
+		if apiKey == "" {
+			return nil, fmt.Errorf("nvidia: config key %q is required", "api_key")
+		}
+		return NewOpenAIProviderWithOptions(
+			cfgmap.Str(cfg, "id", "nvidia"),
+			cfgmap.Str(cfg, "base_url", "https://integrate.api.nvidia.com/v1"),
+			apiKey,
+			cfgmap.Str(cfg, "model", ""),
+			cfgmap.Str(cfg, "organization", ""),
+			cfgmap.BoolPtr(cfg, "parallel_tool_calls"),
+		), nil
+	})
 }

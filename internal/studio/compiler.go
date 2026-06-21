@@ -52,6 +52,10 @@ type CatalogMCPServer struct {
 type CatalogMCPTool struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	// Params is a compact argument hint (e.g. "title*:string, summary:string",
+	// required marked with *) so the model passes the tool's REAL keyword
+	// arguments instead of inventing names like "name".
+	Params string `json:"params,omitempty"`
 }
 
 // CatalogSkill is an installed Agent Skill the model may reference via a
@@ -287,6 +291,11 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 				}
 				sb.WriteString("    • ")
 				sb.WriteString(tn)
+				if p := strings.TrimSpace(t.Params); p != "" {
+					sb.WriteString("(")
+					sb.WriteString(p)
+					sb.WriteString(")")
+				}
 				if desc != "" {
 					sb.WriteString(" — ")
 					sb.WriteString(desc)
@@ -294,7 +303,7 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 				sb.WriteString("\n")
 			}
 		}
-		sb.WriteString("\n")
+		sb.WriteString("\nFor an MCP tool node, set \"input\" to a JSON object using ONLY the argument names shown in that tool's (parentheses) — required args are marked with *. Do NOT invent argument names (e.g. don't pass \"name\" when the tool lists \"title\").\n\n")
 	}
 
 	if len(catalog.Agents) > 0 {

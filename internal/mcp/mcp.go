@@ -16,6 +16,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -76,6 +77,55 @@ type ToolSummary struct {
 	Name        string `json:"name"`
 	FullName    string `json:"full_name"`
 	Description string `json:"description"`
+	// Params is a compact argument hint derived from the tool's input schema,
+	// e.g. "title*:string, summary:string" (required args marked with *), so
+	// callers pass the right keyword arguments instead of guessing.
+	Params string `json:"params,omitempty"`
+}
+
+// paramHint summarizes an MCP tool input schema as a compact argument list,
+// e.g. "title*:string, description:string". Required properties are marked with
+// a trailing "*". Returns "" when there are no properties.
+func paramHint(schema map[string]any) string {
+	if schema == nil {
+		return ""
+	}
+	props, _ := schema["properties"].(map[string]any)
+	if len(props) == 0 {
+		return ""
+	}
+	required := map[string]bool{}
+	if rs, ok := schema["required"].([]any); ok {
+		for _, r := range rs {
+			if s, ok := r.(string); ok {
+				required[s] = true
+			}
+		}
+	}
+	names := make([]string, 0, len(props))
+	for n := range props {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		typ := ""
+		if pm, ok := props[n].(map[string]any); ok {
+			if ts, ok := pm["type"].(string); ok {
+				typ = ts
+			}
+		}
+		star := ""
+		if required[n] {
+			star = "*"
+		}
+		if typ != "" {
+			parts = append(parts, n+star+":"+typ)
+		} else {
+			parts = append(parts, n+star)
+		}
+	}
+	return strings.Join(parts, ", ")
 }
 
 // server tracks the live state of one configured MCP server.
@@ -286,16 +336,17 @@ func (c *Client) ServersSnapshot() []ServerStatus {
 		}
 		ss := ServerStatus{
 			ID: s.id, Transport: transport, Connected: s.connected, Detail: s.detail,
-			Tools: make([]ToolSummary, 0, len(s.tools)),
+			Tools:   make([]ToolSummary, 0, len(s.tools)),
 			Command: s.cfg.Command,
-			Args: s.cfg.Args,
-			Env: s.cfg.Env,
-			URL: s.cfg.URL,
+			Args:    s.cfg.Args,
+			Env:     s.cfg.Env,
+			URL:     s.cfg.URL,
 			Headers: s.cfg.Headers,
 		}
 		for _, t := range s.tools {
 			ss.Tools = append(ss.Tools, ToolSummary{
 				Name: t.Name, FullName: t.FullName(), Description: t.Description,
+				Params: paramHint(t.InputSchema),
 			})
 		}
 		out = append(out, ss)
