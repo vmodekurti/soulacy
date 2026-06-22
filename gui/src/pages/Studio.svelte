@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte'
+  import { onMount, onDestroy } from 'svelte'
   import {
     SvelteFlow, Background, Controls, MiniMap, Position,
   } from '@xyflow/svelte'
@@ -11,7 +11,7 @@
   // thin client that calls the gateway directly through the GUI's
   // authenticated `api` session (studioApi.js keeps the same `bridge` shape).
   import { bridge } from '../lib/studio/studioApi.js'
-  import { editAgent } from '../lib/stores.js'
+  import { editAgent, studioSession } from '../lib/stores.js'
   import { toFlow, kindMeta } from '../lib/studio/graph.js'
   import Palette from '../lib/studio/Palette.svelte'
   import Inspector from '../lib/studio/Inspector.svelte'
@@ -107,6 +107,22 @@
   let questions = []
   let notes = []
   let answers = {}            // { [questionId]: value }
+  let explanation = null      // plain-language "what Studio built" (Story #10)
+  let modelAdvice = null      // builder-model advice (local-first)
+  let cloudAck = false        // user acknowledged cloud builder this session
+  let cloudGate = null        // { provider, model } when the escalation dialog is open
+
+  // ── Pre-generation prompt refinement ──────────────────────────────────────
+  // Pressing Generate first runs a refine pass: the framework LLM rewrites the
+  // rough intent into a clear spec, lists the assumptions it made, and asks any
+  // clarifying questions. The dialog below shows all of it for confirmation;
+  // the workflow is only compiled after the user confirms (and may edit the
+  // refined intent / answer questions first). `refinement` is the open dialog
+  // state; null when closed.
+  let promptViewer = false     // full-prompt read/edit modal open
+  let refinement = null        // { original, refined_intent, summary, assumptions[], questions[] }
+  let refining = false         // refine request in flight
+  let refineAnswers = {}       // { [questionId]: value } for refinement questions
 
   // ── Missing-capability suggestions (M4) ───────────────────────────────────
   // The compile response may carry `suggestions:[{kind,name,reason,installed}]`
@@ -472,24 +488,118 @@ def run(inputs):
     rebuildGraph()   // re-render with (or without) highlights
   }
 
+  // Generate button entry point. Mandatory pre-generation step: instead of
+  // compiling the raw intent straight away, first run a refine pass and open
+  // the confirmation dialog. The actual compile happens in runCompile, called
+  // once the user confirms the refined spec.
   async function generate() {
     const text = intent.trim()
-    if (!text || compiling) return
+    if (!text || compiling || refining || cloudGate) return
+    // Local-first cloud-escalation gate: if the builder is a cloud model and the
+    // user hasn't acknowledged it this session, ask before sending the prompt
+    // off-box. They can continue with cloud or switch to a local model.
+    if (modelAdvice && modelAdvice.cloud_escalation && !cloudAck) {
+      cloudGate = { provider: modelAdvice.provider, model: modelAdvice.model }
+      return
+    }
     // Regenerating from an edited prompt replaces the whole canvas (including any
-    // manual rewiring). Confirm when there's existing work to lose.
+    // manual rewiring). Confirm when there's existing work to lose — do this up
+    // front, before spending a refine round-trip.
     if (workflow && workflow.flow && (workflow.flow.nodes || []).length) {
       let ok = true
       try { ok = window.confirm('Regenerate from this prompt? It replaces the current workflow on the canvas.') } catch (_) { ok = true }
       if (!ok) return
     }
+    refining = true
+    compileError = ''
+    try {
+      const data = await bridge.refinePrompt(text, compactCatalog(catalog))
+      refineAnswers = {}
+      refinement = {
+        original: (data && data.original) || text,
+        refined_intent: (data && data.refined_intent) || text,
+        summary: (data && data.summary) || '',
+        assumptions: (data && Array.isArray(data.assumptions)) ? data.assumptions : [],
+        questions: (data && Array.isArray(data.questions)) ? data.questions : [],
+      }
+    } catch (e) {
+      // Refine should never block generation; if it fails, fall back to
+      // compiling the original intent directly.
+      compileError = (e && e.message) ? `Could not refine prompt (${e.message}); generating from your original text.` : ''
+      await runCompile(text, undefined)
+    } finally {
+      refining = false
+    }
+  }
+
+  // Cloud-escalation gate: user chose to continue with the cloud builder.
+  function approveCloud() {
+    cloudAck = true
+    cloudGate = null
+    generate()
+  }
+  // User chose to keep things local — open the model picker to switch.
+  function declineCloud() {
+    cloudGate = null
+    openModelPicker()
+  }
+
+  // Confirm the refinement dialog. The framework's recommended architecture
+  // decides what we generate: a fixed workflow (canvas) OR a ReAct/Plan-Execute
+  // AGENT (no canvas — it reasons over tools). This is the wizard branch point.
+  async function confirmRefinement() {
+    if (!refinement || compiling) return
+    const text = (refinement.refined_intent || '').trim() || refinement.original
+    const ans = Object.keys(refineAnswers).length ? { ...refineAnswers } : undefined
+    const mode = (refinement.recommended_mode || 'workflow')
+    refinement = null
+    if (mode === 'react' || mode === 'plan_execute') {
+      await runAgentCompile(text, mode, ans)
+    } else {
+      await runCompile(text, ans)
+    }
+  }
+
+  // Generate a ReAct/Plan-Execute agent (no flow). The result draft carries
+  // `strategy`, so the UI renders the agent-spec panel instead of the canvas,
+  // and Save persists a strategy-based agent.
+  async function runAgentCompile(text, mode, ans) {
+    if (!text || compiling) return
     compiling = true
     compileError = ''
     try {
-      const data = await bridge.compile(text, Object.keys(answers).length ? answers : undefined, compactCatalog(catalog))
+      const data = await bridge.compileAgent(text, mode, ans, compactCatalog(catalog))
+      applyCompile(data)
+      if (workflow) workflow = { ...workflow, intent: text }
+      intent = text
+    } catch (e) {
+      compileError = e.message || 'agent generation failed'
+    } finally {
+      compiling = false
+    }
+  }
+
+  function cancelRefinement() {
+    if (compiling) return
+    refinement = null
+  }
+
+  // runCompile performs the actual compile + canvas rebuild from a finalized
+  // (refined) intent. Shared by the confirm path and the refine-failure
+  // fallback.
+  async function runCompile(text, ans) {
+    if (!text || compiling) return
+    compiling = true
+    compileError = ''
+    try {
+      const data = await bridge.compile(text, ans, compactCatalog(catalog))
       applyCompile(data)
       // Remember the prompt on the draft so it persists through save/load and
       // the box stays populated for further edits.
       if (workflow) workflow = { ...workflow, intent: text }
+      // Surface the refined intent in the editor so further edits start from the
+      // clarified version, not the original rough text.
+      intent = text
     } catch (e) {
       compileError = e.message || 'compile failed'
     } finally {
@@ -524,6 +634,7 @@ def run(inputs):
     workflow = (data && data.workflow) || null
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
+    explanation = (data && data.explanation) || null
     // M4: surface missing-capability suggestions (non-blocking). Keep only the
     // ones not yet installed; a fresh compile resets any in-flight discovery.
     suggestions = (data && Array.isArray(data.suggestions))
@@ -536,6 +647,7 @@ def run(inputs):
     validation = null         // clear stale highlights until re-validated
     rebuildGraph()
     scheduleValidate()        // validate the fresh draft (debounced)
+    autosaveDraft()           // persist the just-generated work so it's recoverable from Drafts
   }
 
   // ── M6: set the current draft directly (templates / draft-load / import) ───
@@ -550,6 +662,7 @@ def run(inputs):
     if (workflow && typeof workflow.intent === 'string') intent = workflow.intent
     questions = []
     notes = []
+    explanation = null
     suggestions = []
     discoverState = {}
     selectedNode = null
@@ -867,6 +980,50 @@ def run(inputs):
     }
   }
 
+  // Preview what a single run will do (Story #13): a one-click dry run through
+  // the test bench, framed for the user as "here's what each run does." For a
+  // scheduled agent there's no inbound message, so we send an empty input. No
+  // mocks/assertions — just the per-node trace, which renders in the bench below.
+  let previewing = false
+  async function previewRun() {
+    if (!workflow || previewing || testing) return
+    previewing = true
+    testError = ''
+    testResult = null
+    try {
+      const input = (workflow.trigger && /^(schedule|cron|webhook)$/i.test(workflow.trigger.type)) ? '' : sampleInput
+      testResult = await bridge.test(workflow, input, { mode: 'dry' }) || null
+    } catch (e) {
+      testError = e.message || 'preview failed'
+    } finally {
+      previewing = false
+    }
+  }
+
+  // "Fix with AI": feed a runtime/test error to the LLM, which rewrites the
+  // draft so it won't recur, then applies + re-validates. Works for both the
+  // test-bench error and a pasted runtime error.
+  let troubleshooting = false
+  async function troubleshoot(errText) {
+    const err = (errText || testError || '').trim()
+    if (!workflow || !err || troubleshooting) return
+    troubleshooting = true
+    try {
+      const res = await bridge.troubleshoot(workflow, err)
+      if (res && res.workflow) {
+        setWorkflow(res.workflow, { name: workflow.name })
+        toast(res.changed ? 'Applied an AI fix for that error — re-test to confirm.' : 'AI could not find an automatic fix for that error.')
+        if (res.preflight && ((res.preflight.blockers || []).length || (res.preflight.warnings || []).length)) {
+          preflight = res.preflight
+        }
+      }
+    } catch (e) {
+      testError = e.message || 'troubleshoot failed'
+    } finally {
+      troubleshooting = false
+    }
+  }
+
   // Re-send a history entry's EXACT request (workflow snapshot + input + mocks
   // + assertions + mode) and prepend the fresh result. Non-blocking on error.
   async function replayHistory(entry) {
@@ -908,17 +1065,33 @@ def run(inputs):
   let saveMsg = ''
   let plan = null              // last plan result { tier, reasons, requiresConsent, consentItems }
   let consent = null          // { items:[{kind,name,reason}] } when the dialog is open
+  // Pre-save validation report when the dialog is open: { ok, blockers[], warnings[] }.
+  // Blockers must be fixed before saving; warnings can be acknowledged and saved over.
+  let preflight = null
 
-  // Save click: PLAN first, then either save directly or raise the consent
-  // dialog. Every bridge op degrades gracefully — a bridge/host error just
-  // surfaces as saveError and never throws past here.
-  async function save() {
-    if (!workflow || saving || consent) return
+  // Save click: VALIDATE first (consolidated preflight), then PLAN, then either
+  // save directly or raise the consent dialog. Every bridge op degrades
+  // gracefully — a bridge/host error just surfaces as saveError. The optional
+  // `skipPreflight` flag is set when the user clicked "Save anyway" past a
+  // warnings-only report, so we don't re-gate in a loop.
+  async function save(skipPreflight = false) {
+    if (!workflow || saving || consent || (preflight && !skipPreflight)) return
     saving = true
     saveError = ''
     saveMsg = ''
     commitGraphPositions()   // keep drag-repositioned layout in the saved draft
     try {
+      if (!skipPreflight) {
+        let report = null
+        try { report = await bridge.preflight(workflow) } catch (_) { report = null }
+        // Open the dialog when there's anything to show. Blockers stop the save;
+        // warnings let the user proceed with "Save anyway". A failed/empty
+        // preflight (host error) is non-blocking — fall through to plan/save.
+        if (report && ((report.blockers && report.blockers.length) || (report.warnings && report.warnings.length))) {
+          preflight = report
+          return    // wait for the user to fix blockers or acknowledge warnings
+        }
+      }
       const p = await bridge.plan(workflow)
       plan = p || null
       if (p && p.requiresConsent) {
@@ -930,6 +1103,142 @@ def run(inputs):
       saveError = e.message || 'plan failed'
     } finally {
       saving = false
+    }
+  }
+
+  // From the preflight dialog: proceed to save despite warnings (only reachable
+  // when there are no blockers).
+  function proceedAfterPreflight() {
+    if (!preflight || (preflight.blockers && preflight.blockers.length)) return
+    preflight = null
+    save(true)
+  }
+
+  function cancelPreflight() {
+    if (saving) return
+    preflight = null
+  }
+
+  // Jump from a validation blocker/warning to the offending block: close the
+  // dialog and select that node so it opens in the Inspector for editing.
+  function revealNode(nodeId) {
+    const wf = workflow && workflow.flow && Array.isArray(workflow.flow.nodes) ? workflow.flow.nodes : []
+    const node = wf.find((n) => n && n.id === nodeId)
+    preflight = null
+    if (node) {
+      selectedNode = node
+      selectedEdge = null
+      // Highlight the node on the canvas (xyflow reads `selected` per node).
+      try { nodes.update((arr) => arr.map((gn) => ({ ...gn, selected: gn.id === nodeId }))) } catch (_) {}
+    }
+  }
+
+  // Re-run validation in place (e.g. after the user fixed something) without
+  // closing the dialog.
+  async function rerunPreflight() {
+    if (!workflow) return
+    try { preflight = await bridge.preflight(workflow) } catch (_) { /* keep current */ }
+  }
+
+  // "Fix automatically": run the deterministic data-flow repair (auto-wire empty
+  // required args + reconcile dangling {{ .var }} references to the right
+  // upstream output) on the current draft, apply the result to the canvas, then
+  // re-check. Resolves the common wiring/var-name mismatches without regenerating.
+  let fixing = false
+  async function fixAutomatically() {
+    if (!workflow || fixing) return
+    fixing = true
+    try {
+      const res = await bridge.autowire(workflow)
+      if (res && res.workflow) {
+        setWorkflow(res.workflow, { name: workflow.name })
+        toast(res.fixed ? `Auto-fixed ${res.fixed} wiring issue${res.fixed === 1 ? '' : 's'}.` : 'No auto-fixable wiring issues found.')
+      }
+      preflight = await bridge.preflight(workflow)
+    } catch (e) {
+      saveError = e.message || 'auto-fix failed'
+    } finally {
+      fixing = false
+    }
+  }
+
+  // ── Architect: autonomous build-verify-repair ("Build until it works") ────
+  // One click drives the whole loop server-side: fill capability holes with
+  // generated glue code, synthesize self-tests, then repair every blocker AND
+  // every runtime error — actually RUNNING the agent — until it works or the
+  // budget is hit. The healed draft replaces the canvas and the transcript is
+  // shown so the user sees exactly what was wrong and how each problem was fixed.
+  let building = false
+  let buildReport = null // { workflow, ok, verified, attempts[], summary, residual[] }
+  let buildGlue = []
+  let buildLog = [] // live progress lines while building: [{kind, message}]
+  async function buildUntilWorks() {
+    if (!workflow || building) return
+    building = true
+    buildReport = null
+    buildGlue = []
+    buildLog = []
+    saveError = ''
+    try {
+      const res = await bridge.buildStream(workflow, intent, true, (ev) => {
+        if (!ev || !ev.message) return
+        // Append a live line; glue notes also feed the report's glue list.
+        buildLog = [...buildLog, ev]
+        if (ev.kind === 'glue') buildGlue = [...buildGlue, ev.message.replace(/^🧩\s*/, '')]
+      })
+      if (res && res.report) {
+        buildReport = res.report
+        if (res.report.workflow) setWorkflow(res.report.workflow, { name: workflow.name })
+        preflight = res.preflight && !res.preflight.ok ? res.preflight : null
+        toast(res.report.summary || 'Build complete.')
+      }
+    } catch (e) {
+      saveError = e.message || 'build failed'
+    } finally {
+      building = false
+    }
+  }
+
+  // ── Runtime self-heal: failed (incl. scheduled) runs ──────────────────────
+  // The DLQ feed of runs that failed at run time. Diagnosing one loads the saved
+  // agent, repairs it against the REAL error, re-verifies, and drops the healed
+  // draft onto the canvas to review + Save. No copy-paste of errors anywhere.
+  let showFailedRuns = false
+  let failedRuns = []
+  let loadingFailed = false
+  let healing = '' // id currently being healed
+  let healResult = null
+  async function loadFailedRuns() {
+    loadingFailed = true
+    try {
+      const r = await bridge.failedRuns()
+      failedRuns = (r && r.runs) || []
+    } catch (_) {
+      failedRuns = []
+    } finally {
+      loadingFailed = false
+    }
+  }
+  async function toggleFailedRuns() {
+    showFailedRuns = !showFailedRuns
+    if (showFailedRuns) await loadFailedRuns()
+  }
+  async function healFailedRun(id) {
+    if (healing) return
+    healing = id
+    healResult = null
+    saveError = ''
+    try {
+      const res = await bridge.diagnoseRun(id)
+      healResult = res
+      if (res && res.workflow) {
+        setWorkflow(res.workflow, { name: (res.workflow && res.workflow.name) || (workflow && workflow.name) })
+        toast(res.changed ? 'Healed — review the change and Save to apply it.' : 'No fix was suggested for this error.')
+      }
+    } catch (e) {
+      saveError = e.message || 'diagnose failed'
+    } finally {
+      healing = ''
     }
   }
 
@@ -1055,6 +1364,47 @@ def run(inputs):
   let savingDraft = false
   let library = { open: false, loading: false, error: '', drafts: [], agents: [], busyId: '' }
 
+  // Autosave: after every successful generate, the current workflow is saved to
+  // a single recoverable draft slot ("⟳ Last session") so completed work can be
+  // brought back from My Workflows → Drafts even after a reload or restart — not
+  // just within the in-memory session. We track the slot's id so each autosave
+  // overwrites the previous one instead of piling up duplicates.
+  const AUTOSAVE_NAME = '⟳ Last session'
+  let autosaveId = ''
+
+  // Drafts shown in the left palette (Drafts group, "Draft" badge). Refreshed
+  // on mount and whenever a draft is saved/autosaved/deleted.
+  let paletteDrafts = []
+  async function refreshPaletteDrafts() {
+    try {
+      const res = await bridge.draftsList()
+      paletteDrafts = (res && Array.isArray(res.drafts)) ? res.drafts : []
+    } catch (_) { /* leave as-is on error */ }
+  }
+  // Load a draft onto the canvas by id (palette click).
+  function openDraftById(id) { if (id) loadDraft({ id }) }
+  // Delete a draft from the palette, then refresh the list.
+  async function deleteDraftFromPalette(id, name) {
+    let ok = true
+    try { ok = window.confirm(`Delete draft “${name || id}”?`) } catch (_) { ok = true }
+    if (!ok) return
+    try { await bridge.draftDelete(id) } catch (_) { /* best-effort */ }
+    await refreshPaletteDrafts()
+  }
+  async function autosaveDraft() {
+    if (!workflow || !(workflow.flow && (workflow.flow.nodes || []).length)) return
+    try {
+      const prev = autosaveId
+      const res = await bridge.draftSave(AUTOSAVE_NAME, { ...workflow, intent })
+      autosaveId = (res && res.id) || autosaveId
+      // Remove the previous slot if its id changed (workflow content hash moved).
+      if (prev && prev !== autosaveId) {
+        try { await bridge.draftDelete(prev) } catch (_) { /* best-effort */ }
+      }
+      refreshPaletteDrafts()
+    } catch (_) { /* autosave is best-effort; never block the user */ }
+  }
+
   async function saveDraft() {
     if (!workflow || savingDraft) return
     const suggested = (workflow.name || '').trim() || 'My workflow'
@@ -1078,6 +1428,7 @@ def run(inputs):
         rebuildGraph()
       }
       toast(`Saved draft “${name}”${id ? ' (' + id + ')' : ''}.`)
+      refreshPaletteDrafts()
     } catch (e) {
       saveError = e.message || 'could not save draft'
     } finally {
@@ -1351,7 +1702,13 @@ def run(inputs):
       const st = (cfg && cfg.llm && cfg.llm.studio) || {}
       studioModelLabel = fmtModelLabel(st.provider, st.model)
     }).catch(() => {})
+    refreshModelAdvice()
   })
+
+  // Fetch builder-model strength advice so we can warn before generation.
+  async function refreshModelAdvice() {
+    try { modelAdvice = await bridge.modelAdvice() } catch (_) { modelAdvice = null }
+  }
 
   async function openModelPicker() {
     modelPicker = { open: true, provider: '', model: '', models: [], saving: false, error: '' }
@@ -1391,12 +1748,47 @@ def run(inputs):
       studioModelLabel = fmtModelLabel(modelPicker.provider, modelPicker.model)
       modelPicker = { ...modelPicker, open: false, saving: false }
       toast('Studio model updated.')
+      refreshModelAdvice()
     } catch (e) {
       modelPicker = { ...modelPicker, saving: false, error: e.message || 'could not save' }
     }
   }
 
   onMount(loadCatalog)
+  onMount(refreshPaletteDrafts)
+
+  // ── Persist the working session across screen switches ─────────────────────
+  // App.svelte mounts/destroys page components on navigation, so without this
+  // the intent, the generated/refined workflow, and the transparency panels are
+  // lost when you leave Studio and come back. We snapshot into a module-level
+  // store on unmount and restore on mount.
+  function hydrateSession() {
+    const s = get(studioSession)
+    if (!s) return
+    if (s.workflow) setWorkflow(s.workflow)   // rebuilds the canvas (also sets intent from workflow.intent)
+    if (typeof s.intent === 'string') intent = s.intent
+    if (Array.isArray(s.notes)) notes = s.notes
+    if (Array.isArray(s.questions)) questions = s.questions
+    if (Array.isArray(s.suggestions)) suggestions = s.suggestions
+    if (s.explanation) explanation = s.explanation
+    if (s.refinement) { refinement = s.refinement; refineAnswers = s.refineAnswers || {} }
+    if (typeof s.autosaveId === 'string') autosaveId = s.autosaveId
+  }
+  onMount(hydrateSession)
+
+  onDestroy(() => {
+    studioSession.set({
+      intent,
+      workflow,
+      notes,
+      questions,
+      suggestions,
+      explanation,
+      refinement,
+      refineAnswers,
+      autosaveId,
+    })
+  })
 </script>
 
 <div id="studio-app">
@@ -1414,15 +1806,19 @@ def run(inputs):
         aria-label="Describe what you want"
         on:keydown={(e) => e.key === 'Enter' && generate()}
       />
+      {#if intent.trim()}
+        <button class="intent-expand" type="button" title="Read / edit the full prompt" on:click={() => (promptViewer = true)} aria-label="View full prompt">⤢</button>
+      {/if}
     </div>
-    <button class="btn primary" on:click={generate} disabled={compiling || !intent.trim()}>
-      {compiling ? 'Generating…' : 'Generate'}
+    <button class="btn primary" on:click={generate} disabled={compiling || refining || !!refinement || !intent.trim()}>
+      {refining ? 'Refining…' : compiling ? 'Generating…' : 'Generate'}
     </button>
 
     <!-- M6: draft management toolbar -->
     <div class="toolbar" role="group" aria-label="Draft management">
       <button class="btn" type="button" on:click={openModelPicker} title="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
       <button class="btn" type="button" on:click={openTemplates} title="Start from a template">Templates</button>
+      <button class="btn" type="button" on:click={openLibrary} title="Reopen a saved draft or an existing workflow agent">My Workflows</button>
       <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} title="Save the current draft to the library">
         {savingDraft ? 'Saving…' : 'Save draft'}
       </button>
@@ -1460,10 +1856,32 @@ def run(inputs):
       onInstall={installBrowse}
       onOpenAgent={openAgentOnCanvas}
       onDeleteAgent={deleteAgentFromPalette}
+      drafts={paletteDrafts}
+      onOpenDraft={openDraftById}
+      onDeleteDraft={deleteDraftFromPalette}
     />
 
     <!-- Center: canvas + transparency strips + panels -->
     <section class="center">
+      {#if modelAdvice && (modelAdvice.severity === 'block' || modelAdvice.local_complexity_note || modelAdvice.cloud_escalation)}
+        <div class="strip strip-modeladvice" class:strip-local={modelAdvice.local} title="Builder model">
+          <span class="strip-label">
+            {#if modelAdvice.severity === 'block'}Pick a builder model
+            {:else if modelAdvice.local}🔒 Local-first
+            {:else}☁ Cloud builder{/if}
+          </span>
+          <span>{modelAdvice.local_complexity_note || modelAdvice.message}</span>
+          {#if modelAdvice.cloud_escalation}
+            <button class="btn ma-btn" type="button" on:click={openModelPicker}>Switch to local</button>
+          {:else if modelAdvice.severity === 'block'}
+            <button class="btn ma-btn" type="button" on:click={openModelPicker}>Choose model</button>
+          {:else if modelAdvice.frontier_available}
+            <span class="ma-rec">Optional: use {modelAdvice.frontier_provider} for complex builds —</span>
+            <button class="btn ma-btn" type="button" on:click={openModelPicker}>Use {modelAdvice.frontier_provider}</button>
+          {/if}
+        </div>
+      {/if}
+
       {#if compileError}
         <div class="strip strip-error">⚠ {compileError}</div>
       {/if}
@@ -1489,6 +1907,44 @@ def run(inputs):
             </span>
           {/if}
         </div>
+      {/if}
+
+      {#if explanation}
+        <details class="explain-panel" open>
+          <summary class="explain-summary">What Studio built — in plain language</summary>
+          <div class="explain-body">
+            {#if explanation.purpose}<p class="explain-purpose">{explanation.purpose}</p>{/if}
+            <div class="explain-meta">
+              {#if explanation.trigger}<span><strong>Runs:</strong> {explanation.trigger}</span>{/if}
+              {#if explanation.architecture}<span><strong>Type:</strong> {recoLabel(explanation.architecture)}{#if explanation.arch_reason} — {explanation.arch_reason}{/if}</span>{/if}
+            </div>
+            {#if explanation.steps && explanation.steps.length}
+              <div class="explain-heading">Steps</div>
+              <ol class="explain-steps">
+                {#each explanation.steps as st}<li>{st}</li>{/each}
+              </ol>
+            {/if}
+            <div class="explain-meta">
+              {#if explanation.tools && explanation.tools.length}<span><strong>Tools:</strong> {explanation.tools.join(', ')}</span>{/if}
+              {#if explanation.agents && explanation.agents.length}<span><strong>Agents:</strong> {explanation.agents.join(', ')}</span>{/if}
+              {#if explanation.skills && explanation.skills.length}<span><strong>Skills:</strong> {explanation.skills.join(', ')}</span>{/if}
+              {#if explanation.knowledge_bases && explanation.knowledge_bases.length}<span><strong>Knowledge:</strong> {explanation.knowledge_bases.join(', ')}</span>{/if}
+              {#if explanation.channels && explanation.channels.length}<span><strong>Delivers to:</strong> {explanation.channels.join(', ')}</span>{/if}
+            </div>
+            {#if explanation.needs_config && explanation.needs_config.length}
+              <div class="explain-heading">Still needs configuration</div>
+              <ul class="explain-needs">
+                {#each explanation.needs_config as nc}<li>{nc}</li>{/each}
+              </ul>
+            {/if}
+            <div class="explain-actions">
+              <button class="btn" type="button" on:click={previewRun} disabled={previewing || testing}>
+                {previewing ? 'Previewing…' : 'Preview a run'}
+              </button>
+              <span class="explain-hint">Dry-runs the steps so you can see what each run does — no tools actually fire.</span>
+            </div>
+          </div>
+        </details>
       {/if}
 
       <!-- Validation strip (M3): non-blocking ok / N errors / N warnings. -->
@@ -1597,6 +2053,32 @@ def run(inputs):
             <p class="empty-or">— or —</p>
             <button class="btn primary" type="button" on:click={openTemplates}>Start from a template</button>
           </div>
+        {:else if workflow.strategy}
+          <!-- ReAct / Plan-Execute AGENT spec (no fixed flow). Editable. -->
+          <div class="agent-spec">
+            <div class="agent-spec-head">
+              <span class="agent-badge on">{recoLabel(workflow.strategy)} agent</span>
+              <span class="agent-spec-name">{workflow.name || 'Untitled agent'}</span>
+              <span class="agent-spec-note">Reasons over its tools — no fixed graph. Loops & polls as needed.</span>
+            </div>
+
+            <label class="agent-field-label" for="agent-sys">System prompt (how the agent works)</label>
+            <textarea id="agent-sys" class="agent-sys" rows="9" bind:value={workflow.system_prompt}></textarea>
+
+            <label class="agent-field-label" for="agent-tools">Tools the agent may call (one per line — exact builtin or mcp__server__tool names)</label>
+            <textarea id="agent-tools" class="agent-tools" rows="5"
+              value={(workflow.tools || []).join('\n')}
+              on:change={(e) => { workflow = { ...workflow, tools: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) } }}
+            ></textarea>
+
+            <div class="agent-spec-meta">
+              {#if workflow.skills && workflow.skills.length}<span><strong>Skills:</strong> {workflow.skills.join(', ')}</span>{/if}
+              {#if workflow.knowledge && workflow.knowledge.length}<span><strong>Knowledge:</strong> {workflow.knowledge.join(', ')}</span>{/if}
+              {#if workflow.new_agents && workflow.new_agents.length}<span><strong>Peer agents:</strong> {workflow.new_agents.map(a => a.name || a.id).join(', ')}</span>{/if}
+              {#if workflow.channels && workflow.channels.length}<span><strong>Delivers to:</strong> {workflow.channels.join(', ')}</span>{/if}
+              {#if workflow.trigger && workflow.trigger.type}<span><strong>Runs:</strong> {workflow.trigger.type}{#if workflow.trigger.config && workflow.trigger.config.cron} ({workflow.trigger.config.cron}){/if}</span>{/if}
+            </div>
+          </div>
         {:else}
           <SvelteFlow
             {nodes}
@@ -1654,6 +2136,14 @@ def run(inputs):
           <button class="btn" on:click={runTest} disabled={testing}>
             {testing ? 'Testing…' : 'Test'}
           </button>
+          <button
+            class="btn architect"
+            on:click={buildUntilWorks}
+            disabled={building || !workflow}
+            title="Autonomously fill gaps, fix every error, and run it until it works"
+          >
+            {building ? 'Building…' : '🛠 Build until it works'}
+          </button>
           {#if plan && plan.tier}
             <span
               class="tier-chip tier-{plan.tier}"
@@ -1662,13 +2152,129 @@ def run(inputs):
               {tierLabel(plan.tier)}
             </span>
           {/if}
-          <button class="btn primary" on:click={save} disabled={saving || !!consent}>
+          <label class="unattended-toggle" title="Let this agent's system/network steps run automatically on scheduled runs, with no approval prompt. Only enable if you trust the steps.">
+            <input
+              type="checkbox"
+              checked={!!(workflow && workflow.unattended)}
+              on:change={(e) => { if (workflow) workflow = { ...workflow, unattended: e.target.checked } }}
+            />
+            Unattended
+          </label>
+          <button class="btn primary" on:click={() => save()} disabled={saving || !!consent || !!preflight}>
             {saving ? 'Saving…' : 'Save'}
           </button>
         </div>
 
         {#if saveMsg}<div class="strip strip-ok">✓ {saveMsg}</div>{/if}
         {#if saveError}<div class="strip strip-error">⚠ {saveError}</div>{/if}
+
+        <!-- ── Architect live progress: streamed while the loop runs ──────── -->
+        {#if building || (buildLog.length && !buildReport)}
+          <div class="panel build-progress">
+            <div class="build-head">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="build-summary">Building & verifying — fixing problems as they’re found…</span>
+            </div>
+            {#if buildLog.length}
+              <ul class="build-live">
+                {#each buildLog as ev}
+                  <li class="live-line live-{ev.kind}">
+                    {#if ev.attempt}<span class="live-n">#{ev.attempt}</span>{/if}
+                    {ev.message}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- ── Architect build report: what was wrong, and how it was fixed ── -->
+        {#if buildReport}
+          <div class="panel build-report" class:ok={buildReport.ok}>
+            <div class="build-head">
+              <span class="build-badge" class:ok={buildReport.ok}>
+                {buildReport.verified ? '✓ Verified by running it' : buildReport.ok ? '✓ Validated' : '⚠ Needs attention'}
+              </span>
+              <span class="build-summary">{buildReport.summary}</span>
+              <button class="icon-btn" title="Dismiss" on:click={() => (buildReport = null)}>✕</button>
+            </div>
+            {#if buildGlue && buildGlue.length}
+              <ul class="build-glue">
+                {#each buildGlue as g}<li>🧩 {g}</li>{/each}
+              </ul>
+            {/if}
+            {#if buildReport.attempts && buildReport.attempts.length}
+              <ol class="build-attempts">
+                {#each buildReport.attempts as a}
+                  <li class="attempt" class:ok={a.ok}>
+                    <span class="attempt-phase">{a.phase}</span>
+                    {#if a.problems && a.problems.length}
+                      <ul class="attempt-problems">
+                        {#each a.problems as p}<li>{p}</li>{/each}
+                      </ul>
+                    {/if}
+                    <span class="attempt-action">{a.changed ? '→ ' : ''}{a.action}</span>
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+            {#if buildReport.residual && buildReport.residual.length}
+              <div class="build-residual">
+                <strong>Still unresolved:</strong>
+                <ul>{#each buildReport.residual as r}<li>{r}</li>{/each}</ul>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- ── Runtime self-heal: failed (incl. scheduled) runs ──────────── -->
+        <div class="panel bench">
+          <div class="bench-section">
+            <button class="bench-head" type="button" on:click={toggleFailedRuns}>
+              <span class="caret">{showFailedRuns ? '▾' : '▸'}</span>
+              <h3 class="panel-title">Failed runs — self-heal</h3>
+              <span class="bench-sub">Pick up what failed at run time (including scheduled runs) and fix it automatically.</span>
+            </button>
+            {#if showFailedRuns}
+              {#if loadingFailed}
+                <p class="muted">Loading failed runs…</p>
+              {:else if !failedRuns.length}
+                <p class="muted">No failed runs recorded. 🎉</p>
+              {:else}
+                <ul class="failed-list">
+                  {#each failedRuns as fr (fr.id)}
+                    <li class="failed-item">
+                      <div class="failed-meta">
+                        <span class="failed-agent">{fr.agentName || fr.agentId}</span>
+                        <span class="failed-when">{fr.failedAt}</span>
+                      </div>
+                      <div class="failed-error">{fr.error}</div>
+                      <button
+                        class="btn small"
+                        disabled={!fr.healable || !!healing}
+                        title={fr.healable ? 'Diagnose and repair the saved agent' : 'The agent for this run no longer exists'}
+                        on:click={() => healFailedRun(fr.id)}
+                      >
+                        {healing === fr.id ? 'Healing…' : '✨ Fix with AI'}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+                <button class="btn small" on:click={loadFailedRuns} disabled={loadingFailed}>Refresh</button>
+              {/if}
+              {#if healResult}
+                <div class="strip {healResult.changed ? 'strip-ok' : 'strip-warn'}">
+                  {#if healResult.changed}
+                    ✓ Healed “{healResult.agentName}”. The repaired draft is loaded above — review it and Save to apply.
+                    {#if healResult.report && healResult.report.verified} The fix was verified by re-running it.{/if}
+                  {:else}
+                    No automatic fix found for: {healResult.error}
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+          </div>
+        </div>
 
         <!-- ── Test bench editors: Mocks + Assertions (M5) ──────────────── -->
         <div class="panel bench">
@@ -1790,7 +2396,12 @@ def run(inputs):
 
         <!-- Test results -->
         {#if testError}
-          <div class="strip strip-error">⚠ {testError}</div>
+          <div class="strip strip-error">
+            ⚠ {testError}
+            <button class="btn btn-sm" type="button" on:click={() => troubleshoot(testError)} disabled={troubleshooting || !workflow} title="Let the builder model rewrite the agent to fix this error">
+              {troubleshooting ? 'Fixing…' : '✨ Fix with AI'}
+            </button>
+          </div>
         {/if}
         {#if testResult}
           <div class="panel test">
@@ -2049,6 +2660,191 @@ def run(inputs):
 
   <!-- Consent dialog (M2): shown before saving a privileged, channel-bound
        workflow, or on the server's 409 consent fallback. -->
+  <!-- Full prompt viewer/editor — the top bar truncates long prompts. -->
+  {#if promptViewer}
+    <div class="modal-backdrop" on:click|self={() => (promptViewer = false)} role="presentation">
+      <div class="modal refine-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+        <h2 id="prompt-title" class="modal-title">Your prompt</h2>
+        <p class="modal-body">The full instruction Studio will refine and build from. Edit here if you like.</p>
+        <textarea class="refine-textarea" rows="14" bind:value={intent}></textarea>
+        {#if workflow && workflow.intent && workflow.intent !== intent}
+          <div class="refine-section">
+            <div class="refine-heading">Prompt this draft was generated from</div>
+            <div class="prompt-readonly">{workflow.intent}</div>
+          </div>
+        {/if}
+        <div class="modal-actions">
+          <button class="btn" on:click={() => (promptViewer = false)}>Close</button>
+          <button class="btn primary" on:click={() => { promptViewer = false; generate() }} disabled={!intent.trim()}>Generate from this</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Cloud-escalation gate: ask before a prompt leaves the machine. -->
+  {#if cloudGate}
+    <div class="modal-backdrop" on:click|self={() => (cloudGate = null)} role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="cloud-title">
+        <h2 id="cloud-title" class="modal-title">Use a cloud model for this build?</h2>
+        <p class="modal-body">
+          Your Studio builder is <strong>{cloudGate.provider} / {cloudGate.model}</strong>, a cloud
+          model. To generate this agent, your prompt and your Soulacy setup context
+          (skills, tools, channels, etc.) will be sent to <strong>{cloudGate.provider}</strong>.
+          Soulacy is local-first — using the cloud is always your choice.
+        </p>
+        <div class="modal-actions">
+          <button class="btn" on:click={declineCloud}>Keep it local (choose a local model)</button>
+          <button class="btn primary" on:click={approveCloud}>Continue with {cloudGate.provider}</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Pre-save validation: blockers must be fixed; warnings can be saved over. -->
+  {#if preflight}
+    <div class="modal-backdrop" on:click|self={cancelPreflight} role="presentation">
+      <div class="modal refine-modal" role="dialog" aria-modal="true" aria-labelledby="preflight-title">
+        <h2 id="preflight-title" class="modal-title">
+          {#if preflight.blockers && preflight.blockers.length}Fix these before saving{:else}Ready to save — a few warnings{/if}
+        </h2>
+        <p class="modal-body">
+          Studio checked this agent against your live setup (tools, MCP servers,
+          channels, schedule, and required inputs).
+        </p>
+
+        {#if preflight.blockers && preflight.blockers.length}
+          <div class="refine-section">
+            <div class="refine-heading">Blockers ({preflight.blockers.length})</div>
+            <ul class="pf-list">
+              {#each preflight.blockers as b}
+                <li class="pf-item pf-block" class:pf-clickable={!!b.nodeId}
+                    role={b.nodeId ? 'button' : undefined} tabindex={b.nodeId ? 0 : undefined}
+                    on:click={() => b.nodeId && revealNode(b.nodeId)}
+                    on:keydown={(e) => b.nodeId && (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), revealNode(b.nodeId))}
+                    title={b.nodeId ? 'Click to open this block on the canvas' : ''}>
+                  <div class="pf-msg">{b.message}</div>
+                  {#if b.fix}<div class="pf-fix">→ {b.fix}</div>{/if}
+                  {#if b.nodeId}<div class="pf-node">block: {b.nodeId} — click to open ↗</div>{/if}
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
+        {#if preflight.warnings && preflight.warnings.length}
+          <div class="refine-section">
+            <div class="refine-heading">Warnings ({preflight.warnings.length})</div>
+            <ul class="pf-list">
+              {#each preflight.warnings as w}
+                <li class="pf-item pf-warn" class:pf-clickable={!!w.nodeId}
+                    role={w.nodeId ? 'button' : undefined} tabindex={w.nodeId ? 0 : undefined}
+                    on:click={() => w.nodeId && revealNode(w.nodeId)}
+                    on:keydown={(e) => w.nodeId && (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), revealNode(w.nodeId))}
+                    title={w.nodeId ? 'Click to open this block on the canvas' : ''}>
+                  <div class="pf-msg">{w.message}</div>
+                  {#if w.fix}<div class="pf-fix">→ {w.fix}</div>{/if}
+                  {#if w.nodeId}<div class="pf-node">block: {w.nodeId} — click to open ↗</div>{/if}
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
+        <div class="modal-actions">
+          <button class="btn" on:click={cancelPreflight} disabled={saving || fixing}>Back to editing</button>
+          <button class="btn" on:click={fixAutomatically} disabled={saving || fixing} title="Auto-wire empty inputs and reconcile mismatched variable names">
+            {fixing ? 'Fixing…' : 'Fix automatically'}
+          </button>
+          <button class="btn" on:click={rerunPreflight} disabled={saving || fixing}>Re-check</button>
+          {#if !(preflight.blockers && preflight.blockers.length)}
+            <button class="btn primary" on:click={proceedAfterPreflight} disabled={saving || fixing}>Save anyway</button>
+          {/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Pre-generation prompt refinement: confirm what will be built before a
+       workflow is generated. Shows the clarified spec (editable), the
+       assumptions the analyst made, and any clarifying questions. -->
+  {#if refinement}
+    <div class="modal-backdrop" on:click|self={cancelRefinement} role="presentation">
+      <div class="modal refine-modal" role="dialog" aria-modal="true" aria-labelledby="refine-title">
+        <h2 id="refine-title" class="modal-title">Confirm what to build</h2>
+        <p class="modal-body">
+          Here's how your request was understood. Review it, fix anything that's
+          off, then generate. A clearer spec means a better workflow with fewer errors.
+        </p>
+
+        {#if modelAdvice && modelAdvice.severity && modelAdvice.severity !== 'ok'}
+          <div class="refine-modelwarn">
+            ⚠ {modelAdvice.message}
+            {#if modelAdvice.recommendation}<div class="refine-modelrec">{modelAdvice.recommendation}</div>{/if}
+          </div>
+        {/if}
+
+        {#if refinement.summary}
+          <div class="refine-summary">{refinement.summary}</div>
+        {/if}
+
+        {#if refinement.recommended_mode && refinement.recommended_mode !== 'workflow'}
+          <div class="refine-mode">
+            <strong>Recommended build: {recoLabel(refinement.recommended_mode)} agent</strong>
+            {#if refinement.mode_reason} — {refinement.mode_reason}{/if}
+            <div class="refine-mode-sub">This task reasons over its tools (looping/polling), so Studio will build a reasoning agent instead of a fixed flow canvas.</div>
+          </div>
+        {/if}
+
+        <label class="refine-label" for="refine-intent">Refined specification (edit if needed)</label>
+        <textarea
+          id="refine-intent"
+          class="refine-textarea"
+          rows="8"
+          bind:value={refinement.refined_intent}
+        ></textarea>
+
+        {#if refinement.assumptions && refinement.assumptions.length}
+          <div class="refine-section">
+            <div class="refine-heading">Assumptions made (edit the spec above to change)</div>
+            <ul class="refine-assumptions">
+              {#each refinement.assumptions as a}
+                <li>{a}</li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
+        {#if refinement.questions && refinement.questions.length}
+          <div class="refine-section">
+            <div class="refine-heading">A few questions to get this right</div>
+            {#each refinement.questions as q}
+              <div class="refine-q">
+                <label class="refine-qtext" for={`refine-q-${q.id}`}>{q.text}</label>
+                {#if q.options && q.options.length}
+                  <select id={`refine-q-${q.id}`} bind:value={refineAnswers[q.id]}>
+                    <option value="" disabled selected={!refineAnswers[q.id]}>Choose…</option>
+                    {#each q.options as opt}
+                      <option value={opt}>{opt}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <input id={`refine-q-${q.id}`} type="text" bind:value={refineAnswers[q.id]} placeholder="Your answer…" />
+                {/if}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="modal-actions">
+          <button class="btn" on:click={cancelRefinement} disabled={compiling}>Cancel</button>
+          <button class="btn primary" on:click={confirmRefinement} disabled={compiling || !((refinement.refined_intent || '').trim())}>
+            {compiling ? 'Generating…' : 'Generate workflow'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   {#if consent}
     <div class="modal-backdrop" on:click|self={cancelConsent} role="presentation">
       <div class="modal" role="dialog" aria-modal="true" aria-labelledby="consent-title">
@@ -2266,6 +3062,64 @@ def run(inputs):
     font-size: 11px;
   }
   .strip-warn { background: rgba(245, 167, 66, 0.12); color: var(--warn, #f5a742); }
+
+  /* ── Architect: build button + report + self-heal ─────────────────────── */
+  .btn.architect { background: var(--accent, #7c7aff); color: #fff; border-color: transparent; font-weight: 600; }
+  .btn.architect:disabled { opacity: 0.6; }
+  .btn.small { padding: 3px 10px; font-size: 12px; }
+  .build-report {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg-elev);
+  }
+  .build-report.ok { border-color: rgba(54, 211, 153, 0.4); }
+  .build-head { display: flex; align-items: center; gap: 10px; }
+  .build-badge {
+    font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 999px;
+    background: rgba(245, 167, 66, 0.16); color: var(--warn, #f5a742); white-space: nowrap;
+  }
+  .build-badge.ok { background: rgba(54, 211, 153, 0.16); color: var(--ok); }
+  .build-summary { flex: 1; font-size: 13px; line-height: 1.4; }
+  .build-glue { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-muted); }
+  .build-attempts { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+  .attempt { font-size: 12px; line-height: 1.4; }
+  .attempt-phase {
+    display: inline-block; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em;
+    color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; margin-right: 6px;
+  }
+  .attempt.ok .attempt-phase { color: var(--ok); border-color: rgba(54, 211, 153, 0.4); }
+  .attempt-problems { margin: 4px 0; padding-left: 16px; color: var(--text-muted); }
+  .attempt-action { color: var(--text); }
+  .build-residual { margin-top: 8px; font-size: 12px; color: var(--error); }
+  .build-residual ul { margin: 4px 0 0; padding-left: 18px; }
+  .failed-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .failed-item {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 4px; background: var(--bg);
+  }
+  .failed-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+  .failed-agent { font-weight: 600; }
+  .failed-when { color: var(--text-muted); }
+  .failed-error { font-size: 12px; color: var(--error); word-break: break-word; }
+  .failed-item .btn { align-self: flex-start; }
+  .build-progress {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--accent, #7c7aff); background: var(--bg-elev);
+  }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+    border: 2px solid var(--border); border-top-color: var(--accent, #7c7aff);
+    animation: studio-spin 0.7s linear infinite;
+  }
+  @keyframes studio-spin { to { transform: rotate(360deg); } }
+  .build-live { margin: 8px 0 0; padding-left: 4px; list-style: none; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+  .live-line { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+  .live-line.live-result { color: var(--text); font-weight: 600; }
+  .live-line.live-verify { color: var(--accent, #7c7aff); }
+  .live-line.live-glue { color: var(--ok); }
+  .live-n {
+    display: inline-block; font-size: 10px; color: var(--text-muted);
+    border: 1px solid var(--border); border-radius: 5px; padding: 0 4px; margin-right: 6px;
+  }
   .v-count {
     font-weight: 700;
     border-radius: 999px;
@@ -2755,6 +3609,101 @@ def run(inputs):
   .consent-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .consent-scope select { width: auto; flex: 1; }
   .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+  /* ── Pre-generation refinement dialog ───────────────────────────────────── */
+  .refine-modal { max-width: 640px; width: 92vw; max-height: 84vh; overflow-y: auto; }
+  .refine-summary {
+    font-size: 13px; line-height: 1.5; color: var(--text);
+    background: var(--surface-2, rgba(127,127,127,0.08));
+    border-left: 3px solid var(--accent, #6c8cff);
+    border-radius: 6px; padding: 10px 12px; margin: 0 0 14px;
+  }
+  .refine-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin: 0 0 6px; }
+  .refine-textarea {
+    width: 100%; box-sizing: border-box; resize: vertical;
+    font: inherit; font-size: 13px; line-height: 1.5;
+    padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--border, rgba(127,127,127,0.35));
+    background: var(--surface, transparent); color: var(--text);
+  }
+  .refine-section { margin-top: 16px; }
+  .refine-heading { font-size: 12px; font-weight: 600; color: var(--text-muted); margin: 0 0 8px; }
+  .refine-assumptions { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: var(--text); }
+  .refine-q { margin-bottom: 12px; }
+  .refine-qtext { display: block; font-size: 13px; color: var(--text); margin: 0 0 6px; }
+  .refine-q input, .refine-q select {
+    width: 100%; box-sizing: border-box; font: inherit; font-size: 13px;
+    padding: 7px 10px; border-radius: 8px;
+    border: 1px solid var(--border, rgba(127,127,127,0.35));
+    background: var(--surface, transparent); color: var(--text);
+  }
+
+  /* ── Pre-save validation (preflight) list ───────────────────────────────── */
+  .pf-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .pf-item { border-radius: 8px; padding: 9px 11px; border-left: 3px solid transparent; font-size: 13px; }
+  .pf-clickable { cursor: pointer; }
+  .pf-clickable:hover { filter: brightness(1.15); outline: 1px solid var(--accent, #6c8cff); }
+  .pf-block { background: rgba(220,60,60,0.10); border-left-color: #d83c3c; }
+  .pf-warn  { background: rgba(220,160,40,0.10); border-left-color: #e0a028; }
+  .pf-msg { color: var(--text); line-height: 1.45; }
+  .pf-fix { color: var(--text-muted); font-size: 12px; margin-top: 3px; }
+  .pf-node { color: var(--text-muted); font-size: 11px; margin-top: 2px; opacity: 0.8; }
+
+  /* ── Model-advice warning + refinement model banner ─────────────────────── */
+  .strip-modeladvice { background: rgba(220,160,40,0.12); color: var(--text); align-items: center; gap: 10px; flex-wrap: wrap; }
+  .strip-modeladvice.strip-local { background: rgba(60,160,90,0.12); }
+  .strip-modeladvice .ma-rec { color: var(--text-muted); font-size: 12px; }
+  .ma-btn { margin-left: auto; }
+  .refine-modelwarn {
+    background: rgba(220,160,40,0.12); border-left: 3px solid #e0a028;
+    border-radius: 6px; padding: 9px 11px; margin: 0 0 12px;
+    font-size: 13px; line-height: 1.45; color: var(--text);
+  }
+  .refine-modelrec { color: var(--text-muted); font-size: 12px; margin-top: 4px; }
+
+  /* ── "What Studio built" explanation panel ──────────────────────────────── */
+  .explain-panel {
+    background: var(--bg-elev); border: 1px solid var(--border, rgba(127,127,127,0.25));
+    border-radius: 8px; margin: 6px 0; padding: 8px 12px;
+  }
+  .explain-summary { cursor: pointer; font-size: 13px; font-weight: 600; color: var(--text); }
+  .explain-body { margin-top: 8px; font-size: 13px; line-height: 1.5; color: var(--text); }
+  .explain-purpose { margin: 0 0 8px; }
+  .explain-meta { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0; color: var(--text-muted); font-size: 12px; }
+  .explain-heading { font-weight: 600; font-size: 12px; color: var(--text-muted); margin: 8px 0 4px; }
+  .explain-steps { margin: 0; padding-left: 18px; }
+  .explain-steps li { margin: 2px 0; }
+  .explain-needs { margin: 0; padding-left: 18px; color: var(--text); }
+  .explain-needs li { margin: 2px 0; color: #c98a1a; }
+
+  /* ── ReAct / Plan-Execute agent spec panel (no canvas) ──────────────────── */
+  .agent-spec { padding: 16px 18px; overflow-y: auto; height: 100%; box-sizing: border-box; }
+  .agent-spec-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+  .agent-spec-name { font-size: 15px; font-weight: 600; color: var(--text); }
+  .agent-spec-note { font-size: 12px; color: var(--text-muted); }
+  .agent-field-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin: 12px 0 4px; }
+  .agent-sys, .agent-tools {
+    width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 13px;
+    line-height: 1.5; padding: 10px 12px; border-radius: 8px;
+    border: 1px solid var(--border, rgba(127,127,127,0.35));
+    background: var(--surface, transparent); color: var(--text);
+  }
+  .agent-tools { font-family: ui-monospace, monospace; font-size: 12px; }
+  .agent-spec-meta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 12px; color: var(--text-muted); }
+  .intent { position: relative; display: flex; align-items: center; }
+  .intent-expand {
+    position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: 14px; padding: 2px 4px; line-height: 1;
+  }
+  .intent-expand:hover { color: var(--accent, #6c8cff); }
+  .prompt-readonly { font-size: 12px; color: var(--text-muted); white-space: pre-wrap; line-height: 1.5; background: var(--bg-elev); border-radius: 6px; padding: 8px 10px; }
+  .refine-mode { background: rgba(108,140,255,0.12); border-left: 3px solid var(--accent, #6c8cff); border-radius: 6px; padding: 9px 11px; margin: 0 0 12px; font-size: 13px; color: var(--text); }
+  .refine-mode-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .unattended-toggle { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none; }
+  .unattended-toggle input { margin: 0; }
+  .explain-actions { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .explain-hint { font-size: 12px; color: var(--text-muted); }
 
   /* ── Edge styling (M3) ──────────────────────────────────────────────────
      xyflow renders edges in its own DOM, so we reach them with :global().

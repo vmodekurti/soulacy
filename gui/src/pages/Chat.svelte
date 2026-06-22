@@ -176,7 +176,17 @@
   async function loadAgents() {
     try {
       const res = await api.agents.list()
-      agents = (res.agents || []).filter(a => a.enabled)
+      // Interface-aware (Stories #11/#12): only show agents meant for Chat —
+      // a cron-only agent is hidden unless it explicitly supports chat. The
+      // server reports chat_eligible per agent in `interfaces`.
+      const iface = (res && res.interfaces) || {}
+      const chatOK = (a) => {
+        const m = iface[a.id]
+        if (m && typeof m.chat_eligible === 'boolean') return m.chat_eligible
+        // Fallback for older servers: hide pure cron/oneshot agents.
+        return a.trigger !== 'cron' && a.trigger !== 'oneshot'
+      }
+      agents = (res.agents || []).filter(a => a.enabled && chatOK(a))
       if (agents.length && Object.keys($chatThreads).length === 0) {
         startThread(defaultAgentId())
       }
@@ -221,7 +231,7 @@
       updateThread(threadId, t => ({
         ...t,
         metricsBaseline: curr ? { ...(t.metricsBaseline || {}), [runSessionId]: curr } : (t.metricsBaseline || {}),
-        messages: [...t.messages, { role: 'assistant', text: res.reply, ts: new Date(), thinking: t.thinking || thinking, metrics: delta }],
+        messages: [...t.messages, { role: 'assistant', text: res.reply, parts: (res.parts || []).filter(p => p && p.type && p.type !== 'text'), ts: new Date(), thinking: t.thinking || thinking, metrics: delta }],
       }))
     } catch (e) {
       updateThread(threadId, t => ({
@@ -234,6 +244,27 @@
     activeRuns = rest
     metricsRefresh++   // re-fetch the session metrics strip (Story 7)
     await scrollBottom()
+  }
+
+  // Cancel the active run (Story #22). The run is registered server-side under
+  // the session id, so we cancel by that. Best-effort; the in-flight send()
+  // continuation will surface the cancellation as a system message.
+  async function cancelSend() {
+    const sid = activeThread?.sessionId
+    if (!sid) return
+    try { await api.cancelRun(sid) } catch (_) { /* already finished */ }
+  }
+
+  // Resolve a typed message part to a usable src: prefer a URL, else inline the
+  // base64 data as a data: URI (Stories #26/#28).
+  function partSrc(part) {
+    if (!part) return ''
+    if (part.url) return part.url
+    if (part.data) {
+      const mime = part.mime_type || (part.type === 'image' ? 'image/png' : part.type === 'audio' ? 'audio/mpeg' : 'application/octet-stream')
+      return `data:${mime};base64,${part.data}`
+    }
+    return ''
   }
 
   async function scrollBottom() {
@@ -646,6 +677,21 @@
                         aria-label="Fork conversation from message {mi + 1}">⑂</button>
               {/if}
               <div class="btext">{msg.text}</div>
+              {#if msg.parts && msg.parts.length}
+                <div class="msg-parts">
+                  {#each msg.parts as part}
+                    {#if part.type === 'image'}
+                      <img class="part-image" src={partSrc(part)} alt={part.name || 'image'} />
+                    {:else if part.type === 'audio'}
+                      <audio class="part-audio" controls src={partSrc(part)}></audio>
+                    {:else if part.type === 'file'}
+                      <a class="part-file" href={partSrc(part)} target="_blank" rel="noopener" download>
+                        📎 {part.name || part.url || 'Download file'}
+                      </a>
+                    {/if}
+                  {/each}
+                </div>
+              {/if}
               {#if msg.thinking}
                 <div class="thinking" class:open={msg.thinking.open}>
                   <button class="thinking-head" type="button" on:click={() => toggleThinking(msg.thinking)}>
@@ -730,11 +776,15 @@
         rows="2"
         disabled={isSending || !activeThread?.agentId}
       ></textarea>
-      <button class="send-btn btn-primary"
-              on:click={send}
-              disabled={isSending || !activeThread?.agentId || !input.trim()}>
-        {isSending ? '…' : '↑'}
-      </button>
+      {#if isSending}
+        <button class="send-btn btn-danger" on:click={cancelSend} title="Stop this run">■</button>
+      {:else}
+        <button class="send-btn btn-primary"
+                on:click={send}
+                disabled={!activeThread?.agentId || !input.trim()}>
+          ↑
+        </button>
+      {/if}
     </div>
   </div>
 </div>
@@ -868,6 +918,11 @@
   .sys .bubble  { background: rgba(240,96,96,.1); border-color: rgba(240,96,96,.3); color: #f06060; }
 
   .btext { font-size: .88rem; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
+  .msg-parts { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .part-image { max-width: 100%; max-height: 360px; border-radius: 8px; align-self: flex-start; }
+  .part-audio { width: 100%; max-width: 420px; }
+  .part-file { font-size: .85rem; color: var(--accent, #6c8cff); text-decoration: none; }
+  .part-file:hover { text-decoration: underline; }
   .btime { font-size: .68rem; opacity: .55; align-self: flex-end; }
 
   .thinking {

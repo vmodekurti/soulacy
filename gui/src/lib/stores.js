@@ -24,6 +24,12 @@ export const activityAgent = writable('')
 // Agent to pre-select when navigating to the Agents page (set by Studio after save).
 export const editAgent = writable('')
 
+// Studio working session — persisted across navigation so the intent, the
+// generated/refined workflow, and the transparency panels survive switching to
+// another screen and back (the Studio component is destroyed on unmount). Null
+// until Studio first saves a snapshot.
+export const studioSession = writable(null)
+
 // Chat page — persisted across navigation so in-flight requests survive unmount.
 // chatThreads is keyed by a UI thread id. Each thread owns its agent, runtime
 // session, visible messages, branch state, and per-session metrics baseline.

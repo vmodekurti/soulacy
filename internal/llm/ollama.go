@@ -41,12 +41,14 @@ func NewOllamaProvider(baseURL, defaultModel string, keepAlive string, options m
 		model:     defaultModel,
 		keepAlive: keepAlive,
 		options:   ollamaOptionsWithDefaults(options),
-		// No hard HTTP timeout — the engine's context already governs the
-		// upper bound (per-agent run_timeout). A 120s client cap killed
-		// requests when big local models (e.g. qwen2.5:72b) were loading
-		// from disk on first invocation. Transport is the shared pool from
-		// httpclient.go so concurrent requests reuse idle connections.
-		client: SharedHTTPClient(0),
+		// No hard HTTP timeout AND no response-header timeout — the engine's
+		// context already governs the upper bound (per-agent run_timeout). Big
+		// local models (e.g. qwen3:32b, llama3.3:70b) can take minutes to load
+		// from disk on first invocation; the shared transport's 120s
+		// ResponseHeaderTimeout would abort that cold load with "timeout
+		// awaiting response headers". LocalHTTPClient drops the header cap while
+		// keeping the warm shared connection pool.
+		client: LocalHTTPClient(0),
 	}
 }
 

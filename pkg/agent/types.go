@@ -234,6 +234,13 @@ type Definition struct {
 	// router returns an empty reply with an error event.
 	Routes []RouterRoute `yaml:"routes,omitempty" json:"routes,omitempty"`
 
+	// Surfaces lists where this agent is meant to APPEAR / be invokable —
+	// "chat", "schedule", or a channel name ("telegram", "slack", …). It does
+	// not grant capability; it's a UI/interface hint so, e.g., a cron-only agent
+	// doesn't clutter the Chat picker. Empty = derive from the trigger/channels
+	// (see EffectiveSurfaces). Set by Studio at save time.
+	Surfaces []string `yaml:"surfaces,omitempty" json:"surfaces,omitempty"`
+
 	// --- Trigger ---
 	Trigger  TriggerKind `yaml:"trigger"             json:"trigger"`
 	Channels []string    `yaml:"channels,omitempty"  json:"channels,omitempty"`
@@ -375,6 +382,17 @@ type Definition struct {
 	// Use ["*"] to require confirmation for every built-in tool call.
 	// Particularly useful for destructive tools: shell_exec, write_file, http_request.
 	ConfirmTools []string `yaml:"confirm_tools,omitempty" json:"confirm_tools,omitempty"`
+
+	// Unattended, when true, lets the agent COMPLETE guardrail-confirmation
+	// actions (privileged system/network steps that normally pause for approval)
+	// in contexts where no interactive confirmer is present — notably scheduled
+	// runs. Without it, such an action is DENIED when there is no GUI to approve
+	// it, so a scheduled agent that needs a privileged step fails every run.
+	// Default false: the safe behavior (deny when nobody can approve) is
+	// preserved; an operator opts into unattended execution explicitly. It does
+	// NOT widen what tools are offered (allow_system_tools still gates that) — it
+	// only resolves the confirmation gate non-interactively.
+	Unattended bool `yaml:"unattended,omitempty" json:"unattended,omitempty"`
 
 	// --- Memory ---
 	Memory MemoryPolicy `yaml:"memory" json:"memory"`
@@ -532,6 +550,7 @@ func (d *Definition) Clone() *Definition {
 	// Slices — each gets its own backing array.
 	cp.Tags = cloneStrSlice(d.Tags)
 	cp.Channels = cloneStrSlice(d.Channels)
+	cp.Surfaces = cloneStrSlice(d.Surfaces)
 	cp.Skills = cloneStrSlice(d.Skills)
 	cp.Knowledge = cloneStrSlice(d.Knowledge)
 	cp.Agents = cloneStrSlice(d.Agents)

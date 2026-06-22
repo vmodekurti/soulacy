@@ -20,16 +20,20 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/valyala/fasthttp"
 
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/llm"
+	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/internal/studio"
 	"github.com/soulacy/soulacy/internal/studio/consent"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -64,23 +68,718 @@ func (s *Server) studioLLM() studio.LLM {
 	if s.llmRouter == nil {
 		return nil
 	}
-	// Studio compile is reasoning-heavy. Honour the optional llm.studio override
-	// so operators can run it on a stronger model than the global default. A
-	// configured-but-unregistered provider falls back to the default rather than
-	// failing every compile.
-	provider := strings.TrimSpace(s.cfg.LLM.Studio.Provider)
+	provider, model := s.studioProviderModel()
+	return routerLLM{router: s.llmRouter, provider: provider, model: model}
+}
+
+// studioProviderModel resolves the builder (llm.studio) provider + model the
+// same way studioLLM wires it: honour the llm.studio override, fall back to the
+// default provider when it's unset or unregistered, and fill the model from the
+// provider config when unset. Shared by studioLLM and the model-advice endpoint.
+func (s *Server) studioProviderModel() (provider, model string) {
+	provider = strings.TrimSpace(s.cfg.LLM.Studio.Provider)
 	if provider == "" {
 		provider = s.cfg.LLM.DefaultProvider
 	} else if _, ok := s.cfg.LLM.Providers[provider]; !ok {
 		provider = s.cfg.LLM.DefaultProvider
 	}
-	model := strings.TrimSpace(s.cfg.LLM.Studio.Model)
+	model = strings.TrimSpace(s.cfg.LLM.Studio.Model)
 	if model == "" {
 		if pc, ok := s.cfg.LLM.Providers[provider]; ok {
 			model = pc.Model
 		}
 	}
-	return routerLLM{router: s.llmRouter, provider: provider, model: model}
+	return provider, model
+}
+
+// handleStudioModelAdvice implements GET /api/v1/studio/model-advice. Local-first
+// pivot: it reports the builder model, whether it runs locally, a supportive
+// (non-shaming) complexity note for small local models, whether using it would
+// send the prompt off-box (cloud-escalation), and whether a stronger frontier
+// model is configured and can be OFFERED as optional assistance (hybrid use).
+func (s *Server) handleStudioModelAdvice(c *fiber.Ctx) error {
+	provider, model := s.studioProviderModel()
+	registered := false
+	if s.llmRouter != nil {
+		for _, id := range s.llmRouter.ProviderIDs() {
+			if id == provider {
+				registered = true
+				break
+			}
+		}
+	}
+	if !registered {
+		// Provider not actually usable → advise as unconfigured (block).
+		return c.JSON(studio.AssessModel("", "", ""))
+	}
+	baseURL := ""
+	if pc, ok := s.cfg.LLM.Providers[provider]; ok {
+		baseURL = pc.BaseURL
+	}
+	adv := studio.AssessModel(provider, model, baseURL)
+
+	// Hybrid (the user's question): if the builder is local, surface whether a
+	// stronger CLOUD provider is also configured + registered, so the UI can
+	// offer it as optional assistance for complex builds — opt-in, never forced.
+	if adv.Local {
+		if fp := s.firstConfiguredCloudProvider(); fp != "" {
+			adv.FrontierAvailable = true
+			adv.FrontierProvider = fp
+		}
+	}
+	return c.JSON(adv)
+}
+
+// firstConfiguredCloudProvider returns the name of a registered, configured
+// cloud LLM provider (if any), so Studio can offer it as optional frontier
+// assistance alongside a local builder. Deterministic order: registered IDs.
+func (s *Server) firstConfiguredCloudProvider() string {
+	if s.llmRouter == nil {
+		return ""
+	}
+	for _, id := range s.llmRouter.ProviderIDs() {
+		pc, ok := s.cfg.LLM.Providers[id]
+		if !ok {
+			continue
+		}
+		if !studio.IsLocalProvider(id, pc.BaseURL) {
+			return id
+		}
+	}
+	return ""
+}
+
+// groundCatalog overwrites the caller-supplied catalog's Skills and MCP fields
+// with the REAL, live, authoritative server-side inventory (installed skills +
+// connected MCP servers and their tools). Both the compile and the pre-compile
+// refine pass call this so they see the same world the engine will, and so loose
+// references map to actual capabilities instead of being invented. It mutates
+// the passed catalog in place.
+func (s *Server) groundCatalog(cat *studio.Catalog) {
+	// Installed skills (so "yahoo finance" maps to the real "yfinance").
+	if s.skillLoader != nil {
+		cat.Skills = cat.Skills[:0]
+		for _, sk := range s.skillLoader.All() {
+			if sk == nil || strings.TrimSpace(sk.Name) == "" {
+				continue
+			}
+			cat.Skills = append(cat.Skills, studio.CatalogSkill{
+				Name: sk.Name, Description: sk.Description,
+			})
+		}
+	}
+
+	// Connected MCP servers and their tools, grouped by server, order preserved
+	// as snapshotMCPTools returns them. Use the FULL callable name
+	// (mcp__<server>__<tool>) so a tool node's "tool" resolves and classifies as
+	// MCP rather than a builtin.
+	mcpBySrv := map[string]int{}
+	cat.MCP = nil
+	for _, mt := range s.snapshotMCPTools() {
+		idx, ok := mcpBySrv[mt.Server]
+		if !ok {
+			idx = len(cat.MCP)
+			mcpBySrv[mt.Server] = idx
+			cat.MCP = append(cat.MCP, studio.CatalogMCPServer{Server: mt.Server})
+		}
+		cat.MCP[idx].Tools = append(cat.MCP[idx].Tools,
+			studio.CatalogMCPTool{Name: mt.FullName, Description: mt.Description, Params: mt.Params})
+	}
+
+	// Configured output channels (Story #1): a channel is groundable when it is
+	// always-on (http) or has been configured + enabled. Studio wires delivery
+	// to one of these instead of inventing a channel name.
+	cat.Channels = s.groundedChannels()
+
+	// Knowledge bases (Story #7): expose the KBs the agent could draw on so the
+	// compiler can attach a relevant one. Best-effort: empty when the knowledge
+	// store is disabled.
+	cat.KnowledgeBases = nil
+	if s.engine != nil {
+		if ksvc := s.engine.Knowledge(); ksvc != nil && ksvc.Store != nil {
+			if kbs, err := ksvc.Store.ListKBs(); err == nil {
+				for _, kb := range kbs {
+					cat.KnowledgeBases = append(cat.KnowledgeBases, studio.CatalogKB{
+						Name: kb.Name, Description: kb.Description,
+					})
+				}
+			}
+		}
+	}
+}
+
+// groundedChannels returns the output channels available to a workflow: the
+// always-on ones plus any configured-and-enabled channel. Mirrors the
+// enabled/configured logic in handleListChannels but distilled to the names
+// Studio can wire delivery to.
+func (s *Server) groundedChannels() []string {
+	statuses := s.channels.Statuses()
+	var out []string
+	for _, spec := range channelSpecs {
+		cfg := s.cfg.Channels[spec.ID]
+		enabled := spec.Always
+		if v, ok := cfg["enabled"].(bool); ok {
+			enabled = v
+		}
+		if !enabled {
+			continue
+		}
+		// Require some configuration for non-always channels (a token/bot), or
+		// a registered live adapter, so we don't advertise an unusable channel.
+		if !spec.Always {
+			configured := false
+			for _, f := range spec.Fields {
+				if valuePresent(cfg[f.Key]) {
+					configured = true
+					break
+				}
+			}
+			if _, registered := statuses[spec.ID]; !configured && !registered {
+				continue
+			}
+		}
+		out = append(out, spec.ID)
+	}
+	return out
+}
+
+// studioRefinePromptRequest is the POST /api/v1/studio/refine-prompt body.
+type studioRefinePromptRequest struct {
+	Intent  string         `json:"intent"`
+	Catalog studio.Catalog `json:"catalog,omitempty"`
+}
+
+// handleStudioRefinePrompt implements POST /api/v1/studio/refine-prompt. It is
+// the mandatory pre-generation step: it turns the user's rough intent into a
+// clear, complete specification plus the assumptions it made and any clarifying
+// questions, which the UI shows for confirmation BEFORE a workflow is compiled.
+func (s *Server) handleStudioRefinePrompt(c *fiber.Ctx) error {
+	var req studioRefinePromptRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.Intent) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "intent is required")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	s.groundCatalog(&req.Catalog)
+
+	res, err := studio.RefinePrompt(c.Context(), model, req.Intent, req.Catalog)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	return c.JSON(res)
+}
+
+// studioPreflightRequest is the POST /api/v1/studio/preflight body.
+type studioPreflightRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioPreflight implements POST /api/v1/studio/preflight. It runs the
+// consolidated pre-save validation (Stories #11/#12): missing tools/agents,
+// disconnected MCP servers, empty required tool arguments, invalid schedules,
+// and unconfigured channels — assembled against authoritative server-side state
+// and returned as a single blockers/warnings report.
+func (s *Server) handleStudioPreflight(c *fiber.Ctx) error {
+	var req studioPreflightRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+
+	// Ground a fresh catalog so tool/MCP/channel references are checked against
+	// the real, live inventory rather than whatever the GUI happened to send.
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+
+	res := studio.Preflight(req.Workflow, s.preflightInput(c, cat))
+	return c.JSON(res)
+}
+
+// preflightInput assembles the live-state PreflightInput from a grounded
+// catalog: connected MCP servers, configured channels, and stored secrets.
+// Shared by the preflight endpoint and the compile handler (which surfaces the
+// result as the explanation's NeedsConfig).
+func (s *Server) preflightInput(c *fiber.Ctx, cat studio.Catalog) studio.PreflightInput {
+	in := studio.PreflightInput{
+		Catalog:            cat,
+		ConnectedMCP:       s.connectedMCPSet(),
+		ChannelsConfigured: s.configuredChannelSet(),
+	}
+	if mgr := secrets.New(s.CredentialVault()); mgr.Enabled() {
+		set := map[string]bool{}
+		for _, d := range mgr.Catalog(c.Context(), s.cfg) {
+			set[d.Name] = d.Set
+		}
+		in.SecretsSet = set
+	}
+	return in
+}
+
+// studioCatalogSnapshot builds the agents/tools/providers portion of the
+// catalog from authoritative live state (the agent loader, the unified tool
+// catalog, and the LLM router). groundCatalog then fills Skills/MCP/Channels/
+// KBs. Used by preflight (no GUI-supplied catalog) and reusable elsewhere.
+func (s *Server) studioCatalogSnapshot() studio.Catalog {
+	var cat studio.Catalog
+	if s.loader != nil {
+		for _, d := range s.loader.All() {
+			if d == nil || strings.TrimSpace(d.ID) == "" {
+				continue
+			}
+			cat.Agents = append(cat.Agents, d.ID)
+		}
+	}
+	tc := s.toolCatalog()
+	for _, b := range tc.Builtins {
+		if strings.TrimSpace(b.Name) != "" {
+			cat.Tools = append(cat.Tools, b.Name)
+		}
+	}
+	for _, p := range tc.PythonTools {
+		if strings.TrimSpace(p.Name) != "" {
+			cat.Tools = append(cat.Tools, p.Name)
+		}
+	}
+	if s.llmRouter != nil {
+		cat.Providers = append(cat.Providers, s.llmRouter.ProviderIDs()...)
+	}
+	return cat
+}
+
+// connectedMCPSet returns the set of currently connected MCP server names.
+func (s *Server) connectedMCPSet() map[string]bool {
+	set := map[string]bool{}
+	for _, mt := range s.snapshotMCPTools() {
+		set[mt.Server] = true
+	}
+	return set
+}
+
+// configuredChannelSet returns channel id → configured+enabled, lowercased.
+func (s *Server) configuredChannelSet() map[string]bool {
+	set := map[string]bool{}
+	for _, id := range s.groundedChannels() {
+		set[strings.ToLower(id)] = true
+	}
+	return set
+}
+
+// studioAutowireRequest is the POST /api/v1/studio/autowire body.
+type studioAutowireRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioAutowire implements POST /api/v1/studio/autowire. It runs the
+// deterministic data-flow repair over a draft (fill empty required tool args +
+// reconcile dangling {{ .var }} references to the right upstream output) and
+// returns the repaired workflow plus the number of fixes. This lets the GUI
+// offer "Fix automatically" on a draft that was loaded or edited outside a
+// fresh compile (where the repair already runs). No LLM call.
+func (s *Server) handleStudioAutowire(c *fiber.Ctx) error {
+	var req studioAutowireRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+	model := s.studioLLM()
+
+	// 1) Deterministic repair (auto-wire empty args, reconcile dangling vars,
+	//    collapse template typos).
+	fixed := studio.RepairWiring(&req.Workflow, cat)
+
+	// 2) Iterative LLM repair over the FULL preflight report: validate, hand the
+	//    model EVERY remaining blocker (template/wiring/MCP/python/etc.), apply
+	//    its corrected draft, re-run deterministic passes, and re-validate. Up to
+	//    a few rounds so it converges instead of fixing one thing at a time.
+	if model != nil {
+		for round := 0; round < 3; round++ {
+			pf := studio.Preflight(req.Workflow, in)
+			if pf.OK || len(pf.Blockers) == 0 {
+				break
+			}
+			problems := make([]string, 0, len(pf.Blockers))
+			for _, b := range pf.Blockers {
+				problems = append(problems, studioProblemLine(b))
+			}
+			repaired, changed := studio.RepairWithProblems(c.Context(), model, req.Workflow, problems, cat)
+			if !changed {
+				break // model couldn't improve it; stop rather than loop pointlessly
+			}
+			studio.RepairWiring(&repaired, cat)
+			req.Workflow = repaired
+			fixed++
+		}
+	}
+
+	final := studio.Preflight(req.Workflow, in)
+	return c.JSON(fiber.Map{"workflow": req.Workflow, "fixed": fixed, "preflight": final})
+}
+
+// studioProblemLine renders a preflight issue as a single repair instruction
+// (message + the node it applies to + the suggested fix).
+func studioProblemLine(i studio.PreflightIssue) string {
+	out := i.Message
+	if i.NodeID != "" {
+		out = "node \"" + i.NodeID + "\": " + out
+	}
+	if i.Fix != "" {
+		out += " (" + i.Fix + ")"
+	}
+	return out
+}
+
+// studioTroubleshootRequest is the POST /api/v1/studio/troubleshoot body: a
+// draft plus a runtime error message to fix.
+type studioTroubleshootRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+	Error    string       `json:"error"`
+}
+
+// handleStudioTroubleshoot implements POST /api/v1/studio/troubleshoot. Given a
+// draft and a RUNTIME error (e.g. from a failed scheduled run), it asks the
+// model to fix the draft so that error won't recur, runs the deterministic
+// passes, and returns the corrected draft + a fresh preflight. This is the
+// "Fix with AI" loop for run-time failures, not just pre-save validation.
+func (s *Server) handleStudioTroubleshoot(c *fiber.Ctx) error {
+	var req studioTroubleshootRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.Error) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "error message is required")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	problems := []string{"At RUN TIME the agent failed with this error — change the workflow so it cannot happen again: " + strings.TrimSpace(req.Error)}
+	repaired, changed := studio.RepairWithProblems(c.Context(), model, req.Workflow, problems, cat)
+	studio.RepairWiring(&repaired, cat)
+	pf := studio.Preflight(repaired, s.preflightInput(c, cat))
+	return c.JSON(fiber.Map{"workflow": repaired, "changed": changed, "preflight": pf})
+}
+
+// studioBuildRequest is the POST /api/v1/studio/build body: the current draft to
+// make work, plus the originating intent (used to synthesize self-tests).
+type studioBuildRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+	Intent   string       `json:"intent,omitempty"`
+	// Verify, when false, runs the loop in validation-only mode (no real
+	// execution). Defaults to true: the Architect actually runs the agent.
+	Verify *bool `json:"verify,omitempty"`
+}
+
+// handleStudioBuild implements POST /api/v1/studio/build — the Architect's
+// autonomous build-verify-repair loop. It (1) fills capability holes with
+// generated glue code, (2) synthesizes self-tests from the intent, (3) drives
+// studio.BuildUntilWorks with a REAL-execution verifier backed by the engine
+// (tool + Python steps run for real), repairing every blocker and every runtime
+// error it hits until the agent works or it exhausts its budget, and (4) returns
+// the final draft plus a full, transparent attempt transcript.
+func (s *Server) handleStudioBuild(c *fiber.Ctx) error {
+	var req studioBuildRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+
+	// (1) Fill capability holes with generated glue code before the loop.
+	var glueNotes []string
+	if _, notes := studio.EnsureCapabilities(c.Context(), model, &req.Workflow, cat); len(notes) > 0 {
+		glueNotes = notes
+	}
+
+	// (2) Synthesize self-tests so "it works" is checked, not assumed.
+	intent := strings.TrimSpace(req.Intent)
+	if intent == "" {
+		intent = req.Workflow.Intent
+	}
+	tests := studio.SynthesizeTests(c.Context(), model, intent, req.Workflow, cat)
+
+	// (3) Choose the verifier. Default: REAL execution via the engine.
+	verify := true
+	if req.Verify != nil {
+		verify = *req.Verify
+	}
+	opts := studio.BuildOptions{In: in, Tests: tests}
+	if verify {
+		opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
+	}
+
+	rep := studio.BuildUntilWorks(c.Context(), model, req.Workflow, cat, opts)
+
+	final := studio.Preflight(rep.Workflow, in)
+	return c.JSON(fiber.Map{
+		"report":    rep,
+		"preflight": final,
+		"glue":      glueNotes,
+	})
+}
+
+// handleStudioBuildStream is the streaming variant of /studio/build. It runs the
+// same autonomous loop but emits a text/event-stream so the GUI shows live
+// progress (each attempt starting, what's being repaired, when it's running,
+// the outcome) instead of a frozen "Building…". The stream ends with an
+// `event: done` frame carrying the full {report, preflight, glue} payload.
+func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
+	var req studioBuildRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+	// Detach from the request context so the loop isn't cancelled when the
+	// handler returns to take over the connection as a stream writer.
+	ctx := context.WithoutCancel(c.Context())
+
+	// Events are produced by the loop (in a goroutine) and drained by the SSE
+	// writer. Buffered so the loop never blocks on a slow client.
+	type sse struct{ event, data string }
+	events := make(chan sse, 64)
+
+	go func() {
+		defer close(events)
+		emit := func(kind, data string) {
+			select {
+			case events <- sse{event: kind, data: data}:
+			default: // drop if the client is gone / buffer full
+			}
+		}
+		// (1) Glue, then (2) self-tests — reported as their own steps.
+		if _, notes := studio.EnsureCapabilities(ctx, model, &req.Workflow, cat); len(notes) > 0 {
+			for _, nt := range notes {
+				emit("event", jsonMsg("glue", "🧩 "+nt))
+			}
+		}
+		intent := strings.TrimSpace(req.Intent)
+		if intent == "" {
+			intent = req.Workflow.Intent
+		}
+		emit("event", jsonMsg("tests", "Writing self-tests…"))
+		tests := studio.SynthesizeTests(ctx, model, intent, req.Workflow, cat)
+
+		verify := true
+		if req.Verify != nil {
+			verify = *req.Verify
+		}
+		opts := studio.BuildOptions{In: in, Tests: tests}
+		if verify {
+			opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
+		}
+		opts.OnEvent = func(ev studio.BuildEvent) {
+			b, _ := json.Marshal(ev)
+			emit("event", string(b))
+		}
+
+		rep := studio.BuildUntilWorks(ctx, model, req.Workflow, cat, opts)
+		final := studio.Preflight(rep.Workflow, in)
+		done, _ := json.Marshal(fiber.Map{"report": rep, "preflight": final})
+		emit("done", string(done))
+	}()
+
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+	c.Context().SetBodyStreamWriter(fasthttp.StreamWriter(func(w *bufio.Writer) {
+		for ev := range events {
+			if ev.event != "" {
+				fmt.Fprintf(w, "event: %s\n", ev.event) //nolint:errcheck
+			}
+			fmt.Fprintf(w, "data: %s\n\n", ev.data) //nolint:errcheck
+			w.Flush()                               //nolint:errcheck
+		}
+	}))
+	return nil
+}
+
+// jsonMsg renders a {kind,message} progress frame for the build stream.
+func jsonMsg(kind, msg string) string {
+	b, _ := json.Marshal(studio.BuildEvent{Kind: kind, Message: msg})
+	return string(b)
+}
+
+// studioRealRunner wires the studio RealRunVerifier to the engine's execution
+// primitives so a build-time verification run invokes real tools and real Python
+// — the only way to catch failures that only appear when the agent actually runs.
+func (s *Server) studioRealRunner() studio.RealRunner {
+	if s.engine == nil {
+		return studio.RealRunner{}
+	}
+	return studio.RealRunner{
+		Tool: func(ctx context.Context, name, argsJSON string) (json.RawMessage, error) {
+			return s.engine.RunTool(ctx, name, argsJSON)
+		},
+		Python: func(ctx context.Context, code string, argsJSON []byte) (json.RawMessage, error) {
+			return s.engine.RunInlinePython(ctx, code, argsJSON)
+		},
+	}
+}
+
+// handleStudioFailedRuns implements GET /api/v1/studio/failed-runs. It surfaces
+// the runs that FAILED at run time (including unattended scheduled runs), drawn
+// from the dead-letter queue the engine writes on every failed Handle(). Each
+// entry names the agent, the real error, and when it failed — so the user can
+// self-heal a 6am scheduled failure without pasting anything anywhere. This is
+// the "Soulacy is the only savior" feed: every failure is actionable in-product.
+func (s *Server) handleStudioFailedRuns(c *fiber.Ctx) error {
+	if s.dlqStore == nil {
+		return c.JSON(fiber.Map{"runs": []any{}})
+	}
+	items, err := s.dlqStore.List(c.Context(), "")
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	type failedRun struct {
+		ID        string `json:"id"`
+		AgentID   string `json:"agentId"`
+		AgentName string `json:"agentName"`
+		Error     string `json:"error"`
+		Attempts  int    `json:"attempts"`
+		FailedAt  string `json:"failedAt"`
+		Healable  bool   `json:"healable"`
+	}
+	runs := make([]failedRun, 0, len(items))
+	for _, it := range items {
+		fr := failedRun{
+			ID: it.ID, AgentID: it.Queue, Error: it.ErrorMsg,
+			Attempts: it.Attempts, FailedAt: it.LastAttemptAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		if s.loader != nil {
+			if def := s.loader.Get(it.Queue); def != nil {
+				fr.AgentName = def.Name
+				fr.Healable = true // the saved agent still exists, so we can repair it
+			}
+		}
+		runs = append(runs, fr)
+	}
+	return c.JSON(fiber.Map{"runs": runs})
+}
+
+// studioDiagnoseRunRequest is the POST /api/v1/studio/diagnose-run body: a
+// dead-letter entry id to diagnose and self-heal.
+type studioDiagnoseRunRequest struct {
+	ID string `json:"id"`
+}
+
+// handleStudioDiagnoseRun implements POST /api/v1/studio/diagnose-run. Given a
+// failed run, it loads the SAVED agent, reconstructs its draft, repairs it
+// against the REAL runtime error, then runs the full build-verify loop so the
+// fix is validated (and, for workflows, actually re-executed). It returns the
+// healed draft + a transcript so the user can review and apply it — turning an
+// opaque scheduled-run failure into a one-click fix.
+func (s *Server) handleStudioDiagnoseRun(c *fiber.Ctx) error {
+	var req studioDiagnoseRunRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "failed-run id is required")
+	}
+	if s.dlqStore == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "no failed-run history available")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	entry, err := s.dlqStore.Get(c.Context(), req.ID)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusNotFound, "failed run not found")
+	}
+	def := s.loader.Get(entry.Queue)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "the agent for this run no longer exists")
+	}
+	draft := studio.FromAgentDefinition(*def)
+
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+
+	// (1) Repair directly against the real runtime error.
+	problem := "At RUN TIME this agent failed with: " + strings.TrimSpace(entry.ErrorMsg) +
+		" — change the agent so this cannot happen again."
+	healed, changed := studio.RepairWithProblems(c.Context(), model, draft, []string{problem}, cat)
+	studio.RepairWiring(&healed, cat)
+
+	// (2) Validate (and, for workflows, re-run) to confirm the fix holds.
+	rep := studio.BuildUntilWorks(c.Context(), model, healed, cat, studio.BuildOptions{
+		In:       in,
+		Verifier: studio.RealRunVerifier{Runner: s.studioRealRunner()},
+	})
+
+	return c.JSON(fiber.Map{
+		"agentId":   entry.Queue,
+		"agentName": def.Name,
+		"error":     entry.ErrorMsg,
+		"changed":   changed,
+		"workflow":  rep.Workflow,
+		"report":    rep,
+		"preflight": studio.Preflight(rep.Workflow, in),
+	})
+}
+
+// studioCompileAgentRequest is the POST /api/v1/studio/compile-agent body.
+type studioCompileAgentRequest struct {
+	Intent   string            `json:"intent"`
+	Strategy string            `json:"strategy"` // react | plan_execute
+	Catalog  studio.Catalog    `json:"catalog,omitempty"`
+	Answers  map[string]string `json:"answers,omitempty"`
+}
+
+// handleStudioCompileAgent implements POST /api/v1/studio/compile-agent. It
+// generates a ReAct/Plan-Execute AGENT (system prompt + tool allowlist + peers/
+// skills/KBs, NO workflow) for intents that need a reasoning loop rather than a
+// fixed graph (local-first pivot).
+func (s *Server) handleStudioCompileAgent(c *fiber.Ctx) error {
+	var req studioCompileAgentRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.Intent) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "intent is required")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	s.groundCatalog(&req.Catalog)
+	res, err := studio.CompileAgent(c.Context(), model, req.Intent, req.Catalog, req.Strategy, req.Answers)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	if res.Explanation != nil {
+		pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog))
+		var needs []string
+		for _, b := range pf.Blockers {
+			needs = append(needs, preflightLine(b))
+		}
+		for _, w := range pf.Warnings {
+			needs = append(needs, preflightLine(w))
+		}
+		res.Explanation.NeedsConfig = needs
+	}
+	return c.JSON(res)
 }
 
 // handleStudioCompile implements POST /api/v1/studio/compile.
@@ -98,49 +797,67 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
 	}
 
-	// Ground the compiler in the REAL installed skills (authoritative, from the
-	// live loader) so it maps loose references ("yahoo finance") to the actual
-	// skill name ("yfinance") instead of inventing one. Server-side population
-	// means this works regardless of what the GUI sent in the catalog.
-	if s.skillLoader != nil {
-		req.Catalog.Skills = req.Catalog.Skills[:0]
-		for _, sk := range s.skillLoader.All() {
-			if sk == nil || strings.TrimSpace(sk.Name) == "" {
-				continue
-			}
-			req.Catalog.Skills = append(req.Catalog.Skills, studio.CatalogSkill{
-				Name: sk.Name, Description: sk.Description,
-			})
-		}
-	}
-
-	// Ground the compiler in the live, CONNECTED MCP servers and their tools
-	// (authoritative, server-side) so it can wire an MCP tool when the intent
-	// names a server or a capability one provides. Grouped by server, order
-	// preserved as snapshotMCPTools returns them.
-	mcpBySrv := map[string]int{}
-	req.Catalog.MCP = nil
-	for _, mt := range s.snapshotMCPTools() {
-		idx, ok := mcpBySrv[mt.Server]
-		if !ok {
-			idx = len(req.Catalog.MCP)
-			mcpBySrv[mt.Server] = idx
-			req.Catalog.MCP = append(req.Catalog.MCP, studio.CatalogMCPServer{Server: mt.Server})
-		}
-		// Use the FULL callable name (mcp__<server>__<tool>): that is what a tool
-		// node's "tool" must be so the engine can resolve it AND so flowTools
-		// classifies it as an MCP tool (mcp__ prefix) rather than a builtin.
-		// Emitting the bare name is exactly why generated flows referenced
-		// non-existent tools like "notebook_create".
-		req.Catalog.MCP[idx].Tools = append(req.Catalog.MCP[idx].Tools,
-			studio.CatalogMCPTool{Name: mt.FullName, Description: mt.Description, Params: mt.Params})
-	}
+	// Ground the compiler in the REAL installed skills + connected MCP tools
+	// (authoritative, server-side) so it maps loose references to actual
+	// capabilities and wires real MCP tools instead of inventing names.
+	s.groundCatalog(&req.Catalog)
 
 	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+
+	// Surface setup gaps right at generation time (Story #12): run preflight on
+	// the fresh draft and fold the fixes into the explanation's NeedsConfig so
+	// the user sees what they still have to configure before this can run.
+	if res.Explanation != nil {
+		pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog))
+		var needs []string
+		for _, b := range pf.Blockers {
+			needs = append(needs, preflightLine(b))
+		}
+		for _, w := range pf.Warnings {
+			needs = append(needs, preflightLine(w))
+		}
+		res.Explanation.NeedsConfig = needs
+	}
 	return c.JSON(res)
+}
+
+// applyLocalPreset fills patient timeout/turn defaults on an agent that will run
+// on a LOCAL model, but only where the draft didn't already set them (Stories
+// #23/#24). No-op for cloud-bound agents — the engine's defaults are fine there.
+func (s *Server) applyLocalPreset(def *agent.Definition) {
+	provider := def.LLM.Provider
+	if provider == "" {
+		provider = s.cfg.LLM.DefaultProvider
+	}
+	baseURL := ""
+	if pc, ok := s.cfg.LLM.Providers[provider]; ok {
+		baseURL = pc.BaseURL
+	}
+	if !studio.IsLocalProvider(provider, baseURL) {
+		return
+	}
+	p := studio.LocalPresetFor(def.LLM.Model)
+	if def.RunTimeout == "" && p.RunTimeout != "" {
+		def.RunTimeout = p.RunTimeout
+	}
+	if def.Reasoning.StepTimeout == "" && p.StepTimeout != "" {
+		def.Reasoning.StepTimeout = p.StepTimeout
+	}
+	if def.Reasoning.TotalTimeout == "" && p.TotalTimeout != "" {
+		def.Reasoning.TotalTimeout = p.TotalTimeout
+	}
+}
+
+// preflightLine renders a preflight issue as a single human-readable line for
+// the explanation's NeedsConfig list.
+func preflightLine(i studio.PreflightIssue) string {
+	if i.Fix != "" {
+		return i.Message + " " + i.Fix
+	}
+	return i.Message
 }
 
 // studioTestRequest is the POST /api/v1/studio/test body. Mocks, Assertions,
@@ -281,6 +998,10 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	if def.LLM.Provider == "" {
 		def.LLM.Provider = s.cfg.LLM.DefaultProvider
 	}
+	// Timeout-aware defaults for local-model agents (Stories #23/#24): if this
+	// agent will run on a LOCAL model, apply patient timeout/turn presets where
+	// the draft didn't set them, so a slow local run isn't killed mid-thought.
+	s.applyLocalPreset(&def)
 	// Stamp per-node code consent (§13) onto the workflow nodes. ApplyGrants
 	// refuses if any beyond-guardrail Custom Python node lacks a matching grant,
 	// so a saved (and later enabled) agent can never carry unconsented host or
@@ -333,26 +1054,34 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 		for _, node := range def.Workflow.Nodes {
 			if node.Kind == "agent" && node.Agent != "" {
 				if existing := s.loader.Get(node.Agent); existing == nil {
+					// Prefer the profile the draft carries; if it is missing or
+					// thin, synthesize a complete, reusable persona from the node
+					// so no helper agent is ever saved blank (sub-agent quality).
+					na, ok := newAgentsMap[node.Agent]
+					if !ok || na.Name == "" || na.Description == "" || strings.TrimSpace(na.SystemPrompt) == "" {
+						synth := studio.SynthesizeAgent(node.Agent, node, def.Name)
+						if na.Name == "" {
+							na.Name = synth.Name
+						}
+						if na.Description == "" {
+							na.Description = synth.Description
+						}
+						if strings.TrimSpace(na.SystemPrompt) == "" {
+							na.SystemPrompt = synth.SystemPrompt
+						}
+					}
 					stub := agent.Definition{
-						ID:          node.Agent,
-						Name:        node.Agent,
-						Description: "Auto-generated from workflow",
-						Enabled:     true,
-						MaxTurns:    15,
-						Memory:      agent.MemoryPolicy{MaxTokens: 8000},
+						ID:           node.Agent,
+						Name:         na.Name,
+						Description:  na.Description,
+						SystemPrompt: na.SystemPrompt,
+						Enabled:      true,
+						MaxTurns:     15,
+						Memory:       agent.MemoryPolicy{MaxTokens: 8000},
 						LLM: agent.LLMConfig{
 							Provider:    s.cfg.LLM.DefaultProvider,
 							Temperature: 0.7,
 						},
-					}
-					if na, ok := newAgentsMap[node.Agent]; ok {
-						if na.Name != "" {
-							stub.Name = na.Name
-						}
-						if na.Description != "" {
-							stub.Description = na.Description
-						}
-						stub.SystemPrompt = na.SystemPrompt
 					}
 					// Ignore errors here; best-effort stubbing.
 					_ = s.loader.Upsert(dir, &stub)

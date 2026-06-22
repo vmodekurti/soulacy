@@ -223,7 +223,31 @@ func channelMapReferencesProtectedSystem(id string, chMap map[string]any) bool {
 
 func (s *Server) handleListAgents(c *fiber.Ctx) error {
 	defs := s.loader.All()
-	return c.JSON(fiber.Map{"agents": defs, "count": len(defs)})
+	// Interface-aware design (Stories #11/#12): surface where each agent should
+	// appear so clients (the Chat picker, channel routers) can filter — e.g.
+	// hide cron-only agents from Chat. Computed, not stored, so it stays correct
+	// for older agents that predate the Surfaces field.
+	meta := make(map[string]fiber.Map, len(defs))
+	for _, d := range defs {
+		if d == nil {
+			continue
+		}
+		meta[d.ID] = fiber.Map{
+			"surfaces":      d.EffectiveSurfaces(),
+			"chat_eligible": d.AppearsOnChat(),
+		}
+	}
+	// Optional ?surface=chat filter returns only agents that appear there.
+	if surface := strings.TrimSpace(c.Query("surface")); surface != "" {
+		filtered := make([]*agent.Definition, 0, len(defs))
+		for _, d := range defs {
+			if d != nil && d.AppearsOn(surface) {
+				filtered = append(filtered, d)
+			}
+		}
+		defs = filtered
+	}
+	return c.JSON(fiber.Map{"agents": defs, "count": len(defs), "interfaces": meta})
 }
 
 func (s *Server) handleGetAgent(c *fiber.Ctx) error {
@@ -556,6 +580,13 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), resolveRunTimeout(def))
 	defer cancel()
 
+	// Register the run under its session id so a client can cancel a slow
+	// (local-model) run via POST /chat/cancel {run_id: <session_id>} (Story #22).
+	if s.runReg != nil {
+		s.runReg.Register(sessionID, cancel)
+		defer s.runReg.Done(sessionID)
+	}
+
 	// Inject confirm sender so synchronous GUI chats can still receive tool confirmation
 	// requests over the global WebSocket event stream.
 	ctx = runtime.WithConfirmSender(ctx, func(req runtime.ConfirmRequest) <-chan bool {
@@ -582,7 +613,10 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 			break
 		}
 	}
-	return c.JSON(fiber.Map{"reply": replyText})
+	// Return the full typed parts (text/image/audio/file) so the UI can render
+	// rich results — images, charts, audio (podcasts), files — not just text
+	// (Stories #26/#27/#28). `reply` stays for backward compatibility.
+	return c.JSON(fiber.Map{"reply": replyText, "parts": reply.Parts})
 }
 
 func chatOverrideMetadata(provider, model string, temperature *float64, maxTokens, maxTurns *int, toolChoice string) map[string]string {
@@ -670,6 +704,14 @@ func (s *Server) handleChatStream(c *fiber.Ctx) error {
 	runCtx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), resolveRunTimeout(def))
 	defer cancel()
 
+	// Register this run so it can be cancelled mid-flight (Story #22). The id is
+	// emitted to the client below as a "run" event; POST /chat/cancel cancels it.
+	runID := msg.ID
+	if s.runReg != nil {
+		s.runReg.Register(runID, cancel)
+		defer s.runReg.Done(runID)
+	}
+
 	// sseEvent is the unified event type for the SSE stream.
 	// Event == "" → default "message" frame (token).
 	// Event != "" → named SSE event frame (tool_confirm, error).
@@ -726,6 +768,9 @@ func (s *Server) handleChatStream(c *fiber.Ctx) error {
 	c.Set("X-Accel-Buffering", "no") // disable nginx/proxy buffering
 
 	c.Context().SetBodyStreamWriter(fasthttp.StreamWriter(func(w *bufio.Writer) {
+		// Tell the client the run id up front so it can cancel this run (#22).
+		fmt.Fprintf(w, "event: run\ndata: {\"run_id\":%q}\n\n", runID) //nolint:errcheck
+		w.Flush()                                                      //nolint:errcheck
 		for ev := range events {
 			if ev.Event != "" {
 				fmt.Fprintf(w, "event: %s\n", ev.Event) //nolint:errcheck
@@ -736,6 +781,28 @@ func (s *Server) handleChatStream(c *fiber.Ctx) error {
 	}))
 
 	return nil
+}
+
+// handleChatCancel cancels an in-flight run by its run id (Story #22), so a user
+// can stop a slow local-model run. Returns 404 if the run already finished.
+//
+//	POST /api/v1/chat/cancel  {"run_id": "<id>"}
+func (s *Server) handleChatCancel(c *fiber.Ctx) error {
+	var req struct {
+		RunID string `json:"run_id"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	if req.RunID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "run_id is required")
+	}
+	if s.runReg == nil || !s.runReg.Cancel(req.RunID) {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "run not found — it may have already finished",
+		})
+	}
+	return c.JSON(fiber.Map{"ok": true, "cancelled": req.RunID})
 }
 
 // handleToolConfirm resolves a pending tool-confirmation request.

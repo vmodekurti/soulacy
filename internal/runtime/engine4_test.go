@@ -507,6 +507,29 @@ func TestMaybeConfirm_NoSenderProceeds(t *testing.T) {
 	}
 }
 
+func TestDynamicConfirm_NoSenderDeniesByDefault(t *testing.T) {
+	e := newMinimalEngine(t)
+	def := &agent.Definition{ID: "guarded"}
+	err := e.dynamicConfirm(context.Background(), def, message.ToolCall{
+		ID: "c", Name: "shell_exec",
+	}, "privileged system action")
+	if err == nil {
+		t.Fatal("dynamicConfirm without sender should DENY (error) for a non-unattended agent")
+	}
+}
+
+func TestDynamicConfirm_UnattendedAutoApproves(t *testing.T) {
+	e := newMinimalEngine(t)
+	def := &agent.Definition{ID: "scheduled-bot", Unattended: true}
+	// No confirm sender (e.g. a scheduled run). Unattended → auto-approve.
+	err := e.dynamicConfirm(context.Background(), def, message.ToolCall{
+		ID: "c", Name: "shell_exec",
+	}, "privileged system action")
+	if err != nil {
+		t.Fatalf("unattended agent should auto-approve guardrail confirm, got: %v", err)
+	}
+}
+
 func TestMaybeConfirm_ToolNotInListProceeds(t *testing.T) {
 	e := newMinimalEngine(t)
 	def := &agent.Definition{
@@ -1361,7 +1384,7 @@ func TestHandleMultipleToolCallsInOneTurn(t *testing.T) {
 	})
 	e.builtins = []BuiltinTool{
 		{
-			Name:    "tool_a",
+			Name: "tool_a",
 			Handler: func(ctx context.Context, args map[string]any) (string, error) {
 				mu.Lock()
 				calls = append(calls, "a")
@@ -1933,4 +1956,3 @@ func TestHandle_StreamReplyFlagWithoutCallback(t *testing.T) {
 		t.Fatalf("reply = %q, want 'streamed response'", got)
 	}
 }
-

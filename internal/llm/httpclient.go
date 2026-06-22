@@ -21,6 +21,8 @@ import (
 var (
 	sharedTransportOnce sync.Once
 	sharedTransport     *http.Transport
+	localTransportOnce  sync.Once
+	localTransport      *http.Transport
 )
 
 // SharedTransport returns the process-wide *http.Transport used by every
@@ -58,6 +60,32 @@ func SharedTransport() *http.Transport {
 func SharedHTTPClient(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Transport: SharedTransport(),
+		Timeout:   timeout,
+	}
+}
+
+// LocalTransport is like SharedTransport but with NO ResponseHeaderTimeout.
+// A LOCAL model server (Ollama, llama.cpp, LM Studio) can take far longer than
+// 120s to return the first response header on a cold start — it must load tens
+// of GB from disk into memory before generating a single token. The 120s cap on
+// the shared transport (which protects against a stuck *cloud* provider) would
+// abort that load with "timeout awaiting response headers". Local requests are
+// instead bounded by the request context / per-agent run_timeout, so a cold
+// load is allowed to finish.
+func LocalTransport() *http.Transport {
+	localTransportOnce.Do(func() {
+		t := SharedTransport().Clone()
+		t.ResponseHeaderTimeout = 0 // no header cap — context governs the bound
+		localTransport = t
+	})
+	return localTransport
+}
+
+// LocalHTTPClient wraps LocalTransport for local model servers. Pass 0 for the
+// timeout so the overall bound comes from the caller's context (run_timeout).
+func LocalHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: LocalTransport(),
 		Timeout:   timeout,
 	}
 }

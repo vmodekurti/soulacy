@@ -250,7 +250,13 @@ func TestGatewayChatStreamHandlerStreamsTokens(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("stream status = %d body=%s", status, raw)
 	}
-	if raw != "" && !strings.Contains(raw, "data: hello\n\n") && !strings.Contains(raw, "data: [DONE]\n\n") {
+	// The stream now always opens with a "run" event carrying the run id (so the
+	// client can cancel the run); tokens and [DONE] follow asynchronously and may
+	// not be captured synchronously. Any of these is a valid body.
+	if raw != "" &&
+		!strings.Contains(raw, "event: run") &&
+		!strings.Contains(raw, "data: hello\n\n") &&
+		!strings.Contains(raw, "data: [DONE]\n\n") {
 		t.Fatalf("stream body = %q", raw)
 	}
 	if !provider.waitForStreamRequest(500 * time.Millisecond) {

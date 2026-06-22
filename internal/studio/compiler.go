@@ -36,6 +36,21 @@ type Catalog struct {
 	Providers []string           `json:"providers,omitempty"`
 	Skills    []CatalogSkill     `json:"skills,omitempty"`
 	MCP       []CatalogMCPServer `json:"mcp,omitempty"`
+	// Channels are the configured output channels available to the workflow
+	// (e.g. "telegram", "slack", "discord", "http"). Studio wires a workflow's
+	// delivery to one of these instead of inventing a channel name.
+	Channels []string `json:"channels,omitempty"`
+	// KnowledgeBases are the knowledge bases the agent could draw on, so Studio
+	// can attach a relevant KB instead of starting from scratch (Story #7).
+	KnowledgeBases []CatalogKB `json:"knowledge_bases,omitempty"`
+}
+
+// CatalogKB is one knowledge base the workflow's agents could use as a source.
+// Name is the exact KB name; Description lets the compiler decide relevance.
+type CatalogKB struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Documents   int    `json:"documents,omitempty"`
 }
 
 // CatalogMCPServer is one connected MCP server and the tools it exposes, so the
@@ -121,6 +136,34 @@ type Draft struct {
 	Flow           Flow            `json:"flow"`
 	NewAgents      []NewAgent      `json:"new_agents,omitempty"`
 	Recommendation *Recommendation `json:"recommendation,omitempty"`
+	// Knowledge lists knowledge base names to attach to the agent so it can draw
+	// on existing documents (Story #7). The model may set this from the Available
+	// knowledge bases when the subject matches; mapped to Definition.Knowledge on
+	// save.
+	Knowledge []string `json:"knowledge,omitempty"`
+	// Unattended opts the saved agent into auto-approving guardrail confirmations
+	// in non-interactive (e.g. scheduled) runs (Story #14). Set by the user via
+	// the Studio toggle; mapped to Definition.Unattended on save.
+	Unattended bool `json:"unattended,omitempty"`
+
+	// ── ReAct / Plan-Execute agent form (local-first pivot) ───────────────────
+	// When Strategy is set ("react" or "plan_execute"), this Draft is NOT a fixed
+	// workflow — it's a reasoning agent. The engine runs the strategy loop and
+	// the Flow is left empty (a workflow block would override the strategy). The
+	// agent drives Tools (an allowlist of builtin + mcp__ tool names) and Skills
+	// dynamically, guided by SystemPrompt, with NewAgents as peers and Knowledge
+	// attached. Used for tasks that loop or depend on intermediate results
+	// (e.g. NotebookLM: add each source, poll audio status until ready).
+	Strategy string   `json:"strategy,omitempty"`
+	Tools    []string `json:"tools,omitempty"`
+	Skills   []string `json:"skills,omitempty"`
+}
+
+// IsAgent reports whether the draft is a reasoning agent (ReAct/Plan-Execute)
+// rather than a fixed workflow.
+func (d Draft) IsAgent() bool {
+	s := strings.ToLower(strings.TrimSpace(d.Strategy))
+	return s == "react" || s == "plan_execute"
 }
 
 // Question is one clarifying question. Options, when present, suggest a
@@ -154,6 +197,14 @@ type Result struct {
 	Questions   []Question   `json:"questions"`
 	Notes       []string     `json:"notes"`
 	Suggestions []Suggestion `json:"suggestions"`
+	// Explanation is a plain-language description of what was built (Story #10):
+	// purpose, steps, tools/channels, and the chosen architecture. Derived
+	// deterministically from the draft.
+	Explanation *DraftExplanation `json:"explanation,omitempty"`
+	// Plan is the deterministic skeleton the model was asked to realise (local-
+	// first pivot). Present when the intent matched a known pattern; surfaced for
+	// transparency so the user sees the framework did the structural planning.
+	Plan []PlanStep `json:"plan,omitempty"`
 }
 
 // canonicalExample is the shape the model is instructed to emit. It is
@@ -207,6 +258,10 @@ const canonicalExample = `{
 // grounding the model in the supplied catalog and weaving in any answers
 // the user gave to clarifying questions from a prior compile.
 func BuildPrompt(intent string, catalog Catalog, answers map[string]string) string {
+	// Keep only the grounding most relevant to the intent when the catalog is
+	// large, so the prompt stays focused (and within reach of weaker models).
+	// No-op for typical/small setups.
+	catalog = FilterCatalogForIntent(intent, catalog)
 	var sb strings.Builder
 	sb.WriteString("You are the Soulacy Studio intent compiler. ")
 	sb.WriteString("Turn the user's plain-language intent into a draft automation workflow.\n\n")
@@ -236,7 +291,8 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("    * Pull concrete values straight from the user's words: if they ask for \"top 10 AI articles\", the query is about AI articles and the count is 10 — bake that in, do not leave it generic.\n")
 	sb.WriteString("- Give every node a meaningful \"output\" var name so downstream nodes can reference it (e.g. \"articles\", \"notebook_id\", \"audio_url\").\n")
 	sb.WriteString("- Give every node a one-line \"description\" stating concretely what THAT node does (e.g. \"Search the web for today's AI news\", \"Keep the top 5 articles as {title,url}\") — not a vague label. The node ids should also read as verbs (search_ai_news, pick_top_articles), not generic names like node1.\n")
-	sb.WriteString("- If the intent needs reasoning and no suitable agent exists in the Available agents list, you MAY invent a new peer agent. If you do, you MUST provide its full definition in a `new_agents` array at the top level of your output JSON (alongside `flow`), including its `id`, `name`, `description`, and `system_prompt`.\n")
+	sb.WriteString("- AGENTS MUST BE FULLY DEFINED — never blank. Every agent node's `agent` id must be EITHER an agent in the Available agents list OR an agent you fully define in a top-level `new_agents` array (alongside `flow`). For EACH new agent you MUST supply: `id`, a human `name`, a one-line `description`, and a rich, REUSABLE `system_prompt`. Do NOT leave any of these empty and do NOT emit an agent node whose agent is neither in the catalog nor in new_agents.\n")
+	sb.WriteString("- WRITE REUSABLE AGENT PERSONAS: a helper agent like a summarizer or notifier may be reused across many workflows, so its `system_prompt` must be a complete, standalone persona — NOT a one-liner. Include: (1) its role and expertise, (2) what kinds of input it receives and the contract it expects, (3) exactly how it should behave and reason, (4) the precise OUTPUT format it must produce, and (5) how to handle empty/erroneous input gracefully. Aim for 3-6 sentences. The node's `input` is the per-run task; the agent's `system_prompt` is its durable, scenario-independent character.\n")
 	sb.WriteString("- Do NOT invent tool names. Do the work in a python node or an existing tool if no tool exists.\n")
 	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), DO NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name and description, then emit a tool node with \"tool\":\"read_skill\" and \"input\":{\"skill_name\":\"<EXACT installed skill name>\"} (e.g. a request for \"yahoo finance\" → {\"skill_name\":\"yfinance\"}). Only reference skills that appear in the Available skills list; if none matches, do the work with an existing tool or a python node instead of inventing a read_skill.\n")
 	sb.WriteString("- MCP SERVERS: connected MCP servers and the tools they expose are listed under \"Available MCP servers\" below. When the intent names a server or a capability one provides (e.g. \"use the github mcp\", \"create a notebook in notebooklm\", \"open a Linear issue\"), emit a tool node whose \"tool\" is the EXACT MCP tool name from that list, with \"input\" set to that tool's arguments built from the intent. Match loose references to the closest listed MCP tool by name + description. Do NOT invent MCP tool names; if no listed MCP tool fits, use another existing tool or a python node.\n")
@@ -321,6 +377,10 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 		sb.WriteString(strings.Join(catalog.Providers, ", "))
 		sb.WriteString("\n")
 	}
+	writeChannelGrounding(&sb, catalog)
+	writeKBGrounding(&sb, catalog)
+	writePatternGrounding(&sb, intent, catalog)
+	writePlanGrounding(&sb, intent, catalog)
 	if len(answers) > 0 {
 		sb.WriteString("\nThe user already answered these clarifying questions — honor them in the draft:\n")
 		for _, k := range sortedKeys(answers) {
@@ -454,9 +514,35 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// otherwise-valid draft over one cosmetic wiring slip.
 	reconcilePorts(&draft)
 
+	// Deterministic data-flow repair (local-first pivot, Story #10): fill empty
+	// required tool args from same-named upstream outputs AND reconcile dangling
+	// {{ .var }} references to the right upstream output (e.g. a step referencing
+	// {{ .date_str }} when its producer emits date_info) — repairing the most
+	// common wiring failures without asking the model to regenerate.
+	RepairWiring(&draft, catalog)
+
 	// Classify each Custom Python node's required capabilities from its code so
 	// the canvas can show them and save/consent can gate on them.
 	classifyFlowNodes(&draft.Flow)
+
+	// Deterministic backstop for sub-agent quality: guarantee every agent node
+	// that references a non-catalog helper agent has a full, reusable profile
+	// (name + description + rich system prompt) in NewAgents — so a "Notifier"
+	// or "Summarizer" the model invented (or forgot to define) is never saved
+	// blank. Runs after normalizeFlow so node Kind/Agent are settled.
+	ensureNewAgents(&draft, catalog)
+
+	// Focused-LLM repair (local-first pivot, Stories #16/#17): if deterministic
+	// auto-wiring left a data-flow gap (a step references a var no earlier step
+	// produces), ask the model to fix ONLY the broken node(s) — not regenerate
+	// the whole agent — then re-run the deterministic passes over the result.
+	// One pass, best-effort; the hard CompileFlow check below still guards.
+	if focusedRepair(ctx, llm, &draft) {
+		normalizeFlow(&draft)
+		reconcilePorts(&draft)
+		AutoWire(&draft, catalog)
+		classifyFlowNodes(&draft.Flow)
+	}
 
 	// The flow must compile — this is the hard contract. A model that emits a
 	// structurally invalid multi-node/branch/port graph is rejected here and
@@ -466,11 +552,33 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	}
 
 	questions, notes := analyze(draft)
+	// Transparency (Stories #15/#10): tell the user which proven pattern(s)
+	// shaped the design, so the applied step-ordering isn't a black box.
+	if applied := MatchPatterns(intent, catalog, 2); len(applied) > 0 {
+		names := make([]string, 0, len(applied))
+		for _, p := range applied {
+			names = append(names, p.Name)
+		}
+		notes = append(notes, "Applied proven pattern(s): "+strings.Join(names, "; ")+".")
+	}
+	// Transparency (Stories #5/#6/#7): say which skills the agent will use and,
+	// if a relevant KB exists that wasn't attached, recommend it.
+	if sk := usedSkills(draft.Flow); len(sk) > 0 {
+		notes = append(notes, "Uses installed skill(s): "+strings.Join(sk, ", ")+".")
+	}
+	if len(draft.Knowledge) > 0 {
+		notes = append(notes, "Attached knowledge base(s): "+strings.Join(draft.Knowledge, ", ")+".")
+	} else if rec := recommendKBs(intent, catalog); len(rec) > 0 {
+		notes = append(notes, "Consider attaching knowledge base(s) for this task: "+strings.Join(rec, ", ")+".")
+	}
+	explanation := ExplainDraft(draft)
 	return Result{
 		Workflow:    draft,
 		Questions:   questions,
 		Notes:       notes,
 		Suggestions: suggestMissing(draft, catalog),
+		Explanation: &explanation,
+		Plan:        BuildPlan(intent, catalog),
 	}, nil
 }
 
@@ -521,12 +629,25 @@ func suggestMissing(draft Draft, cat Catalog) []Suggestion {
 // (in first-seen flow order) followed by all agents.
 func referencedCapabilities(draft Draft, cat Catalog) []Suggestion {
 	// Empty-catalog guard: no context => no claims about install state.
-	if len(cat.Tools) == 0 && len(cat.Agents) == 0 {
+	if len(cat.Tools) == 0 && len(cat.Agents) == 0 && len(cat.MCP) == 0 {
 		return nil
 	}
 
 	toolSet := newNameSet(cat.Tools)
 	agentSet := newNameSet(cat.Agents)
+	// MCP tools live in cat.MCP (full names like mcp__server__tool), NOT in
+	// cat.Tools (which holds Go/Python builtins). Build a set of the connected
+	// MCP tool names so an mcp__ tool node is recognised as installed when its
+	// server is connected and exposes it. Without this, EVERY MCP tool node was
+	// falsely flagged "not installed", even with the server connected.
+	mcpSet := map[string]bool{}
+	for _, srv := range cat.MCP {
+		for _, t := range srv.Tools {
+			if name := strings.TrimSpace(t.Name); name != "" {
+				mcpSet[normalizeName(name)] = true
+			}
+		}
+	}
 
 	var out []Suggestion
 	seenTool := map[string]bool{}
@@ -538,8 +659,14 @@ func referencedCapabilities(draft Draft, cat Catalog) []Suggestion {
 		if t == "" || seenTool[normalizeName(t)] {
 			continue
 		}
-		seenTool[normalizeName(t)] = true
-		installed := toolSet[normalizeName(t)]
+		key := normalizeName(t)
+		seenTool[key] = true
+		installed := toolSet[key]
+		// An mcp__server__tool reference is installed when a connected MCP server
+		// exposes it (checked against cat.MCP, not cat.Tools).
+		if !installed && strings.HasPrefix(strings.ToLower(t), "mcp__") {
+			installed = mcpSet[key]
+		}
 		out = append(out, Suggestion{
 			Kind:      "tool",
 			Name:      t,
@@ -805,6 +932,11 @@ func normalizeFlow(d *Draft) {
 	}
 	for i := range d.Flow.Nodes {
 		n := &d.Flow.Nodes[i]
+		// Unwrap a double-wrapped python code field: some models emit the node's
+		// `code` as a JSON envelope {"code":"import …"} instead of raw Python, so
+		// the stored Code is `{"code":"..."}` — which fails at run time with
+		// "name 'run' is not defined". Replace it with the inner source.
+		unwrapNodeCode(n)
 		if strings.TrimSpace(n.Kind) != "" {
 			continue
 		}

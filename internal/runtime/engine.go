@@ -691,7 +691,16 @@ func (e *Engine) maybeConfirm(ctx context.Context, def *agent.Definition, call m
 func (e *Engine) dynamicConfirm(ctx context.Context, def *agent.Definition, call message.ToolCall, reason string) error {
 	sender, ok := confirmSenderFrom(ctx)
 	if !ok {
-		// No confirm channel in this context. Since the guardrail demanded confirmation but we can't get it, we must DENY for safety.
+		// No confirm channel in this context (e.g. a scheduled run). An agent
+		// explicitly marked Unattended opts into auto-approving these guardrail
+		// confirmations so it can COMPLETE without a human present; otherwise we
+		// DENY for safety. The auto-approval is recorded in the audit log.
+		if def != nil && def.Unattended {
+			e.log.Warn("guardrail required confirmation, no confirm channel — auto-approved (unattended agent)",
+				zap.String("agent", def.ID), zap.String("tool", call.Name), zap.String("reason", reason))
+			e.logAudit(ctx, def, call, "auto-approved (unattended)", time.Now(), false, nil)
+			return nil
+		}
 		e.log.Warn("guardrail required confirmation but no confirm channel in context — denying",
 			zap.String("tool", call.Name))
 		return fmt.Errorf("guardrail required confirmation, but no GUI available to confirm: %s", reason)
