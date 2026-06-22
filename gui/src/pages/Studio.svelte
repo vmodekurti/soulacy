@@ -1162,6 +1162,86 @@ def run(inputs):
     }
   }
 
+  // ── Architect: autonomous build-verify-repair ("Build until it works") ────
+  // One click drives the whole loop server-side: fill capability holes with
+  // generated glue code, synthesize self-tests, then repair every blocker AND
+  // every runtime error — actually RUNNING the agent — until it works or the
+  // budget is hit. The healed draft replaces the canvas and the transcript is
+  // shown so the user sees exactly what was wrong and how each problem was fixed.
+  let building = false
+  let buildReport = null // { workflow, ok, verified, attempts[], summary, residual[] }
+  let buildGlue = []
+  let buildLog = [] // live progress lines while building: [{kind, message}]
+  async function buildUntilWorks() {
+    if (!workflow || building) return
+    building = true
+    buildReport = null
+    buildGlue = []
+    buildLog = []
+    saveError = ''
+    try {
+      const res = await bridge.buildStream(workflow, intent, true, (ev) => {
+        if (!ev || !ev.message) return
+        // Append a live line; glue notes also feed the report's glue list.
+        buildLog = [...buildLog, ev]
+        if (ev.kind === 'glue') buildGlue = [...buildGlue, ev.message.replace(/^🧩\s*/, '')]
+      })
+      if (res && res.report) {
+        buildReport = res.report
+        if (res.report.workflow) setWorkflow(res.report.workflow, { name: workflow.name })
+        preflight = res.preflight && !res.preflight.ok ? res.preflight : null
+        toast(res.report.summary || 'Build complete.')
+      }
+    } catch (e) {
+      saveError = e.message || 'build failed'
+    } finally {
+      building = false
+    }
+  }
+
+  // ── Runtime self-heal: failed (incl. scheduled) runs ──────────────────────
+  // The DLQ feed of runs that failed at run time. Diagnosing one loads the saved
+  // agent, repairs it against the REAL error, re-verifies, and drops the healed
+  // draft onto the canvas to review + Save. No copy-paste of errors anywhere.
+  let showFailedRuns = false
+  let failedRuns = []
+  let loadingFailed = false
+  let healing = '' // id currently being healed
+  let healResult = null
+  async function loadFailedRuns() {
+    loadingFailed = true
+    try {
+      const r = await bridge.failedRuns()
+      failedRuns = (r && r.runs) || []
+    } catch (_) {
+      failedRuns = []
+    } finally {
+      loadingFailed = false
+    }
+  }
+  async function toggleFailedRuns() {
+    showFailedRuns = !showFailedRuns
+    if (showFailedRuns) await loadFailedRuns()
+  }
+  async function healFailedRun(id) {
+    if (healing) return
+    healing = id
+    healResult = null
+    saveError = ''
+    try {
+      const res = await bridge.diagnoseRun(id)
+      healResult = res
+      if (res && res.workflow) {
+        setWorkflow(res.workflow, { name: (res.workflow && res.workflow.name) || (workflow && workflow.name) })
+        toast(res.changed ? 'Healed — review the change and Save to apply it.' : 'No fix was suggested for this error.')
+      }
+    } catch (e) {
+      saveError = e.message || 'diagnose failed'
+    } finally {
+      healing = ''
+    }
+  }
+
   // Persist the draft. acceptPrivilegedExposure threads the operator's
   // channel-consent; grants threads the per-node code consent (§13). Handles the
   // 409 consent fallback (error carrying requiresConsent + consentItems) by
@@ -2056,6 +2136,14 @@ def run(inputs):
           <button class="btn" on:click={runTest} disabled={testing}>
             {testing ? 'Testing…' : 'Test'}
           </button>
+          <button
+            class="btn architect"
+            on:click={buildUntilWorks}
+            disabled={building || !workflow}
+            title="Autonomously fill gaps, fix every error, and run it until it works"
+          >
+            {building ? 'Building…' : '🛠 Build until it works'}
+          </button>
           {#if plan && plan.tier}
             <span
               class="tier-chip tier-{plan.tier}"
@@ -2079,6 +2167,114 @@ def run(inputs):
 
         {#if saveMsg}<div class="strip strip-ok">✓ {saveMsg}</div>{/if}
         {#if saveError}<div class="strip strip-error">⚠ {saveError}</div>{/if}
+
+        <!-- ── Architect live progress: streamed while the loop runs ──────── -->
+        {#if building || (buildLog.length && !buildReport)}
+          <div class="panel build-progress">
+            <div class="build-head">
+              <span class="spinner" aria-hidden="true"></span>
+              <span class="build-summary">Building & verifying — fixing problems as they’re found…</span>
+            </div>
+            {#if buildLog.length}
+              <ul class="build-live">
+                {#each buildLog as ev}
+                  <li class="live-line live-{ev.kind}">
+                    {#if ev.attempt}<span class="live-n">#{ev.attempt}</span>{/if}
+                    {ev.message}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- ── Architect build report: what was wrong, and how it was fixed ── -->
+        {#if buildReport}
+          <div class="panel build-report" class:ok={buildReport.ok}>
+            <div class="build-head">
+              <span class="build-badge" class:ok={buildReport.ok}>
+                {buildReport.verified ? '✓ Verified by running it' : buildReport.ok ? '✓ Validated' : '⚠ Needs attention'}
+              </span>
+              <span class="build-summary">{buildReport.summary}</span>
+              <button class="icon-btn" title="Dismiss" on:click={() => (buildReport = null)}>✕</button>
+            </div>
+            {#if buildGlue && buildGlue.length}
+              <ul class="build-glue">
+                {#each buildGlue as g}<li>🧩 {g}</li>{/each}
+              </ul>
+            {/if}
+            {#if buildReport.attempts && buildReport.attempts.length}
+              <ol class="build-attempts">
+                {#each buildReport.attempts as a}
+                  <li class="attempt" class:ok={a.ok}>
+                    <span class="attempt-phase">{a.phase}</span>
+                    {#if a.problems && a.problems.length}
+                      <ul class="attempt-problems">
+                        {#each a.problems as p}<li>{p}</li>{/each}
+                      </ul>
+                    {/if}
+                    <span class="attempt-action">{a.changed ? '→ ' : ''}{a.action}</span>
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+            {#if buildReport.residual && buildReport.residual.length}
+              <div class="build-residual">
+                <strong>Still unresolved:</strong>
+                <ul>{#each buildReport.residual as r}<li>{r}</li>{/each}</ul>
+              </div>
+            {/if}
+          </div>
+        {/if}
+
+        <!-- ── Runtime self-heal: failed (incl. scheduled) runs ──────────── -->
+        <div class="panel bench">
+          <div class="bench-section">
+            <button class="bench-head" type="button" on:click={toggleFailedRuns}>
+              <span class="caret">{showFailedRuns ? '▾' : '▸'}</span>
+              <h3 class="panel-title">Failed runs — self-heal</h3>
+              <span class="bench-sub">Pick up what failed at run time (including scheduled runs) and fix it automatically.</span>
+            </button>
+            {#if showFailedRuns}
+              {#if loadingFailed}
+                <p class="muted">Loading failed runs…</p>
+              {:else if !failedRuns.length}
+                <p class="muted">No failed runs recorded. 🎉</p>
+              {:else}
+                <ul class="failed-list">
+                  {#each failedRuns as fr (fr.id)}
+                    <li class="failed-item">
+                      <div class="failed-meta">
+                        <span class="failed-agent">{fr.agentName || fr.agentId}</span>
+                        <span class="failed-when">{fr.failedAt}</span>
+                      </div>
+                      <div class="failed-error">{fr.error}</div>
+                      <button
+                        class="btn small"
+                        disabled={!fr.healable || !!healing}
+                        title={fr.healable ? 'Diagnose and repair the saved agent' : 'The agent for this run no longer exists'}
+                        on:click={() => healFailedRun(fr.id)}
+                      >
+                        {healing === fr.id ? 'Healing…' : '✨ Fix with AI'}
+                      </button>
+                    </li>
+                  {/each}
+                </ul>
+                <button class="btn small" on:click={loadFailedRuns} disabled={loadingFailed}>Refresh</button>
+              {/if}
+              {#if healResult}
+                <div class="strip {healResult.changed ? 'strip-ok' : 'strip-warn'}">
+                  {#if healResult.changed}
+                    ✓ Healed “{healResult.agentName}”. The repaired draft is loaded above — review it and Save to apply.
+                    {#if healResult.report && healResult.report.verified} The fix was verified by re-running it.{/if}
+                  {:else}
+                    No automatic fix found for: {healResult.error}
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+          </div>
+        </div>
 
         <!-- ── Test bench editors: Mocks + Assertions (M5) ──────────────── -->
         <div class="panel bench">
@@ -2866,6 +3062,64 @@ def run(inputs):
     font-size: 11px;
   }
   .strip-warn { background: rgba(245, 167, 66, 0.12); color: var(--warn, #f5a742); }
+
+  /* ── Architect: build button + report + self-heal ─────────────────────── */
+  .btn.architect { background: var(--accent, #7c7aff); color: #fff; border-color: transparent; font-weight: 600; }
+  .btn.architect:disabled { opacity: 0.6; }
+  .btn.small { padding: 3px 10px; font-size: 12px; }
+  .build-report {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--border); background: var(--bg-elev);
+  }
+  .build-report.ok { border-color: rgba(54, 211, 153, 0.4); }
+  .build-head { display: flex; align-items: center; gap: 10px; }
+  .build-badge {
+    font-weight: 700; font-size: 12px; padding: 2px 8px; border-radius: 999px;
+    background: rgba(245, 167, 66, 0.16); color: var(--warn, #f5a742); white-space: nowrap;
+  }
+  .build-badge.ok { background: rgba(54, 211, 153, 0.16); color: var(--ok); }
+  .build-summary { flex: 1; font-size: 13px; line-height: 1.4; }
+  .build-glue { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-muted); }
+  .build-attempts { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
+  .attempt { font-size: 12px; line-height: 1.4; }
+  .attempt-phase {
+    display: inline-block; text-transform: uppercase; font-size: 10px; letter-spacing: 0.05em;
+    color: var(--text-muted); border: 1px solid var(--border); border-radius: 6px; padding: 0 5px; margin-right: 6px;
+  }
+  .attempt.ok .attempt-phase { color: var(--ok); border-color: rgba(54, 211, 153, 0.4); }
+  .attempt-problems { margin: 4px 0; padding-left: 16px; color: var(--text-muted); }
+  .attempt-action { color: var(--text); }
+  .build-residual { margin-top: 8px; font-size: 12px; color: var(--error); }
+  .build-residual ul { margin: 4px 0 0; padding-left: 18px; }
+  .failed-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .failed-item {
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 4px; background: var(--bg);
+  }
+  .failed-meta { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+  .failed-agent { font-weight: 600; }
+  .failed-when { color: var(--text-muted); }
+  .failed-error { font-size: 12px; color: var(--error); word-break: break-word; }
+  .failed-item .btn { align-self: flex-start; }
+  .build-progress {
+    margin-top: 10px; padding: 10px 12px; border-radius: 10px;
+    border: 1px solid var(--accent, #7c7aff); background: var(--bg-elev);
+  }
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+    border: 2px solid var(--border); border-top-color: var(--accent, #7c7aff);
+    animation: studio-spin 0.7s linear infinite;
+  }
+  @keyframes studio-spin { to { transform: rotate(360deg); } }
+  .build-live { margin: 8px 0 0; padding-left: 4px; list-style: none; display: flex; flex-direction: column; gap: 4px; max-height: 220px; overflow-y: auto; }
+  .live-line { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+  .live-line.live-result { color: var(--text); font-weight: 600; }
+  .live-line.live-verify { color: var(--accent, #7c7aff); }
+  .live-line.live-glue { color: var(--ok); }
+  .live-n {
+    display: inline-block; font-size: 10px; color: var(--text-muted);
+    border: 1px solid var(--border); border-radius: 5px; padding: 0 4px; margin-right: 6px;
+  }
   .v-count {
     font-weight: 700;
     border-radius: 999px;

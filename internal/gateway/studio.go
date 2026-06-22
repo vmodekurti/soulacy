@@ -20,12 +20,15 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/valyala/fasthttp"
 
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/config"
@@ -462,6 +465,278 @@ func (s *Server) handleStudioTroubleshoot(c *fiber.Ctx) error {
 	studio.RepairWiring(&repaired, cat)
 	pf := studio.Preflight(repaired, s.preflightInput(c, cat))
 	return c.JSON(fiber.Map{"workflow": repaired, "changed": changed, "preflight": pf})
+}
+
+// studioBuildRequest is the POST /api/v1/studio/build body: the current draft to
+// make work, plus the originating intent (used to synthesize self-tests).
+type studioBuildRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+	Intent   string       `json:"intent,omitempty"`
+	// Verify, when false, runs the loop in validation-only mode (no real
+	// execution). Defaults to true: the Architect actually runs the agent.
+	Verify *bool `json:"verify,omitempty"`
+}
+
+// handleStudioBuild implements POST /api/v1/studio/build — the Architect's
+// autonomous build-verify-repair loop. It (1) fills capability holes with
+// generated glue code, (2) synthesizes self-tests from the intent, (3) drives
+// studio.BuildUntilWorks with a REAL-execution verifier backed by the engine
+// (tool + Python steps run for real), repairing every blocker and every runtime
+// error it hits until the agent works or it exhausts its budget, and (4) returns
+// the final draft plus a full, transparent attempt transcript.
+func (s *Server) handleStudioBuild(c *fiber.Ctx) error {
+	var req studioBuildRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+
+	// (1) Fill capability holes with generated glue code before the loop.
+	var glueNotes []string
+	if _, notes := studio.EnsureCapabilities(c.Context(), model, &req.Workflow, cat); len(notes) > 0 {
+		glueNotes = notes
+	}
+
+	// (2) Synthesize self-tests so "it works" is checked, not assumed.
+	intent := strings.TrimSpace(req.Intent)
+	if intent == "" {
+		intent = req.Workflow.Intent
+	}
+	tests := studio.SynthesizeTests(c.Context(), model, intent, req.Workflow, cat)
+
+	// (3) Choose the verifier. Default: REAL execution via the engine.
+	verify := true
+	if req.Verify != nil {
+		verify = *req.Verify
+	}
+	opts := studio.BuildOptions{In: in, Tests: tests}
+	if verify {
+		opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
+	}
+
+	rep := studio.BuildUntilWorks(c.Context(), model, req.Workflow, cat, opts)
+
+	final := studio.Preflight(rep.Workflow, in)
+	return c.JSON(fiber.Map{
+		"report":    rep,
+		"preflight": final,
+		"glue":      glueNotes,
+	})
+}
+
+// handleStudioBuildStream is the streaming variant of /studio/build. It runs the
+// same autonomous loop but emits a text/event-stream so the GUI shows live
+// progress (each attempt starting, what's being repaired, when it's running,
+// the outcome) instead of a frozen "Building…". The stream ends with an
+// `event: done` frame carrying the full {report, preflight, glue} payload.
+func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
+	var req studioBuildRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+	// Detach from the request context so the loop isn't cancelled when the
+	// handler returns to take over the connection as a stream writer.
+	ctx := context.WithoutCancel(c.Context())
+
+	// Events are produced by the loop (in a goroutine) and drained by the SSE
+	// writer. Buffered so the loop never blocks on a slow client.
+	type sse struct{ event, data string }
+	events := make(chan sse, 64)
+
+	go func() {
+		defer close(events)
+		emit := func(kind, data string) {
+			select {
+			case events <- sse{event: kind, data: data}:
+			default: // drop if the client is gone / buffer full
+			}
+		}
+		// (1) Glue, then (2) self-tests — reported as their own steps.
+		if _, notes := studio.EnsureCapabilities(ctx, model, &req.Workflow, cat); len(notes) > 0 {
+			for _, nt := range notes {
+				emit("event", jsonMsg("glue", "🧩 "+nt))
+			}
+		}
+		intent := strings.TrimSpace(req.Intent)
+		if intent == "" {
+			intent = req.Workflow.Intent
+		}
+		emit("event", jsonMsg("tests", "Writing self-tests…"))
+		tests := studio.SynthesizeTests(ctx, model, intent, req.Workflow, cat)
+
+		verify := true
+		if req.Verify != nil {
+			verify = *req.Verify
+		}
+		opts := studio.BuildOptions{In: in, Tests: tests}
+		if verify {
+			opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
+		}
+		opts.OnEvent = func(ev studio.BuildEvent) {
+			b, _ := json.Marshal(ev)
+			emit("event", string(b))
+		}
+
+		rep := studio.BuildUntilWorks(ctx, model, req.Workflow, cat, opts)
+		final := studio.Preflight(rep.Workflow, in)
+		done, _ := json.Marshal(fiber.Map{"report": rep, "preflight": final})
+		emit("done", string(done))
+	}()
+
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+	c.Context().SetBodyStreamWriter(fasthttp.StreamWriter(func(w *bufio.Writer) {
+		for ev := range events {
+			if ev.event != "" {
+				fmt.Fprintf(w, "event: %s\n", ev.event) //nolint:errcheck
+			}
+			fmt.Fprintf(w, "data: %s\n\n", ev.data) //nolint:errcheck
+			w.Flush()                               //nolint:errcheck
+		}
+	}))
+	return nil
+}
+
+// jsonMsg renders a {kind,message} progress frame for the build stream.
+func jsonMsg(kind, msg string) string {
+	b, _ := json.Marshal(studio.BuildEvent{Kind: kind, Message: msg})
+	return string(b)
+}
+
+// studioRealRunner wires the studio RealRunVerifier to the engine's execution
+// primitives so a build-time verification run invokes real tools and real Python
+// — the only way to catch failures that only appear when the agent actually runs.
+func (s *Server) studioRealRunner() studio.RealRunner {
+	if s.engine == nil {
+		return studio.RealRunner{}
+	}
+	return studio.RealRunner{
+		Tool: func(ctx context.Context, name, argsJSON string) (json.RawMessage, error) {
+			return s.engine.RunTool(ctx, name, argsJSON)
+		},
+		Python: func(ctx context.Context, code string, argsJSON []byte) (json.RawMessage, error) {
+			return s.engine.RunInlinePython(ctx, code, argsJSON)
+		},
+	}
+}
+
+// handleStudioFailedRuns implements GET /api/v1/studio/failed-runs. It surfaces
+// the runs that FAILED at run time (including unattended scheduled runs), drawn
+// from the dead-letter queue the engine writes on every failed Handle(). Each
+// entry names the agent, the real error, and when it failed — so the user can
+// self-heal a 6am scheduled failure without pasting anything anywhere. This is
+// the "Soulacy is the only savior" feed: every failure is actionable in-product.
+func (s *Server) handleStudioFailedRuns(c *fiber.Ctx) error {
+	if s.dlqStore == nil {
+		return c.JSON(fiber.Map{"runs": []any{}})
+	}
+	items, err := s.dlqStore.List(c.Context(), "")
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	type failedRun struct {
+		ID        string `json:"id"`
+		AgentID   string `json:"agentId"`
+		AgentName string `json:"agentName"`
+		Error     string `json:"error"`
+		Attempts  int    `json:"attempts"`
+		FailedAt  string `json:"failedAt"`
+		Healable  bool   `json:"healable"`
+	}
+	runs := make([]failedRun, 0, len(items))
+	for _, it := range items {
+		fr := failedRun{
+			ID: it.ID, AgentID: it.Queue, Error: it.ErrorMsg,
+			Attempts: it.Attempts, FailedAt: it.LastAttemptAt.UTC().Format("2006-01-02T15:04:05Z"),
+		}
+		if s.loader != nil {
+			if def := s.loader.Get(it.Queue); def != nil {
+				fr.AgentName = def.Name
+				fr.Healable = true // the saved agent still exists, so we can repair it
+			}
+		}
+		runs = append(runs, fr)
+	}
+	return c.JSON(fiber.Map{"runs": runs})
+}
+
+// studioDiagnoseRunRequest is the POST /api/v1/studio/diagnose-run body: a
+// dead-letter entry id to diagnose and self-heal.
+type studioDiagnoseRunRequest struct {
+	ID string `json:"id"`
+}
+
+// handleStudioDiagnoseRun implements POST /api/v1/studio/diagnose-run. Given a
+// failed run, it loads the SAVED agent, reconstructs its draft, repairs it
+// against the REAL runtime error, then runs the full build-verify loop so the
+// fix is validated (and, for workflows, actually re-executed). It returns the
+// healed draft + a transcript so the user can review and apply it — turning an
+// opaque scheduled-run failure into a one-click fix.
+func (s *Server) handleStudioDiagnoseRun(c *fiber.Ctx) error {
+	var req studioDiagnoseRunRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.ID) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "failed-run id is required")
+	}
+	if s.dlqStore == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "no failed-run history available")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	entry, err := s.dlqStore.Get(c.Context(), req.ID)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusNotFound, "failed run not found")
+	}
+	def := s.loader.Get(entry.Queue)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "the agent for this run no longer exists")
+	}
+	draft := studio.FromAgentDefinition(*def)
+
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+
+	// (1) Repair directly against the real runtime error.
+	problem := "At RUN TIME this agent failed with: " + strings.TrimSpace(entry.ErrorMsg) +
+		" — change the agent so this cannot happen again."
+	healed, changed := studio.RepairWithProblems(c.Context(), model, draft, []string{problem}, cat)
+	studio.RepairWiring(&healed, cat)
+
+	// (2) Validate (and, for workflows, re-run) to confirm the fix holds.
+	rep := studio.BuildUntilWorks(c.Context(), model, healed, cat, studio.BuildOptions{
+		In:       in,
+		Verifier: studio.RealRunVerifier{Runner: s.studioRealRunner()},
+	})
+
+	return c.JSON(fiber.Map{
+		"agentId":   entry.Queue,
+		"agentName": def.Name,
+		"error":     entry.ErrorMsg,
+		"changed":   changed,
+		"workflow":  rep.Workflow,
+		"report":    rep,
+		"preflight": studio.Preflight(rep.Workflow, in),
+	})
 }
 
 // studioCompileAgentRequest is the POST /api/v1/studio/compile-agent body.

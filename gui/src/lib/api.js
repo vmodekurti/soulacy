@@ -31,6 +31,43 @@ export async function apiFetch(path, opts = {}) {
   return text ? JSON.parse(text) : null
 }
 
+// streamSSE POSTs a body and parses a text/event-stream response, invoking
+// onEvent({event, data}) for each frame. Resolves when the stream closes.
+// Used by the Studio Architect's "Build until it works" so progress shows live.
+export async function streamSSE(path, body, onEvent) {
+  const res = await fetch('/api/v1' + path, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify(body),
+  })
+  if (!res.ok || !res.body) {
+    const b = await res.json().catch(() => ({}))
+    if (res.status === 401 || res.status === 403) authRequired.set(true)
+    throw Object.assign(new Error(b.error || res.statusText), { status: res.status, body: b })
+  }
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += decoder.decode(value, { stream: true })
+    // Frames are separated by a blank line.
+    let idx
+    while ((idx = buf.indexOf('\n\n')) >= 0) {
+      const frame = buf.slice(0, idx)
+      buf = buf.slice(idx + 2)
+      let event = 'message'
+      let data = ''
+      for (const line of frame.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim()
+        else if (line.startsWith('data:')) data += line.slice(5).trim()
+      }
+      if (data) onEvent({ event, data })
+    }
+  }
+}
+
 export const api = {
   health: () => apiFetch('/health'),
 
@@ -267,6 +304,55 @@ export const api = {
       apiFetch('/studio/troubleshoot', {
         method: 'POST',
         body: JSON.stringify({ workflow, error }),
+      }),
+    /**
+     * Architect: autonomous build-verify-repair loop. Fills capability holes
+     * with glue code, synthesizes self-tests, then repairs every blocker and
+     * runtime error — actually running the agent — until it works.
+     * @returns {Promise<{report:{workflow,ok,verified,attempts:{n,phase,problems,action,changed,ok}[],summary,residual?}, preflight, glue:string[]}>}
+     */
+    build: ({ workflow, intent, verify } = {}) =>
+      apiFetch('/studio/build', {
+        method: 'POST',
+        body: JSON.stringify({
+          workflow,
+          ...(intent ? { intent } : {}),
+          ...(verify === false ? { verify: false } : {}),
+        }),
+      }),
+    /**
+     * Streaming build: same loop, live progress via SSE. onEvent receives each
+     * {kind, attempt?, phase?, message} progress frame; the returned promise
+     * resolves with the final {report, preflight} payload.
+     */
+    buildStream: ({ workflow, intent, verify } = {}, onEvent) => {
+      let final = null
+      return streamSSE(
+        '/studio/build/stream',
+        { workflow, ...(intent ? { intent } : {}), ...(verify === false ? { verify: false } : {}) },
+        ({ event, data }) => {
+          let parsed
+          try { parsed = JSON.parse(data) } catch (_) { return }
+          if (event === 'done') { final = parsed; return }
+          if (onEvent) onEvent(parsed)
+        },
+      ).then(() => final)
+    },
+    /**
+     * List runs that FAILED at run time (including unattended scheduled runs),
+     * from the dead-letter queue — the self-heal feed.
+     * @returns {Promise<{runs:{id,agentId,agentName,error,attempts,failedAt,healable}[]}>}
+     */
+    failedRuns: () => apiFetch('/studio/failed-runs'),
+    /**
+     * Diagnose a failed run and self-heal its saved agent: repair against the
+     * real error, then validate/re-run. Returns the healed draft + transcript.
+     * @returns {Promise<{agentId,agentName,error,changed,workflow,report,preflight}>}
+     */
+    diagnoseRun: ({ id } = {}) =>
+      apiFetch('/studio/diagnose-run', {
+        method: 'POST',
+        body: JSON.stringify({ id }),
       }),
     /**
      * Advice on whether the configured builder model is strong enough for agent

@@ -78,6 +78,16 @@ export const bridge = {
   // AI troubleshoot of a runtime error.
   troubleshoot: (workflow, error) => api.studio.troubleshoot({ workflow, error }),
 
+  // Architect: autonomous build-verify-repair loop ("Build until it works").
+  build: (workflow, intent, verify) => api.studio.build({ workflow, intent, verify }),
+  // Streaming variant: onEvent gets live progress frames; resolves with the report.
+  buildStream: (workflow, intent, verify, onEvent) =>
+    api.studio.buildStream({ workflow, intent, verify }, onEvent),
+
+  // Runtime self-heal: list failed runs + diagnose/heal one.
+  failedRuns: () => api.studio.failedRuns(),
+  diagnoseRun: (id) => api.studio.diagnoseRun({ id }),
+
   // Builder-model strength advice (warn before generating on a weak model).
   modelAdvice: () => api.studio.modelAdvice(),
 

@@ -715,6 +715,13 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/autowire", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioAutowire)
 	// Studio plugin backend: AI troubleshoot of a runtime error ("Fix with AI").
 	api.Post("/studio/troubleshoot", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTroubleshoot)
+	// Studio Architect: autonomous build-verify-repair loop ("Build until it works").
+	api.Post("/studio/build", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioBuild)
+	// Streaming variant: live progress as a text/event-stream.
+	api.Post("/studio/build/stream", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioBuildStream)
+	// Studio Architect: list/diagnose failed runs and self-heal the saved agent.
+	api.Get("/studio/failed-runs", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioFailedRuns)
+	api.Post("/studio/diagnose-run", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioDiagnoseRun)
 	// Studio plugin backend (Wave 2): dry-run test and save-as-disabled-agent.
 	api.Post("/studio/test", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTest)
 	// Studio plugin backend (M2): capability-tier consent plan + gated save.

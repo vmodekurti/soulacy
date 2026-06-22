@@ -222,6 +222,12 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 	// produced by an earlier step.
 	checkDataFlow(draft, add)
 
+	// Deep tool introspection (Architect): validate each tool call against the
+	// tool's real signature — unknown argument names + literal type mismatches —
+	// so a call that would silently fail at the MCP boundary is caught at build
+	// time and fed to the repair loop.
+	checkToolArgs(draft, in.Catalog, add)
+
 	// Unattended-execution / confirmation tradeoff (Story #14): a scheduled agent
 	// runs with no human present, so any step that acts on the system or network
 	// executes WITHOUT approval. Warn and explain the tradeoff.
