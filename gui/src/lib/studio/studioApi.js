@@ -45,8 +45,17 @@ export const bridge = {
     return { agents, tools, providers, channels, skills, mcp }
   },
 
+  // Mandatory pre-generation refine pass: clarify a rough intent before it is
+  // compiled into a workflow.
+  refinePrompt: (intent, catalog) =>
+    api.studio.refinePrompt({ intent, catalog }),
+
   compile: (intent, answers, catalog) =>
     api.studio.compile({ intent, answers, catalog }),
+
+  // Generate a ReAct/Plan-Execute agent (no fixed flow).
+  compileAgent: (intent, strategy, answers, catalog) =>
+    api.studio.compileAgent({ intent, strategy, answers, catalog }),
 
   // M5 test bench: only forward present optional fields; the backend defaults
   // the rest.
@@ -58,6 +67,19 @@ export const bridge = {
       ...(opts.assertions ? { assertions: opts.assertions } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
     }),
+
+  // Consolidated pre-save validation (missing capabilities, empty required
+  // args, invalid schedule, unconfigured channels).
+  preflight: (workflow) => api.studio.preflight({ workflow }),
+
+  // Deterministic + iterative-LLM repair (auto-wire + reconcile + fix blockers).
+  autowire: (workflow) => api.studio.autowire({ workflow }),
+
+  // AI troubleshoot of a runtime error.
+  troubleshoot: (workflow, error) => api.studio.troubleshoot({ workflow, error }),
+
+  // Builder-model strength advice (warn before generating on a weak model).
+  modelAdvice: () => api.studio.modelAdvice(),
 
   plan: (workflow) => api.studio.plan({ workflow }),
 

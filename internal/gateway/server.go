@@ -119,6 +119,9 @@ type Server struct {
 	// handlers return 503.
 	costStore *costs.Store
 
+	// runReg tracks cancellable in-flight chat/stream runs (Story #22).
+	runReg *runRegistry
+
 	// workboardStore is the optional Kanban task store (Story 5). Wired via
 	// SetWorkboardStore after construction. When nil, /api/v1/workboard
 	// handlers return 503.
@@ -180,6 +183,7 @@ func New(
 		mcp:         mcpClient,
 		hub:         hub,
 		log:         log,
+		runReg:      newRunRegistry(),
 	}
 	s.app = s.buildApp()
 	return s
@@ -615,6 +619,8 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/chat/stream", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChatStream)
 	api.Get("/chat/stream", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChatStream)
 	api.Post("/chat/confirm", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleToolConfirm)
+	// Cancel an in-flight run (Story #22): stop a slow local-model run.
+	api.Post("/chat/cancel", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleChatCancel)
 
 	// Channels
 	api.Get("/channels", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleListChannels)
@@ -690,8 +696,25 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/builder/deploy", s.rbacMW(rbac.ResourceBuilder, rbac.ActionWrite), s.handleBuilderDeploy)
 	api.Delete("/builder/session/:id", s.rbacMW(rbac.ResourceBuilder, rbac.ActionWrite), s.handleBuilderDeleteSession)
 
+	// Studio plugin backend: mandatory pre-generation prompt refinement — turn a
+	// rough intent into a clear spec + assumptions + clarifying questions before
+	// a workflow is compiled.
+	api.Post("/studio/refine-prompt", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioRefinePrompt)
 	// Studio plugin backend (Story S1.1): intent compiler.
 	api.Post("/studio/compile", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCompile)
+	// Studio plugin backend: generate a ReAct/Plan-Execute AGENT (no fixed flow)
+	// for intents that need a reasoning loop (local-first pivot).
+	api.Post("/studio/compile-agent", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCompileAgent)
+	// Studio plugin backend: consolidated pre-save validation (missing tools/MCP/
+	// channels/secrets, empty required args, invalid schedules).
+	api.Post("/studio/preflight", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioPreflight)
+	// Studio plugin backend: builder-model strength advice (warn on weak models).
+	api.Get("/studio/model-advice", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioModelAdvice)
+	// Studio plugin backend: deterministic + iterative-LLM repair for the "Fix
+	// automatically" action.
+	api.Post("/studio/autowire", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioAutowire)
+	// Studio plugin backend: AI troubleshoot of a runtime error ("Fix with AI").
+	api.Post("/studio/troubleshoot", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTroubleshoot)
 	// Studio plugin backend (Wave 2): dry-run test and save-as-disabled-agent.
 	api.Post("/studio/test", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTest)
 	// Studio plugin backend (M2): capability-tier consent plan + gated save.

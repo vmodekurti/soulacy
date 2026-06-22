@@ -53,8 +53,20 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		return agent.Definition{}, fmt.Errorf("studio: cannot derive an agent id from an empty workflow name")
 	}
 
-	// Ensure every Custom Python node carries fresh capability classification on
-	// the saved agent (a draft may have been imported/edited without a compile).
+	// ReAct / Plan-Execute agent: NOT a fixed workflow. The engine runs the
+	// reasoning loop over an allowlist of tools/skills/peers — there is NO
+	// workflow block (one would override reasoning.strategy). Map the draft's
+	// agent form onto a strategy-based Definition.
+	if draft.IsAgent() {
+		return toReActAgentDefinition(draft, id, acceptPrivilegedExposure)
+	}
+
+	// Normalize python node code: unwrap any {"code":"..."} JSON envelope so the
+	// saved agent stores runnable Python, not a JSON string (which would fail at
+	// run time with "name 'run' is not defined"). Then classify capabilities.
+	for i := range draft.Flow.Nodes {
+		unwrapNodeCode(&draft.Flow.Nodes[i])
+	}
 	classifyFlowNodes(&draft.Flow)
 
 	def := agent.Definition{
@@ -98,6 +110,33 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		def.Agents = peers
 	}
 
+	// Enable the skills the flow actually loads (read_skill nodes). Without this
+	// the engine treats skills as disabled and the read_skill node can't resolve.
+	if skills := usedSkills(draft.Flow); len(skills) > 0 {
+		def.Skills = skills
+	}
+	// Attach any knowledge bases the draft chose so the agent can use them.
+	if len(draft.Knowledge) > 0 {
+		seen := map[string]bool{}
+		for _, kb := range draft.Knowledge {
+			kb = strings.TrimSpace(kb)
+			if kb != "" && !seen[kb] {
+				seen[kb] = true
+				def.Knowledge = append(def.Knowledge, kb)
+			}
+		}
+	}
+
+	// Unattended execution opt-in (Story #14): carry through so a scheduled agent
+	// with privileged steps can complete without a human to approve them.
+	def.Unattended = draft.Unattended
+
+	// Interface-aware design (Stories #11/#12): record where this agent should
+	// appear so cron-only agents don't clutter Chat. Derived deterministically
+	// from the trigger + channels; a scheduled agent is schedule-only unless it
+	// also targets channels.
+	def.Surfaces = studioSurfaces(draft)
+
 	// Schedule triggers carry their cron into the agent Schedule block so
 	// the scheduler can register the (disabled) agent unchanged.
 	if def.Trigger == agent.TriggerCron {
@@ -118,6 +157,131 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	}
 
 	return def, nil
+}
+
+// toReActAgentDefinition maps a ReAct/Plan-Execute agent Draft onto an
+// agent.Definition that runs the reasoning loop (NO workflow block). The agent
+// drives an allowlist of tools/skills/peers dynamically.
+func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure bool) (agent.Definition, error) {
+	strategy := strings.ToLower(strings.TrimSpace(draft.Strategy))
+
+	def := agent.Definition{
+		ID:           id,
+		Name:         draft.Name,
+		Description:  reactDescription(draft),
+		Trigger:      mapTrigger(draft.Trigger.Type),
+		Channels:     append([]string(nil), draft.Channels...),
+		SystemPrompt: reactSystemPrompt(draft),
+		StudioIntent: strings.TrimSpace(draft.Intent),
+		Enabled:      false, // staged for review, like every Studio save
+		MaxTurns:     15,
+		Memory:       agent.MemoryPolicy{MaxTokens: 8000},
+		LLM:          agent.LLMConfig{Temperature: 0.7},
+		// The reasoning loop — the whole point. No Workflow block.
+		Reasoning:  agent.ReasoningConfig{Strategy: strategy},
+		Unattended: draft.Unattended,
+	}
+
+	// Tool allowlist → builtins + MCP tools (split on the mcp__ prefix), so the
+	// tier classifier and the engine offer exactly these.
+	var builtins, mcpTools []string
+	seen := map[string]bool{}
+	for _, t := range draft.Tools {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		if strings.HasPrefix(t, "mcp__") {
+			mcpTools = append(mcpTools, t)
+		} else {
+			builtins = append(builtins, t)
+		}
+	}
+	if len(builtins) > 0 {
+		def.Builtins = &builtins
+	}
+	if len(mcpTools) > 0 {
+		def.MCPTools = &mcpTools
+	}
+
+	// Peers, skills, knowledge.
+	if peers := dedupeNonEmpty(newAgentIDs(draft)); len(peers) > 0 {
+		def.Agents = peers
+	}
+	if sk := dedupeNonEmpty(draft.Skills); len(sk) > 0 {
+		def.Skills = sk
+	}
+	if kb := dedupeNonEmpty(draft.Knowledge); len(kb) > 0 {
+		def.Knowledge = kb
+	}
+
+	def.Surfaces = studioSurfaces(draft)
+	if def.Trigger == agent.TriggerCron {
+		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
+			def.Schedule = &agent.Schedule{Cron: cron}
+		}
+	}
+	if acceptPrivilegedExposure && len(def.Channels) > 0 {
+		def.Labels = map[string]string{StudioPrivilegeAckLabel: "true"}
+	}
+	return def, nil
+}
+
+// newAgentIDs returns the ids of peer agents the draft defines/references.
+func newAgentIDs(draft Draft) []string {
+	out := make([]string, 0, len(draft.NewAgents))
+	for _, na := range draft.NewAgents {
+		out = append(out, na.ID)
+	}
+	return out
+}
+
+func dedupeNonEmpty(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s != "" && !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// reactSystemPrompt builds the agent's system prompt: the model-authored prompt
+// (which should already carry the task + ordered approach) plus a short loop
+// directive so the agent uses its tools methodically.
+func reactSystemPrompt(draft Draft) string {
+	var b strings.Builder
+	if p := strings.TrimSpace(draft.SystemPrompt); p != "" {
+		b.WriteString(p)
+	} else {
+		name := strings.TrimSpace(draft.Name)
+		if name == "" {
+			name = "this agent"
+		}
+		fmt.Fprintf(&b, "You are %q, an autonomous agent built in Soulacy Studio.", name)
+	}
+	b.WriteString("\n\nWork the task by reasoning step by step: decide the next action, call ONE tool, read its result, then decide the next step from what actually happened — never assume a step succeeded. Loop until the goal is met. For lists, act on each item; for asynchronous jobs, poll status until ready before continuing. On a tool error, adapt or stop gracefully with a clear message.")
+	if t := strings.TrimSpace(draft.Intent); t != "" {
+		b.WriteString("\n\nGoal: ")
+		b.WriteString(t)
+	}
+	return b.String()
+}
+
+func reactDescription(draft Draft) string {
+	mode := "ReAct"
+	if strings.EqualFold(draft.Strategy, "plan_execute") {
+		mode = "Plan-Execute"
+	}
+	out := fmt.Sprintf("Studio %s agent — %s", mode, triggerShort(draft.Trigger))
+	if len(draft.Channels) > 0 {
+		out += " → " + strings.Join(draft.Channels, ", ")
+	}
+	return out + "."
 }
 
 // flowTools collects the distinct, non-empty tool names from a flow's
@@ -159,6 +323,46 @@ func flowPeers(flow Flow) []string {
 // mapTrigger translates Studio's trigger.type vocabulary (schedule | channel
 // | webhook | manual) onto the agent's TriggerKind. "manual" has no direct
 // agent equivalent; it maps to TriggerInternal (programmatic activation).
+// studioSurfaces derives the agent's interface surfaces from the draft's
+// trigger + channels (Stories #11/#12). A scheduled agent appears only under
+// Schedule (not Chat) unless it also delivers to channels; a manual/channel
+// agent appears in Chat and on its channels.
+func studioSurfaces(draft Draft) []string {
+	var out []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		for _, e := range out {
+			if e == s {
+				return
+			}
+		}
+		out = append(out, s)
+	}
+	switch strings.ToLower(strings.TrimSpace(draft.Trigger.Type)) {
+	case "schedule", "cron", "oneshot":
+		add(agent.SurfaceSchedule)
+		for _, ch := range draft.Channels {
+			add(ch) // a scheduled digest still delivers to its channel(s)
+		}
+	case "channel":
+		for _, ch := range draft.Channels {
+			add(ch)
+		}
+		add(agent.SurfaceChat)
+	case "webhook":
+		add("webhook")
+	default: // manual / internal
+		add(agent.SurfaceChat)
+		for _, ch := range draft.Channels {
+			add(ch)
+		}
+	}
+	return out
+}
+
 func mapTrigger(t string) agent.TriggerKind {
 	switch strings.ToLower(strings.TrimSpace(t)) {
 	case "schedule", "cron":

@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"text/template"
 	"time"
 
@@ -126,7 +127,22 @@ func flowOutputString(out json.RawMessage) string {
 var flowTemplateFuncs = template.FuncMap{
 	"toJson": toJSONString,
 	"json":   toJSONString,
+	// Curated helpers models commonly reach for (Sprig-style). Having them
+	// registered means a reasonable generated template (e.g. {{ pluck "url"
+	// .articles }}) works instead of failing to parse with "function X not
+	// defined". They operate on the PARSED JSON flow vars (maps/slices/any).
+	"default": tmplDefault,
+	"join":    tmplJoin,
+	"first":   tmplFirst,
+	"last":    tmplLast,
+	"pluck":   tmplPluck,
 }
+
+// FlowTemplateFuncs exposes the template functions available inside node Input /
+// edge If templates, so callers that VALIDATE templates (e.g. the Studio
+// pre-save check) parse with the exact same function set the renderer uses —
+// keeping "valid at save" and "renders at run" in lockstep.
+func FlowTemplateFuncs() template.FuncMap { return flowTemplateFuncs }
 
 func toJSONString(v any) (string, error) {
 	b, err := json.Marshal(v)
@@ -134,6 +150,97 @@ func toJSONString(v any) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// tmplDefault returns val when it's "present" (non-nil, non-empty), else def.
+// Usable as {{ default "x" .y }} or {{ .y | default "x" }}.
+func tmplDefault(def, val any) any {
+	switch v := val.(type) {
+	case nil:
+		return def
+	case string:
+		if strings.TrimSpace(v) == "" {
+			return def
+		}
+	case []any:
+		if len(v) == 0 {
+			return def
+		}
+	case map[string]any:
+		if len(v) == 0 {
+			return def
+		}
+	}
+	return val
+}
+
+// asSlice coerces a parsed-JSON value to []any (nil when not a list).
+func asSlice(v any) []any {
+	if s, ok := v.([]any); ok {
+		return s
+	}
+	return nil
+}
+
+// tmplJoin joins a list's elements with sep. Accepts either argument order —
+// {{ join ", " .urls }} (Sprig) or {{ join .urls ", " }} (common slip).
+func tmplJoin(a, b any) string {
+	sep, parts := joinArgs(a, b)
+	strs := make([]string, 0, len(parts))
+	for _, p := range parts {
+		strs = append(strs, fmt.Sprint(p))
+	}
+	return strings.Join(strs, sep)
+}
+
+// joinArgs resolves (sep, list) from two args given in either order.
+func joinArgs(a, b any) (string, []any) {
+	if s, ok := a.(string); ok {
+		return s, asSlice(b)
+	}
+	if s, ok := b.(string); ok {
+		return s, asSlice(a)
+	}
+	return "", asSlice(a)
+}
+
+func tmplFirst(v any) any {
+	if s := asSlice(v); len(s) > 0 {
+		return s[0]
+	}
+	return nil
+}
+
+func tmplLast(v any) any {
+	if s := asSlice(v); len(s) > 0 {
+		return s[len(s)-1]
+	}
+	return nil
+}
+
+// tmplPluck extracts field `key` from each map in a list. Accepts either
+// argument order — {{ pluck "url" .articles }} (Sprig) or
+// {{ pluck .articles "url" }} (common slip) — since both are valid syntax and
+// the order is a frequent model mistake.
+func tmplPluck(a, b any) []any {
+	var key string
+	var list []any
+	if s, ok := a.(string); ok {
+		key, list = s, asSlice(b)
+	} else if s, ok := b.(string); ok {
+		key, list = s, asSlice(a)
+	} else {
+		return nil
+	}
+	var out []any
+	for _, item := range list {
+		if m, ok := item.(map[string]any); ok {
+			if val, present := m[key]; present {
+				out = append(out, val)
+			}
+		}
+	}
+	return out
 }
 
 // renderTemplate executes a Go text/template over the flow vars (same

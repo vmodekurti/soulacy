@@ -13,6 +13,11 @@
   // Click a workflow-bearing agent to open it on the canvas; delete removes it.
   export let onOpenAgent = null   // (agentId) => void
   export let onDeleteAgent = null // (agentId, name) => void
+  // Saved drafts, shown in their own palette group with a "Draft" badge.
+  // Clicking one loads it onto the canvas (onOpenDraft); 🗑 deletes it.
+  export let drafts = []          // [{ id, name }]
+  export let onOpenDraft = null   // (draftId) => void
+  export let onDeleteDraft = null // (draftId, name) => void
   export let browse = { open: false, loading: false, error: '', results: [], message: '' }
 
   // Each item carries an optional `drag` payload describing what dropping it on
@@ -134,6 +139,12 @@
   }
 
   $: agents = error ? [] : agentItems(catalog)
+  // Draft items — clickable to load onto the canvas, tagged with a "Draft" badge.
+  $: draftItems = (drafts || []).map((d) => ({
+    label: d.name || d.id,
+    draftId: d.id,
+    badge: 'Draft',
+  }))
   $: tools = error ? [] : toolItems(catalog)
   $: skills = error ? [] : skillItems(catalog)
   $: mcp = error ? [] : mcpServers(catalog)
@@ -149,6 +160,7 @@
   // makes `groups` a tracked dependency of agents/tools/providers/channels.
   $: groups = [
     { key: 'agents', icon: '🤖', title: 'Agents', items: agents, empty: 'No agents' },
+    { key: 'drafts', icon: '📝', title: 'Drafts', items: draftItems, empty: 'No saved drafts' },
     { key: 'tools', icon: '🛠️', title: 'Tools', items: tools, empty: 'No tools' },
     { key: 'skills', icon: '📚', title: 'Skills', items: skills, empty: 'No skills installed' },
     { key: 'mcp', icon: '🔌', title: 'MCP servers', items: mcp, empty: 'No MCP servers' },
@@ -236,16 +248,25 @@
             <li
               class="item"
               class:draggable={!!it.drag}
-              class:openable={it.hasWorkflow}
+              class:openable={it.hasWorkflow || !!it.draftId}
               draggable={!!it.drag}
               on:dragstart={(e) => startDrag(e, it.drag)}
-              on:click={() => it.hasWorkflow && onOpenAgent && onOpenAgent(it.agentId)}
-              on:keydown={(e) => { if (it.hasWorkflow && onOpenAgent && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); onOpenAgent(it.agentId) } }}
-              role={it.hasWorkflow ? 'button' : undefined}
-              tabindex={it.hasWorkflow ? 0 : undefined}
-              title={it.sub ? it.sub : (it.hasWorkflow ? 'Click to edit this workflow · drag to add a handoff step' : (it.drag ? 'Drag onto the canvas' : ''))}
+              on:click={() => {
+                if (it.draftId && onOpenDraft) onOpenDraft(it.draftId)
+                else if (it.hasWorkflow && onOpenAgent) onOpenAgent(it.agentId)
+              }}
+              on:keydown={(e) => {
+                if ((e.key === 'Enter' || e.key === ' ')) {
+                  if (it.draftId && onOpenDraft) { e.preventDefault(); onOpenDraft(it.draftId) }
+                  else if (it.hasWorkflow && onOpenAgent) { e.preventDefault(); onOpenAgent(it.agentId) }
+                }
+              }}
+              role={(it.hasWorkflow || it.draftId) ? 'button' : undefined}
+              tabindex={(it.hasWorkflow || it.draftId) ? 0 : undefined}
+              title={it.draftId ? 'Click to load this draft onto the canvas' : (it.sub ? it.sub : (it.hasWorkflow ? 'Click to edit this workflow · drag to add a handoff step' : (it.drag ? 'Drag onto the canvas' : '')))}
             >
               <span class="item-label">{it.label}</span>
+              {#if it.badge}<span class="item-badge">{it.badge}</span>{/if}
               {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
               {#if it.hasWorkflow && onDeleteAgent}
                 <button
@@ -253,6 +274,14 @@
                   type="button"
                   title="Delete this agent"
                   on:click|stopPropagation={() => onDeleteAgent(it.agentId, it.label)}
+                >🗑</button>
+              {/if}
+              {#if it.draftId && onDeleteDraft}
+                <button
+                  class="item-del"
+                  type="button"
+                  title="Delete this draft"
+                  on:click|stopPropagation={() => onDeleteDraft(it.draftId, it.label)}
                 >🗑</button>
               {/if}
             </li>
@@ -406,6 +435,12 @@
   .item:hover { border-color: var(--accent); transform: translateX(2px); }
   .item:active { cursor: grabbing; }
   .item-label { font-size: 13px; color: var(--text); word-break: break-word; }
+  .item-badge {
+    display: inline-block; margin-left: 6px; padding: 0 6px;
+    font-size: 10px; line-height: 16px; border-radius: 8px;
+    background: rgba(108,140,255,0.18); color: var(--accent, #6c8cff);
+    vertical-align: middle;
+  }
   .item-sub {
     margin-top: 2px;
     font-size: 11px;

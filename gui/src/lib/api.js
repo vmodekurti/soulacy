@@ -62,6 +62,10 @@ export const api = {
       body: JSON.stringify({ agent_id: agentId, user_id: userId, session_id: sessionId, text, ...(overrides ? { overrides } : {}) }),
     }),
 
+  /** Cancel an in-flight run (Story #22). run_id is the session id for /chat. */
+  cancelRun: (runId) =>
+    apiFetch('/chat/cancel', { method: 'POST', body: JSON.stringify({ run_id: runId }) }),
+
   admin: {
     restart: () => apiFetch('/admin/restart', { method: 'POST' }),
   },
@@ -208,12 +212,68 @@ export const api = {
   // Studio visual builder (M1 Wave 2). Called by the host bridge in
   // PluginFrame.svelte on behalf of the sandboxed Studio plugin iframe.
   studio: {
+    /**
+     * Refine a rough intent into a clear specification BEFORE compiling it into
+     * a workflow (mandatory pre-generation step). Returns the refined intent,
+     * a plain-language summary, the assumptions made, and clarifying questions.
+     * @returns {Promise<{original, refined_intent, summary,
+     *                     assumptions:string[],
+     *                     questions:{id,text,options?}[]}>}
+     */
+    refinePrompt: ({ intent, catalog } = {}) =>
+      apiFetch('/studio/refine-prompt', {
+        method: 'POST',
+        body: JSON.stringify({ intent, catalog }),
+      }),
     /** Compile an intent (+ optional clarifying answers) into a draft workflow. */
     compile: ({ intent, catalog, answers } = {}) =>
       apiFetch('/studio/compile', {
         method: 'POST',
         body: JSON.stringify({ intent, catalog, answers }),
       }),
+    /**
+     * Generate a ReAct/Plan-Execute AGENT (no fixed flow) — for intents that
+     * need a reasoning loop. Returns a draft with strategy + tools allowlist.
+     */
+    compileAgent: ({ intent, strategy, catalog, answers } = {}) =>
+      apiFetch('/studio/compile-agent', {
+        method: 'POST',
+        body: JSON.stringify({ intent, strategy, catalog, answers }),
+      }),
+    /**
+     * Consolidated pre-save validation against live state: missing tools/MCP
+     * servers/channels/secrets, empty required tool args, invalid schedules.
+     * @returns {Promise<{ok:boolean,
+     *                     blockers:{severity,kind,nodeId?,message,fix?}[],
+     *                     warnings:{severity,kind,nodeId?,message,fix?}[]}>}
+     */
+    preflight: ({ workflow } = {}) =>
+      apiFetch('/studio/preflight', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+    /**
+     * Deterministic data-flow repair: fill empty required tool args + reconcile
+     * dangling {{ .var }} references to the right upstream output.
+     * @returns {Promise<{workflow, fixed:number}>}
+     */
+    autowire: ({ workflow } = {}) =>
+      apiFetch('/studio/autowire', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+    /** Fix a draft from a RUNTIME error message via the LLM. */
+    troubleshoot: ({ workflow, error } = {}) =>
+      apiFetch('/studio/troubleshoot', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, error }),
+      }),
+    /**
+     * Advice on whether the configured builder model is strong enough for agent
+     * design (Stories #8/#9).
+     * @returns {Promise<{provider,model,configured,strong,severity,message,recommendation?}>}
+     */
+    modelAdvice: () => apiFetch('/studio/model-advice'),
     /**
      * Exercise a workflow against a sample input as a test bench (M5).
      * Optional `mocks` ({<nodeId>:<output>}) override individual node outputs,

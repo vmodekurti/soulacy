@@ -143,6 +143,12 @@ func buildScript(pyFile, funcName, inline string) (string, error) {
 import sys as _sys, json
 _orig_stdout = _sys.stdout
 _sys.stdout = _sys.stderr
+# Tolerate JSON/JS literals that models sometimes emit into Python code
+# (null/true/false) by aliasing them to their Python equivalents. Correct code
+# using None/True/False is unaffected; user reassignment still wins.
+null = None
+true = True
+false = False
 %s
 _raw = _sys.stdin.read()
 try:

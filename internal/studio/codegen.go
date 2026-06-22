@@ -11,11 +11,40 @@ package studio
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
+
+// unwrapCodeEnvelope returns the inner Python source when s is a JSON envelope
+// of the form {"code":"..."} (a common model slip), else s unchanged. Used by
+// codegen and by node-code normalization so a node never stores a JSON string
+// as its "code" (which would fail at run time with "name 'run' is not defined").
+func unwrapCodeEnvelope(s string) string {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "{") {
+		return s
+	}
+	var m map[string]any
+	if err := json.Unmarshal([]byte(t), &m); err != nil {
+		return s
+	}
+	if inner, ok := m["code"].(string); ok && strings.TrimSpace(inner) != "" {
+		return inner
+	}
+	return s
+}
+
+// unwrapNodeCode normalizes one flow node's Code in place: if it's a JSON
+// {"code":"..."} envelope, replace it with the inner source.
+func unwrapNodeCode(n *sdkr.FlowNode) {
+	if n == nil || strings.TrimSpace(n.Code) == "" {
+		return
+	}
+	n.Code = unwrapCodeEnvelope(n.Code)
+}
 
 // CodegenRequest asks the framework to write one python node's code.
 type CodegenRequest struct {
@@ -103,15 +132,19 @@ func describeNodeShort(n sdkr.FlowNode) string {
 // the model wrapped its output despite instructions.
 func extractPythonCode(s string) string {
 	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "```") {
-		return s
+	if strings.HasPrefix(s, "```") {
+		// Drop the first fence line.
+		if nl := strings.IndexByte(s, '\n'); nl >= 0 {
+			s = s[nl+1:]
+		}
+		if i := strings.LastIndex(s, "```"); i >= 0 {
+			s = s[:i]
+		}
+		s = strings.TrimSpace(s)
 	}
-	// Drop the first fence line.
-	if nl := strings.IndexByte(s, '\n'); nl >= 0 {
-		s = s[nl+1:]
-	}
-	if i := strings.LastIndex(s, "```"); i >= 0 {
-		s = s[:i]
-	}
-	return strings.TrimSpace(s)
+	// Some models wrap the answer as a JSON envelope {"code":"import …"} instead
+	// of raw Python (despite being asked for source only). Unwrap it so the node
+	// stores runnable code, not a JSON string that fails with "name 'run' is not
+	// defined" at run time.
+	return unwrapCodeEnvelope(s)
 }
