@@ -519,6 +519,25 @@ func sanitizeSchemaForGemini(s map[string]any) map[string]any {
 		case map[string]any:
 			out[k] = sanitizeSchemaForGemini(vv)
 		case []any:
+			if k == "type" {
+				var nonNullType any
+				hasNull := false
+				for _, item := range vv {
+					if s, ok := item.(string); ok && s == "null" {
+						hasNull = true
+					} else {
+						nonNullType = item
+					}
+				}
+				if nonNullType != nil {
+					out["type"] = nonNullType
+				}
+				if hasNull {
+					out["nullable"] = true
+				}
+				continue
+			}
+
 			arr := make([]any, len(vv))
 			for i, item := range vv {
 				if m, ok := item.(map[string]any); ok {

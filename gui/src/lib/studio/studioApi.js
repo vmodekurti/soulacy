@@ -47,11 +47,20 @@ export const bridge = {
 
   // Mandatory pre-generation refine pass: clarify a rough intent before it is
   // compiled into a workflow.
-  refinePrompt: (intent, catalog) =>
-    api.studio.refinePrompt({ intent, catalog }),
+  // `light` requests a fast touch-up pass (used when re-generating from an
+  // already-refined, user-edited prompt) instead of a full re-refine.
+  refinePrompt: (intent, catalog, light) =>
+    api.studio.refinePrompt({ intent, catalog, light }),
 
   compile: (intent, answers, catalog) =>
     api.studio.compile({ intent, answers, catalog }),
+
+  // Canvas⇄Code (SOUL.yaml) view: serialize a draft to YAML, parse edited YAML
+  // back to a draft (+ warnings), and save authored YAML straight to disk.
+  toYaml: (workflow) => api.studio.yaml({ workflow }),
+  fromYaml: (yaml) => api.studio.fromYaml({ yaml }),
+  saveYaml: (yaml) => api.studio.saveYaml({ yaml }),
+  validateYaml: (yaml) => api.studio.validateYaml({ yaml }),
 
   // Generate a ReAct/Plan-Execute agent (no fixed flow).
   compileAgent: (intent, strategy, answers, catalog) =>

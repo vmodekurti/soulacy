@@ -601,6 +601,8 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleListAgents)
 	api.Post("/agents/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleValidateAgent)
 	api.Get("/agents/:id", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgent)
+	api.Get("/agents/:id/yaml", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentYAML)
+	api.Put("/agents/:id/yaml", s.rbacAgentMW(rbac.ActionWrite), s.handleUpdateAgentYAML)
 	api.Get("/agents/:id/tier", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentTier)
 	api.Post("/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleCreateAgent)
 	api.Put("/agents/:id", s.rbacAgentMW(rbac.ActionWrite), s.handleUpdateAgent)
@@ -727,6 +729,13 @@ func (s *Server) buildApp() *fiber.App {
 	// Studio plugin backend (M2): capability-tier consent plan + gated save.
 	api.Post("/studio/plan", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioPlan)
 	api.Post("/studio/save", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSave)
+	// Studio Canvas⇄Code (SOUL.yaml) view: serialize a draft to YAML, parse
+	// edited YAML back to a draft (with lossiness warnings), and save authored
+	// YAML directly to disk (code view is authoritative).
+	api.Post("/studio/yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioYAML)
+	api.Post("/studio/from-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioFromYAML)
+	api.Post("/studio/save-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSaveYAML)
+	api.Post("/studio/validate-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidateYAML)
 	// Studio plugin backend (M3): canvas-time graph validation (read-only).
 	api.Post("/studio/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidate)
 	// Studio plugin backend (M6): starter templates (read-only).

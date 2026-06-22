@@ -29,7 +29,10 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/valyala/fasthttp"
+	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 
+	"github.com/soulacy/soulacy/internal/agentvalidate"
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/llm"
@@ -247,6 +250,10 @@ func (s *Server) groundedChannels() []string {
 type studioRefinePromptRequest struct {
 	Intent  string         `json:"intent"`
 	Catalog studio.Catalog `json:"catalog,omitempty"`
+	// Light requests a touch-up pass instead of a full rewrite. The UI sets it
+	// when re-generating from an already-refined, user-edited prompt so the LLM
+	// only cleans up the edits rather than re-refining the whole specification.
+	Light bool `json:"light,omitempty"`
 }
 
 // handleStudioRefinePrompt implements POST /api/v1/studio/refine-prompt. It is
@@ -267,7 +274,11 @@ func (s *Server) handleStudioRefinePrompt(c *fiber.Ctx) error {
 	}
 	s.groundCatalog(&req.Catalog)
 
-	res, err := studio.RefinePrompt(c.Context(), model, req.Intent, req.Catalog)
+	refine := studio.RefinePrompt
+	if req.Light {
+		refine = studio.LightRefinePrompt
+	}
+	res, err := refine(c.Context(), model, req.Intent, req.Catalog)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -939,6 +950,232 @@ func (s *Server) handleStudioPlan(c *fiber.Ctx) error {
 		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	return c.JSON(res)
+}
+
+// studioYAMLRequest carries a draft to serialize into SOUL.yaml (the same form
+// a Save would write), for the Studio "Code" view.
+type studioYAMLRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioYAML implements POST /api/v1/studio/yaml. It converts the current
+// draft into the exact agent.Definition a Save would persist, then returns it
+// marshalled as SOUL.yaml so the GUI can show (and let the user edit) the code
+// behind the canvas. Conversion errors (e.g. an unnamed workflow) come back as
+// 400s with a clear message.
+func (s *Server) handleStudioYAML(c *fiber.Ctx) error {
+	var req studioYAMLRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	def, err := studio.ToAgentDefinition(req.Workflow, true)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, err.Error())
+	}
+	out, err := yaml.Marshal(&def)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	return c.JSON(fiber.Map{"yaml": string(out)})
+}
+
+// studioFromYAMLRequest carries edited SOUL.yaml to parse back into a draft for
+// the canvas.
+type studioFromYAMLRequest struct {
+	YAML string `json:"yaml"`
+}
+
+// handleStudioFromYAML implements POST /api/v1/studio/from-yaml. The Code view is
+// authoritative, so when the user switches back to Canvas we parse the edited
+// SOUL.yaml into an agent.Definition and map it onto a Studio draft. Because the
+// draft⇄definition mapping is intentionally lossy (the canvas shows the flow
+// graph, not every agent field), we also return human-readable warnings naming
+// anything in the YAML that the canvas can't represent — so the user knows the
+// YAML remains the source of truth for those parts.
+func (s *Server) handleStudioFromYAML(c *fiber.Ctx) error {
+	var req studioFromYAMLRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML is empty")
+	}
+	var def agent.Definition
+	if err := yaml.Unmarshal([]byte(req.YAML), &def); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML error: "+err.Error())
+	}
+	draft := studio.FromAgentDefinition(def)
+
+	var warnings []string
+	if def.Workflow == nil || len(def.Workflow.Nodes) == 0 {
+		warnings = append(warnings, "This agent has no workflow graph (it runs as a reasoning/ReAct agent), so the canvas can't display its steps — keep editing it here in code view.")
+	}
+	if len(def.Agents) > 0 {
+		warnings = append(warnings, "Peer agents ("+strings.Join(def.Agents, ", ")+") aren't shown on the canvas; they stay defined in the YAML.")
+	}
+	if len(def.Knowledge) > 0 {
+		warnings = append(warnings, "Attached knowledge bases ("+strings.Join(def.Knowledge, ", ")+") aren't shown on the canvas; they stay in the YAML.")
+	}
+	if strings.TrimSpace(def.SystemPrompt) != "" {
+		warnings = append(warnings, "A custom system prompt is set in the YAML; the canvas doesn't edit it and a canvas re-save would regenerate it.")
+	}
+	return c.JSON(fiber.Map{"workflow": draft, "warnings": warnings})
+}
+
+// handleStudioSaveYAML implements POST /api/v1/studio/save-yaml. In Code view the
+// YAML is authoritative, so this writes it to disk directly (parse → validate →
+// loader.Upsert) rather than re-deriving from the draft — preserving fields the
+// canvas can't express. Privileged-node consent is still enforced fail-closed by
+// the runtime, and Studio saves stay disabled unless the YAML says otherwise.
+func (s *Server) handleStudioSaveYAML(c *fiber.Ctx) error {
+	var req studioFromYAMLRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML is empty")
+	}
+	var def agent.Definition
+	if err := yaml.Unmarshal([]byte(req.YAML), &def); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML error: "+err.Error())
+	}
+	if strings.TrimSpace(def.ID) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "the YAML needs an 'id' field before it can be saved")
+	}
+	if isProtectedSystemAgent(def.ID) {
+		return protectedSystemAgentResponse(c)
+	}
+
+	report := agentvalidate.Definition(&def, "", s.agentValidationOptions(c.Context()), agentvalidate.Report{})
+	if report.Errors > 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":      "validation failed",
+			"validation": report,
+		})
+	}
+
+	if def.LLM.Provider == "" {
+		def.LLM.Provider = s.cfg.LLM.DefaultProvider
+	}
+	s.applyLocalPreset(&def)
+
+	dir := ""
+	if len(s.cfg.AgentDirs) > 0 {
+		dir = s.cfg.AgentDirs[0]
+	}
+	if err := s.loader.Upsert(dir, &def); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	s.scheduler.DeregisterAgent(def.ID)
+	if err := s.scheduler.RegisterAgent(&def); err != nil {
+		s.log.Warn("scheduler registration failed", zap.String("agent", def.ID), zap.Error(err))
+	}
+	return c.JSON(fiber.Map{"id": def.ID, "agent": &def, "validation": report})
+}
+
+// yamlValidateItem is one problem found validating SOUL.yaml, normalized across
+// the three checkers so the GUI can render a single list. Source says which
+// layer found it; Severity is "error" (must fix) or "warning" (should review).
+type yamlValidateItem struct {
+	Severity string `json:"severity"` // error | warning
+	Source   string `json:"source"`   // yaml | definition | graph | runtime
+	NodeID   string `json:"nodeId,omitempty"`
+	Message  string `json:"message"`
+	Fix      string `json:"fix,omitempty"`
+}
+
+// handleStudioValidateYAML implements POST /api/v1/studio/validate-yaml — the
+// "Validate" button in the Code view. It runs the FULL battery against the
+// edited SOUL.yaml so problems are caught before save/run:
+//   - YAML syntax (it parses at all),
+//   - definition correctness (agentvalidate: required fields, tool/channel sanity),
+//   - graph integrity (studio.Validate → reasoning.CompileFlow: dangling edges,
+//     bad entry/output, unreachable nodes),
+//   - runtime-error avoidance (studio.Preflight against LIVE state: missing/
+//     disconnected MCP servers, unfilled required tool args, unconfigured
+//     channels, invalid schedules, and template-reference bugs like passing a
+//     whole object where a scalar id is needed).
+//
+// It always returns 200 with a consolidated report (problems are data, not HTTP
+// errors) so the UI can list them inline.
+func (s *Server) handleStudioValidateYAML(c *fiber.Ctx) error {
+	var req studioFromYAMLRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML is empty")
+	}
+
+	var items []yamlValidateItem
+	add := func(sev, src, node, msg, fix string) {
+		items = append(items, yamlValidateItem{Severity: sev, Source: src, NodeID: node, Message: msg, Fix: fix})
+	}
+
+	// 1) Syntax. A parse failure is terminal — nothing else can run.
+	var def agent.Definition
+	if err := yaml.Unmarshal([]byte(req.YAML), &def); err != nil {
+		add("error", "yaml", "", "YAML syntax error: "+err.Error(), "Fix the indentation, quoting, or a stray colon, then validate again.")
+		return c.JSON(buildYAMLValidation(items))
+	}
+
+	// 2) Definition correctness.
+	if strings.TrimSpace(def.ID) == "" {
+		add("error", "definition", "", "Missing required field 'id'.", "Add a top-level 'id:' so the agent can be saved and referenced.")
+	}
+	rep := agentvalidate.Definition(&def, "", s.agentValidationOptions(c.Context()), agentvalidate.Report{})
+	for _, f := range rep.Findings {
+		sev := "warning"
+		if f.Severity == agentvalidate.Error {
+			sev = "error"
+		}
+		msg := f.Message
+		if strings.TrimSpace(f.Field) != "" {
+			msg = f.Field + ": " + msg
+		}
+		add(sev, "definition", "", msg, f.Suggestion)
+	}
+
+	// 3) Graph integrity + 4) runtime checks operate on the flow form. Only run
+	// the graph compiler when there IS a graph (a reasoning/ReAct agent has none;
+	// its correctness is covered by the definition checks above).
+	draft := studio.FromAgentDefinition(def)
+	if def.Workflow != nil && len(def.Workflow.Nodes) > 0 {
+		vr := studio.Validate(draft)
+		for _, e := range vr.Errors {
+			add("error", "graph", e.NodeID, e.Message, "Fix the workflow graph (edges, entry/output, node ids).")
+		}
+		for _, w := range vr.Warnings {
+			add("warning", "graph", w.NodeID, w.Message, "")
+		}
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	pf := studio.Preflight(draft, s.preflightInput(c, cat))
+	for _, b := range pf.Blockers {
+		add("error", "runtime", b.NodeID, b.Message, b.Fix)
+	}
+	for _, w := range pf.Warnings {
+		add("warning", "runtime", w.NodeID, w.Message, w.Fix)
+	}
+
+	return c.JSON(buildYAMLValidation(items))
+}
+
+// buildYAMLValidation tallies the items into the response envelope.
+func buildYAMLValidation(items []yamlValidateItem) fiber.Map {
+	errors, warnings := 0, 0
+	for _, it := range items {
+		if it.Severity == "error" {
+			errors++
+		} else {
+			warnings++
+		}
+	}
+	if items == nil {
+		items = []yamlValidateItem{}
+	}
+	return fiber.Map{"ok": errors == 0, "errors": errors, "warnings": warnings, "items": items}
 }
 
 // studioSaveRequest is the POST /api/v1/studio/save body. AcceptPrivilegedExposure

@@ -1318,6 +1318,10 @@ func (e *Engine) ollamaWebSearch(ctx context.Context, args map[string]any) (stri
 		key = e.getOllamaAPIKey()
 	}
 	if key == "" {
+		_, searchKey := e.getSearchConfig()
+		key = searchKey
+	}
+	if key == "" {
 		return "", fmt.Errorf("web_search: no Ollama API key. Create one at https://ollama.com/settings/keys, then set the OLLAMA_API_KEY environment variable or llm.providers.ollama.api_key in config.yaml")
 	}
 

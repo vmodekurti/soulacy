@@ -131,6 +131,11 @@ type Draft struct {
 	Name           string          `json:"name"`
 	SystemPrompt   string          `json:"system_prompt,omitempty"`
 	Intent         string          `json:"intent,omitempty"` // the prompt that generated this workflow (Studio editor)
+	// Refined marks that Intent has already been through a full refine pass and
+	// (optionally) hand-edited by the user. The UI sets it after the first
+	// generate; it persists via Definition.StudioRefined so a re-opened workflow
+	// re-generates with a fast LIGHT touch-up instead of a full re-refine.
+	Refined        bool            `json:"refined,omitempty"`
 	Trigger        Trigger         `json:"trigger"`
 	Channels       []string        `json:"channels,omitempty"`
 	Flow           Flow            `json:"flow"`

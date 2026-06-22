@@ -26,6 +26,7 @@ func FromAgentDefinition(def agent.Definition) Draft {
 	d := Draft{
 		Name:     def.Name,
 		Intent:   def.StudioIntent,
+		Refined:  def.StudioRefined,
 		Trigger:  Trigger{Type: triggerTypeFromKind(def.Trigger)},
 		Channels: append([]string(nil), def.Channels...),
 	}
