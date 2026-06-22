@@ -36,7 +36,7 @@ func RepairWithProblems(ctx context.Context, llm LLM, draft Draft, problems []st
 		return draft, false
 	}
 	fixed, err := ParseDraft(raw)
-	if err != nil || (len(fixed.Flow.Nodes) == 0 && !fixed.IsAgent() && draft.IsAgent() == false && len(draft.Flow.Nodes) > 0) {
+	if err != nil || (len(fixed.Flow.Nodes) == 0 && !fixed.IsAgent() && !draft.IsAgent() && len(draft.Flow.Nodes) > 0) {
 		// Parse failed, or the model returned something structurally empty for a
 		// workflow that had nodes — don't accept a worse draft.
 		return draft, false

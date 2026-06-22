@@ -54,6 +54,12 @@ func IsLocalProvider(name, baseURL string) bool {
 	if hostIsLocal(baseURL) {
 		return true
 	}
+	// A known cloud provider with no local base_url is cloud (rule 3); any
+	// unknown provider with no local base_url is treated as cloud too (rule 4,
+	// the safe default — we'd rather ask before sending than assume local).
+	if cloudProviderNames[n] {
+		return false
+	}
 	return false
 }
 
