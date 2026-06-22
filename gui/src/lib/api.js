@@ -77,6 +77,10 @@ export const api = {
     create:  (def)     => apiFetch('/agents',     { method: 'POST', body: JSON.stringify(def) }),
     update:  (id, def) => apiFetch(`/agents/${id}`, { method: 'PUT',  body: JSON.stringify(def) }),
     validate:(def)     => apiFetch('/agents/validate', { method: 'POST', body: JSON.stringify(def) }),
+    // Raw SOUL.yaml view/edit: getYaml returns { id, path, yaml }; updateYaml
+    // sends the edited YAML text back (server parses + validates before writing).
+    getYaml:   (id)        => apiFetch(`/agents/${id}/yaml`),
+    updateYaml:(id, yaml)  => apiFetch(`/agents/${id}/yaml`, { method: 'PUT', body: yaml }),
     delete:  (id)      => apiFetch(`/agents/${id}`, { method: 'DELETE' }),
     enable:  (id)      => apiFetch(`/agents/${id}/enable`,  { method: 'POST' }),
     disable: (id)      => apiFetch(`/agents/${id}/disable`, { method: 'POST' }),
@@ -257,10 +261,10 @@ export const api = {
      *                     assumptions:string[],
      *                     questions:{id,text,options?}[]}>}
      */
-    refinePrompt: ({ intent, catalog } = {}) =>
+    refinePrompt: ({ intent, catalog, light } = {}) =>
       apiFetch('/studio/refine-prompt', {
         method: 'POST',
-        body: JSON.stringify({ intent, catalog }),
+        body: JSON.stringify({ intent, catalog, light }),
       }),
     /** Compile an intent (+ optional clarifying answers) into a draft workflow. */
     compile: ({ intent, catalog, answers } = {}) =>
@@ -268,6 +272,18 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ intent, catalog, answers }),
       }),
+    /** Serialize the current draft to SOUL.yaml for the Code view. */
+    yaml: ({ workflow } = {}) =>
+      apiFetch('/studio/yaml', { method: 'POST', body: JSON.stringify({ workflow }) }),
+    /** Parse edited SOUL.yaml back into a draft (+ lossiness warnings). */
+    fromYaml: ({ yaml } = {}) =>
+      apiFetch('/studio/from-yaml', { method: 'POST', body: JSON.stringify({ yaml }) }),
+    /** Save authored SOUL.yaml directly to disk (code view is authoritative). */
+    saveYaml: ({ yaml } = {}) =>
+      apiFetch('/studio/save-yaml', { method: 'POST', body: JSON.stringify({ yaml }) }),
+    /** Full validation of edited SOUL.yaml: syntax + definition + graph + runtime. */
+    validateYaml: ({ yaml } = {}) =>
+      apiFetch('/studio/validate-yaml', { method: 'POST', body: JSON.stringify({ yaml }) }),
     /**
      * Generate a ReAct/Plan-Execute AGENT (no fixed flow) — for intents that
      * need a reasoning loop. Returns a draft with strategy + tools allowlist.

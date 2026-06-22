@@ -458,6 +458,12 @@ type Definition struct {
 	// runtime does not use it.
 	StudioIntent string `yaml:"studio_intent,omitempty" json:"studio_intent,omitempty"`
 
+	// StudioRefined records that StudioIntent has already been through Studio's
+	// full refine pass (and may have been hand-edited). When set, re-opening the
+	// workflow in Studio re-generates with a fast LIGHT touch-up instead of a
+	// full re-refine. Studio-only metadata; the runtime does not use it.
+	StudioRefined bool `yaml:"studio_refined,omitempty" json:"studio_refined,omitempty"`
+
 	// RunTimeout caps the total wall-clock duration of one full agent run
 	// (across all LLM turns and tool calls). Go duration syntax: "5m", "30m",
 	// "1h". Empty = use the gateway default (15m). Bump this for agents that

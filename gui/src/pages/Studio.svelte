@@ -15,6 +15,7 @@
   import { toFlow, kindMeta } from '../lib/studio/graph.js'
   import Palette from '../lib/studio/Palette.svelte'
   import Inspector from '../lib/studio/Inspector.svelte'
+  import YamlView from '../lib/studio/YamlView.svelte'
   import StudioNode from '../lib/studio/nodes/StudioNode.svelte'
   import TriggerNode from '../lib/studio/nodes/TriggerNode.svelte'
   import OutputNode from '../lib/studio/nodes/OutputNode.svelte'
@@ -513,7 +514,11 @@ def run(inputs):
     refining = true
     compileError = ''
     try {
-      const data = await bridge.refinePrompt(text, compactCatalog(catalog))
+      // If this prompt has already been refined once (fresh generate this
+      // session, or a re-opened workflow that was saved as refined), run a fast
+      // LIGHT touch-up that respects the user's edits instead of a full rewrite.
+      const light = !!(workflow && workflow.refined)
+      const data = await bridge.refinePrompt(text, compactCatalog(catalog), light)
       refineAnswers = {}
       refinement = {
         original: (data && data.original) || text,
@@ -570,7 +575,9 @@ def run(inputs):
     try {
       const data = await bridge.compileAgent(text, mode, ans, compactCatalog(catalog))
       applyCompile(data)
-      if (workflow) workflow = { ...workflow, intent: text }
+      // Mark the prompt as refined so a later edit + Generate uses the fast
+      // LIGHT touch-up pass; persists via the workflow's `refined` field.
+      if (workflow) workflow = { ...workflow, intent: text, refined: true }
       intent = text
     } catch (e) {
       compileError = e.message || 'agent generation failed'
@@ -595,8 +602,9 @@ def run(inputs):
       const data = await bridge.compile(text, ans, compactCatalog(catalog))
       applyCompile(data)
       // Remember the prompt on the draft so it persists through save/load and
-      // the box stays populated for further edits.
-      if (workflow) workflow = { ...workflow, intent: text }
+      // the box stays populated for further edits. Mark it refined so a later
+      // edit + Generate uses the fast LIGHT touch-up pass.
+      if (workflow) workflow = { ...workflow, intent: text, refined: true }
       // Surface the refined intent in the editor so further edits start from the
       // clarified version, not the original rough text.
       intent = text
@@ -843,6 +851,137 @@ def run(inputs):
   let mockText = {}           // { [nodeId]: string }
   let mockErrors = {}         // { [nodeId]: string }
   let showMocks = false       // collapsed by default to keep the panel tidy
+
+  // ── Workspace layout: collapse/resize the test panels + inspector ─────────
+  // Lets the user reclaim space for the canvas (hide the bottom test/self-heal
+  // section, hide the inspector) or widen the inspector to read code clearly.
+  // Persisted across sessions so the chosen layout sticks.
+  let showTests     = true
+  let showInspector = true
+  let inspectorWidth = 280     // px; clamped on resize
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const p = JSON.parse(localStorage.getItem('studio.layout') || '{}')
+      if (typeof p.showTests === 'boolean') showTests = p.showTests
+      if (typeof p.showInspector === 'boolean') showInspector = p.showInspector
+      if (typeof p.inspectorWidth === 'number') inspectorWidth = p.inspectorWidth
+    }
+  } catch (_) { /* ignore malformed/blocked storage */ }
+  function persistLayout() {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem('studio.layout', JSON.stringify({ showTests, showInspector, inspectorWidth }))
+      }
+    } catch (_) { /* ignore */ }
+  }
+  function toggleTests() { showTests = !showTests; persistLayout() }
+  function toggleInspector() { showInspector = !showInspector; persistLayout() }
+
+  // ── Canvas ⇄ Code (SOUL.yaml) view ────────────────────────────────────────
+  // Code view is authoritative: switching to it serializes the current draft to
+  // SOUL.yaml; switching back parses the (possibly edited) YAML into a draft and
+  // warns about anything the canvas can't show; Save in code view writes the
+  // YAML straight to disk.
+  let viewMode = 'canvas'     // 'canvas' | 'code'
+  let codeYaml = ''
+  let codeOrig = ''           // last-synced text (dirty detection)
+  let codeWarnings = []
+  let codeError = ''
+  let codeLoading = false
+  let codeValidation = null    // { ok, errors, warnings, items[] }
+  let codeValidating = false
+
+  async function showCodeView() {
+    if (viewMode === 'code' || !workflow) return
+    codeError = ''
+    codeLoading = true
+    viewMode = 'code'
+    try {
+      const r = await bridge.toYaml(workflow)
+      codeYaml = (r && r.yaml) || ''
+      codeOrig = codeYaml
+    } catch (e) {
+      codeError = (e && e.message) || 'Could not generate YAML'
+    }
+    codeLoading = false
+  }
+
+  // Editing the YAML invalidates any prior validation report.
+  $: { codeYaml; codeValidation = null }
+
+  async function showCanvasView() {
+    if (viewMode === 'canvas') return
+    codeError = ''
+    // Parse the authoritative YAML back into a draft for the canvas.
+    if (codeYaml.trim()) {
+      try {
+        const r = await bridge.fromYaml(codeYaml)
+        codeWarnings = (r && Array.isArray(r.warnings)) ? r.warnings : []
+        if (r && r.workflow) setWorkflow(r.workflow)
+      } catch (e) {
+        codeError = (e && e.message) || 'YAML could not be parsed'
+        return // stay in code view so the user can fix it
+      }
+    }
+    codeOrig = codeYaml
+    viewMode = 'canvas'
+  }
+
+  // Full validation of the edited YAML: syntax + definition + graph + runtime
+  // (missing capabilities, unfilled args, template-reference bugs, …).
+  async function validateCode() {
+    if (codeValidating) return
+    codeValidating = true
+    codeError = ''
+    try {
+      codeValidation = await bridge.validateYaml(codeYaml)
+    } catch (e) {
+      codeError = (e && e.message) || 'Validation failed'
+      codeValidation = null
+    }
+    codeValidating = false
+  }
+
+  // Save directly from the authoritative YAML (bypasses the draft round-trip so
+  // fields the canvas can't express are preserved).
+  async function saveFromCode() {
+    if (saving) return
+    saving = true
+    saveError = ''
+    saveMsg = ''
+    try {
+      const res = await bridge.saveYaml(codeYaml)
+      codeOrig = codeYaml
+      const id = (res && res.id) || ''
+      saveMsg = id ? `Saved ${id} — manage it from the Agents page.` : 'Saved'
+      // Mirror the canvas Save: hand off to the Agents page to review/enable.
+      if (id) { $editAgent = id; window.location.hash = '#agents' }
+    } catch (e) {
+      const v = e && e.body && e.body.validation
+      if (v && Array.isArray(v.findings) && v.findings.length) {
+        const f = v.findings.find((x) => x.severity === 'error') || v.findings[0]
+        saveError = (f.field ? f.field + ': ' : '') + f.message
+      } else {
+        saveError = (e && e.message) || 'Save failed'
+      }
+    }
+    saving = false
+  }
+  // Drag the splitter on the inspector's left edge to resize it. Width is taken
+  // from the viewport's right edge (the inspector is the rightmost column).
+  function startInspResize(e) {
+    const onMove = (ev) => {
+      inspectorWidth = Math.max(240, Math.min(760, window.innerWidth - ev.clientX))
+    }
+    const onUp = () => {
+      persistLayout()
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    e.preventDefault()
+  }
 
   // Assertions editor: rows of { target, op, value }. target is a node id or
   // the literal "result"; op ∈ contains|equals|exists.
@@ -1465,6 +1604,26 @@ def run(inputs):
     closeLibrary()
   }
 
+  // "New agent": a clean slate — clear the prompt, the canvas, and any code-view
+  // state, so the user can describe and build a fresh agent from scratch.
+  function startNewAgent() {
+    if (workflow && workflow.flow && (workflow.flow.nodes || []).length) {
+      let ok = true
+      try { ok = window.confirm('Start a new agent? This clears the current prompt and canvas.') } catch (_) { ok = true }
+      if (!ok) return
+    }
+    intent = ''
+    refinement = null
+    viewMode = 'canvas'
+    codeYaml = ''
+    codeOrig = ''
+    codeValidation = null
+    codeWarnings = []
+    compileError = ''
+    setWorkflow(null)
+    closeLibrary()
+  }
+
   // Click an agent in the left palette → load its workflow onto the canvas for
   // editing. Re-Saving (same name → same id) upserts it.
   async function openAgentOnCanvas(id) {
@@ -1806,9 +1965,7 @@ def run(inputs):
         aria-label="Describe what you want"
         on:keydown={(e) => e.key === 'Enter' && generate()}
       />
-      {#if intent.trim()}
-        <button class="intent-expand" type="button" title="Read / edit the full prompt" on:click={() => (promptViewer = true)} aria-label="View full prompt">⤢</button>
-      {/if}
+      <button class="intent-expand" type="button" title="Open the full prompt editor" on:click={() => (promptViewer = true)} aria-label="Open prompt editor">⤢ Editor</button>
     </div>
     <button class="btn primary" on:click={generate} disabled={compiling || refining || !!refinement || !intent.trim()}>
       {refining ? 'Refining…' : compiling ? 'Generating…' : 'Generate'}
@@ -1816,6 +1973,7 @@ def run(inputs):
 
     <!-- M6: draft management toolbar -->
     <div class="toolbar" role="group" aria-label="Draft management">
+      <button class="btn primary-ghost" type="button" on:click={startNewAgent} title="Start a new agent from scratch">+ New agent</button>
       <button class="btn" type="button" on:click={openModelPicker} title="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
       <button class="btn" type="button" on:click={openTemplates} title="Start from a template">Templates</button>
       <button class="btn" type="button" on:click={openLibrary} title="Reopen a saved draft or an existing workflow agent">My Workflows</button>
@@ -1863,6 +2021,22 @@ def run(inputs):
 
     <!-- Center: canvas + transparency strips + panels -->
     <section class="center">
+      {#if workflow}
+        <div class="view-switch" role="tablist" aria-label="Editor view">
+          <button class="vs-btn" class:active={viewMode === 'canvas'} type="button"
+                  role="tab" aria-selected={viewMode === 'canvas'} on:click={showCanvasView}>⬚ Canvas</button>
+          <button class="vs-btn" class:active={viewMode === 'code'} type="button"
+                  role="tab" aria-selected={viewMode === 'code'} on:click={showCodeView}>{'</> SOUL.yaml'}</button>
+          {#if viewMode === 'code' && codeYaml !== codeOrig}<span class="vs-dirty" title="Unsaved YAML edits">●</span>{/if}
+        </div>
+      {/if}
+
+      {#if codeWarnings.length}
+        <div class="strip strip-notes" title="Things the canvas can't show — they stay in the YAML">
+          <span class="strip-label">Kept in YAML</span>
+          {#each codeWarnings as w}<span class="note">{w}</span>{/each}
+        </div>
+      {/if}
       {#if modelAdvice && (modelAdvice.severity === 'block' || modelAdvice.local_complexity_note || modelAdvice.cloud_escalation)}
         <div class="strip strip-modeladvice" class:strip-local={modelAdvice.local} title="Builder model">
           <span class="strip-label">
@@ -2037,6 +2211,48 @@ def run(inputs):
         </div>
       {/if}
 
+      {#if viewMode === 'code'}
+        <div class="code-view">
+          {#if codeError}<div class="strip strip-error">⚠ {codeError}</div>{/if}
+          {#if codeLoading}
+            <div class="canvas-state">Generating SOUL.yaml…</div>
+          {:else}
+            <div class="code-editor-wrap">
+              <YamlView bind:value={codeYaml} />
+            </div>
+            {#if codeValidation}
+              <div class="code-validation" class:ok={codeValidation.ok}>
+                <div class="cv-summary">
+                  {#if codeValidation.ok && !codeValidation.warnings}
+                    <span class="cv-badge ok">✓ All checks passed</span>
+                  {:else}
+                    {#if codeValidation.errors}<span class="cv-badge err">{codeValidation.errors} error{codeValidation.errors === 1 ? '' : 's'}</span>{/if}
+                    {#if codeValidation.warnings}<span class="cv-badge warn">{codeValidation.warnings} warning{codeValidation.warnings === 1 ? '' : 's'}</span>{/if}
+                  {/if}
+                  <button class="icon-btn" title="Dismiss" on:click={() => (codeValidation = null)}>✕</button>
+                </div>
+                {#if codeValidation.items && codeValidation.items.length}
+                  <ul class="cv-list">
+                    {#each codeValidation.items as it}
+                      <li class="cv-item cv-{it.severity}">
+                        <span class="cv-dot">{it.severity === 'error' ? '✕' : '!'}</span>
+                        <div class="cv-body">
+                          <div class="cv-msg">
+                            <span class="cv-source">{it.source}</span>
+                            {#if it.nodeId}<span class="cv-node">{it.nodeId}</span>{/if}
+                            {it.message}
+                          </div>
+                          {#if it.fix}<div class="cv-fix">→ {it.fix}</div>{/if}
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/if}
+          {/if}
+        </div>
+      {:else}
       <div
         class="canvas"
         role="application"
@@ -2106,10 +2322,12 @@ def run(inputs):
           </div>
         {/if}
       </div>
+      {/if}
 
       {#if workflow}
         <!-- Action bar -->
         <div class="actions">
+          {#if viewMode === 'canvas'}
           <input
             class="sample"
             type="text"
@@ -2160,8 +2378,24 @@ def run(inputs):
             />
             Unattended
           </label>
-          <button class="btn primary" on:click={() => save()} disabled={saving || !!consent || !!preflight}>
-            {saving ? 'Saving…' : 'Save'}
+          <button class="btn btn-sm view-toggle" type="button" on:click={toggleTests}
+                  title="Show or hide the test & self-heal panels below the canvas">
+            {showTests ? 'Hide tests' : 'Show tests'}
+          </button>
+          <button class="btn btn-sm view-toggle" type="button" on:click={toggleInspector}
+                  title="Show or hide the inspector panel">
+            {showInspector ? 'Hide inspector' : 'Show inspector'}
+          </button>
+          {/if}
+          {#if viewMode === 'code'}
+            <button class="btn" on:click={validateCode} disabled={codeValidating}>
+              {codeValidating ? 'Validating…' : '✓ Validate'}
+            </button>
+          {/if}
+          <button class="btn primary"
+                  on:click={() => (viewMode === 'code' ? saveFromCode() : save())}
+                  disabled={saving || (viewMode === 'canvas' && (!!consent || !!preflight))}>
+            {saving ? 'Saving…' : (viewMode === 'code' ? 'Save YAML' : 'Save')}
           </button>
         </div>
 
@@ -2227,6 +2461,7 @@ def run(inputs):
           </div>
         {/if}
 
+        {#if showTests && viewMode === 'canvas'}
         <!-- ── Runtime self-heal: failed (incl. scheduled) runs ──────────── -->
         <div class="panel bench">
           <div class="bench-section">
@@ -2500,27 +2735,39 @@ def run(inputs):
             </ul>
           </div>
         {/if}
+        {/if}
       {/if}
     </section>
 
-    <Inspector
-      node={selectedNode}
-      {selectedEdge}
-      {workflow}
-      channels={channelOptions}
-      onChange={applyFraming}
-      onEdgeChange={applyEdgePatch}
-      onAddEdge={addEdge}
-      onEdgeDelete={deleteEdge}
-      onSetEntry={setEntry}
-      onSetOutput={setOutput}
-      onRefine={refineNode}
-      {refineState}
-      onDelete={deleteNode}
-      onNodeChange={applyNodePatch}
-      {scaffolds}
-      onGenerateCode={generateNodeCode}
-    />
+    {#if showInspector && viewMode === 'canvas'}
+      <div
+        class="insp-splitter"
+        role="separator"
+        aria-orientation="vertical"
+        title="Drag to resize the inspector"
+        on:pointerdown={startInspResize}
+      ></div>
+      <div class="insp-host" style="width:{inspectorWidth}px">
+        <Inspector
+          node={selectedNode}
+          {selectedEdge}
+          {workflow}
+          channels={channelOptions}
+          onChange={applyFraming}
+          onEdgeChange={applyEdgePatch}
+          onAddEdge={addEdge}
+          onEdgeDelete={deleteEdge}
+          onSetEntry={setEntry}
+          onSetOutput={setOutput}
+          onRefine={refineNode}
+          {refineState}
+          onDelete={deleteNode}
+          onNodeChange={applyNodePatch}
+          {scaffolds}
+          onGenerateCode={generateNodeCode}
+        />
+      </div>
+    {/if}
   </main>
 
   <!-- ── M6: Template picker (S6.1) ──────────────────────────────────────── -->
@@ -2663,10 +2910,16 @@ def run(inputs):
   <!-- Full prompt viewer/editor — the top bar truncates long prompts. -->
   {#if promptViewer}
     <div class="modal-backdrop" on:click|self={() => (promptViewer = false)} role="presentation">
-      <div class="modal refine-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
-        <h2 id="prompt-title" class="modal-title">Your prompt</h2>
-        <p class="modal-body">The full instruction Studio will refine and build from. Edit here if you like.</p>
-        <textarea class="refine-textarea" rows="14" bind:value={intent}></textarea>
+      <div class="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+        <h2 id="prompt-title" class="modal-title">Prompt editor</h2>
+        <p class="modal-body">
+          {#if workflow && workflow.refined}
+            This is the refined prompt your agent was built from. Edit it here, then re-generate.
+          {:else}
+            The full instruction Studio refines and builds from. Write or paste a longer prompt here comfortably.
+          {/if}
+        </p>
+        <textarea class="prompt-editor-area" bind:value={intent} placeholder="Describe what you want your agent to do…"></textarea>
         {#if workflow && workflow.intent && workflow.intent !== intent}
           <div class="refine-section">
             <div class="refine-heading">Prompt this draft was generated from</div>
@@ -2675,7 +2928,9 @@ def run(inputs):
         {/if}
         <div class="modal-actions">
           <button class="btn" on:click={() => (promptViewer = false)}>Close</button>
-          <button class="btn primary" on:click={() => { promptViewer = false; generate() }} disabled={!intent.trim()}>Generate from this</button>
+          <button class="btn primary" on:click={() => { promptViewer = false; generate() }} disabled={!intent.trim() || compiling || refining}>
+            {refining ? 'Refining…' : compiling ? 'Generating…' : 'Generate from this'}
+          </button>
         </div>
       </div>
     </div>
@@ -2795,11 +3050,11 @@ def run(inputs):
           </div>
         {/if}
 
-        <label class="refine-label" for="refine-intent">Refined specification (edit if needed)</label>
+        <label class="refine-label" for="refine-intent">Refined prompt — edit it in the editor below before generating</label>
         <textarea
           id="refine-intent"
-          class="refine-textarea"
-          rows="8"
+          class="refine-textarea refine-editor"
+          rows="14"
           bind:value={refinement.refined_intent}
         ></textarea>
 
@@ -3019,6 +3274,90 @@ def run(inputs):
 
   /* Body layout */
   .body { display: flex; flex: 1 1 auto; min-height: 0; }
+
+  /* Resizable inspector column: a host whose width the user controls via the
+     splitter, with the Inspector component filling it (overriding its fixed
+     280px). */
+  .insp-host { flex: 0 0 auto; display: flex; min-width: 0; overflow: hidden; }
+  .insp-host :global(.inspector) { flex: 1 1 auto; width: 100%; }
+  .insp-splitter {
+    flex: 0 0 6px;
+    cursor: col-resize;
+    background: var(--border);
+    transition: background .12s;
+  }
+  .insp-splitter:hover { background: var(--accent); }
+  .view-toggle { white-space: nowrap; }
+
+  /* Canvas ⇄ Code view switch */
+  .view-switch {
+    display: flex; align-items: center; gap: 2px;
+    padding: 8px 14px 0;
+    flex-shrink: 0;
+  }
+  .vs-btn {
+    font-size: 12px; font-weight: 600;
+    padding: 6px 14px;
+    color: var(--text-muted);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .vs-btn:first-of-type { border-radius: 7px 0 0 7px; }
+  .vs-btn:nth-of-type(2) { border-radius: 0 7px 7px 0; border-left: 0; }
+  .vs-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .vs-dirty { color: #ffd479; font-size: 13px; margin-left: 6px; }
+
+  /* Code view fills the canvas area */
+  .code-view {
+    flex: 1 1 auto;
+    min-height: 240px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 12px 14px;
+    background: var(--bg);
+    overflow: hidden;
+  }
+  .code-editor-wrap { flex: 1 1 auto; min-height: 0; display: flex; }
+
+  /* Validation results */
+  .code-validation {
+    flex: 0 0 auto;
+    max-height: 34vh;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-elev);
+  }
+  .cv-summary {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+    position: sticky; top: 0; background: var(--bg-elev);
+  }
+  .cv-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 20px; }
+  .cv-badge.ok   { color: #4caf82; background: rgba(76,175,130,.14); }
+  .cv-badge.err  { color: #f06060; background: rgba(240,96,96,.14); }
+  .cv-badge.warn { color: #e7b765; background: rgba(231,183,101,.14); }
+  .cv-summary .icon-btn { margin-left: auto; }
+  .cv-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .cv-item { display: flex; gap: 8px; padding: 7px 8px; border-radius: 6px; background: var(--bg); }
+  .cv-dot { flex: 0 0 auto; width: 18px; text-align: center; font-weight: 700; }
+  .cv-error .cv-dot   { color: #f06060; }
+  .cv-warning .cv-dot { color: #e7b765; }
+  .cv-body { min-width: 0; }
+  .cv-msg { font-size: 13px; line-height: 1.45; color: var(--text); }
+  .cv-source {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--text-muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 4px; margin-right: 6px;
+  }
+  .cv-node {
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px;
+    color: var(--accent); margin-right: 6px;
+  }
+  .cv-fix { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+
   .center {
     flex: 1 1 auto;
     min-width: 0;
@@ -3612,6 +3951,25 @@ def run(inputs):
 
   /* ── Pre-generation refinement dialog ───────────────────────────────────── */
   .refine-modal { max-width: 640px; width: 92vw; max-height: 84vh; overflow-y: auto; }
+
+  /* Prompt editor modal: roomy editor for writing/editing the (refined) prompt */
+  .prompt-modal { max-width: 820px; width: 92vw; max-height: 88vh; overflow-y: auto; }
+  .prompt-editor-area {
+    width: 100%; box-sizing: border-box; resize: vertical;
+    min-height: 320px;
+    font: inherit; font-size: 14px; line-height: 1.6;
+    padding: 14px 16px; border-radius: 10px;
+    border: 1px solid var(--border, rgba(127,127,127,0.35));
+    background: var(--bg-elev, var(--surface, transparent)); color: var(--text);
+  }
+  .prompt-editor-area:focus { outline: none; border-color: var(--accent); }
+
+  /* "New agent" emphasized-but-secondary button */
+  .primary-ghost {
+    color: var(--accent); border-color: var(--accent);
+    font-weight: 600;
+  }
+  .primary-ghost:hover { background: rgba(108,140,255,.12); }
   .refine-summary {
     font-size: 13px; line-height: 1.5; color: var(--text);
     background: var(--surface-2, rgba(127,127,127,0.08));
@@ -3626,6 +3984,7 @@ def run(inputs):
     border: 1px solid var(--border, rgba(127,127,127,0.35));
     background: var(--surface, transparent); color: var(--text);
   }
+  .refine-editor { min-height: 240px; font-size: 14px; line-height: 1.6; }
   .refine-section { margin-top: 16px; }
   .refine-heading { font-size: 12px; font-weight: 600; color: var(--text-muted); margin: 0 0 8px; }
   .refine-assumptions { margin: 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: var(--text); }

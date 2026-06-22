@@ -15,6 +15,65 @@
   let validating = false
   let validationReport = null
 
+  // ── Raw SOUL.yaml view/edit modal ─────────────────────────────────────────
+  let showYaml    = false   // modal open
+  let yamlText    = ''      // editable buffer
+  let yamlOrig    = ''      // last-loaded text (to detect unsaved edits)
+  let yamlPath    = ''      // on-disk path (shown for reference)
+  let yamlLoading = false
+  let yamlSaving  = false
+  let yamlError   = ''      // parse/validation error from the server
+  let yamlMsg     = ''      // success note
+
+  async function openYaml() {
+    if (!selected) return
+    showYaml = true
+    yamlLoading = true
+    yamlError = ''
+    yamlMsg = ''
+    try {
+      const res = await api.agents.getYaml(selected.id)
+      yamlText = (res && res.yaml) || ''
+      yamlOrig = yamlText
+      yamlPath = (res && res.path) || ''
+    } catch (e) {
+      yamlError = e.message || 'Could not load YAML'
+    }
+    yamlLoading = false
+  }
+
+  function closeYaml() {
+    if (yamlSaving) return
+    if (yamlText !== yamlOrig && !window.confirm('Discard your unsaved YAML edits?')) return
+    showYaml = false
+  }
+
+  async function saveYaml() {
+    if (!selected || yamlSaving) return
+    yamlSaving = true
+    yamlError = ''
+    yamlMsg = ''
+    try {
+      await api.agents.updateYaml(selected.id, yamlText)
+      yamlOrig = yamlText
+      yamlMsg = '✓ Saved'
+      await load()
+      const found = agents.find(a => a.id === selected.id)
+      if (found) select(found) // refresh the form editor with the new definition
+    } catch (e) {
+      // The server returns structured validation findings on a 400; surface the
+      // first concrete message so the user can fix syntax/fields in place.
+      const v = e.body && e.body.validation
+      if (v && Array.isArray(v.findings) && v.findings.length) {
+        const f = v.findings.find(x => x.severity === 'error') || v.findings[0]
+        yamlError = (f.field ? f.field + ': ' : '') + f.message
+      } else {
+        yamlError = e.message || 'Save failed'
+      }
+    }
+    yamlSaving = false
+  }
+
   // Tool catalog — fetched once, used by the python_file dropdown
   let catalog = { python_tools: [], mcp_tools: [], builtins: [] }
 
@@ -679,6 +738,11 @@ console.log(reply);` : ''
                 </button>
                 <button class="btn-danger" on:click={deleteAgent} disabled={deleting || editingProtected}>
                   {deleting ? '…' : 'Delete'}
+                </button>
+              {/if}
+              {#if selected}
+                <button class="btn-secondary" on:click={openYaml} title="View and edit the raw SOUL.yaml">
+                  View YAML
                 </button>
               {/if}
               <button class="btn-secondary" on:click={validateEditing} disabled={validating}>
@@ -1514,6 +1578,53 @@ console.log(reply);` : ''
   </div>
 {/if}
 
+{#if showYaml}
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close YAML editor"
+    on:click|self={closeYaml}
+    on:keydown={(e) => e.key === 'Escape' && closeYaml()}
+  >
+    <div class="modal wide">
+      <h2>Edit SOUL.yaml — {selected ? selected.id : ''}</h2>
+      <div class="modal-sub">
+        The raw agent definition. Fix syntax, template references (e.g. use
+        <code>{'{{ .notebook.id }}'}</code> not <code>{'{{ .notebook }}'}</code>),
+        or fields the form doesn't expose. Saving parses and validates before
+        writing to disk.
+        {#if yamlPath}<br><span class="hint">{yamlPath}</span>{/if}
+      </div>
+
+      {#if yamlError}
+        <div class="banner err">⚠ {yamlError}</div>
+      {/if}
+      {#if yamlMsg}
+        <div class="banner ok-banner">{yamlMsg}</div>
+      {/if}
+
+      {#if yamlLoading}
+        <div class="tpl-empty">Loading…</div>
+      {:else}
+        <textarea
+          class="yaml-area"
+          spellcheck="false"
+          bind:value={yamlText}
+          on:input={() => { yamlError = ''; yamlMsg = '' }}
+        ></textarea>
+      {/if}
+
+      <div class="modal-row" style="display:flex;justify-content:flex-end;gap:.5rem;">
+        <button class="btn-secondary" on:click={closeYaml} disabled={yamlSaving}>Cancel</button>
+        <button class="btn-primary" on:click={saveYaml} disabled={yamlSaving || yamlLoading || yamlText === yamlOrig}>
+          {yamlSaving ? 'Saving…' : 'Save YAML'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .page        { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; height: 100%; }
   .page-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
@@ -1521,6 +1632,16 @@ console.log(reply);` : ''
 
   .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; flex-shrink: 0; }
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
+  .ok-banner { background: rgba(76,175,130,.12); border: 1px solid rgba(76,175,130,.35); color: #4caf82; }
+
+  .yaml-area {
+    width: 100%; min-height: 420px; resize: vertical;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .8rem; line-height: 1.5; tab-size: 2;
+    background: #0e1020; color: #d7dcf5;
+    border: 1px solid #1a1e36; border-radius: 8px; padding: .75rem .85rem;
+    white-space: pre; overflow: auto;
+  }
 
   .split    { display: flex; gap: 1rem; flex: 1; min-height: 0; }
 

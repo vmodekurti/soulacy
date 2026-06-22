@@ -222,6 +222,54 @@ func writeKBGrounding(sb *strings.Builder, catalog Catalog) {
 	sb.WriteString("\n")
 }
 
+// BuildLightRefineInstruction builds the instruction for a LIGHT (touch-up)
+// refine pass. It is used when the intent has ALREADY been through a full
+// refine and the user has hand-edited the resulting specification: re-running
+// the full analyst rewrite would be slow and would fight the user's edits. The
+// light pass instead treats the input as near-final — it only cleans up grammar
+// and obvious gaps, preserves the user's wording and structure, and returns the
+// same JSON shape so the UI/compiler path is unchanged. Like the full builder it
+// is pure and grounds the model in the same catalog.
+func BuildLightRefineInstruction(intent string, catalog Catalog) string {
+	catalog = FilterCatalogForIntent(intent, catalog)
+	var sb strings.Builder
+	sb.WriteString("You are the Soulacy Studio requirements analyst doing a LIGHT touch-up. ")
+	sb.WriteString("The text below is ALREADY a refined specification that the user has reviewed and hand-edited. ")
+	sb.WriteString("It is essentially final. Do NOT rewrite it, restructure it, or expand its scope.\n\n")
+
+	sb.WriteString("Your ONLY job is a light cleanup that respects the user's edits:\n")
+	sb.WriteString("- Fix grammar, spelling, and obvious clarity issues.\n")
+	sb.WriteString("- Preserve the user's wording, ordering, and intent as closely as possible — change as little as you can.\n")
+	sb.WriteString("- If the user left an obvious gap in the standard spec (trigger, inputs, processing, output, edge cases), fill ONLY that gap with a sensible default and record it in \"assumptions\".\n")
+	sb.WriteString("- Do NOT introduce new features, steps, or scope the user did not write.\n")
+	sb.WriteString("- Only reference capabilities that exist in the catalog below.\n")
+	sb.WriteString("- Ask a clarifying question ONLY if the user's edit introduced a genuine, workflow-changing contradiction. Prefer 0 questions.\n\n")
+
+	sb.WriteString("Also re-check the best ARCHITECTURE for the edited spec and return it:\n")
+	sb.WriteString("- \"workflow\": a fixed, deterministic pipeline.\n")
+	sb.WriteString("- \"react\": a reasoning loop (steps depend on intermediate results, per-item loops, or polling an async job).\n")
+	sb.WriteString("- \"plan_execute\": a long, multi-phase job worth decomposing first.\n\n")
+
+	sb.WriteString("Respond with ONLY a single JSON object, no prose, no markdown, no code fences, matching exactly:\n")
+	sb.WriteString("{\n")
+	sb.WriteString("  \"refined_intent\": \"<the lightly cleaned-up specification — keep the user's text>\",\n")
+	sb.WriteString("  \"summary\": \"<one or two sentences: what this automation does>\",\n")
+	sb.WriteString("  \"assumptions\": [\"<only gaps you had to fill>\"],\n")
+	sb.WriteString("  \"questions\": [ { \"id\": \"<short_id>\", \"text\": \"<question>\", \"options\": [\"<opt>\", \"...\"] } ],\n")
+	sb.WriteString("  \"recommended_mode\": \"workflow|react|plan_execute\",\n")
+	sb.WriteString("  \"mode_reason\": \"<1 sentence on why this architecture fits>\"\n")
+	sb.WriteString("}\n")
+	sb.WriteString("(\"assumptions\" and \"questions\" may be empty arrays.)\n\n")
+
+	writeCatalogGrounding(&sb, catalog)
+	writePatternGrounding(&sb, intent, catalog)
+
+	sb.WriteString("\nAlready-refined specification (the user's edited text):\n")
+	sb.WriteString(intent)
+	sb.WriteString("\n")
+	return sb.String()
+}
+
 // RefinePrompt runs the pre-generation refine pass: it asks the LLM to rewrite
 // the intent into a clear specification plus assumptions and clarifying
 // questions. Like Compile it is tolerant of model output wrapped in fences or
@@ -229,6 +277,22 @@ func writeKBGrounding(sb *strings.Builder, catalog Catalog) {
 // it returns a refinement that echoes the original intent (so the UI can still
 // proceed) rather than erroring — a refine pass should never block generation.
 func RefinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog) (PromptRefinement, error) {
+	return refinePrompt(ctx, llm, intent, catalog, false)
+}
+
+// LightRefinePrompt runs a LIGHT touch-up pass for an already-refined,
+// user-edited specification: it cleans up the text without the full rewrite, so
+// re-generating after an edit is fast and faithful to what the user typed. Same
+// output contract as RefinePrompt.
+func LightRefinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog) (PromptRefinement, error) {
+	return refinePrompt(ctx, llm, intent, catalog, true)
+}
+
+// refinePrompt is the shared implementation behind RefinePrompt (full) and
+// LightRefinePrompt (touch-up). The only difference is which instruction the
+// model is given; parsing, mode resolution, and graceful degradation are
+// identical so both paths return the same PromptRefinement contract.
+func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, light bool) (PromptRefinement, error) {
 	if strings.TrimSpace(intent) == "" {
 		return PromptRefinement{}, fmt.Errorf("studio: intent is required")
 	}
@@ -236,7 +300,12 @@ func RefinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog) 
 		return PromptRefinement{}, fmt.Errorf("studio: no LLM configured")
 	}
 
-	prompt := BuildRefinePromptInstruction(intent, catalog)
+	var prompt string
+	if light {
+		prompt = BuildLightRefineInstruction(intent, catalog)
+	} else {
+		prompt = BuildRefinePromptInstruction(intent, catalog)
+	}
 	raw, err := llm.Complete(ctx, prompt)
 	if err != nil {
 		return PromptRefinement{}, fmt.Errorf("studio: llm complete: %w", err)

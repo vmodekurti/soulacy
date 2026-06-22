@@ -222,6 +222,12 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 	// produced by an earlier step.
 	checkDataFlow(draft, add)
 
+	// Template-reference shape: a step that interpolates a whole produced object
+	// ({{ .notebook }}) or a wrong nested path ({{ .notebook.notebook }}) renders
+	// a Go map ("map[id:… title:…]") instead of the scalar it needs, silently
+	// corrupting downstream tool inputs. Catch it at save instead of at run.
+	checkTemplateReferences(draft, add)
+
 	// Deep tool introspection (Architect): validate each tool call against the
 	// tool's real signature — unknown argument names + literal type mismatches —
 	// so a call that would silently fail at the MCP boundary is caught at build

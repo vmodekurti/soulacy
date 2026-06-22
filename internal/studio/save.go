@@ -76,7 +76,8 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		Trigger:      mapTrigger(draft.Trigger.Type),
 		Channels:     append([]string(nil), draft.Channels...),
 		SystemPrompt: buildSystemPrompt(draft),
-		StudioIntent: strings.TrimSpace(draft.Intent),
+		StudioIntent:  strings.TrimSpace(draft.Intent),
+		StudioRefined: draft.Refined,
 		// Disabled by construction: a Studio save stages an agent for the
 		// operator to review and enable.
 		Enabled:  false,
@@ -172,7 +173,8 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 		Trigger:      mapTrigger(draft.Trigger.Type),
 		Channels:     append([]string(nil), draft.Channels...),
 		SystemPrompt: reactSystemPrompt(draft),
-		StudioIntent: strings.TrimSpace(draft.Intent),
+		StudioIntent:  strings.TrimSpace(draft.Intent),
+		StudioRefined: draft.Refined,
 		Enabled:      false, // staged for review, like every Studio save
 		MaxTurns:     15,
 		Memory:       agent.MemoryPolicy{MaxTokens: 8000},

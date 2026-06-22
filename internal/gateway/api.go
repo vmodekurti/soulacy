@@ -24,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
 
 	"github.com/soulacy/soulacy/internal/agentvalidate"
 	"github.com/soulacy/soulacy/internal/builder"
@@ -256,6 +257,109 @@ func (s *Server) handleGetAgent(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
 	return c.JSON(def)
+}
+
+// handleGetAgentYAML returns the raw SOUL.yaml text for one agent so the GUI can
+// show it in an editor for hand fixes (syntax, template references, fields the
+// form doesn't expose). It reads the exact on-disk file when available, and
+// falls back to marshalling the in-memory Definition (e.g. a built-in agent with
+// no source file) so the endpoint always returns something editable.
+func (s *Server) handleGetAgentYAML(c *fiber.Ctx) error {
+	id := c.Params("id")
+	def := s.loader.Get(id)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	var (
+		raw  []byte
+		path = def.SourcePath
+		err  error
+	)
+	if path != "" {
+		raw, err = os.ReadFile(path)
+	}
+	if path == "" || err != nil {
+		// No file on disk (or unreadable): serialize the live definition instead.
+		raw, err = yaml.Marshal(def)
+		if err != nil {
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
+		}
+		path = ""
+	}
+	return c.JSON(fiber.Map{"id": def.ID, "path": path, "yaml": string(raw)})
+}
+
+// handleUpdateAgentYAML accepts edited SOUL.yaml text, parses + validates it, and
+// (on success) writes it back via the loader. YAML syntax or structural errors
+// are returned as 400s with the parser/validator message so the user can fix
+// them in the editor — nothing is written to disk unless the YAML is valid.
+func (s *Server) handleUpdateAgentYAML(c *fiber.Ctx) error {
+	id := c.Params("id")
+	existing := s.loader.Get(id)
+	if existing == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+
+	body := c.Body()
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML body is empty")
+	}
+
+	// Parse leniently — matching the loader, which tolerates unknown fields (it
+	// only warns on them) so editing a SOUL.yaml that carries extra keys doesn't
+	// get rejected. A real syntax error still fails here and is reported back.
+	var def agent.Definition
+	if err := yaml.Unmarshal(body, &def); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML error: "+err.Error())
+	}
+
+	// The id is part of the resource path and the on-disk folder; a raw edit must
+	// not move the agent. Carry over the non-serialized bookkeeping fields.
+	def.ID = id
+	def.SourcePath = existing.SourcePath
+	def.LoadedAt = existing.LoadedAt
+
+	// Protected system agents keep their required invariants regardless of edits,
+	// mirroring handleUpdateAgent, so a raw edit can't brick the system agent.
+	if isProtectedSystemAgent(id) {
+		def.Enabled = true
+		def.SystemTools = true
+		def.Channels = []string{"http"}
+		if len(def.ConfirmTools) == 0 {
+			def.ConfirmTools = existing.ConfirmTools
+		}
+	}
+
+	// Structural validation (same checks as POST /agents/validate). Blocking
+	// errors are returned so the user can fix them; the report also rides along
+	// on success so the UI can surface non-blocking warnings.
+	report := agentvalidate.Definition(&def, "", s.agentValidationOptions(c.Context()), agentvalidate.Report{})
+	if report.Errors > 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":      "validation failed",
+			"validation": report,
+		})
+	}
+
+	dir := ""
+	if len(s.cfg.AgentDirs) > 0 {
+		dir = s.cfg.AgentDirs[0]
+	}
+	if err := s.loader.Upsert(dir, &def); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Re-register schedule, mirroring handleUpdateAgent.
+	s.scheduler.DeregisterAgent(id)
+	if err := s.scheduler.RegisterAgent(&def); err != nil {
+		s.log.Warn("scheduler re-registration failed", zap.String("agent", id), zap.Error(err))
+	}
+
+	if def.HasCapability("system") {
+		c.Set("X-Soulacy-Warning", "WARNING: This agent has been granted 'system' capabilities. It has raw access to shell execution and file writing. Ensure you fully trust the agent's prompt to avoid local machine compromise.")
+	}
+
+	return c.JSON(fiber.Map{"agent": &def, "validation": report})
 }
 
 // handleGetAgentTier returns the capability tier for an agent plus the
