@@ -3319,7 +3319,7 @@ def run(inputs):
     background: var(--bg);
     overflow: hidden;
   }
-  .code-editor-wrap { flex: 1 1 auto; min-height: 0; display: flex; }
+  .code-editor-wrap { flex: 1 1 auto; min-height: 360px; display: flex; }
 
   /* Validation results */
   .code-validation {
