@@ -942,6 +942,20 @@ def run(inputs):
     codeValidating = false
   }
 
+  // One-click fix: rewrite each flagged template reference to the suggested
+  // scalar accessor (e.g. {{ .notebook.notebook }} -> {{ .notebook.notebook.id }})
+  // across the whole YAML, then re-validate so the panel refreshes.
+  async function applyTemplateFixes() {
+    const fixes = (codeValidation && codeValidation.fixes) || []
+    if (!fixes.length) return
+    let text = codeYaml
+    for (const f of fixes) {
+      if (f && f.find) text = text.split(f.find).join(f.replace)
+    }
+    codeYaml = text
+    await validateCode()
+  }
+
   // Save directly from the authoritative YAML (bypasses the draft round-trip so
   // fields the canvas can't express are preserved).
   async function saveFromCode() {
@@ -2229,6 +2243,12 @@ def run(inputs):
                     {#if codeValidation.errors}<span class="cv-badge err">{codeValidation.errors} error{codeValidation.errors === 1 ? '' : 's'}</span>{/if}
                     {#if codeValidation.warnings}<span class="cv-badge warn">{codeValidation.warnings} warning{codeValidation.warnings === 1 ? '' : 's'}</span>{/if}
                   {/if}
+                  {#if codeValidation.fixes && codeValidation.fixes.length}
+                    <button class="btn btn-sm cv-fixbtn" on:click={applyTemplateFixes} disabled={codeValidating}
+                            title="Rewrite the flagged template references to the suggested scalar field">
+                      ⚡ Auto-fix {codeValidation.fixes.length} reference{codeValidation.fixes.length === 1 ? '' : 's'}
+                    </button>
+                  {/if}
                   <button class="icon-btn" title="Dismiss" on:click={() => (codeValidation = null)}>✕</button>
                 </div>
                 {#if codeValidation.items && codeValidation.items.length}
@@ -3339,7 +3359,9 @@ def run(inputs):
   .cv-badge.ok   { color: #4caf82; background: rgba(76,175,130,.14); }
   .cv-badge.err  { color: #f06060; background: rgba(240,96,96,.14); }
   .cv-badge.warn { color: #e7b765; background: rgba(231,183,101,.14); }
-  .cv-summary .icon-btn { margin-left: auto; }
+  .cv-fixbtn { margin-left: auto; white-space: nowrap; color: var(--accent); border-color: var(--accent); }
+  .cv-fixbtn:hover { background: rgba(108,140,255,.12); }
+  .cv-summary .icon-btn { margin-left: 4px; }
   .cv-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
   .cv-item { display: flex; gap: 8px; padding: 7px 8px; border-radius: 6px; background: var(--bg); }
   .cv-dot { flex: 0 0 auto; width: 18px; text-align: center; font-weight: 700; }

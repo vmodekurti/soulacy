@@ -135,18 +135,102 @@ func templatePaths(s string) []string {
 	return out
 }
 
-// producerEmitsObject reports whether a node's output is likely a structured
-// object/array (so interpolating it bare would render as "map[…]"). Conservative
-// to avoid false positives: agent nodes return text (scalar), python nodes and
-// MCP tools return structured JSON; unknown builtin tools are treated as scalar.
+// producerEmitsObject reports whether a node's output is DEFINITELY likely a
+// structured object/array (so interpolating it bare would render as "map[…]").
+// Conservative to avoid false positives: only MCP tools are assumed to return
+// structured JSON. Agent nodes return text, and a python node can return either
+// a scalar (e.g. a date string from a get_date step) or an object — so we do NOT
+// assume python is structured here; a python output is only flagged when it is
+// independently proven to be an object by a field access elsewhere
+// (accessedWithField in checkTemplateReferences).
 func producerEmitsObject(n sdkr.FlowNode) bool {
-	switch strings.TrimSpace(n.Kind) {
-	case sdkr.FlowNodeAgent:
+	if strings.TrimSpace(n.Kind) == sdkr.FlowNodeAgent {
 		return false
-	case sdkr.FlowNodePython:
-		return true
 	}
 	return strings.HasPrefix(strings.TrimSpace(n.Tool), "mcp__")
+}
+
+// TemplateFix is a machine-applicable suggestion for a flagged template
+// reference: replace the exact Find string with Replace in the SOUL.yaml. The
+// GUI offers this as a one-click "Fix". The replacement appends the most common
+// scalar accessor (".id"); it's a best-effort default the user can adjust, since
+// the real field name depends on the tool's actual output shape.
+type TemplateFix struct {
+	NodeID  string `json:"nodeId,omitempty"`
+	Find    string `json:"find"`
+	Replace string `json:"replace"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// SuggestTemplateFixes mirrors checkTemplateReferences but returns concrete
+// find/replace edits for each auto-fixable reference (whole-object or repeated
+// nested path). Deduped by the exact template action so applying the set fixes
+// every occurrence (e.g. the same {{ .notebook.notebook }} used by three steps).
+func SuggestTemplateFixes(draft Draft) []TemplateFix {
+	nodes := draft.Flow.Nodes
+	if len(nodes) == 0 {
+		return nil
+	}
+	producer := map[string]sdkr.FlowNode{}
+	for _, n := range nodes {
+		if v := strings.TrimSpace(n.Output); v != "" {
+			producer[v] = n
+		}
+	}
+	accessedWithField := map[string]bool{}
+	for _, n := range nodes {
+		for _, path := range templatePaths(n.Input) {
+			if segs := strings.Split(path, "."); len(segs) >= 2 {
+				accessedWithField[segs[0]] = true
+			}
+		}
+	}
+
+	var fixes []TemplateFix
+	seen := map[string]bool{}
+	for _, n := range nodes {
+		if !strings.Contains(n.Input, "{{") {
+			continue
+		}
+		for _, full := range tmplActionRe.FindAllString(n.Input, -1) { // full "{{ … }}"
+			if mentionsAny(full, objectCoercers) {
+				continue
+			}
+			for _, path := range templatePaths(full) {
+				segs := strings.Split(path, ".")
+				root := segs[0]
+				prod, ok := producer[root]
+				if !ok || prod.ID == n.ID {
+					continue
+				}
+				apply := false
+				if hasRepeatedAdjacentSegment(segs) {
+					apply = true // .notebook.notebook -> .notebook.notebook.id
+				} else if len(segs) == 1 && (accessedWithField[root] || producerEmitsObject(prod)) {
+					apply = true // .notebook -> .notebook.id
+				}
+				if !apply {
+					continue
+				}
+				replaceWith := strings.Replace(full, "."+path, "."+path+".id", 1)
+				if replaceWith == full {
+					continue
+				}
+				key := full
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				fixes = append(fixes, TemplateFix{
+					NodeID:  n.ID,
+					Find:    full,
+					Replace: replaceWith,
+					Reason:  "reference the scalar field instead of the whole object",
+				})
+			}
+		}
+	}
+	return fixes
 }
 
 // hasRepeatedAdjacentSegment reports whether a dotted path repeats a segment

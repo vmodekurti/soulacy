@@ -1116,7 +1116,7 @@ func (s *Server) handleStudioValidateYAML(c *fiber.Ctx) error {
 	var def agent.Definition
 	if err := yaml.Unmarshal([]byte(req.YAML), &def); err != nil {
 		add("error", "yaml", "", "YAML syntax error: "+err.Error(), "Fix the indentation, quoting, or a stray colon, then validate again.")
-		return c.JSON(buildYAMLValidation(items))
+		return c.JSON(buildYAMLValidation(items, nil))
 	}
 
 	// 2) Definition correctness.
@@ -1159,11 +1159,15 @@ func (s *Server) handleStudioValidateYAML(c *fiber.Ctx) error {
 		add("warning", "runtime", w.NodeID, w.Message, w.Fix)
 	}
 
-	return c.JSON(buildYAMLValidation(items))
+	// One-click auto-fixes for the template-reference warnings.
+	fixes := studio.SuggestTemplateFixes(draft)
+
+	return c.JSON(buildYAMLValidation(items, fixes))
 }
 
-// buildYAMLValidation tallies the items into the response envelope.
-func buildYAMLValidation(items []yamlValidateItem) fiber.Map {
+// buildYAMLValidation tallies the items into the response envelope, including any
+// machine-applicable template fixes for the GUI's "Fix" button.
+func buildYAMLValidation(items []yamlValidateItem, fixes []studio.TemplateFix) fiber.Map {
 	errors, warnings := 0, 0
 	for _, it := range items {
 		if it.Severity == "error" {
@@ -1175,7 +1179,10 @@ func buildYAMLValidation(items []yamlValidateItem) fiber.Map {
 	if items == nil {
 		items = []yamlValidateItem{}
 	}
-	return fiber.Map{"ok": errors == 0, "errors": errors, "warnings": warnings, "items": items}
+	if fixes == nil {
+		fixes = []studio.TemplateFix{}
+	}
+	return fiber.Map{"ok": errors == 0, "errors": errors, "warnings": warnings, "items": items, "fixes": fixes}
 }
 
 // studioSaveRequest is the POST /api/v1/studio/save body. AcceptPrivilegedExposure

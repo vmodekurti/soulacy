@@ -21,6 +21,37 @@ func toolNode(id, output, tool, input string) sdkr.FlowNode {
 	return sdkr.FlowNode{ID: id, Kind: "tool", Tool: tool, Output: output, Input: input}
 }
 
+// SuggestTemplateFixes turns the {{ .notebook.notebook }} bug into a concrete
+// find/replace the GUI's one-click Fix applies.
+func TestSuggestTemplateFixes_RepeatedNestedPath(t *testing.T) {
+	draft := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+		toolNode("create", "notebook", "mcp__notebooklm__create", `{"title":"AI news"}`),
+		toolNode("add", "", "mcp__notebooklm__add_sources", `{"notebook_id":"{{ .notebook.notebook }}"}`),
+	}}}
+	fixes := SuggestTemplateFixes(draft)
+	if len(fixes) != 1 {
+		t.Fatalf("want 1 fix, got %d: %+v", len(fixes), fixes)
+	}
+	if fixes[0].Find != "{{ .notebook.notebook }}" || fixes[0].Replace != "{{ .notebook.notebook.id }}" {
+		t.Errorf("unexpected fix: %+v", fixes[0])
+	}
+}
+
+// A python step that outputs a plain string (e.g. a date) must NOT be flagged or
+// generate a fix when interpolated bare — the false-positive case to suppress.
+func TestSuggestTemplateFixes_IgnoresBarePythonScalar(t *testing.T) {
+	draft := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+		{ID: "get_date", Kind: "python", Output: "current_date", Code: "def run(inputs):\n  return '2026-06-22'"},
+		toolNode("create", "notebook", "mcp__x__create", `{"date":"{{ .current_date }}"}`),
+	}}}
+	if fixes := SuggestTemplateFixes(draft); len(fixes) != 0 {
+		t.Errorf("a bare python scalar should not be fixed, got: %+v", fixes)
+	}
+	if issues := collectTemplateRefs(draft); len(issues) != 0 {
+		t.Errorf("a bare python scalar should not warn, got: %+v", issues)
+	}
+}
+
 // The reported bug: a wrong nested path {{ .notebook.notebook }} that resolves
 // to a map instead of the id string.
 func TestCheckTemplateRefs_FlagsRepeatedNestedPath(t *testing.T) {
