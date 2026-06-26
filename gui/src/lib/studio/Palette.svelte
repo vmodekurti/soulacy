@@ -25,14 +25,24 @@
   // to the workflow output. Providers carry no payload (not droppable).
   function agentItems(c) {
     const agents = (c && c.agents && c.agents.agents) || []
-    return agents.map((a) => ({
-      label: a.name || a.id || 'agent',
-      sub: a.description || '',
-      drag: { kind: 'agent', name: a.name || a.id, id: a.id || a.name },
-      agentId: a.id,
-      // A workflow-bearing agent can be opened on the canvas to edit/delete.
-      hasWorkflow: !!(a.workflow && Array.isArray(a.workflow.nodes) && a.workflow.nodes.length),
-    }))
+    return agents.map((a) => {
+      const strat = a.reasoning && String(a.reasoning.strategy || '').toLowerCase()
+      // Openable in Studio when it has SOMETHING Studio can edit: a workflow
+      // graph, a reasoning strategy (ReAct/Plan-Execute agent — opens the agent
+      // editor + SOUL.yaml), or it was authored in Studio (studio_intent) even if
+      // its graph is currently empty (e.g. a 0-step build). Plain library/peer
+      // agents have none of these and stay drag-only.
+      const openable = !!(a.workflow && Array.isArray(a.workflow.nodes) && a.workflow.nodes.length)
+        || strat === 'react' || strat === 'plan_execute'
+        || !!(a.studio_intent && String(a.studio_intent).trim())
+      return {
+        label: a.name || a.id || 'agent',
+        sub: a.description || '',
+        drag: { kind: 'agent', name: a.name || a.id, id: a.id || a.name },
+        agentId: a.id,
+        openable,
+      }
+    })
   }
   function toolItems(c) {
     // Builtins + Python tools. MCP tools live in their own group below.
@@ -186,11 +196,29 @@
         <li
           class="item draggable"
           draggable="true"
+          on:dragstart={(e) => startDrag(e, { kind: 'trigger' })}
+          title="Drag onto the canvas — the block that STARTS the flow (cron / HTTP / channel). Configure it in the Inspector."
+        >
+          <span class="item-label">⚡ Trigger</span>
+          <span class="item-sub">starts the flow</span>
+        </li>
+        <li
+          class="item draggable"
+          draggable="true"
           on:dragstart={(e) => startDrag(e, { kind: 'python' })}
           title="Drag onto the canvas — a custom Python step you can edit in the Inspector"
         >
           <span class="item-label">🐍 Custom Python</span>
           <span class="item-sub">inline script</span>
+        </li>
+        <li
+          class="item draggable"
+          draggable="true"
+          on:dragstart={(e) => startDrag(e, { kind: 'exit' })}
+          title="Drag onto the canvas — the block that ENDS the flow and delivers the result (HTTP / channel / console)."
+        >
+          <span class="item-label">🏁 Exit</span>
+          <span class="item-sub">ends the flow</span>
         </li>
       </ul>
     {/if}
@@ -245,30 +273,34 @@
           {/each}
         {:else}
           {#each g.items as it}
+            <!-- An openable (top-level / Studio-authored) agent is CLICK-to-open,
+                 NOT draggable: dragging it onto the canvas used to wrap it in a
+                 one-step workflow and corrupt a stepless agent. Reusable peer
+                 agents (non-openable) stay draggable for composition. -->
             <li
               class="item"
-              class:draggable={!!it.drag}
-              class:openable={it.hasWorkflow || !!it.draftId}
-              draggable={!!it.drag}
-              on:dragstart={(e) => startDrag(e, it.drag)}
+              class:draggable={!!it.drag && !it.openable}
+              class:openable={it.openable || !!it.draftId}
+              draggable={!!it.drag && !it.openable}
+              on:dragstart={(e) => { if (!it.openable) startDrag(e, it.drag) }}
               on:click={() => {
                 if (it.draftId && onOpenDraft) onOpenDraft(it.draftId)
-                else if (it.hasWorkflow && onOpenAgent) onOpenAgent(it.agentId)
+                else if (it.openable && onOpenAgent) onOpenAgent(it.agentId)
               }}
               on:keydown={(e) => {
                 if ((e.key === 'Enter' || e.key === ' ')) {
                   if (it.draftId && onOpenDraft) { e.preventDefault(); onOpenDraft(it.draftId) }
-                  else if (it.hasWorkflow && onOpenAgent) { e.preventDefault(); onOpenAgent(it.agentId) }
+                  else if (it.openable && onOpenAgent) { e.preventDefault(); onOpenAgent(it.agentId) }
                 }
               }}
-              role={(it.hasWorkflow || it.draftId) ? 'button' : undefined}
-              tabindex={(it.hasWorkflow || it.draftId) ? 0 : undefined}
-              title={it.draftId ? 'Click to load this draft onto the canvas' : (it.sub ? it.sub : (it.hasWorkflow ? 'Click to edit this workflow · drag to add a handoff step' : (it.drag ? 'Drag onto the canvas' : '')))}
+              role={(it.openable || it.draftId) ? 'button' : undefined}
+              tabindex={(it.openable || it.draftId) ? 0 : undefined}
+              title={it.draftId ? 'Click to load this draft onto the canvas' : (it.openable ? 'Click to open this agent in the editor' : (it.sub ? it.sub : (it.drag ? 'Drag onto the canvas to add as a step' : '')))}
             >
               <span class="item-label">{it.label}</span>
               {#if it.badge}<span class="item-badge">{it.badge}</span>{/if}
               {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
-              {#if it.hasWorkflow && onDeleteAgent}
+              {#if it.openable && onDeleteAgent}
                 <button
                   class="item-del"
                   type="button"

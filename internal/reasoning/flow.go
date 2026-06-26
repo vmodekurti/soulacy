@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
@@ -83,8 +84,8 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 			if n.Code == "" && n.Tool == "" {
 				return nil, fmt.Errorf("flow: node %q is kind=python but has neither inline code nor a tool", n.ID)
 			}
-		case sdkr.FlowNodeBranch:
-			// nothing to validate
+		case sdkr.FlowNodeBranch, sdkr.FlowNodeTrigger, sdkr.FlowNodeExit:
+			// Structural endpoint/routing nodes: no action, nothing to validate.
 		default:
 			return nil, fmt.Errorf("flow: node %q has unknown kind %q", n.ID, n.Kind)
 		}
@@ -159,6 +160,30 @@ type FlowHooks struct {
 	Completed func(visitKey string, state json.RawMessage)
 	// Failed fires when a visit aborts the flow.
 	Failed func(visitKey string, err error)
+	// Observe fires after every executed (non-branch) node visit with the full
+	// per-node record — rendered input, output, error, and wall-clock duration —
+	// so the runtime can build a legible per-block run trace. It fires on
+	// success, on a skipped error, and on an aborting error (before Failed).
+	// It never fires for a restored (resumed) visit. Purely observational.
+	Observe func(rec FlowNodeRun)
+}
+
+// FlowNodeRun is one executed node's record in a run trace (Story S0.3 /
+// per-block logging). It captures exactly what a block received, produced, how
+// long it took, and whether it errored — the data a non-technical user needs to
+// see WHERE a run went wrong, without reading templates or logs.
+type FlowNodeRun struct {
+	VisitKey   string          `json:"visitKey"`
+	NodeID     string          `json:"nodeId"`
+	Kind       string          `json:"kind"`
+	Input      string          `json:"input,omitempty"`
+	Output     json.RawMessage `json:"output,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	DurationMS int64           `json:"durationMs"`
+	StartedAt  time.Time       `json:"startedAt"`
+	// WiredPorts is true when this node's input was assembled from typed port
+	// wires (template-free handoff) rather than a Go-template input.
+	WiredPorts bool `json:"wiredPorts,omitempty"`
 }
 
 // RunFlow walks the compiled graph. vars seeds the template namespace
@@ -187,7 +212,7 @@ func RunFlow(ctx context.Context, g *FlowGraph, vars map[string]any, run FlowRun
 		visits[current]++
 		visitKey := fmt.Sprintf("%s#%d", current, visits[current])
 
-		if node.Kind != sdkr.FlowNodeBranch {
+		if !sdkr.IsStructuralKind(node.Kind) {
 			executions++
 			if executions > budget {
 				err := fmt.Errorf("flow: node-execution budget exhausted (%d) at %q — check cycle bounds", budget, current)
@@ -212,8 +237,16 @@ func RunFlow(ctx context.Context, g *FlowGraph, vars map[string]any, run FlowRun
 				if hooks.Started != nil {
 					hooks.Started(visitKey, node)
 				}
+
+				// Typed-port handoffs (Story S0.3 runtime resolution): if any
+				// incoming edge declares a to_port, the node's input is assembled
+				// from the wired upstream output ports — no Go template. This is the
+				// template-free handoff path that removes the {{ .x.id }} bug class.
+				overlay, hasPorts := resolvePortInputs(g, current, vars)
+
 				rendered := ""
-				if node.Input != "" {
+				switch {
+				case node.Input != "":
 					var rerr error
 					rendered, rerr = renderTemplate(node.Input, vars)
 					if rerr != nil {
@@ -223,10 +256,12 @@ func RunFlow(ctx context.Context, g *FlowGraph, vars map[string]any, run FlowRun
 						}
 						return nil, err
 					}
-				} else if node.Kind == sdkr.FlowNodePython {
-					// A python node with no explicit Input receives ALL flow vars as a
-					// JSON `inputs` dict (keyed by each prior node's output var), so its
-					// run(inputs) sees upstream outputs without manual templating.
+				case node.Kind == sdkr.FlowNodePython && !hasPorts:
+					// A python node with no explicit Input AND no wired ports receives
+					// ALL flow vars as a JSON `inputs` dict (keyed by each prior node's
+					// output var), so its run(inputs) sees upstream outputs without
+					// manual templating. When ports ARE wired the node instead receives
+					// exactly its declared inputs (assembled below).
 					if b, jerr := json.Marshal(vars); jerr == nil {
 						rendered = string(b)
 					} else {
@@ -234,9 +269,45 @@ func RunFlow(ctx context.Context, g *FlowGraph, vars map[string]any, run FlowRun
 					}
 				}
 
+				// Overlay the wired port values onto the static base (constants the
+				// node carries in Input as a JSON object). The wires win.
+				if hasPorts {
+					base := map[string]any{}
+					if s := strings.TrimSpace(rendered); s != "" {
+						// Ignore a parse error: a non-object base (prose) is dropped in
+						// favor of the structured wired inputs.
+						_ = json.Unmarshal([]byte(s), &base)
+					}
+					for k, v := range overlay {
+						base[k] = v
+					}
+					if b, jerr := json.Marshal(base); jerr == nil {
+						rendered = string(b)
+					}
+				}
+
+				start := time.Now()
 				result, err := run(ctx, node, rendered)
 				if err != nil && node.OnError == "retry" {
 					result, err = run(ctx, node, rendered)
+				}
+				// Record the per-node run (success, skip, or abort) before deciding
+				// the flow's fate, so the trace always shows what each block did.
+				if hooks.Observe != nil {
+					rec := FlowNodeRun{
+						VisitKey:   visitKey,
+						NodeID:     current,
+						Kind:       node.Kind,
+						Input:      rendered,
+						Output:     result,
+						DurationMS: time.Since(start).Milliseconds(),
+						StartedAt:  start.UTC(),
+						WiredPorts: hasPorts,
+					}
+					if err != nil {
+						rec.Error = err.Error()
+					}
+					hooks.Observe(rec)
 				}
 				if err != nil {
 					if node.OnError == "skip" {
@@ -292,6 +363,112 @@ func RunFlow(ctx context.Context, g *FlowGraph, vars map[string]any, run FlowRun
 		}
 		current = next
 	}
+}
+
+// resolvePortInputs assembles a node's input from its incoming WIRED edges
+// (Story S0.3 runtime resolution). For every edge whose To is this node and that
+// declares a ToPort, it reads the producing node's stored output var, extracts
+// the field the FromPort exposes, and binds it under the consumer's input-port
+// key. The result is the structured, template-free input the runtime overlays
+// onto the node's static base. ok=false when the node has no wired inputs — the
+// caller then keeps today's template/all-vars behavior unchanged.
+//
+// Forgiving by design: a producer that hasn't run yet (value absent) binds the
+// zero value rather than erroring, and a FromPort whose field can't be walked
+// falls back to the whole upstream value — so a slightly-off wire degrades
+// gracefully instead of aborting the run.
+func resolvePortInputs(g *FlowGraph, nodeID string, vars map[string]any) (map[string]any, bool) {
+	consumer, ok := g.nodes[nodeID]
+	if !ok {
+		return nil, false
+	}
+	overlay := map[string]any{}
+	used := false
+	for _, e := range g.spec.Edges {
+		if e.To != nodeID || e.ToPort == "" {
+			continue
+		}
+		src, ok := g.nodes[e.From]
+		if !ok {
+			continue
+		}
+		var srcVal any
+		if src.Output != "" {
+			srcVal = vars[src.Output]
+		}
+		// Which value does the from_port expose?
+		//   - no from_port            → the whole producer output
+		//   - port has explicit Field → strict dotted path into the output
+		//   - else (port NAME)        → the output's same-named field IF present,
+		//                               otherwise the WHOLE output (a generic port
+		//                               name like "result"/"output" addresses the
+		//                               whole thing; a specific one like "id"
+		//                               addresses that field).
+		var val any
+		switch {
+		case e.FromPort == "":
+			val = srcVal
+		default:
+			if op := findPort(src.Outputs, e.FromPort); op != nil && op.Field != "" {
+				val = extractField(srcVal, op.Field)
+			} else {
+				val = extractNamedField(srcVal, e.FromPort)
+			}
+		}
+		// Bind under the consumer's input-port key (Field override or port name).
+		key := e.ToPort
+		if ip := findPort(consumer.Inputs, e.ToPort); ip != nil && ip.Field != "" {
+			key = ip.Field
+		}
+		overlay[key] = val
+		used = true
+	}
+	return overlay, used
+}
+
+// findPort returns the named port (or nil) from a port list.
+func findPort(ports []sdkr.FlowPort, name string) *sdkr.FlowPort {
+	for i := range ports {
+		if ports[i].Name == name {
+			return &ports[i]
+		}
+	}
+	return nil
+}
+
+// extractNamedField resolves a port-NAME reference against a producer output:
+// when the output is an object that HAS the key, it returns that field; in every
+// other case (output isn't an object, or has no such key) it returns the whole
+// output. This makes a generic port name ("result", "output") carry the whole
+// value while a specific one ("id", "url") carries just that field — without the
+// author having to declare an explicit Field.
+func extractNamedField(v any, name string) any {
+	if m, ok := v.(map[string]any); ok {
+		if val, present := m[name]; present {
+			return val
+		}
+	}
+	return v
+}
+
+// extractField walks a dotted path into a decoded JSON value and returns the
+// addressed leaf. An empty path returns the whole value. If a segment can't be
+// walked (the value isn't an object at that depth), it returns what it reached
+// so far — so wiring the whole of a scalar output via a named port still yields
+// the scalar instead of nil.
+func extractField(v any, path string) any {
+	if strings.TrimSpace(path) == "" {
+		return v
+	}
+	cur := v
+	for _, seg := range strings.Split(path, ".") {
+		m, ok := cur.(map[string]any)
+		if !ok {
+			return cur
+		}
+		cur = m[seg]
+	}
+	return cur
 }
 
 // applyFlowResult stores a node result under its Output var (parsed JSON

@@ -37,6 +37,14 @@ type TraceEntry struct {
 	Input  string          `json:"input"`
 	Output json.RawMessage `json:"output"`
 	Mocked bool            `json:"mocked,omitempty"`
+	// DurationMS and Error mirror the live run trace (reasoning.FlowNodeRun) so
+	// the GUI renders dry-run and production traces with one component. In a dry
+	// run Error is normally empty (the mock runner never calls real tools).
+	DurationMS int64  `json:"durationMs"`
+	Error      string `json:"error,omitempty"`
+	// WiredPorts reports that this node's input was assembled from typed port
+	// wires rather than a Go template (template-free handoff).
+	WiredPorts bool `json:"wiredPorts,omitempty"`
 }
 
 // Assertion is a single check evaluated against the run after it completes.
@@ -86,6 +94,10 @@ type TestResult struct {
 	Passed     bool              `json:"passed"`
 	Mode       string            `json:"mode"`
 	Warnings   []string          `json:"warnings,omitempty"`
+	// Shapes are the captured output shapes per flow var from this run (Phase D):
+	// real data the per-node compiler (CompileNode) can be grounded in so it wires
+	// downstream steps by actual field names instead of guessing.
+	Shapes []UpstreamVar `json:"shapes,omitempty"`
 }
 
 // liveNotSupportedNote is the user-facing explanation returned for Mode=="live".
@@ -159,21 +171,32 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 	}
 
 	var trace []TraceEntry
+	mockedByNode := map[string]bool{}
 	run := func(_ context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
 		out := mockNodeOutput(node, renderedInput)
-		mocked := false
 		if raw, ok := opts.Mocks[node.ID]; ok && len(raw) > 0 {
 			out = append(json.RawMessage(nil), raw...) // copy to decouple from caller's map
-			mocked = true
+			mockedByNode[node.ID] = true
 		}
-		trace = append(trace, TraceEntry{
-			NodeID: node.ID,
-			Kind:   nodeKind(node),
-			Input:  renderedInput,
-			Output: out,
-			Mocked: mocked,
-		})
 		return out, nil
+	}
+
+	// Build the trace from the Observe hook so the dry run captures the same
+	// per-block fields as a live run (duration, wired-ports), keeping a single
+	// trace shape across dry and production.
+	hooks := reasoning.FlowHooks{
+		Observe: func(rec reasoning.FlowNodeRun) {
+			trace = append(trace, TraceEntry{
+				NodeID:     rec.NodeID,
+				Kind:       rec.Kind,
+				Input:      rec.Input,
+				Output:     rec.Output,
+				Mocked:     mockedByNode[rec.NodeID],
+				DurationMS: rec.DurationMS,
+				Error:      rec.Error,
+				WiredPorts: rec.WiredPorts,
+			})
+		},
 	}
 
 	vars := map[string]any{
@@ -181,7 +204,7 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 			"text": input,
 		},
 	}
-	result, err := reasoning.RunFlow(ctx, g, vars, run, reasoning.FlowHooks{})
+	result, err := reasoning.RunFlow(ctx, g, vars, run, hooks)
 	if err != nil {
 		return TestResult{}, fmt.Errorf("studio: test run: %w", err)
 	}
@@ -205,6 +228,7 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 		Passed:     passed,
 		Mode:       "dry",
 		Warnings:   warnings,
+		Shapes:     ShapesFromTrace(draft, trace),
 	}, nil
 }
 

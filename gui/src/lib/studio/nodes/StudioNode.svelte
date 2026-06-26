@@ -12,6 +12,8 @@
   $: inputs = (data && data.inputs) || []
   $: outputs = (data && data.outputs) || []
   $: shape = (data && data.shape) || 'card'
+  // Post-build execution status for the semantic accent (set by runstate.js).
+  $: runState = (data && data.runState) || 'idle'
 
   // Evenly distribute N handles across the vertical edge of the node.
   function offsetPct(i, n) {
@@ -24,6 +26,9 @@
   class:entry={data.isEntry}
   class:invalid={data.invalid}
   class:warn={data.warn}
+  class:state-ok={runState === 'ok'}
+  class:state-repaired={runState === 'repaired'}
+  class:state-problem={runState === 'problem'}
   style="--node-accent: {data.color}"
 >
   <!-- ── Input handles (left) ── -->
@@ -46,6 +51,9 @@
     {#if shape === 'decision'}<span class="decision-glyph" aria-hidden="true">◆</span>{/if}
     {#if shape === 'peer'}<span class="peer-glyph" title="peer-agent handoff" aria-hidden="true">⇄</span>{/if}
     {#if data.isEntry}<span class="entry-chip">entry</span>{/if}
+    {#if runState !== 'idle'}
+      <span class="state-dot {runState}" title={runState === 'ok' ? 'verified by the last build' : runState === 'repaired' ? 'repaired during the last build' : 'unresolved problem'} aria-hidden="true"></span>
+    {/if}
   </div>
   <div class="node-title" title={data.label}>{data.label}</div>
   {#if data.description}<div class="node-desc" title={data.description}>{data.description}</div>{/if}
@@ -116,6 +124,28 @@
   .studio-node.warn {
     box-shadow: 0 0 0 2px var(--warn, #f5a742), 0 4px 16px rgba(0, 0, 0, 0.4);
   }
+
+  /* Post-build execution accents — restrained, semantic. Validation rings
+     (invalid/warn) take precedence by being later in the cascade if both apply. */
+  .studio-node.state-ok {
+    box-shadow: 0 0 0 1.5px var(--ok, #38c172), 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+  .studio-node.state-repaired {
+    box-shadow: 0 0 0 1.5px var(--warn, #f5a742), 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+  .studio-node.state-problem {
+    box-shadow: 0 0 0 1.5px var(--error, #ff6b81), 0 4px 16px rgba(0, 0, 0, 0.4);
+  }
+  .state-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-left: auto;
+    flex: none;
+  }
+  .state-dot.ok { background: var(--ok, #38c172); box-shadow: 0 0 6px var(--ok, #38c172); }
+  .state-dot.repaired { background: var(--warn, #f5a742); box-shadow: 0 0 6px var(--warn, #f5a742); }
+  .state-dot.problem { background: var(--error, #ff6b81); box-shadow: 0 0 6px var(--error, #ff6b81); }
 
   .node-head {
     display: flex;

@@ -52,8 +52,15 @@ export const bridge = {
   refinePrompt: (intent, catalog, light) =>
     api.studio.refinePrompt({ intent, catalog, light }),
 
-  compile: (intent, answers, catalog) =>
-    api.studio.compile({ intent, answers, catalog }),
+  compile: (intent, answers, catalog, rawIntent) =>
+    api.studio.compile({ intent, answers, catalog, rawIntent }),
+
+  // Try an unsaved reasoning agent against one sample question.
+  tryAgent: (workflow, question) => api.studio.tryAgent({ workflow, question }),
+
+  // Credentials: list configured secrets (with a `set` flag) and set one inline.
+  listSecrets: () => api.secrets.list(),
+  setSecret: (name, value) => api.secrets.set(name, value),
 
   // Canvas⇄Code (SOUL.yaml) view: serialize a draft to YAML, parse edited YAML
   // back to a draft (+ warnings), and save authored YAML straight to disk.
@@ -61,6 +68,17 @@ export const bridge = {
   fromYaml: (yaml) => api.studio.fromYaml({ yaml }),
   saveYaml: (yaml) => api.studio.saveYaml({ yaml }),
   validateYaml: (yaml) => api.studio.validateYaml({ yaml }),
+  fixYaml: (yaml) => api.studio.fixYaml({ yaml }),
+  reviewYaml: (yaml) => api.studio.reviewYaml({ yaml }),
+  getRules: () => api.studio.getRules(),
+  saveRules: (rules) => api.studio.saveRules({ rules }),
+
+  // Phase B: compile a plain-language connector gate into a flow predicate.
+  compileGate: (phrase, vars) => api.studio.compileGate({ phrase, vars }),
+  // Phase C: compile ONE node from its plain-language intent into config.
+  compileNode: (req) => api.studio.compileNode(req),
+  // Phase 2: the coarse composite-block catalog.
+  compositeBlocks: () => api.studio.compositeBlocks(),
 
   // Generate a ReAct/Plan-Execute agent (no fixed flow).
   compileAgent: (intent, strategy, answers, catalog) =>
@@ -96,6 +114,19 @@ export const bridge = {
   // Runtime self-heal: list failed runs + diagnose/heal one.
   failedRuns: () => api.studio.failedRuns(),
   diagnoseRun: (id) => api.studio.diagnoseRun({ id }),
+
+  // Per-block run trace of a live flow run (input/output/duration/error),
+  // by runId or the agent's most recent run.
+  runTrace: (agentId, runId) => api.studio.runTrace(agentId, runId),
+
+  // Complete run history for an agent (every run, scheduled or on-demand).
+  runHistory: (agentId) => api.studio.runHistory(agentId),
+
+  // Full structured trace of an autonomous build (the build inspector source):
+  // a specific build by id, or the most recent when omitted; and the list of
+  // recent builds for the picker.
+  buildTrace: (id) => api.studio.buildTrace(id),
+  buildTraces: () => api.studio.buildTraces(),
 
   // Builder-model strength advice (warn before generating on a weak model).
   modelAdvice: () => api.studio.modelAdvice(),

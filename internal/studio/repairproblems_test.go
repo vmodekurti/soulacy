@@ -22,8 +22,24 @@ func TestRepairWithProblems_FixesFromMessages(t *testing.T) {
 	if !changed {
 		t.Fatal("expected repair to apply")
 	}
-	if !strings.Contains(out.Flow.Nodes[1].Input, "{{ .notebook }}") {
-		t.Errorf("not repaired: %q", out.Flow.Nodes[1].Input)
+	// The model's fix (wire id from the notebook output) is now lowered to a typed
+	// PORT wire, not a Go-template string: node b declares an input port "id" and
+	// an edge a→b carries it (to_port "id"). The template handoff is gone — that is
+	// the redesign's "typed ports, not magic strings" working end to end.
+	if strings.Contains(out.Flow.Nodes[1].Input, "{{") {
+		t.Errorf("handoff should be a port, not a template: %q", out.Flow.Nodes[1].Input)
+	}
+	if !outputPortExists(out.Flow.Nodes[1].Inputs, "id") {
+		t.Errorf("expected input port \"id\" on node b; got %+v", out.Flow.Nodes[1].Inputs)
+	}
+	var wired bool
+	for _, e := range out.Flow.Edges {
+		if e.From == "a" && e.To == "b" && e.ToPort == "id" {
+			wired = true
+		}
+	}
+	if !wired {
+		t.Errorf("expected edge a→b wired to_port \"id\"; got %+v", out.Flow.Edges)
 	}
 }
 

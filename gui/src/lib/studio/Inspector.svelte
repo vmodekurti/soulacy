@@ -31,11 +31,62 @@
   // (nodeId, patch) => void; merge a patch into the selected node (used by the
   // Custom Python code editor to write inline code back into the draft).
   export let onNodeChange = () => {}
+  // { [toolFullName]: "name*:type, name2:type, …" } — the published argument
+  // schema for each connected MCP tool, so a tool node can show its allowed
+  // parameters and let you add one with a click instead of guessing.
+  export let toolParams = {}
   // Framework-written Python options for a code node:
   //   scaffolds: [{kind,title,requires,code}] deterministic templates.
   //   onGenerateCode: async (nodeId) => code — the framework's model writes it.
   export let scaffolds = []
   export let onGenerateCode = null
+  // Phase B: (phrase, vars) => Promise<predicate>; compiles a plain-language
+  // connector gate into a flow predicate. null = feature unavailable.
+  export let onCompileGate = null
+  // Phase C: (intent, node) => Promise<patch>; compiles a node's plain-language
+  // intent into concrete config (tool/agent/python). null = feature unavailable.
+  export let onCompileNode = null
+
+  // Phase C "describe this step" state.
+  let intentBusy = false
+  let intentError = ''
+  async function compileNodeNow() {
+    if (!onCompileNode || !node) return
+    const intent = (intentDraft || '').trim()
+    if (!intent) return
+    onNodeChange(node.id, { intent })
+    intentBusy = true; intentError = ''
+    try {
+      await onCompileNode(intent, node)
+    } catch (e) {
+      intentError = (e && e.message) || 'Could not compile this step'
+    } finally {
+      intentBusy = false
+    }
+  }
+
+  // Phase B connector-gate helper state.
+  let gatePhrase = ''
+  let gateBusy = false
+  let gateError = ''
+  function flowVarNames() {
+    const ns = (workflow && workflow.flow && workflow.flow.nodes) || []
+    return ns.map((n) => (n && n.output ? String(n.output).trim() : '')).filter(Boolean)
+  }
+  async function compileGateNow() {
+    if (!onCompileGate || !selectedEdge) return
+    const phrase = (gatePhrase || '').trim()
+    if (!phrase) return
+    gateBusy = true; gateError = ''
+    try {
+      const pred = await onCompileGate(phrase, flowVarNames())
+      if (pred) onEdgeChange(selectedEdge.index, { if: pred })
+    } catch (e) {
+      gateError = (e && e.message) || 'Could not compile the condition'
+    } finally {
+      gateBusy = false
+    }
+  }
 
   let generating = false
 
@@ -71,11 +122,83 @@
   let codeDraft = ''
   let inputDraft = ''
   let outputDraft = ''
+  let timeoutDraft = ''
   let toolDraft = ''
   let agentDraft = ''
   let paramsDraft = ''
   let paramsError = ''
   let descDraft = ''
+  let intentDraft = ''
+  let customParamName = ''
+
+  // ── MCP tool parameter schema ──────────────────────────────────────────────
+  // The allowed arguments for the selected tool node (from the connected MCP
+  // server's published schema), and which of them are currently set in the args.
+  $: allowedParams = node && node.kind === 'tool' && node.tool
+    ? parseParamHint(toolParams[node.tool] || '')
+    : []
+  $: argKeys = argKeysOf(inputDraft)
+
+  // parseParamHint turns "title*:string, summary:string" into
+  // [{name:'title', type:'string', required:true}, …].
+  function parseParamHint(hint) {
+    if (!hint) return []
+    return String(hint).split(',').map((s) => s.trim()).filter(Boolean).map((part) => {
+      let name = part, type = ''
+      const ci = part.indexOf(':')
+      if (ci >= 0) { name = part.slice(0, ci).trim(); type = part.slice(ci + 1).trim() }
+      const required = name.endsWith('*')
+      if (required) name = name.slice(0, -1).trim()
+      return { name, type, required }
+    }).filter((p) => p.name)
+  }
+
+  // argKeysOf parses the args JSON (templates live inside quoted strings, so it
+  // stays valid JSON) and returns the set of keys already present.
+  function argKeysOf(s) {
+    try {
+      const o = JSON.parse((s || '').trim() || '{}')
+      return o && typeof o === 'object' && !Array.isArray(o) ? new Set(Object.keys(o)) : new Set()
+    } catch (_) { return null } // unparseable (hand-edited) → unknown; don't claim keys
+  }
+
+  function placeholderForType(type) {
+    const t = (type || '').toLowerCase()
+    if (t.includes('bool')) return false
+    if (t.includes('int') || t.includes('num') || t.includes('float') || t.includes('double')) return 0
+    if (t.includes('list') || t.includes('array')) return []
+    if (t.includes('object') || t.includes('json') || t.includes('map') || t.includes('dict')) return {}
+    return ''
+  }
+
+  // addArg inserts a parameter into the args JSON (with a typed placeholder) and
+  // persists it — the click-to-add for allowed params and custom ones.
+  function addArg(name, type) {
+    if (!name) return
+    let obj = {}
+    const s = (inputDraft || '').trim()
+    if (s) {
+      try { obj = JSON.parse(s) } catch (_) { return } // don't clobber hand-edited JSON
+      if (!obj || typeof obj !== 'object' || Array.isArray(obj)) obj = {}
+    }
+    if (Object.prototype.hasOwnProperty.call(obj, name)) return // already present
+    obj[name] = placeholderForType(type)
+    inputDraft = JSON.stringify(obj, null, 2)
+    onNodeChange(node.id, { input: inputDraft })
+  }
+
+  function addCustomParam() {
+    const n = customParamName.trim()
+    if (!n) return
+    addArg(n, '')
+    customParamName = ''
+  }
+
+  function shortToolName(full) {
+    if (!full) return ''
+    const i = full.lastIndexOf('__')
+    return i >= 0 ? full.slice(i + 2) : full
+  }
 
   // Live (advisory) capability hint for the Custom Python editor. The server is
   // authoritative at save/consent — this just shows the author what they're
@@ -91,11 +214,13 @@
     codeDraft = node.code || ''
     inputDraft = node.input || ''
     outputDraft = node.output || ''
+    timeoutDraft = node.timeout || ''
     toolDraft = node.tool || ''
     agentDraft = node.agent || ''
     paramsDraft = (node.params && Object.keys(node.params).length) ? JSON.stringify(node.params, null, 2) : ''
     paramsError = ''
     descDraft = node.description || ''
+    intentDraft = node.intent || ''
   }
 
   // Parse the params JSON editor and write it back; flag invalid JSON.
@@ -276,6 +401,19 @@
       </select>
     {/if}
 
+    {#if onCompileGate}
+      <label class="field-label" for="edge-gate">condition (plain language)</label>
+      <div class="gate-row">
+        <input id="edge-gate" type="text" placeholder="e.g. only if at least one article was found"
+          bind:value={gatePhrase} on:keydown={(e) => { if (e.key === 'Enter') compileGateNow() }} />
+        <button type="button" class="btn sm" on:click={compileGateNow} disabled={gateBusy}>
+          {gateBusy ? '…' : 'Compile'}
+        </button>
+      </div>
+      {#if gateError}<p class="insp-hint" style="color:var(--danger,#c33)">{gateError}</p>{/if}
+      <p class="insp-hint">Describe when the flow should follow this connector; it compiles to the predicate below.</p>
+    {/if}
+
     <label class="field-label" for="edge-if">if (predicate)</label>
     <input
       id="edge-if"
@@ -285,6 +423,17 @@
       on:input={(e) => onEdgeChange(selectedEdge.index, { if: e.target.value })}
     />
     <p class="insp-hint">Writes back to the draft so Test / Save / Validate use this condition.</p>
+
+    <label class="field-label" for="edge-maxiter">max iterations (loop bound)</label>
+    <input
+      id="edge-maxiter"
+      type="number"
+      min="0"
+      placeholder="0 — not a loop"
+      value={selectedEdge.edge.max_iterations || 0}
+      on:change={(e) => onEdgeChange(selectedEdge.index, { max_iterations: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+    />
+    <p class="insp-hint">When this edge loops back to an earlier step, caps how many times the loop may run before the flow gives up. 0 = not a loop.</p>
     <button type="button" class="btn danger sm" on:click={() => onEdgeDelete(selectedEdge.index)}>Delete connection</button>
   {:else if node}
     <!-- Selected node: editable configuration. Each field writes back to the
@@ -294,6 +443,61 @@
       <dt>kind</dt><dd>{node.kind || '—'}</dd>
     </dl>
 
+    {#if node.kind === 'trigger'}
+      <!-- Trigger endpoint block (Phase A): how the flow starts. Stored in
+           node.params; projected onto the workflow trigger on save. -->
+      <section class="frame">
+        <h3 class="sub">Trigger</h3>
+        <label class="field-label" for="trig-kind">how it starts</label>
+        <select id="trig-kind" value={(node.params && node.params.kind) || 'cron'}
+          on:change={(e) => onNodeChange(node.id, { params: { ...(node.params || {}), kind: e.target.value } })}>
+          <option value="cron">cron — on a schedule</option>
+          <option value="http">http — incoming webhook</option>
+          <option value="channel">channel — a message arrives</option>
+        </select>
+        {#if ((node.params && node.params.kind) || 'cron') === 'cron'}
+          <label class="field-label" for="trig-cron">cron expression</label>
+          <input id="trig-cron" type="text" placeholder="0 9 * * *"
+            value={(node.params && node.params.config && node.params.config.cron) || ''}
+            on:blur={(e) => onNodeChange(node.id, { params: { ...(node.params || {}), kind: 'cron', config: { ...((node.params && node.params.config) || {}), cron: e.target.value } } })} />
+        {/if}
+        {#if (node.params && node.params.kind) === 'channel'}
+          <label class="field-label" for="trig-chan">channel</label>
+          <input id="trig-chan" type="text" placeholder="telegram"
+            value={(node.params && node.params.config && node.params.config.channel) || ''}
+            on:blur={(e) => onNodeChange(node.id, { params: { ...(node.params || {}), kind: 'channel', config: { ...((node.params && node.params.config) || {}), channel: e.target.value } } })} />
+        {/if}
+        <p class="insp-hint">This block is where the flow begins; it becomes the entry on save.</p>
+      </section>
+    {/if}
+
+    {#if node.kind === 'exit'}
+      <!-- Exit endpoint block (Phase A): how the result leaves the flow. -->
+      <section class="frame">
+        <h3 class="sub">Exit</h3>
+        <label class="field-label" for="exit-route">deliver via</label>
+        <select id="exit-route" value={(node.params && node.params.route) || 'console'}
+          on:change={(e) => onNodeChange(node.id, { params: { ...(node.params || {}), route: e.target.value } })}>
+          <option value="console">console — just return the result</option>
+          <option value="channel">channel — send to a channel</option>
+          <option value="http">http — POST to a URL</option>
+        </select>
+        {#if (node.params && node.params.route) === 'channel'}
+          <label class="field-label" for="exit-chan">channel</label>
+          <input id="exit-chan" type="text" placeholder="telegram"
+            value={(node.params && node.params.config && node.params.config.channel) || ''}
+            on:blur={(e) => onNodeChange(node.id, { params: { ...(node.params || {}), route: 'channel', config: { ...((node.params && node.params.config) || {}), channel: e.target.value } } })} />
+        {/if}
+        {#if (node.params && node.params.route) === 'http'}
+          <label class="field-label" for="exit-url">URL</label>
+          <input id="exit-url" type="text" placeholder="https://…"
+            value={(node.params && node.params.config && node.params.config.url) || ''}
+            on:blur={(e) => onNodeChange(node.id, { params: { ...(node.params || {}), route: 'http', config: { ...((node.params && node.params.config) || {}), url: e.target.value } } })} />
+        {/if}
+      </section>
+    {/if}
+
+    {#if node.kind !== 'trigger' && node.kind !== 'exit'}
     <!-- Entry/start node: the trigger always flows into the entry node, so this
          is how you "connect" the trigger to a given node. -->
     {#if isEntryNode}
@@ -329,6 +533,22 @@
         bind:value={agentDraft} on:blur={() => onNodeChange(node.id, { agent: agentDraft })} />
     {/if}
 
+    {#if onCompileNode}
+      <!-- Phase C: describe this step in plain language; compile it into config. -->
+      <section class="frame">
+        <h3 class="sub">Describe this step</h3>
+        <textarea id="node-intent" class="node-input" rows="2" spellcheck="false"
+          placeholder="e.g. create a NotebookLM podcast from these urls"
+          bind:value={intentDraft}
+          on:blur={() => onNodeChange(node.id, { intent: intentDraft })}></textarea>
+        <button type="button" class="btn sm" on:click={compileNodeNow} disabled={intentBusy}>
+          {intentBusy ? 'Compiling…' : '✨ Compile this step'}
+        </button>
+        {#if intentError}<p class="insp-hint" style="color:var(--danger,#c33)">{intentError}</p>{/if}
+        <p class="insp-hint">Turns your description into a tool, agent, or Python step below — no coding.</p>
+      </section>
+    {/if}
+
     <label class="field-label" for="node-input">
       {node.kind === 'agent' ? 'task prompt' : node.kind === 'tool' ? 'arguments (JSON)' : 'input'}
     </label>
@@ -339,6 +559,42 @@
       Reference an upstream output with <code>{'{{ toJson .var }}'}</code> (JSON) or
       <code>{'{{ .var }}'}</code> (text). Saved when you click away.
     </p>
+
+    {#if node.kind === 'tool' && allowedParams.length}
+      <div class="param-schema">
+        <div class="ps-head">
+          <span class="field-label">allowed parameters</span>
+          <span class="ps-tool" title={node.tool}>{shortToolName(node.tool)}</span>
+        </div>
+        <div class="ps-chips">
+          {#each allowedParams as p}
+            <button
+              type="button"
+              class="ps-chip"
+              class:set={argKeys && argKeys.has(p.name)}
+              class:req={p.required}
+              title={(p.required ? 'required' : 'optional') + (p.type ? ' · ' + p.type : '') + ((argKeys && argKeys.has(p.name)) ? ' · already set' : ' · click to add')}
+              on:click={() => addArg(p.name, p.type)}
+            >
+              <span class="ps-name">{p.name}{#if p.required}<span class="ps-star">*</span>{/if}</span>
+              {#if p.type}<span class="ps-type">{p.type}</span>{/if}
+              {#if argKeys && argKeys.has(p.name)}<span class="ps-check">✓</span>{/if}
+            </button>
+          {/each}
+        </div>
+        <div class="ps-add">
+          <input
+            class="ps-add-input"
+            placeholder="add any parameter…"
+            bind:value={customParamName}
+            on:keydown={(e) => { if (e.key === 'Enter') addCustomParam() }}
+            aria-label="Add a custom parameter"
+          />
+          <button class="btn btn-sm" type="button" on:click={addCustomParam} disabled={!customParamName.trim()}>+ add</button>
+        </div>
+        <p class="insp-hint">Click a parameter to add it to the arguments. <span class="ps-star">*</span> = required. Hand-edited JSON is never overwritten.</p>
+      </div>
+    {/if}
 
     <label class="field-label" for="node-output">output variable</label>
     <input id="node-output" type="text" placeholder="e.g. articles"
@@ -351,6 +607,12 @@
       <option value="skip">skip — continue without this step</option>
       <option value="retry">retry — try once more, then abort</option>
     </select>
+
+    <label class="field-label" for="node-timeout">timeout</label>
+    <input id="node-timeout" type="text" placeholder="auto — e.g. 30s, 5m, 10m"
+      bind:value={timeoutDraft} on:blur={() => onNodeChange(node.id, { timeout: timeoutDraft.trim() })} />
+    <p class="insp-hint">Caps how long THIS block may run — the framework wraps the block with it (a value here always wins). Empty = auto: a declared <code>max_wait</code>/<code>timeout_s</code>, else a generous default for external tools, else the global. Set it on any block that hits “context deadline exceeded”.</p>
+    {/if}
 
     {#if node.kind === 'python'}
       <!-- Custom Python block: edit the inline script. Written back on blur. -->
@@ -744,6 +1006,41 @@
     border-radius: 8px; color: var(--text); padding: 7px 9px; resize: vertical;
   }
   .node-input:focus { outline: none; border-color: var(--accent); }
+
+  /* MCP tool: allowed-parameter chips + custom-param adder. */
+  .param-schema {
+    margin: 8px 0 4px;
+    padding: 8px;
+    background: var(--bg-elev-2, #1b2235);
+    border: 1px solid var(--border, #2a3350);
+    border-radius: 8px;
+  }
+  .ps-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 6px; }
+  .ps-tool { font-size: 11px; color: var(--text-muted, #8b93ab); font-family: ui-monospace, Menlo, monospace; }
+  .ps-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ps-chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--border, #2a3350);
+    background: var(--bg, #0f1420);
+    color: var(--text, #e6e9ef);
+    border-radius: 999px; padding: 3px 9px; font-size: 12px; cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .ps-chip:hover { border-color: var(--accent, #4f7cff); }
+  .ps-chip.set { background: color-mix(in srgb, var(--ok, #38c172) 16%, transparent); border-color: var(--ok, #38c172); }
+  .ps-chip.req .ps-name { font-weight: 600; }
+  .ps-name { white-space: nowrap; }
+  .ps-type { font-size: 10.5px; color: var(--text-muted, #8b93ab); }
+  .ps-star { color: var(--error, #ff6b81); }
+  .ps-check { color: var(--ok, #38c172); font-size: 11px; }
+  .ps-add { display: flex; gap: 6px; margin-top: 8px; }
+  .ps-add-input {
+    flex: 1; min-width: 0; font-size: 12px; padding: 4px 8px;
+    background: var(--bg, #0f1420); border: 1px solid var(--border, #2a3350);
+    border-radius: 6px; color: var(--text, #e6e9ef);
+  }
+  .ps-add-input:focus { outline: none; border-color: var(--accent, #4f7cff); }
+
   .codegen-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0; }
   .btn-codegen, .btn-upload {
     font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 7px;

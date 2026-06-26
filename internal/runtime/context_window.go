@@ -42,16 +42,43 @@ func modelContextLimit(provider, model string) int {
 		return 16385
 	case strings.Contains(m, "gemini"):
 		return 1000000
+	// Gemma 3 (and the larger 27B/31B variants) carry a 128k window; even Gemma 2
+	// is 8k. Recognising "gemma" stops it falling through to the tiny default that
+	// trimmed history every turn and made tool-using agents loop. The
+	// context-exceeded retry safely catches the rare case a smaller local num_ctx
+	// is actually in force.
+	case strings.Contains(m, "gemma"):
+		return 32768
 	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"), strings.Contains(m, "qwen"):
 		return 32768
 	case strings.Contains(m, "llama3.1"), strings.Contains(m, "llama-3.1"),
 		strings.Contains(m, "llama3.2"), strings.Contains(m, "llama-3.2"):
-		// Architecturally 128k, but Ollama's default num_ctx is far smaller;
+		// Architecturally 128k, but local Ollama's default num_ctx is far smaller;
 		// stay conservative so we don't rely on a num_ctx the operator may not
-		// have set.
+		// have set. (Hosted "cloud" providers run full context — handled below.)
+		if isHostedCloudProvider(provider) {
+			return 32768
+		}
 		return 8192
 	}
+	// Hosted cloud providers (e.g. ollama_cloud) run models at their FULL context,
+	// unlike a local Ollama whose num_ctx defaults small. An unrecognised model on
+	// such a provider should NOT get the tiny local default — that over-trims and
+	// breaks multi-step tool use. Give it a generous-but-bounded budget; an actual
+	// overflow is still caught by the context-exceeded retry.
+	if isHostedCloudProvider(provider) {
+		return 32768
+	}
 	return defaultContextLimit
+}
+
+// isHostedCloudProvider reports whether the provider is a hosted service that
+// runs models at full context (so the small local-Ollama default doesn't apply).
+func isHostedCloudProvider(provider string) bool {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	return strings.Contains(p, "cloud") || strings.Contains(p, "openrouter") ||
+		strings.Contains(p, "together") || strings.Contains(p, "groq") ||
+		strings.Contains(p, "fireworks")
 }
 
 // estimateTokens is a deliberately rough chars/4 approximation of the prompt

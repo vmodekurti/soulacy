@@ -1,0 +1,64 @@
+package studio
+
+import "strings"
+
+// DefaultSOULRules is the built-in authoring rulebook. It is injected into the
+// builder (generate), the AI fixer, and shown in the GUI editor where the user
+// can edit it; their saved copy (in the workspace) takes precedence. Tier 1 is
+// generic and applies to every agent; Tier 2 collects per-tool I/O contracts the
+// catalog can't express (output shapes), which is where the "use the right
+// field" knowledge lives.
+const DefaultSOULRules = `# SOUL.yaml Authoring Rules
+
+These rules ground how Soulacy generates, validates, and fixes agent workflows.
+Add a rule whenever you discover a new failure mode, and add tool I/O contracts
+under "Tier 2" so the builder knows each tool's real shape.
+
+## Tier 1 — Generic rules (apply to every agent)
+
+### Macro-Workflow Architecture
+- R1. Generate a Macro-Workflow graph by default! Visual flows MUST be high-level and simple (max 3-5 nodes).
+- R2. Do NOT generate 10-15 node pipelines. Instead of creating a separate node for every step of data extraction or cleaning, combine data manipulation, filtering, and JSON parsing into a SINGLE 'python' node.
+- R3. Delegate complex multi-tool reasoning to an 'agent' node. For example, instead of a rigid loop of tool nodes, create a 'Summarizer' or 'Researcher' peer agent and call it in one node.
+- R4. Only use 'react' execution mode if a rigid workflow is totally impossible. Macro-Workflows are preferred for predictable orchestration.
+
+### Tools & Capabilities
+- R5. If the workflow needs to parse complex JSON, manipulate lists, format strings, or do math, add a 'python' node. Do NOT try to use template variables like {{ .var }} to do complex data mangling.
+- R6. Do NOT invent tool names. If you need a capability that doesn't exist in the catalog, script it in a 'python' node, or use a web_search tool.
+- R7. When generating 'new_agents' for the overarching workflow to delegate to, ensure their system prompts are fully self-contained and describe exactly the output format they must return.
+
+### Scheduling & Delivery
+- R8. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
+- R9. Every channel the agent delivers to must be configured and enabled.
+
+## Tier 2 — Tool contracts (input args + output shapes)
+
+Document each tool's INPUT arguments and OUTPUT shape so steps reference the
+right fields. (Argument schemas for connected MCP tools are also given to the
+builder automatically from the live catalog; add OUTPUT shapes here.)
+
+- web_search — input {query, num_results}; output
+  {query, result_count, results:[{title, url, content}]}. Read .results.
+- (add your tools below, e.g.)
+- mcp__notebooklm__notebook_create — output {notebook_id, title}; the notebook id is
+  {{ .<output>.notebook_id }}.
+- mcp__notebooklm__source_add — input {notebook_id, source_type, urls (array of strings), wait (boolean)}.
+- mcp__notebooklm__studio_create — input {notebook_id, artifact_type}.
+- mcp__notebooklm__studio_status — input needs the notebook id (notebook_id),
+  not the audio/artifact id.
+`
+
+// RulesPromptBlock wraps the (possibly user-edited) rulebook for injection into
+// an LLM prompt. Returns "" when there are no rules so callers can append it
+// unconditionally.
+func RulesPromptBlock(rules string) string {
+	rules = strings.TrimSpace(rules)
+	if rules == "" {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\nAUTHORING RULES — obey every one of these; they take precedence:\n")
+	sb.WriteString(rules)
+	sb.WriteString("\n")
+	return sb.String()
+}

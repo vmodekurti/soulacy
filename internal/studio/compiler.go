@@ -43,6 +43,10 @@ type Catalog struct {
 	// KnowledgeBases are the knowledge bases the agent could draw on, so Studio
 	// can attach a relevant KB instead of starting from scratch (Story #7).
 	KnowledgeBases []CatalogKB `json:"knowledge_bases,omitempty"`
+	// Rules is the user-editable SOUL.yaml authoring rulebook. When set, the
+	// builder injects it so generation follows the same rules validation and the
+	// AI fixer enforce. Not part of the live inventory — it's guidance.
+	Rules string `json:"rules,omitempty"`
 }
 
 // CatalogKB is one knowledge base the workflow's agents could use as a source.
@@ -86,6 +90,11 @@ type CatalogSkill struct {
 type Request struct {
 	Intent  string  `json:"intent"`
 	Catalog Catalog `json:"catalog,omitempty"`
+	// RawIntent is the user's ORIGINAL prompt before refinement (Intent is the
+	// refined version). The server's architecture decision (RecommendAgentMode) is
+	// evaluated over BOTH so a strong cue present only in the raw text — and lost
+	// during refinement — still routes correctly, matching what refine decided.
+	RawIntent string `json:"raw_intent,omitempty"`
 	// Answers carries the user's responses to clarifying questions from a
 	// prior compile (question id -> answer). When present they are woven
 	// into the prompt so a re-compile incorporates them, closing the
@@ -106,6 +115,10 @@ type Flow struct {
 	Edges  []sdkr.FlowEdge `json:"edges,omitempty"`
 	Entry  string          `json:"entry,omitempty"`
 	Output string          `json:"output,omitempty"` // node id whose result is the flow's output (default: last node)
+	// MaxNodeExecutions caps total node executions for a workflow run (0 = engine
+	// default). Preserved across the canvas round-trip so a user-set budget isn't
+	// silently reset on re-save.
+	MaxNodeExecutions int `json:"max_node_executions,omitempty"`
 }
 
 // NewAgent defines a full profile for an agent the model invented.
@@ -128,14 +141,18 @@ type Recommendation struct {
 
 // Draft is the workflow the compiler produces.
 type Draft struct {
-	Name           string          `json:"name"`
-	SystemPrompt   string          `json:"system_prompt,omitempty"`
-	Intent         string          `json:"intent,omitempty"` // the prompt that generated this workflow (Studio editor)
+	Name         string `json:"name"`
+	SystemPrompt string `json:"system_prompt,omitempty"`
+	Intent       string `json:"intent,omitempty"` // the prompt that generated this workflow (Studio editor)
 	// Refined marks that Intent has already been through a full refine pass and
 	// (optionally) hand-edited by the user. The UI sets it after the first
 	// generate; it persists via Definition.StudioRefined so a re-opened workflow
 	// re-generates with a fast LIGHT touch-up instead of a full re-refine.
-	Refined        bool            `json:"refined,omitempty"`
+	Refined bool `json:"refined,omitempty"`
+	// RawIntent is the user's ORIGINAL prompt before refinement (Intent holds the
+	// refined version). Persisted via Definition.StudioRawIntent so the prompt
+	// editor can show and re-refine the original.
+	RawIntent      string          `json:"raw_intent,omitempty"`
 	Trigger        Trigger         `json:"trigger"`
 	Channels       []string        `json:"channels,omitempty"`
 	Flow           Flow            `json:"flow"`
@@ -162,6 +179,12 @@ type Draft struct {
 	Strategy string   `json:"strategy,omitempty"`
 	Tools    []string `json:"tools,omitempty"`
 	Skills   []string `json:"skills,omitempty"`
+	// Reasoning-loop budgets for an agent draft. Preserved across the canvas/YAML
+	// round-trip so a user who tuned them in SOUL.yaml doesn't have them reset to
+	// defaults on re-save. Empty/zero means "use Studio's sensible default".
+	StepTimeout  string `json:"step_timeout,omitempty"`
+	TotalTimeout string `json:"total_timeout,omitempty"`
+	MaxTurns     int    `json:"max_turns,omitempty"`
 }
 
 // IsAgent reports whether the draft is a reasoning agent (ReAct/Plan-Execute)
@@ -220,7 +243,7 @@ type Result struct {
 // handoff, and named ports as the norm, not the exception.
 const canonicalExample = `{
   "name": "Weekday AI Digest",
-  "system_prompt": "You are a specialized AI news curator. You wake up every weekday morning to compile a brief, high-signal digest of the latest artificial intelligence research and product news. You execute your workflow methodically: searching the web, filtering out noise, and delegating the final synthesis to your summarizer agent. Your tone is professional and concise. When encountering empty search results or errors, you gracefully emit a fallback message rather than failing. Stick strictly to the defined workflow steps.",
+  "system_prompt": "You are a specialized AI news curator. You wake up every weekday morning to compile a brief, high-signal digest of the latest artificial intelligence research and product news. You execute your workflow methodically: searching the web, filtering out noise with a python script, and delegating the final synthesis to your summarizer agent. Your tone is professional and concise. When encountering empty search results or errors, you gracefully emit a fallback message rather than failing. Stick strictly to the defined workflow steps.",
   "trigger": { "type": "schedule", "config": { "cron": "0 8 * * 1-5" } },
   "channels": ["telegram"],
   "flow": {
@@ -255,7 +278,21 @@ const canonicalExample = `{
       { "from": "say_quiet", "to": "end" }
     ],
     "entry": "search_ai_news"
-  }
+  },
+  "new_agents": [
+    {
+      "id": "summarizer",
+      "name": "Summarizer",
+      "description": "Summarize articles into a 5-bullet digest",
+      "system_prompt": "You are an expert AI news curator. Your task is to write a concise, 5-bullet AI digest based on the provided articles. For each article, write a single clear sentence summarizing the takeaway, followed immediately by the URL. Do not include any introductory text or fluff. Output strictly as a markdown bulleted list."
+    },
+    {
+      "id": "notifier",
+      "name": "Notifier",
+      "description": "Output static notifications",
+      "system_prompt": "You are a simple notifier. You output the exact message provided to you without any formatting or conversational text."
+    }
+  ]
 }`
 
 // BuildPrompt builds the instruction the model must answer. It pins the
@@ -279,29 +316,19 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- trigger.type is one of: schedule, channel, webhook, manual.\n")
 	sb.WriteString("- For schedule triggers, put a cron expression in trigger.config.cron.\n")
 	sb.WriteString("- channels is a list of output channel names (e.g. \"telegram\", \"slack\", \"email\").\n")
-	sb.WriteString("- flow.nodes[].kind is one of: tool, agent, branch, python. tool nodes set \"tool\"; agent nodes set \"agent\"; python nodes set \"code\" (inline Python); branch nodes set none of these.\n")
-	sb.WriteString("- Every flow must have an entry node and edges that terminate at \"end\".\n")
-	sb.WriteString("- Prefer at least one tool node (to fetch/act) and one agent node (to reason/summarize).\n")
-	sb.WriteString("- PRODUCTION MINDSET: Treat every intent as a production workload. Handle empty states, edge cases, and failure modes explicitly (e.g., using a branch node to check if an API returned data before proceeding to processing it).\n")
-	sb.WriteString("- Build REAL multi-node graphs. Emit MULTIPLE tool and agent nodes when the intent has multiple steps; multiple agent (kind=agent) nodes are peers that hand off to each other.\n")
-	sb.WriteString("- Use a branch node (kind=branch, no tool/agent) whenever the work forks on a CONDITION. A branch node fans out 2+ edges; put a Go-template predicate in edge.if (over flow vars, e.g. \"{{ gt (len .stories) 0 }}\"). Edges from a node are tried IN ORDER; the first whose if is truthy wins, so leave the LAST/fallback edge's if empty.\n")
-	sb.WriteString("- When a node fans out to multiple targets, you MAY declare typed ports: set nodes[].outputs / inputs to lists of {\"name\":...,\"type\"?:...} and wire edges with from_port / to_port. A named from_port MUST be one of the From node's declared outputs; a named to_port MUST be one of the To node's declared inputs. Omit ports entirely for simple linear hops.\n\n")
-	sb.WriteString("- Use a python node (kind=python) ONLY for glue the available tools can't do: shelling out to a local CLI the user says is installed, parsing a tool's raw output, reshaping data, or calling an external command. Put the script in nodes[].code as a function `def run(inputs):` where `inputs` is a dict of the node's rendered input (JSON) and the value you RETURN becomes the node's output. Always prefer an existing tool or agent when one fits; reach for python only for the gaps, and keep the code minimal. Do NOT invent tool names for capabilities that don't exist — write a python node instead.\n\n")
-	sb.WriteString("- system_prompt: Write a rich, conversational system prompt for the overarching agent (2-4 sentences). Give it a clear persona, define its goal based on the intent, and instruct it to faithfully execute the steps in the graph. Do NOT write a mechanical list of steps (the framework will attach those automatically); write the persona and domain instructions.\n")
-	sb.WriteString("- CRITICAL — every node MUST carry its REAL instruction derived from the intent, never a placeholder or empty field:\n")
-	sb.WriteString("    * tool nodes: set \"input\" to the tool's arguments as a JSON object built from the intent. A search/web tool node MUST contain the actual query, e.g. {\"query\":\"latest AI research articles\",\"num_results\":10}. Never leave a tool node's input empty when it takes arguments.\n")
-	sb.WriteString("    * agent nodes: set \"input\" to the full, concrete, highly specific task prompt for that agent (what to do, with which data, what persona to adopt, edge case rules, explicit output format) — not a one-word label or 1-sentence stub. Inject an upstream output with {{ toJson .var }} for a JSON value, or {{ .var }} for a plain string.\n")
-	sb.WriteString("    * python nodes: write COMPLETE, robust, runnable code in \"code\". NEVER a stub, `pass`, `...`, TODO, or `return inputs`. The code automatically receives ALL prior node outputs as the `inputs` dict (keyed by each node's output var), so read e.g. inputs.get(\"articles\"). Code MUST include try/except blocks, defensive dictionary lookups (.get()), type checking, and fallback values. Never blindly index into dicts/lists. Always define def run(inputs).\n")
-	sb.WriteString("- TOOL OUTPUT CONTRACT — the web_search tool returns a JSON OBJECT: {\"query\":\"...\",\"result_count\":N,\"results\":[{\"title\":\"...\",\"url\":\"...\",\"content\":\"...\"}]}. A python node consuming it MUST read the dict, e.g. `data = inputs.get(\"<search_var>\", {})` then `for it in data.get(\"results\", []): it[\"title\"], it[\"url\"], it[\"content\"]`. Defensive code only: treat a non-dict value as empty (e.g. `if not isinstance(data, dict): data = {}`) so a missing or error result never crashes the node.\n")
-	sb.WriteString("    * Pull concrete values straight from the user's words: if they ask for \"top 10 AI articles\", the query is about AI articles and the count is 10 — bake that in, do not leave it generic.\n")
-	sb.WriteString("- Give every node a meaningful \"output\" var name so downstream nodes can reference it (e.g. \"articles\", \"notebook_id\", \"audio_url\").\n")
-	sb.WriteString("- Give every node a one-line \"description\" stating concretely what THAT node does (e.g. \"Search the web for today's AI news\", \"Keep the top 5 articles as {title,url}\") — not a vague label. The node ids should also read as verbs (search_ai_news, pick_top_articles), not generic names like node1.\n")
-	sb.WriteString("- AGENTS MUST BE FULLY DEFINED — never blank. Every agent node's `agent` id must be EITHER an agent in the Available agents list OR an agent you fully define in a top-level `new_agents` array (alongside `flow`). For EACH new agent you MUST supply: `id`, a human `name`, a one-line `description`, and a rich, REUSABLE `system_prompt`. Do NOT leave any of these empty and do NOT emit an agent node whose agent is neither in the catalog nor in new_agents.\n")
-	sb.WriteString("- WRITE REUSABLE AGENT PERSONAS: a helper agent like a summarizer or notifier may be reused across many workflows, so its `system_prompt` must be a complete, standalone persona — NOT a one-liner. Include: (1) its role and expertise, (2) what kinds of input it receives and the contract it expects, (3) exactly how it should behave and reason, (4) the precise OUTPUT format it must produce, and (5) how to handle empty/erroneous input gracefully. Aim for 3-6 sentences. The node's `input` is the per-run task; the agent's `system_prompt` is its durable, scenario-independent character.\n")
-	sb.WriteString("- Do NOT invent tool names. Do the work in a python node or an existing tool if no tool exists.\n")
-	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), DO NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name and description, then emit a tool node with \"tool\":\"read_skill\" and \"input\":{\"skill_name\":\"<EXACT installed skill name>\"} (e.g. a request for \"yahoo finance\" → {\"skill_name\":\"yfinance\"}). Only reference skills that appear in the Available skills list; if none matches, do the work with an existing tool or a python node instead of inventing a read_skill.\n")
-	sb.WriteString("- MCP SERVERS: connected MCP servers and the tools they expose are listed under \"Available MCP servers\" below. When the intent names a server or a capability one provides (e.g. \"use the github mcp\", \"create a notebook in notebooklm\", \"open a Linear issue\"), emit a tool node whose \"tool\" is the EXACT MCP tool name from that list, with \"input\" set to that tool's arguments built from the intent. Match loose references to the closest listed MCP tool by name + description. Do NOT invent MCP tool names; if no listed MCP tool fits, use another existing tool or a python node.\n")
-	sb.WriteString("- EXECUTION MODE: judge which execution model best fits the intent and include a top-level \"recommendation\": {\"mode\":\"workflow|react|plan_execute\", \"rationale\":\"<1-2 sentences>\"}. Pick \"workflow\" for a fixed, deterministic pipeline — the same steps in the same order every run, knowable up front (e.g. \"each morning search X, summarize, post to Telegram\"); the graph you emit IS the artifact. Pick \"react\" when steps DEPEND on intermediate results or the task is exploratory/decision-heavy — an id from one tool feeds the next, the number or choice of tool calls varies per run, or the user says \"manage\", \"research and then\", \"figure out\" (most multi-step MCP jobs like driving NotebookLM are react); a frozen graph is brittle, so the agent should loop think→act→observe. Pick \"plan_execute\" for long, multi-phase jobs worth decomposing first. ALWAYS still emit a best-effort flow, but set the recommendation honestly even when it is not \"workflow\".\n\n")
+	sb.WriteString("- KEEP GRAPHS SIMPLE, but COMPOSE THE CAPABILITIES YOU HAVE: aim for a handful of meaningful nodes, not a 10-15 step pipeline. Collapse pure DATA GLUE (parsing, reshaping, dedupe, formatting) into a SINGLE `python` node. But do NOT collapse real OPERATIONS into python: when an available tool / MCP tool / skill performs the operation, emit a discrete `tool` node that CALLS it, and sequence several such nodes for a multi-step external job (e.g. create -> add sources -> generate -> poll). Delegate open-ended reasoning/summarizing to an `agent` node.\n")
+	sb.WriteString("- PRODUCTION MINDSET: Treat every intent as a production workload. Handle empty states, edge cases, and failure modes explicitly (e.g. using a branch node to emit a fallback message if no items are found).\n")
+	sb.WriteString("- STANDARD DATA FORMAT — every handoff between steps is JSON, always. A step's output is a JSON value; the next step receives JSON. To pass a structured value (list/object) into a tool or python input, EITHER leave a python node's input EMPTY (it then auto-receives all upstream outputs as a JSON `inputs` dict) OR use {{ toJson .var }} UNQUOTED, e.g. \"urls\": {{ toJson .urls }}. NEVER write \"urls\": \"{{ .urls }}\" — Go renders a list/object that way as `[map[...] ...]` text (not JSON) and the next step breaks. A bare {{ .scalar }} is only for a single scalar value inside a string.\n")
+	sb.WriteString("- system_prompt: Write a rich, conversational system prompt for the overarching agent (2-4 sentences). Give it a clear persona, define its goal based on the intent, and explicitly outline the multi-step strategy it must follow. Instruct it to gracefully emit a fallback message on errors rather than failing.\n")
+	sb.WriteString("- AGENTS MUST BE FULLY DEFINED — never blank. If the workflow needs to delegate to a specialized peer, define the peer in the `new_agents` array.\n")
+	sb.WriteString("- WRITE REUSABLE AGENT PERSONAS: a helper agent like a summarizer or notifier may be reused across many tasks, so its `system_prompt` must be a complete, standalone persona — NOT a one-liner. Include: (1) its role and expertise, (2) exactly how it should behave and reason, (3) the precise OUTPUT format it must produce, and (4) how to handle empty/erroneous input gracefully. Aim for 3-6 sentences. The overarching agent's `system_prompt` contains the workflow plan; the helper agent's `system_prompt` is its durable, scenario-independent character.\n")
+	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), do NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name, then add it to the `skills` array.\n")
+	sb.WriteString("- PREFER TYPED CAPABILITIES OVER GUESSED CODE: the tools, skills, and MCP tools listed below come with their REAL argument names. When a step's operation is covered by one of them, ALWAYS emit a `tool` node that calls it with those EXACT named arguments — a typed contract that always works — one operation per node. NEVER re-implement a typed tool inside a `python` node, and NEVER shell out to a CLI (subprocess) for something an MCP/tool already exposes: the model would have to guess CLI flags, which is exactly what breaks. For a multi-step MCP job, emit the discrete tool nodes IN SEQUENCE and wire each step's output into the next via typed ports (or {{ toJson .var }}). Reach for a `python` node ONLY for glue no tool covers. Do NOT invent tool/MCP names; if truly nothing fits, then a python node.\n")
+	sb.WriteString("- EXECUTION MODE: judge which execution model best fits the intent and include a top-level \"recommendation\": {\"mode\":\"workflow|react|plan_execute\", \"rationale\":\"<1-2 sentences>\"}. Pick \"workflow\" as the strong default (a clear sequence of tool/MCP/agent nodes, with python only for glue). Only pick \"react\" if the task requires deeply dynamic tool reasoning where a workflow graph is impossible.\n\n")
+
+	// User-editable authoring rulebook (same rules the validator + AI fixer use),
+	// so generation follows them up front instead of being corrected after.
+	sb.WriteString(RulesPromptBlock(catalog.Rules))
 
 	if len(catalog.Skills) > 0 {
 		sb.WriteString("Available skills (use the EXACT name in read_skill's skill_name):\n")
@@ -384,6 +411,7 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	}
 	writeChannelGrounding(&sb, catalog)
 	writeKBGrounding(&sb, catalog)
+	writeCompositeBlockGrounding(&sb, intent)
 	writePatternGrounding(&sb, intent, catalog)
 	writePlanGrounding(&sb, intent, catalog)
 	if len(answers) > 0 {
@@ -400,6 +428,19 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 			sb.WriteString("\n")
 		}
 	}
+
+	// Final, explicit self-check — weaker models follow an end-of-prompt
+	// checklist far better than rules buried in context. These are the failure
+	// modes we keep seeing.
+	sb.WriteString("\nFINAL CHECK before you output — fix any violation in your draft:\n")
+	sb.WriteString("- Every VALUE handed from one tool/python step to a later tool/python step is a typed PORT WIRE (from_port/to_port on an edge with declared ports), NOT a {{ }} template. If you wrote {{ .something.id }} to feed a tool argument, convert it to a port wire.\n")
+	sb.WriteString("- No node interpolates a WHOLE object: never {{ .x }} where a single value is needed — use the scalar field, e.g. {{ .x.id }} (or {{ toJson .x }} to send the whole object on purpose).\n")
+	sb.WriteString("- No repeated/guessed nested path like {{ .x.x }} — reach the real field, e.g. {{ .x.id }}.\n")
+	sb.WriteString("- No structured value is passed as \"key\": \"{{ .var }}\" (quoted) — that yields Go `map[...]` text, not JSON. Use \"key\": {{ toJson .var }} (unquoted) or leave a python node's input empty.\n")
+	sb.WriteString("- Every {{ .var }} is produced by an EARLIER node's output; pass the RIGHT id (a status/poll step needs the resource id, not a sub-artifact id).\n")
+	sb.WriteString("- Any poll/wait loop sets max_iterations (>1) on the back edge, or it only runs once.\n")
+	sb.WriteString("- Exactly one entry; every path ends at \"end\"; a branch's last/fallback edge has an empty \"if\".\n")
+	sb.WriteString("- Obey every AUTHORING RULE above. Re-read them and correct the draft before returning.\n")
 
 	sb.WriteString("\nIntent:\n")
 	sb.WriteString(intent)
@@ -432,6 +473,14 @@ func ParseDraft(raw string) (Draft, error) {
 	}
 	s = s[start : end+1]
 
+	// Tolerate the single most common model type-slip: a flow node's "input"
+	// emitted as a JSON OBJECT/array instead of the schema's stringified JSON
+	// (e.g. "input":{"query":"x"} rather than "input":"{\"query\":\"x\"}").
+	// Without this, the whole otherwise-valid draft is thrown away with
+	// `cannot unmarshal object into Go struct field FlowNode...input of type
+	// string` — a frequent failure on weaker cloud models. Coerce, don't reject.
+	s = coerceNodeInputs(s)
+
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.DisallowUnknownFields()
 	var d Draft
@@ -445,6 +494,54 @@ func ParseDraft(raw string) (Draft, error) {
 		return d2, nil
 	}
 	return d, nil
+}
+
+// coerceNodeInputs rewrites every flow node whose "input" the model emitted as a
+// JSON object or array into the schema's stringified-JSON form, so a structurally
+// reasonable draft that only mis-typed this one field still parses instead of
+// being discarded. It is a pre-parse text transform: it round-trips the draft
+// through a generic map, stringifies each offending node "input", and re-marshals.
+// On any problem (not an object, unparseable, no flow/nodes) it returns the input
+// unchanged so the normal decoder still surfaces the real error. Idempotent: a
+// node "input" that is already a string is left alone.
+func coerceNodeInputs(raw string) string {
+	var root map[string]any
+	if err := json.Unmarshal([]byte(raw), &root); err != nil {
+		return raw
+	}
+	flow, ok := root["flow"].(map[string]any)
+	if !ok {
+		return raw
+	}
+	nodes, ok := flow["nodes"].([]any)
+	if !ok {
+		return raw
+	}
+	changed := false
+	for _, n := range nodes {
+		nm, ok := n.(map[string]any)
+		if !ok {
+			continue
+		}
+		in, ok := nm["input"]
+		if !ok {
+			continue
+		}
+		switch in.(type) {
+		case map[string]any, []any:
+			if b, err := json.Marshal(in); err == nil {
+				nm["input"] = string(b)
+				changed = true
+			}
+		}
+	}
+	if !changed {
+		return raw
+	}
+	if b, err := json.Marshal(root); err == nil {
+		return string(b)
+	}
+	return raw
 }
 
 // stripFences removes a single leading/trailing markdown code fence
@@ -530,6 +627,10 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// the canvas can show them and save/consent can gate on them.
 	classifyFlowNodes(&draft.Flow)
 
+	// Parity (Phase E): seed each node's Intent from its description so a
+	// generated node is re-editable as a prompt, exactly like a hand-built one.
+	ensureNodeIntents(&draft.Flow)
+
 	// Deterministic backstop for sub-agent quality: guarantee every agent node
 	// that references a non-catalog helper agent has a full, reusable profile
 	// (name + description + rich system prompt) in NewAgents — so a "Notifier"
@@ -552,8 +653,10 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// The flow must compile — this is the hard contract. A model that emits a
 	// structurally invalid multi-node/branch/port graph is rejected here and
 	// NOT persisted; the caller sees a clear error.
-	if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
-		return Result{}, fmt.Errorf("studio: compiled flow is invalid: %w", err)
+	if !draft.IsAgent() {
+		if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
+			return Result{}, fmt.Errorf("studio: compiled flow is invalid: %w", err)
+		}
 	}
 
 	questions, notes := analyze(draft)
@@ -566,6 +669,12 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 		}
 		notes = append(notes, "Applied proven pattern(s): "+strings.Join(names, "; ")+".")
 	}
+	// Ground read_skill nodes against the live index: fuzzy-correct a near-miss
+	// skill name to the real installed one so the step resolves at run time
+	// (symmetric with the agent path's skill grounding). Runs before usedSkills so
+	// the corrected names flow into the transparency note + the saved Skills list.
+	notes = append(notes, GroundFlowSkills(&draft, catalog)...)
+
 	// Transparency (Stories #5/#6/#7): say which skills the agent will use and,
 	// if a relevant KB exists that wasn't attached, recommend it.
 	if sk := usedSkills(draft.Flow); len(sk) > 0 {
@@ -989,6 +1098,26 @@ func reconcilePorts(d *Draft) {
 		}
 		if n, ok := idx[e.To]; ok {
 			ensure(&n.Inputs, e.ToPort)
+		}
+	}
+}
+
+// ensureNodeIntents gives every non-structural node a plain-language Intent
+// (Phase E parity): a generated node seeds its Intent from its Description so it
+// is re-editable as a prompt and round-trips identically to a node the user
+// authored by "describe this step." Never overwrites an Intent the node already
+// carries; skips trigger/exit/branch (structural) nodes.
+func ensureNodeIntents(f *Flow) {
+	if f == nil {
+		return
+	}
+	for i := range f.Nodes {
+		n := &f.Nodes[i]
+		if sdkr.IsStructuralKind(n.Kind) {
+			continue
+		}
+		if strings.TrimSpace(n.Intent) == "" {
+			n.Intent = strings.TrimSpace(n.Description)
 		}
 	}
 }

@@ -315,21 +315,27 @@ func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	if perr != nil || strings.TrimSpace(payload.RefinedIntent) == "" {
 		// Graceful degradation: never block generation on a bad refine. Fall
 		// back to the original intent + a deterministic mode guess.
+		degraded := RecommendAgentMode(intent)
+		if degraded == "" {
+			degraded = inferModeFromIntent(intent)
+		}
 		return PromptRefinement{
 			Original:        intent,
 			RefinedIntent:   intent,
-			RecommendedMode: inferModeFromIntent(intent),
+			RecommendedMode: degraded,
 		}, nil
 	}
 
 	combined := payload.RefinedIntent + " " + intent
 	mode := normalizeMode(payload.RecommendedMode)
-	// Override the model when there are STRONG async/loop signals: a fixed flow
-	// physically cannot poll an async job or loop per-item, so these are always
-	// ReAct regardless of what the model guessed (models often mislabel a
-	// scheduled NotebookLM job as a "workflow" because it has a daily cadence).
-	if hasStrongReactCues(combined) {
-		mode = "react"
+	// Deterministic override: when the intent has STRONG signals a fixed flow
+	// physically cannot satisfy (async polling, per-item loops, dynamic capability
+	// routing, or an explicit multi-phase plan), force the corresponding agent
+	// mode regardless of what the model guessed (models often mislabel these).
+	// This is the SAME authority the server-side compile route uses, on the SAME
+	// combined text, so the decision can't diverge by entry path.
+	if forced := RecommendAgentMode(combined); forced != "" {
+		mode = forced
 	} else if mode == "" {
 		mode = inferModeFromIntent(combined)
 	}
@@ -367,11 +373,23 @@ func normalizeMode(s string) string {
 func hasStrongReactCues(intent string) bool {
 	t := strings.ToLower(intent)
 	strong := []string{
+		// Async jobs / polling / per-item loops a fixed DAG physically can't do.
 		"notebooklm", "notebook lm", "audio overview",
 		"poll", "until ready", "until it is ready", "until complete", "until completed",
 		"until done", "until it finishes", "wait until", "wait for it",
 		"each source", "one at a time", "one by one", "for each ", "per article", "per item",
 		"check status", "status until", "generation status",
+		// Dynamic capability ROUTING: the agent must decide WHICH skill/tool to use
+		// per request. This is the canonical reasoning pattern (an interactive
+		// assistant that maps an arbitrary question to the right skill), and a fixed
+		// graph can't branch over open-ended input — it's always an agent.
+		"appropriate skill", "appropriate skills", "best-matching skill", "right skill",
+		"selects and calls", "select the skill", "selects the skill", "choose the skill",
+		"maps the question", "map the question", "route to the", "routes to the",
+		"based on the parsed intent", "based on the question", "depending on the question",
+		"which skill", "which tool", "selects the appropriate", "select the appropriate",
+		"on-demand", "answers questions", "responds to questions", "responds to user questions",
+		"responds to incoming questions", "natural-language question",
 	}
 	for _, c := range strong {
 		if strings.Contains(t, c) {
@@ -379,6 +397,43 @@ func hasStrongReactCues(intent string) bool {
 		}
 	}
 	return false
+}
+
+// hasPlanExecuteCues reports whether the intent describes an explicitly
+// MULTI-PHASE job that benefits from planning the whole sequence before acting —
+// the Plan-Execute pattern. Checked before the ReAct cues because a long
+// decompose-then-run task is more specific than generic dynamic routing.
+func hasPlanExecuteCues(intent string) bool {
+	t := strings.ToLower(intent)
+	cues := []string{
+		"plan and execute", "plan-execute", "plan then execute",
+		"decompose", "break it down into", "break this down into", "break down the task",
+		"multi-step plan", "multistep plan", "step-by-step plan", "create a plan",
+		"first plan", "outline the steps then", "devise a plan", "research plan",
+	}
+	for _, c := range cues {
+		if strings.Contains(t, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// RecommendAgentMode is the SINGLE authoritative architecture decision. It
+// returns the full verdict — "plan_execute", "react", or "" (a deterministic
+// workflow) — from the intent text. Both the refine recommendation and the
+// server-side compile route call it on the SAME (raw + refined) text, so Studio
+// never generates a fixed workflow for a task that is really a reasoning agent
+// (the source of "it says ReAct but builds a workflow"), and the decision can't
+// diverge by entry path.
+func RecommendAgentMode(intent string) string {
+	if hasPlanExecuteCues(intent) {
+		return "plan_execute"
+	}
+	if hasStrongReactCues(intent) {
+		return "react"
+	}
+	return ""
 }
 
 // inferModeFromIntent is a deterministic backstop: phrases implying loops over

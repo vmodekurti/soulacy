@@ -7,6 +7,17 @@ bin/
 dist/
 *.exe
 
+# Editor/sync backup copies like foo.go.123456789 — Go ignores them (they don't
+# end in .go) but they clutter grep/symbol search. Not source; never commit.
+*.go.[0-9]*
+
+# Scratch / diagnostic leftovers — never commit.
+build*.err
+test_prompt.go
+internal/studio/tmp_groundcheck_test.go
+# Vite/Vitest write transient *.config.js.timestamp-*.mjs files while building.
+*.config.js.timestamp-*.mjs
+
 # ── MkDocs generated site ─────────────────────────────────────────────────────
 site/
 

@@ -69,6 +69,7 @@ import (
 	"github.com/soulacy/soulacy/internal/scheduler"
 	"github.com/soulacy/soulacy/internal/session"
 	"github.com/soulacy/soulacy/internal/storage"
+	"github.com/soulacy/soulacy/internal/studio"
 	"github.com/soulacy/soulacy/internal/webui"
 	"github.com/soulacy/soulacy/internal/workboard"
 
@@ -103,6 +104,13 @@ type Server struct {
 	historyStore    session.HistoryStore // nil until SetHistoryStore() is called
 	agentWatcher    healthReporter       // nil until SetAgentWatcher() is called (S2.13)
 	log             *zap.Logger
+
+	// buildTraces retains recent Studio build traces in a bounded in-memory ring
+	// and, when SOULACY_STUDIO_TRACE_DIR is set, also persists each as a JSONL
+	// file — so an autonomous build is fully debuggable after the fact. Lazily
+	// initialised by studioTraceStore().
+	buildTraces     *studio.BuildTraceStore
+	buildTracesOnce sync.Once
 
 	// Tool-catalog TTL cache. See toolCatalog() / InvalidateToolCatalog().
 	toolCatalogMu    sync.Mutex
@@ -363,9 +371,23 @@ func (s *Server) buildApp() *fiber.App {
 		// (the agent loader map, scheduler entries, cron closures). Without it, a
 		// later request's buffer reuse mutates those stored keys, producing
 		// corrupted "phantom" agents (e.g. "daily-briefing" → "e/statusiefing").
-		Immutable:    true,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 60 * time.Second,
+		Immutable: true,
+		ReadTimeout: 30 * time.Second,
+		// WriteTimeout is deliberately 0 (no fixed cap on how long a response may
+		// take to finish writing). This server legitimately holds connections open
+		// far longer than any fixed timeout:
+		//   • SSE streams — "Build until it works" (/studio/build-stream) and chat
+		//     streaming push events for minutes while the agent actually runs.
+		//   • Synchronous LLM work — /studio/compile and /studio/build call a
+		//     (often cloud) model and can easily exceed a minute.
+		// A fixed WriteTimeout (was 60s) severed these mid-flight, surfacing as a
+		// browser "network error" with no server-side failure. We instead reap
+		// genuinely idle keep-alive connections via IdleTimeout, and bound inbound
+		// request reads via ReadTimeout — so slow-client protection remains without
+		// guillotining long, legitimate responses. Per-operation limits (tool
+		// timeouts, the build attempt budget) bound the actual work.
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 				"error": err.Error(),
@@ -723,9 +745,15 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/build/stream", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioBuildStream)
 	// Studio Architect: list/diagnose failed runs and self-heal the saved agent.
 	api.Get("/studio/failed-runs", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioFailedRuns)
+	api.Get("/studio/run-trace", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRunTrace)
+	api.Get("/studio/run-history", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRunHistory)
+	api.Get("/studio/build-trace", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioBuildTrace)
+	api.Get("/studio/build-traces", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioBuildTraces)
 	api.Post("/studio/diagnose-run", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioDiagnoseRun)
 	// Studio plugin backend (Wave 2): dry-run test and save-as-disabled-agent.
 	api.Post("/studio/test", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTest)
+	// Try an UNSAVED reasoning agent against one sample question (ephemeral run).
+	api.Post("/studio/try-agent", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTryAgent)
 	// Studio plugin backend (M2): capability-tier consent plan + gated save.
 	api.Post("/studio/plan", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioPlan)
 	api.Post("/studio/save", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSave)
@@ -736,10 +764,21 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/from-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioFromYAML)
 	api.Post("/studio/save-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSaveYAML)
 	api.Post("/studio/validate-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidateYAML)
+	api.Post("/studio/fix-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioFixYAML)
+	api.Get("/studio/rules", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioGetRules)
+	api.Put("/studio/rules", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSaveRules)
+	api.Post("/studio/review-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioReviewYAML)
 	// Studio plugin backend (M3): canvas-time graph validation (read-only).
 	api.Post("/studio/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidate)
 	// Studio plugin backend (M6): starter templates (read-only).
 	api.Get("/studio/templates", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioTemplates)
+	// Phase 2: coarse composite-block catalog (read-only) — one node that
+	// encapsulates a whole multi-step dance (e.g. NotebookLM podcast).
+	api.Get("/studio/composite-blocks", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioCompositeBlocks)
+	// Phase B: compile a plain-language connector gate into a flow predicate.
+	api.Post("/studio/compile-gate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioCompileGate)
+	// Phase C: compile ONE node from its plain-language intent into concrete config.
+	api.Post("/studio/compile-node", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCompileNode)
 	// Studio plugin backend (M6): user draft library (save/list/load/delete).
 	api.Post("/studio/drafts", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSaveDraft)
 	api.Get("/studio/drafts", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioListDrafts)

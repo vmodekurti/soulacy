@@ -36,3 +36,37 @@ func TestHasStrongReactCues(t *testing.T) {
 		t.Error("plain pipeline should have no strong cues")
 	}
 }
+
+// The finance-assistant pattern — an interactive agent that maps a question to
+// the appropriate skill — must classify as a reasoning agent, not a workflow.
+// This is the case that kept (wrongly) generating a workflow.
+func TestRecommendAgentMode_SkillRoutingAssistant(t *testing.T) {
+	intent := `An interactive, on-demand financial assistant that responds to user questions ` +
+		`about stocks and markets. Based on the parsed intent, it selects and calls the ` +
+		`appropriate skill(s) from the deployed finance catalog.`
+	if got := RecommendAgentMode(intent); got != "react" {
+		t.Fatalf("a dynamic skill-routing assistant must be react; got %q", got)
+	}
+	// A genuinely fixed pipeline must NOT be forced to an agent.
+	fixed := "Every weekday at 8am, search the web for AI news, summarize the top 5, and post to Telegram."
+	if got := RecommendAgentMode(fixed); got != "" {
+		t.Errorf("a fixed scheduled pipeline should stay a workflow; got %q", got)
+	}
+}
+
+// Plan-Execute is now deterministically reachable, and is preferred over react
+// when the intent explicitly asks to plan-then-execute a multi-phase job.
+func TestRecommendAgentMode_PlanExecute(t *testing.T) {
+	if got := RecommendAgentMode("First plan the research, decompose it into steps, then execute the plan and write a report"); got != "plan_execute" {
+		t.Fatalf("an explicit decompose-then-execute task should be plan_execute; got %q", got)
+	}
+	// Refine path surfaces it too (deterministic override beats a model 'workflow').
+	out := `{"refined_intent":"Devise a plan to research three vendors, then execute it step by step.","summary":"vendor research","recommended_mode":"workflow","mode_reason":"x"}`
+	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "research three cloud vendors with a plan", Catalog{})
+	if err != nil {
+		t.Fatalf("RefinePrompt: %v", err)
+	}
+	if r.RecommendedMode != "plan_execute" {
+		t.Errorf("refine should surface plan_execute from strong cues; got %q", r.RecommendedMode)
+	}
+}

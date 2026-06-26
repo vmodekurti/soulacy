@@ -139,15 +139,27 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 		return Result{}, fmt.Errorf("studio: agent spec lists no tools or agents to act with")
 	}
 
+	// Capture any skills the model named that aren't installed BEFORE grounding
+	// drops them, so they surface in "Needs setup" instead of vanishing silently.
+	missingSkills := MissingSkillSuggestions(draft.Skills, catalog)
+
+	// Ground the model's capability picks against the live index: verify + correct
+	// chosen skills/tools, and inject installed skills the intent clearly calls for.
+	// This is the BASELINE — the user can still add/modify skills and tools by hand
+	// in the agent editor. Runs before ExplainDraft so the explanation reflects the
+	// grounded set.
+	groundNotes := GroundAgentCapabilities(&draft, catalog)
+
 	explanation := ExplainDraft(draft)
 	notes := []string{"Generated a " + recoLabelGo(strategy) + " agent — it reasons over its tools rather than running a fixed graph."}
 	if sk := draft.Skills; len(sk) > 0 {
 		notes = append(notes, "Enables skill(s): "+strings.Join(sk, ", ")+".")
 	}
+	notes = append(notes, groundNotes...)
 	return Result{
 		Workflow:    draft,
 		Notes:       notes,
-		Suggestions: suggestMissingAgent(draft, catalog),
+		Suggestions: append(suggestMissingAgent(draft, catalog), missingSkills...),
 		Explanation: &explanation,
 	}, nil
 }

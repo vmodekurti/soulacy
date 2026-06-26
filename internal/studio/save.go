@@ -53,6 +53,14 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		return agent.Definition{}, fmt.Errorf("studio: cannot derive an agent id from an empty workflow name")
 	}
 
+	// Canvas is authoritative (Phase A): if the user wired trigger/exit blocks,
+	// project them onto Trigger/Channels/Entry before the definition is built.
+	DeriveEndpoints(&draft)
+
+	// Every executable node needs an output var or its result is dropped and
+	// downstream wires read null. Guarantee it even for hand-edited canvases.
+	ensureOutputVars(&draft.Flow)
+
 	// ReAct / Plan-Execute agent: NOT a fixed workflow. The engine runs the
 	// reasoning loop over an allowlist of tools/skills/peers — there is NO
 	// workflow block (one would override reasoning.strategy). Map the draft's
@@ -70,14 +78,15 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	classifyFlowNodes(&draft.Flow)
 
 	def := agent.Definition{
-		ID:           id,
-		Name:         draft.Name,
-		Description:  describeWorkflowShort(draft),
-		Trigger:      mapTrigger(draft.Trigger.Type),
-		Channels:     append([]string(nil), draft.Channels...),
-		SystemPrompt: buildSystemPrompt(draft),
-		StudioIntent:  strings.TrimSpace(draft.Intent),
-		StudioRefined: draft.Refined,
+		ID:              id,
+		Name:            draft.Name,
+		Description:     describeWorkflowShort(draft),
+		Trigger:         mapTrigger(draft.Trigger.Type),
+		Channels:        append([]string(nil), draft.Channels...),
+		SystemPrompt:    buildSystemPrompt(draft),
+		StudioIntent:    strings.TrimSpace(draft.Intent),
+		StudioRefined:   draft.Refined,
+		StudioRawIntent: strings.TrimSpace(draft.RawIntent),
 		// Disabled by construction: a Studio save stages an agent for the
 		// operator to review and enable.
 		Enabled:  false,
@@ -86,13 +95,20 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		LLM: agent.LLMConfig{
 			Temperature: 0.7,
 		},
-		Workflow: &agent.WorkflowSpec{
+	}
+
+	// Only attach a workflow block when there's an actual graph. A 0-node draft
+	// would otherwise serialize as `workflow: {}`, which is invalid ("flow: no
+	// nodes declared") and confusing in SOUL.yaml. An empty draft stays a bare
+	// (incomplete) agent the user can fill in or convert to a reasoning agent.
+	if len(draft.Flow.Nodes) > 0 {
+		def.Workflow = &agent.WorkflowSpec{
 			Nodes:             draft.Flow.Nodes,
 			Edges:             draft.Flow.Edges,
 			Entry:             draft.Flow.Entry,
 			Output:            draft.Flow.Output,
-			MaxNodeExecutions: 0,
-		},
+			MaxNodeExecutions: draft.Flow.MaxNodeExecutions,
+		}
 	}
 
 	// Project the flow's capability surface onto the Definition so the tier
@@ -167,20 +183,25 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 	strategy := strings.ToLower(strings.TrimSpace(draft.Strategy))
 
 	def := agent.Definition{
-		ID:           id,
-		Name:         draft.Name,
-		Description:  reactDescription(draft),
-		Trigger:      mapTrigger(draft.Trigger.Type),
-		Channels:     append([]string(nil), draft.Channels...),
-		SystemPrompt: reactSystemPrompt(draft),
-		StudioIntent:  strings.TrimSpace(draft.Intent),
-		StudioRefined: draft.Refined,
-		Enabled:      false, // staged for review, like every Studio save
-		MaxTurns:     15,
-		Memory:       agent.MemoryPolicy{MaxTokens: 8000},
-		LLM:          agent.LLMConfig{Temperature: 0.7},
-		// The reasoning loop — the whole point. No Workflow block.
-		Reasoning:  agent.ReasoningConfig{Strategy: strategy},
+		ID:              id,
+		Name:            draft.Name,
+		Description:     reactDescription(draft),
+		Trigger:         mapTrigger(draft.Trigger.Type),
+		Channels:        append([]string(nil), draft.Channels...),
+		SystemPrompt:    reactSystemPrompt(draft),
+		StudioIntent:    strings.TrimSpace(draft.Intent),
+		StudioRefined:   draft.Refined,
+		StudioRawIntent: strings.TrimSpace(draft.RawIntent),
+		Enabled:         false, // staged for review, like every Studio save
+		MaxTurns:        maxTurnsOr(draft.MaxTurns, 15),
+		Memory:          agent.MemoryPolicy{MaxTokens: 8000},
+		LLM:             agent.LLMConfig{Temperature: 0.7},
+		// The reasoning loop — the whole point. No Workflow block. Studio sets
+		// sensible reasoning timeouts up front (the engine's bare defaults of
+		// 30s/step and 180s total are tuned for fast cloud calls and trip the
+		// validator as "may be too short"); plan_execute runs more steps so it
+		// gets the more generous budget. The user can still override in SOUL.yaml.
+		Reasoning:  reasoningConfigFor(draft, strategy),
 		Unattended: draft.Unattended,
 	}
 
@@ -272,6 +293,47 @@ func reactSystemPrompt(draft Draft) string {
 		b.WriteString(t)
 	}
 	return b.String()
+}
+
+// defaultReasoningConfig returns a reasoning config with sensible, explicit
+// timeouts so a freshly-built agent validates clean (no "timeout not set"
+// warnings) and survives slower providers. plan_execute typically runs more
+// steps, so it gets a larger total budget. Values are deliberately generous but
+// bounded; the user can override any of them in SOUL.yaml.
+func defaultReasoningConfig(strategy string) agent.ReasoningConfig {
+	cfg := agent.ReasoningConfig{
+		Strategy:     strategy,
+		StepTimeout:  "120s",
+		TotalTimeout: "600s",
+	}
+	if strings.EqualFold(strategy, "plan_execute") {
+		cfg.TotalTimeout = "900s"
+	}
+	return cfg
+}
+
+// reasoningConfigFor builds the saved reasoning config, PRESERVING any timeouts
+// the user already tuned (carried on the draft from a SOUL.yaml round-trip) and
+// only filling Studio's sensible defaults where the draft left them empty — so a
+// canvas re-save never silently resets hand-set budgets.
+func reasoningConfigFor(draft Draft, strategy string) agent.ReasoningConfig {
+	cfg := defaultReasoningConfig(strategy)
+	if t := strings.TrimSpace(draft.StepTimeout); t != "" {
+		cfg.StepTimeout = t
+	}
+	if t := strings.TrimSpace(draft.TotalTimeout); t != "" {
+		cfg.TotalTimeout = t
+	}
+	return cfg
+}
+
+// maxTurnsOr returns v when positive, else the fallback — so a user-tuned
+// max_turns survives the round-trip while an unset draft gets the default.
+func maxTurnsOr(v, fallback int) int {
+	if v > 0 {
+		return v
+	}
+	return fallback
 }
 
 func reactDescription(draft Draft) string {

@@ -3,7 +3,7 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui install test lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install test lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 \
@@ -14,16 +14,36 @@ LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Versio
 ## there is no longer a separate plugin-ui step — `make gui` embeds Studio.
 all: gui build
 
-## Build only the Go binaries (embeds whatever is in internal/webui/dist/).
-## `go mod tidy` runs first so go.sum picks up any newly-added deps.
-build: deps build-gateway build-cli
+# The embedded GUI bundle (go:embed all:dist) and the sources it's built from.
+# Defined BEFORE the `build` rule so `$(GUI_DIST)` is non-empty when used as a
+# prerequisite below (make expands a := variable at the point it is read).
+GUI_DIST := internal/webui/dist/index.html
+GUI_SRC  := $(shell find gui/src gui/index.html gui/package.json gui/package-lock.json \
+              gui/vite.config.js gui/svelte.config.js gui/tailwind.config.js \
+              gui/postcss.config.js gui/public 2>/dev/null)
+
+## Build the binaries AND refresh the embedded GUI when its sources changed.
+## The GUI step is incremental: $(GUI_DIST) only rebuilds when a file under
+## gui/ is newer than the last build, so a pure-Go change skips npm entirely
+## while a GUI change is always picked up. `go mod tidy` runs first so go.sum
+## picks up any newly-added deps.
+build: deps $(GUI_DIST) build-gateway build-cli
 
 ## Ensure module deps are fetched and go.sum is consistent.
 deps:
 	@echo "→ Ensuring go.mod/go.sum are in sync..."
 	go mod tidy
 
-## Build the Svelte GUI → outputs to internal/webui/dist/ (embedded into the binary)
+## Incremental GUI build: only runs npm when a gui/ source is newer than the
+## last embedded bundle. This is the dependency `build` uses.
+$(GUI_DIST): $(GUI_SRC)
+	@echo "→ GUI sources changed — rebuilding embedded GUI (Svelte)..."
+	@command -v npm >/dev/null 2>&1 || { echo "npm not found — install Node.js from https://nodejs.org"; exit 1; }
+	cd gui && npm install --silent && npm run build
+	@touch $(GUI_DIST)
+	@echo "→ GUI built."
+
+## Force a full GUI rebuild regardless of timestamps (used by `make all`).
 gui:
 	@echo "→ Building GUI (Svelte)..."
 	@command -v npm >/dev/null 2>&1 || { echo "npm not found — install Node.js from https://nodejs.org"; exit 1; }
@@ -52,6 +72,17 @@ sdk-install:
 ## Install Python SDK from PyPI
 sdk-install-release:
 	pip3 install soulacy
+
+## ONE COMMAND: (re)build the GUI + binaries, then run the gateway serving the
+## embedded GUI on http://localhost:18789. No vite dev server, no second process
+## — what you see at :18789 is exactly the built binary. The GUI rebuild is
+## incremental (only runs npm when gui/ changed). Stop any running gateway first
+## (the port must be free). Override the config with:
+##     make up CONFIG=./config.dev.yaml
+CONFIG ?=
+up: build
+	@echo "→ Gateway on http://localhost:18789  (embedded GUI — Ctrl-C to stop)"
+	@$(if $(CONFIG),SOULACY_CONFIG_PATH=$(CONFIG) ,)./bin/$(BINARY_GATEWAY) serve
 
 ## Run gateway in dev mode (auto-restart on changes with Air)
 dev:

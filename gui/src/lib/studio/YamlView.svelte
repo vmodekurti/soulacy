@@ -138,8 +138,15 @@
 <style>
   .yv {
     display: flex;
+    /* Fill the flex parent via flex-grow + stretch instead of height:100% —
+       a percentage height collapses to 0 inside an indefinite-height flex
+       wrapper (the Validate panel wrapper), which blanked the editor. A
+       concrete min-height guarantees it's never invisible even if the parent
+       chain provides no height at all. */
+    flex: 1 1 auto;
+    align-self: stretch;
+    min-height: 360px;
     height: 100%;
-    min-height: 0;
     background: #0e1020;
     border: 1px solid var(--border);
     border-radius: 10px;

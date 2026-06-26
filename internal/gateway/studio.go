@@ -24,18 +24,25 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 	"github.com/valyala/fasthttp"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+
+	"github.com/soulacy/soulacy/pkg/message"
 
 	"github.com/soulacy/soulacy/internal/agentvalidate"
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/llm"
+	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/internal/studio"
 	"github.com/soulacy/soulacy/internal/studio/consent"
@@ -159,6 +166,9 @@ func (s *Server) firstConfiguredCloudProvider() string {
 // references map to actual capabilities instead of being invented. It mutates
 // the passed catalog in place.
 func (s *Server) groundCatalog(cat *studio.Catalog) {
+	// Inject the authoring rulebook so the builder follows the same rules the
+	// validator and AI fixer enforce.
+	cat.Rules = s.soulRules()
 	// Installed skills (so "yahoo finance" maps to the real "yfinance").
 	if s.skillLoader != nil {
 		cat.Skills = cat.Skills[:0]
@@ -478,6 +488,46 @@ func (s *Server) handleStudioTroubleshoot(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"workflow": repaired, "changed": changed, "preflight": pf})
 }
 
+// studioTraceStore lazily initialises the bounded build-trace store. Disk
+// persistence is enabled when SOULACY_STUDIO_TRACE_DIR names a writable
+// directory; otherwise the store is in-memory only (still fully readable via the
+// build-trace endpoints, just not durable across restarts).
+func (s *Server) studioTraceStore() *studio.BuildTraceStore {
+	s.buildTracesOnce.Do(func() {
+		s.buildTraces = studio.NewBuildTraceStore(50, os.Getenv("SOULACY_STUDIO_TRACE_DIR"))
+	})
+	return s.buildTraces
+}
+
+// handleStudioBuildTrace implements GET /api/v1/studio/build-trace. With ?id it
+// returns that build's full structured trace; without, the most recent build.
+// The trace is the durable record of every phase the autonomous loop ran —
+// snapshots, preflight, each repair, each verify — with timings and detail, so a
+// build that failed (or a 6am scheduled one) is debuggable without server logs.
+func (s *Server) handleStudioBuildTrace(c *fiber.Ctx) error {
+	st := s.studioTraceStore()
+	id := strings.TrimSpace(c.Query("id"))
+	var (
+		tr *studio.BuildTrace
+		ok bool
+	)
+	if id != "" {
+		tr, ok = st.Get(id)
+	} else {
+		tr, ok = st.Latest()
+	}
+	if !ok {
+		return c.JSON(studio.TraceDump{ID: id, Events: []studio.TraceEvent{}})
+	}
+	return c.JSON(tr.Dump())
+}
+
+// handleStudioBuildTraces implements GET /api/v1/studio/build-traces — compact
+// summaries of retained builds (newest first) for a "recent builds" picker.
+func (s *Server) handleStudioBuildTraces(c *fiber.Ctx) error {
+	return c.JSON(fiber.Map{"traces": s.studioTraceStore().List(), "dir": s.studioTraceStore().Dir()})
+}
+
 // studioBuildRequest is the POST /api/v1/studio/build body: the current draft to
 // make work, plus the originating intent (used to synthesize self-tests).
 type studioBuildRequest struct {
@@ -508,25 +558,35 @@ func (s *Server) handleStudioBuild(c *fiber.Ctx) error {
 	s.groundCatalog(&cat)
 	in := s.preflightInput(c, cat)
 
-	// (1) Fill capability holes with generated glue code before the loop.
-	var glueNotes []string
-	if _, notes := studio.EnsureCapabilities(c.Context(), model, &req.Workflow, cat); len(notes) > 0 {
-		glueNotes = notes
-	}
-
-	// (2) Synthesize self-tests so "it works" is checked, not assumed.
 	intent := strings.TrimSpace(req.Intent)
 	if intent == "" {
 		intent = req.Workflow.Intent
 	}
+
+	// Open a durable build trace covering the WHOLE flow — glue, self-tests, and
+	// the loop — so every build is debuggable end to end.
+	tr := s.studioTraceStore().New(intent)
+	defer func() { _ = tr.Close() }()
+
+	// (1) Fill capability holes with generated glue code before the loop.
+	var glueNotes []string
+	doneGlue := tr.Step("phase", "glue", 0, "filling capability gaps with generated glue")
+	if _, notes := studio.EnsureCapabilities(c.Context(), model, &req.Workflow, cat); len(notes) > 0 {
+		glueNotes = notes
+	}
+	doneGlue(nil, map[string]any{"notes": glueNotes})
+
+	// (2) Synthesize self-tests so "it works" is checked, not assumed.
+	doneTests := tr.Step("phase", "tests", 0, "synthesizing self-tests from the intent")
 	tests := studio.SynthesizeTests(c.Context(), model, intent, req.Workflow, cat)
+	doneTests(nil, map[string]any{"count": len(tests)})
 
 	// (3) Choose the verifier. Default: REAL execution via the engine.
 	verify := true
 	if req.Verify != nil {
 		verify = *req.Verify
 	}
-	opts := studio.BuildOptions{In: in, Tests: tests}
+	opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr}
 	if verify {
 		opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
 	}
@@ -538,6 +598,7 @@ func (s *Server) handleStudioBuild(c *fiber.Ctx) error {
 		"report":    rep,
 		"preflight": final,
 		"glue":      glueNotes,
+		"traceId":   tr.ID,
 	})
 }
 
@@ -567,8 +628,49 @@ func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
 	type sse struct{ event, data string }
 	events := make(chan sse, 64)
 
+	intent := strings.TrimSpace(req.Intent)
+	if intent == "" {
+		intent = req.Workflow.Intent
+	}
+	// Durable trace for the whole streamed build (glue → tests → loop).
+	tr := s.studioTraceStore().New(intent)
+
+	// Heartbeat: during a long verify step the build can legitimately produce no
+	// events for minutes (it's running the agent against a real model + tools).
+	// A periodic keepalive frame keeps the connection visibly alive end-to-end so
+	// no intermediary (or browser) treats the idle stream as dead. The frame is a
+	// harmless `{"kind":"ping"}` with no message — the client's parser ignores it
+	// (non-'done', no .message). hbStop + WaitGroup guarantee the heartbeat has
+	// fully stopped BEFORE the producer closes `events`, so there is no send on a
+	// closed channel.
+	hbStop := make(chan struct{})
+	var hbWG sync.WaitGroup
+	hbWG.Add(1)
 	go func() {
+		defer hbWG.Done()
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbStop:
+				return
+			case <-t.C:
+				select {
+				case events <- sse{event: "event", data: `{"kind":"ping"}`}:
+				case <-hbStop:
+					return
+				default: // buffer full → a real event is already in flight; skip
+				}
+			}
+		}
+	}()
+
+	go func() {
+		// Order matters: close(events) is registered first so it runs LAST —
+		// after the heartbeat goroutine has been stopped and joined.
 		defer close(events)
+		defer func() { close(hbStop); hbWG.Wait() }()
+		defer func() { _ = tr.Close() }()
 		emit := func(kind, data string) {
 			select {
 			case events <- sse{event: kind, data: data}:
@@ -576,23 +678,26 @@ func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
 			}
 		}
 		// (1) Glue, then (2) self-tests — reported as their own steps.
+		doneGlue := tr.Step("phase", "glue", 0, "filling capability gaps with generated glue")
+		var glueNotes []string
 		if _, notes := studio.EnsureCapabilities(ctx, model, &req.Workflow, cat); len(notes) > 0 {
+			glueNotes = notes
 			for _, nt := range notes {
 				emit("event", jsonMsg("glue", "🧩 "+nt))
 			}
 		}
-		intent := strings.TrimSpace(req.Intent)
-		if intent == "" {
-			intent = req.Workflow.Intent
-		}
+		doneGlue(nil, map[string]any{"notes": glueNotes})
+
 		emit("event", jsonMsg("tests", "Writing self-tests…"))
+		doneTests := tr.Step("phase", "tests", 0, "synthesizing self-tests from the intent")
 		tests := studio.SynthesizeTests(ctx, model, intent, req.Workflow, cat)
+		doneTests(nil, map[string]any{"count": len(tests)})
 
 		verify := true
 		if req.Verify != nil {
 			verify = *req.Verify
 		}
-		opts := studio.BuildOptions{In: in, Tests: tests}
+		opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr}
 		if verify {
 			opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
 		}
@@ -603,7 +708,7 @@ func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
 
 		rep := studio.BuildUntilWorks(ctx, model, req.Workflow, cat, opts)
 		final := studio.Preflight(rep.Workflow, in)
-		done, _ := json.Marshal(fiber.Map{"report": rep, "preflight": final})
+		done, _ := json.Marshal(fiber.Map{"report": rep, "preflight": final, "traceId": tr.ID})
 		emit("done", string(done))
 	}()
 
@@ -646,6 +751,125 @@ func (s *Server) studioRealRunner() studio.RealRunner {
 	}
 }
 
+// truncate shortens s to at most n runes, appending an ellipsis when cut, so a
+// try-run trace stays compact without dumping large tool payloads.
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
+// studioTryAgentRequest runs an UNSAVED reasoning agent against one question.
+type studioTryAgentRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+	Question string       `json:"question"`
+}
+
+// handleStudioTryAgent implements POST /api/v1/studio/try-agent. It runs an
+// UNSAVED ReAct/Plan-Execute agent against a single sample question so the author
+// can see real behaviour before saving. The agent is registered in memory ONLY
+// (never written to disk), runs unattended so a guardrail confirmation can't hang
+// the try, and is removed immediately after. Real tools/skills DO fire (that's
+// the point of a real try), but the reply is returned to the caller and is NOT
+// delivered to any channel — calling Handle directly never routes the reply out.
+func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
+	var req studioTryAgentRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if s.engine == nil || s.loader == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "runtime engine unavailable")
+	}
+	// Runnable when it's a reasoning agent OR a workflow with actual steps. A bare
+	// empty draft has nothing to run.
+	if !req.Workflow.IsAgent() && len(req.Workflow.Flow.Nodes) == 0 {
+		return s.errMsg(c, fiber.StatusBadRequest, "nothing to run — add steps, or use a ReAct/Plan-Execute agent")
+	}
+	q := strings.TrimSpace(req.Question)
+	if q == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "question is required")
+	}
+
+	defVal, err := studio.ToAgentDefinition(req.Workflow, true)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	def := &defVal
+	def.ID = "studio-try-" + uuid.NewString()
+	def.Enabled = true
+	def.Unattended = true // auto-approve confirmations so the throwaway run can't hang
+	def.SourcePath = ""   // never persisted
+
+	s.loader.Register(def)
+	defer s.loader.Unregister(def.ID)
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 120*time.Second)
+	defer cancel()
+
+	// Capture the exact sequence of skills/tools the agent invokes, so the author
+	// can see whether it routed to the right one. read_skill calls record which
+	// skill was loaded.
+	var (
+		traceMu sync.Mutex
+		trace   = []fiber.Map{}
+	)
+	ctx = runtime.WithToolObserver(ctx, func(call message.ToolCall, result string, isErr bool) {
+		detail := ""
+		if call.Name == "read_skill" {
+			if sk, ok := call.Arguments["skill_name"].(string); ok {
+				detail = sk
+			}
+		}
+		args := ""
+		if len(call.Arguments) > 0 {
+			if b, err := json.Marshal(call.Arguments); err == nil {
+				args = truncate(string(b), 240)
+			}
+		}
+		traceMu.Lock()
+		trace = append(trace, fiber.Map{
+			"name":   call.Name,
+			"detail": detail,
+			"args":   args,
+			"result": truncate(strings.TrimSpace(result), 400),
+			"error":  isErr,
+		})
+		traceMu.Unlock()
+	})
+
+	msg := message.Message{
+		ID:        uuid.NewString(),
+		SessionID: "studio-try-" + def.ID,
+		AgentID:   def.ID,
+		Channel:   "studio-try",
+		ThreadID:  "studio",
+		UserID:    "studio",
+		Username:  "studio",
+		Role:      message.RoleUser,
+		Parts:     message.Text(q),
+		CreatedAt: time.Now().UTC(),
+	}
+
+	reply, runErr := s.engine.Handle(ctx, msg)
+	replyText := ""
+	for _, p := range reply.Parts {
+		if p.Type == message.ContentText && p.Text != "" {
+			replyText = p.Text
+			break
+		}
+	}
+	traceMu.Lock()
+	usedTrace := trace
+	traceMu.Unlock()
+	resp := fiber.Map{"reply": replyText, "parts": reply.Parts, "trace": usedTrace}
+	if runErr != nil {
+		resp["error"] = runErr.Error()
+	}
+	return c.JSON(resp)
+}
+
 // handleStudioFailedRuns implements GET /api/v1/studio/failed-runs. It surfaces
 // the runs that FAILED at run time (including unattended scheduled runs), drawn
 // from the dead-letter queue the engine writes on every failed Handle(). Each
@@ -684,6 +908,53 @@ func (s *Server) handleStudioFailedRuns(c *fiber.Ctx) error {
 		runs = append(runs, fr)
 	}
 	return c.JSON(fiber.Map{"runs": runs})
+}
+
+// handleStudioRunTrace implements GET /api/v1/studio/run-trace. It returns the
+// per-block run trace (Story S0.3 Phase 1) of a flow run — each executed block's
+// input, output, duration, error, and whether its input came from typed port
+// wires — so the GUI can show a non-technical user WHERE a run went wrong.
+//
+// Query: runId selects a specific run; otherwise agentId returns that agent's
+// most recent run. The trace is best-effort and in-memory, so a run the gateway
+// no longer retains returns an empty (not error) trace.
+func (s *Server) handleStudioRunTrace(c *fiber.Ctx) error {
+	if s.engine == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "engine unavailable")
+	}
+	agentID := strings.TrimSpace(c.Query("agentId"))
+	runID := strings.TrimSpace(c.Query("runId"))
+	if agentID == "" && runID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "agentId or runId is required")
+	}
+	// Types inferred so studio.go needn't import the runtime package.
+	tr, ok := s.engine.LatestFlowTrace(agentID)
+	if runID != "" {
+		// Disk-aware: an old run that aged out of memory is still served from the
+		// durable run history.
+		tr, ok = s.engine.FlowTraceFor(agentID, runID)
+	}
+	if !ok {
+		return c.JSON(fiber.Map{"agentId": agentID, "runId": runID, "entries": []any{}})
+	}
+	return c.JSON(tr)
+}
+
+// handleStudioRunHistory implements GET /api/v1/studio/run-history. It returns a
+// summary of EVERY retained run for an agent — scheduled and on-demand alike,
+// newest first, each with its trigger source and verdict — so the GUI can show a
+// complete run history instead of just the latest run. In-memory and best-effort
+// (a run the gateway no longer retains is dropped), so it returns an empty list,
+// not an error, when nothing is recorded.
+func (s *Server) handleStudioRunHistory(c *fiber.Ctx) error {
+	if s.engine == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "engine unavailable")
+	}
+	agentID := strings.TrimSpace(c.Query("agentId"))
+	if agentID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "agentId is required")
+	}
+	return c.JSON(fiber.Map{"agentId": agentID, "runs": s.engine.FlowRunHistory(agentID)})
 }
 
 // studioDiagnoseRunRequest is the POST /api/v1/studio/diagnose-run body: a
@@ -779,6 +1050,7 @@ func (s *Server) handleStudioCompileAgent(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	studio.ApplyTemplateFixes(&res.Workflow) // deterministic self-heal (no-op when there's no flow graph)
 	if res.Explanation != nil {
 		pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog))
 		var needs []string
@@ -813,9 +1085,49 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	// capabilities and wires real MCP tools instead of inventing names.
 	s.groundCatalog(&req.Catalog)
 
+	// SINGLE authoritative architecture decision, evaluated over the raw + refined
+	// text (the SAME input refine used) so it can't diverge by entry path. A
+	// reasoning task (dynamic skill routing, async polling, per-item loops, or an
+	// explicit multi-phase plan) is built as an AGENT here — never a fixed
+	// workflow. This is the server-side guarantee behind "if it can't be a
+	// workflow, don't build one": even if the client calls /compile, the server
+	// returns the agent, so the user never gets a workflow carrying a "use ReAct"
+	// sticker (or a brittle multi-agent flow with invented peers).
+	if mode := studio.RecommendAgentMode(req.Intent + " " + req.RawIntent); mode != "" {
+		ares, aerr := studio.CompileAgent(c.Context(), model, req.Intent, req.Catalog, mode, req.Answers)
+		if aerr != nil {
+			// Do NOT silently fall through to the workflow compiler — that would
+			// produce exactly the brittle workflow this guard exists to prevent,
+			// with no signal. Surface the failure so the user (or a retry) knows
+			// the intended agent build didn't happen.
+			return s.errJSON(c, fiber.StatusInternalServerError, aerr)
+		}
+		return c.JSON(ares)
+	}
+
 	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Deterministic self-heal at generation, regardless of model quality:
+	//  1) RepairWiring — reconcile dangling {{ .var }} refs to the right upstream
+	//     output and fill empty required tool args.
+	//  2) ApplyTemplateFixes — scalarize any whole-object / wrong-nested refs
+	//     (including ones step 1 may have wired to an object).
+	studio.RepairWiring(&res.Workflow, req.Catalog)
+	studio.ApplyTemplateFixes(&res.Workflow)
+
+	// Auto-repair: if deterministic passes didn't clear every blocker (e.g. a
+	// dangling {{ .id }} that should be {{ .notebook.id }}, an unsupported
+	// template function, a malformed predicate), spend ONE LLM pass to fix the
+	// residue — then deterministically heal its output so the model can only
+	// improve correctness. This replaces the manual Validate→AI-review→Fix loop
+	// with a single automatic pass and a clean flow on the canvas.
+	if model != nil {
+		if pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog)); len(pf.Blockers) > 0 {
+			s.autoRepairWorkflow(c.Context(), &res.Workflow, pf.Blockers, req.Catalog)
+		}
 	}
 
 	// Surface setup gaps right at generation time (Story #12): run preflight on
@@ -926,7 +1238,12 @@ func (s *Server) handleStudioValidate(c *fiber.Ctx) error {
 	if err := c.BodyParser(&req); err != nil {
 		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
-	return c.JSON(studio.Validate(req.Workflow))
+	res := studio.Validate(req.Workflow)
+	// Argument-schema check against the live catalog: flag a tool node passing an
+	// argument the tool doesn't accept (the "unexpected keyword argument" class),
+	// before it fails at run time.
+	res.Warnings = append(res.Warnings, studio.ValidateToolArgs(req.Workflow, s.studioCatalogSnapshot())...)
+	return c.JSON(res)
 }
 
 // studioPlanRequest is the POST /api/v1/studio/plan body.
@@ -1006,18 +1323,23 @@ func (s *Server) handleStudioFromYAML(c *fiber.Ctx) error {
 	}
 	draft := studio.FromAgentDefinition(def)
 
+	// Warnings must reflect what the draft⇄definition mapping ACTUALLY preserves,
+	// or they mislead the user about data loss. A reasoning agent round-trips its
+	// system prompt, tools, skills, knowledge and peers losslessly (they're shown/
+	// editable in the agent panel), so none of those warrant a "kept in YAML"
+	// warning. Only a fixed WORKFLOW agent has canvas-invisible fields.
+	strat := strings.ToLower(strings.TrimSpace(def.Reasoning.Strategy))
+	isReasoningAgent := strat == "react" || strat == "plan_execute"
 	var warnings []string
-	if def.Workflow == nil || len(def.Workflow.Nodes) == 0 {
-		warnings = append(warnings, "This agent has no workflow graph (it runs as a reasoning/ReAct agent), so the canvas can't display its steps — keep editing it here in code view.")
-	}
-	if len(def.Agents) > 0 {
-		warnings = append(warnings, "Peer agents ("+strings.Join(def.Agents, ", ")+") aren't shown on the canvas; they stay defined in the YAML.")
-	}
-	if len(def.Knowledge) > 0 {
-		warnings = append(warnings, "Attached knowledge bases ("+strings.Join(def.Knowledge, ", ")+") aren't shown on the canvas; they stay in the YAML.")
-	}
-	if strings.TrimSpace(def.SystemPrompt) != "" {
-		warnings = append(warnings, "A custom system prompt is set in the YAML; the canvas doesn't edit it and a canvas re-save would regenerate it.")
+	switch {
+	case isReasoningAgent:
+		warnings = append(warnings, "This is a reasoning agent (no fixed graph) — edit its prompt, tools and skills in the agent panel or here in SOUL.yaml; everything round-trips.")
+	case def.Workflow == nil || len(def.Workflow.Nodes) == 0:
+		warnings = append(warnings, "This agent has no workflow graph and no reasoning strategy — it's incomplete. Add steps on the canvas, or switch it to a ReAct agent.")
+	default:
+		if strings.TrimSpace(def.SystemPrompt) != "" {
+			warnings = append(warnings, "This workflow's system prompt is generated from its steps; a canvas re-save will regenerate it from the graph.")
+		}
 	}
 	return c.JSON(fiber.Map{"workflow": draft, "warnings": warnings})
 }
@@ -1116,7 +1438,7 @@ func (s *Server) handleStudioValidateYAML(c *fiber.Ctx) error {
 	var def agent.Definition
 	if err := yaml.Unmarshal([]byte(req.YAML), &def); err != nil {
 		add("error", "yaml", "", "YAML syntax error: "+err.Error(), "Fix the indentation, quoting, or a stray colon, then validate again.")
-		return c.JSON(buildYAMLValidation(items))
+		return c.JSON(buildYAMLValidation(items, nil))
 	}
 
 	// 2) Definition correctness.
@@ -1159,11 +1481,15 @@ func (s *Server) handleStudioValidateYAML(c *fiber.Ctx) error {
 		add("warning", "runtime", w.NodeID, w.Message, w.Fix)
 	}
 
-	return c.JSON(buildYAMLValidation(items))
+	// One-click auto-fixes for the template-reference warnings.
+	fixes := studio.SuggestTemplateFixes(draft)
+
+	return c.JSON(buildYAMLValidation(items, fixes))
 }
 
-// buildYAMLValidation tallies the items into the response envelope.
-func buildYAMLValidation(items []yamlValidateItem) fiber.Map {
+// buildYAMLValidation tallies the items into the response envelope, including any
+// machine-applicable template fixes for the GUI's "Fix" button.
+func buildYAMLValidation(items []yamlValidateItem, fixes []studio.TemplateFix) fiber.Map {
 	errors, warnings := 0, 0
 	for _, it := range items {
 		if it.Severity == "error" {
@@ -1175,7 +1501,212 @@ func buildYAMLValidation(items []yamlValidateItem) fiber.Map {
 	if items == nil {
 		items = []yamlValidateItem{}
 	}
-	return fiber.Map{"ok": errors == 0, "errors": errors, "warnings": warnings, "items": items}
+	if fixes == nil {
+		fixes = []studio.TemplateFix{}
+	}
+	return fiber.Map{"ok": errors == 0, "errors": errors, "warnings": warnings, "items": items, "fixes": fixes}
+}
+
+// issueLine formats one validation problem for the LLM fixer prompt.
+func issueLine(sev, node, msg string) string {
+	if strings.TrimSpace(msg) == "" {
+		return ""
+	}
+	if strings.TrimSpace(node) != "" {
+		return sev + " [" + node + "]: " + msg
+	}
+	return sev + ": " + msg
+}
+
+// handleStudioFixYAML implements POST /api/v1/studio/fix-yaml — the "Fix with
+// AI" button. It collects the current validation problems and asks the framework
+// LLM to rewrite the SOUL.yaml so they're resolved, then returns the corrected
+// (and parse-checked) document. Unlike the deterministic auto-fix, the model can
+// pick the right field and restructure, so it handles cases a string edit can't.
+func (s *Server) handleStudioFixYAML(c *fiber.Ctx) error {
+	var req studioFromYAMLRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML is empty")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+
+	var def agent.Definition
+	if err := yaml.Unmarshal([]byte(req.YAML), &def); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML error: "+err.Error())
+	}
+	draft := studio.FromAgentDefinition(def)
+
+	// Gather every problem (graph + runtime + definition) to feed the model.
+	var issues []string
+	add := func(sev, node, msg string) {
+		if line := issueLine(sev, node, msg); line != "" {
+			issues = append(issues, line)
+		}
+	}
+	if def.Workflow != nil && len(def.Workflow.Nodes) > 0 {
+		vr := studio.Validate(draft)
+		for _, e := range vr.Errors {
+			add("ERROR", e.NodeID, e.Message)
+		}
+		for _, w := range vr.Warnings {
+			add("WARNING", w.NodeID, w.Message)
+		}
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	pf := studio.Preflight(draft, s.preflightInput(c, cat))
+	for _, b := range pf.Blockers {
+		add("ERROR", b.NodeID, b.Message)
+	}
+	for _, w := range pf.Warnings {
+		add("WARNING", w.NodeID, w.Message)
+	}
+	rep := agentvalidate.Definition(&def, "", s.agentValidationOptions(c.Context()), agentvalidate.Report{})
+	for _, f := range rep.Findings {
+		add(strings.ToUpper(string(f.Severity)), f.Field, f.Message)
+	}
+	if len(issues) == 0 {
+		return c.JSON(fiber.Map{"yaml": req.YAML, "changed": false})
+	}
+
+	prompt := studio.BuildYAMLFixInstruction(req.YAML, issues, s.soulRules())
+	raw, err := model.Complete(c.Context(), prompt)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	fixed := studio.CleanYAMLOutput(raw)
+	if strings.TrimSpace(fixed) == "" {
+		return s.errMsg(c, fiber.StatusInternalServerError, "the model did not return a corrected file")
+	}
+	// Make sure the model returned parseable YAML before handing it back.
+	var check agent.Definition
+	if err := yaml.Unmarshal([]byte(fixed), &check); err != nil {
+		return s.errMsg(c, fiber.StatusUnprocessableEntity, "the AI returned invalid YAML; please fix manually or try again")
+	}
+
+	// Deterministic safety net on the AI's output: a weaker model's rewrite must
+	// not be allowed to REINTRODUCE the bugs the deterministic layers guarantee
+	// against. Re-run wiring repair + template-ref heal on the corrected flow
+	// before returning, so Fix-with-AI can only ever improve correctness.
+	if check.Workflow != nil && len(check.Workflow.Nodes) > 0 {
+		d := studio.Draft{Flow: studio.Flow{
+			Nodes:  check.Workflow.Nodes,
+			Edges:  check.Workflow.Edges,
+			Entry:  check.Workflow.Entry,
+			Output: check.Workflow.Output,
+		}}
+		cat := s.studioCatalogSnapshot()
+		s.groundCatalog(&cat)
+		studio.RepairWiring(&d, cat)
+		studio.ApplyTemplateFixes(&d)
+		check.Workflow.Nodes = d.Flow.Nodes
+		check.Workflow.Edges = d.Flow.Edges
+		check.Workflow.Entry = d.Flow.Entry
+		check.Workflow.Output = d.Flow.Output
+		if out, merr := yaml.Marshal(&check); merr == nil {
+			fixed = strings.TrimSpace(string(out))
+		}
+	}
+	return c.JSON(fiber.Map{"yaml": fixed, "changed": fixed != req.YAML})
+}
+
+// autoRepairWorkflow runs ONE bounded LLM repair pass on a generated flow that
+// still has blockers after deterministic repair, then deterministically heals
+// the model's output before keeping it. It only replaces the flow GRAPH of the
+// draft (nodes/edges/entry/output), preserving everything else (new_agents,
+// knowledge, …). Best-effort: any failure leaves the draft unchanged.
+func (s *Server) autoRepairWorkflow(ctx context.Context, draft *studio.Draft, blockers []studio.PreflightIssue, cat studio.Catalog) {
+	model := s.studioLLM()
+	if model == nil || draft == nil || len(draft.Flow.Nodes) == 0 {
+		return
+	}
+	def, err := studio.ToAgentDefinition(*draft, true)
+	if err != nil {
+		return
+	}
+	yamlBytes, err := yaml.Marshal(&def)
+	if err != nil {
+		return
+	}
+	issues := make([]string, 0, len(blockers))
+	for _, b := range blockers {
+		if line := issueLine("ERROR", b.NodeID, b.Message); line != "" {
+			issues = append(issues, line)
+		}
+	}
+	if len(issues) == 0 {
+		return
+	}
+	prompt := studio.BuildYAMLFixInstruction(string(yamlBytes), issues, s.soulRules())
+	raw, err := model.Complete(ctx, prompt)
+	if err != nil {
+		return
+	}
+	fixed := studio.CleanYAMLOutput(raw)
+	if strings.TrimSpace(fixed) == "" {
+		return
+	}
+	var def2 agent.Definition
+	if err := yaml.Unmarshal([]byte(fixed), &def2); err != nil || def2.Workflow == nil || len(def2.Workflow.Nodes) == 0 {
+		return
+	}
+	// Deterministically heal the model's output before trusting it.
+	d := studio.Draft{Flow: studio.Flow{
+		Nodes:  def2.Workflow.Nodes,
+		Edges:  def2.Workflow.Edges,
+		Entry:  def2.Workflow.Entry,
+		Output: def2.Workflow.Output,
+	}}
+	studio.RepairWiring(&d, cat)
+	studio.ApplyTemplateFixes(&d)
+	draft.Flow.Nodes = d.Flow.Nodes
+	draft.Flow.Edges = d.Flow.Edges
+	draft.Flow.Entry = d.Flow.Entry
+	draft.Flow.Output = d.Flow.Output
+}
+
+// handleStudioReviewYAML implements POST /api/v1/studio/review-yaml — the
+// rules-grounded LLM review. It complements the deterministic validator: the
+// model checks the YAML against the (editable) rulebook and reports judgment-call
+// problems a linter can't (wrong field/id, broken logic). Returns findings as
+// items shaped like the validator's so the GUI merges them into one panel.
+func (s *Server) handleStudioReviewYAML(c *fiber.Ctx) error {
+	var req studioFromYAMLRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.YAML) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML is empty")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	// Only review parseable YAML — syntax is the deterministic validator's job.
+	var def agent.Definition
+	if err := yaml.Unmarshal([]byte(req.YAML), &def); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "YAML error: "+err.Error())
+	}
+
+	prompt := studio.BuildYAMLReviewInstruction(req.YAML, s.soulRules())
+	raw, err := model.Complete(c.Context(), prompt)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	findings := studio.ParseReviewFindings(raw)
+	items := make([]yamlValidateItem, 0, len(findings))
+	for _, f := range findings {
+		items = append(items, yamlValidateItem{
+			Severity: f.Severity, Source: "ai", NodeID: f.NodeID, Message: f.Message, Fix: f.Fix,
+		})
+	}
+	return c.JSON(fiber.Map{"items": items, "count": len(items)})
 }
 
 // studioSaveRequest is the POST /api/v1/studio/save body. AcceptPrivilegedExposure
@@ -1397,7 +1928,20 @@ func (s *Server) handleStudioLoadAgent(c *fiber.Ctx) error {
 	if def == nil {
 		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
 	}
-	if !studio.HasWorkflow(*def) {
+	// Studio can edit two shapes: a fixed-workflow agent (canvas) AND a
+	// reasoning agent (ReAct/Plan-Execute — the agent-spec editor + SOUL.yaml).
+	// Previously this gated on HasWorkflow alone, so every reasoning agent was
+	// rejected with "no editable workflow" and couldn't be opened at all. Since
+	// FromAgentDefinition now round-trips the agent form losslessly, let those
+	// through too.
+	strat := strings.ToLower(strings.TrimSpace(def.Reasoning.Strategy))
+	isReasoningAgent := strat == "react" || strat == "plan_execute"
+	// Studio-authored agents (studio_intent set) are openable even with an empty
+	// graph — e.g. a 0-step build the user needs to inspect, fix, or switch to an
+	// agent. Only truly external/library agents with nothing Studio can edit are
+	// rejected.
+	studioAuthored := strings.TrimSpace(def.StudioIntent) != ""
+	if !studio.HasWorkflow(*def) && !isReasoningAgent && !studioAuthored {
 		return s.errMsg(c, fiber.StatusBadRequest, "agent has no editable workflow")
 	}
 	return c.JSON(fiber.Map{"workflow": studio.FromAgentDefinition(*def)})
@@ -1414,7 +1958,134 @@ func (s *Server) handleStudioTemplates(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"templates": studio.Templates()})
 }
 
+// studioCompileGateRequest is the POST /api/v1/studio/compile-gate body: a
+// plain-language connector gate + the flow vars available at that edge.
+type studioCompileGateRequest struct {
+	Phrase string   `json:"phrase"`
+	Vars   []string `json:"vars,omitempty"`
+}
+
+// handleStudioCompileGate implements POST /api/v1/studio/compile-gate (Phase B):
+// turn a plain-language connector condition into a validated flow predicate.
+func (s *Server) handleStudioCompileGate(c *fiber.Ctx) error {
+	var req studioCompileGateRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	pred, err := studio.CompileGate(c.Context(), s.studioLLM(), req.Phrase, req.Vars)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(fiber.Map{"predicate": pred})
+}
+
+// handleStudioCompileNode implements POST /api/v1/studio/compile-node (Phase C):
+// compile ONE node from its plain-language intent into concrete config.
+func (s *Server) handleStudioCompileNode(c *fiber.Ctx) error {
+	var req studio.CompileNodeRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	// Ground in the live catalog when the caller didn't supply one.
+	if len(req.Catalog.Tools) == 0 && len(req.Catalog.MCP) == 0 && len(req.Catalog.Agents) == 0 {
+		req.Catalog = s.studioCatalogSnapshot()
+	}
+	node, err := studio.CompileNode(c.Context(), s.studioLLM(), req)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, err.Error())
+	}
+	return c.JSON(fiber.Map{"node": node})
+}
+
+// handleStudioCompositeBlocks implements GET /api/v1/studio/composite-blocks —
+// returns the coarse composite-block catalog (Phase 2): each block's id, name,
+// summary, requirements, typed port contract, and the ready-to-drop python
+// FlowNode that encapsulates its whole multi-step dance. The palette/canvas
+// consumes this to offer one-click coarse blocks instead of hand-wired graphs.
+func (s *Server) handleStudioCompositeBlocks(c *fiber.Ctx) error {
+	blocks := studio.CompositeBlocks()
+	out := make([]fiber.Map, 0, len(blocks))
+	for _, b := range blocks {
+		out = append(out, fiber.Map{
+			"id":           b.ID,
+			"name":         b.Name,
+			"summary":      b.Summary,
+			"requirements": b.Requirements,
+			"inputs":       b.Inputs,
+			"outputs":      b.Outputs,
+			// The materialised, drop-ready node (typed ports + inline code +
+			// classifier-derived requires).
+			"node": b.MaterializeNode(),
+		})
+	}
+	return c.JSON(fiber.Map{"blocks": out})
+}
+
 // --- Studio draft library (Story S6.2) ---
+
+// soulRulesPath is the workspace path of the editable SOUL.yaml rulebook:
+// <workspace>/studio/soul-yaml-rules.md.
+func (s *Server) soulRulesPath() (string, error) {
+	ws, err := config.ResolveWorkspace()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(ws.Root, "studio", "soul-yaml-rules.md"), nil
+}
+
+// soulRules returns the effective rulebook: the user's saved copy if present and
+// non-empty, otherwise the built-in default. Never errors — a missing file just
+// falls back to the default so generation/validation/fix always have rules.
+func (s *Server) soulRules() string {
+	if path, err := s.soulRulesPath(); err == nil {
+		if b, rerr := os.ReadFile(path); rerr == nil && strings.TrimSpace(string(b)) != "" {
+			return string(b)
+		}
+	}
+	return studio.DefaultSOULRules
+}
+
+// handleStudioGetRules implements GET /api/v1/studio/rules — returns the
+// effective rulebook, whether it's the built-in default, and the default text
+// (so the GUI can offer a "reset to default").
+func (s *Server) handleStudioGetRules(c *fiber.Ctx) error {
+	rules := s.soulRules()
+	return c.JSON(fiber.Map{
+		"rules":     rules,
+		"isDefault": rules == studio.DefaultSOULRules,
+		"default":   studio.DefaultSOULRules,
+	})
+}
+
+// studioRulesRequest is the PUT /api/v1/studio/rules body.
+type studioRulesRequest struct {
+	Rules string `json:"rules"`
+}
+
+// handleStudioSaveRules implements PUT /api/v1/studio/rules — saves the edited
+// rulebook to the workspace. An empty body resets to the built-in default by
+// removing the saved copy.
+func (s *Server) handleStudioSaveRules(c *fiber.Ctx) error {
+	var req studioRulesRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	path, err := s.soulRulesPath()
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	if strings.TrimSpace(req.Rules) == "" {
+		_ = os.Remove(path) // reset to built-in default
+		return c.JSON(fiber.Map{"ok": true, "isDefault": true, "rules": studio.DefaultSOULRules})
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	if err := os.WriteFile(path, []byte(req.Rules), 0o644); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	return c.JSON(fiber.Map{"ok": true, "isDefault": false})
+}
 
 // studioDraftsDir derives the Studio drafts directory from the resolved
 // workspace: <workspace>/studio/drafts. The store (internal/studio) creates the

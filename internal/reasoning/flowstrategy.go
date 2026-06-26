@@ -136,6 +136,92 @@ var flowTemplateFuncs = template.FuncMap{
 	"first":   tmplFirst,
 	"last":    tmplLast,
 	"pluck":   tmplPluck,
+	"dict":    tmplDict,
+	// Time helpers models reach for constantly (the #1 "function not defined"
+	// blocker we saw was {{ now }}). All read the wall clock at render time and
+	// emit strings safe to drop into a JSON tool input.
+	"now":     tmplNow,     // RFC3339 timestamp, e.g. 2026-06-23T07:00:00Z
+	"today":   tmplToday,   // date only, e.g. 2026-06-23
+	"nowUnix": tmplNowUnix, // unix seconds (int)
+	// Date formatting — registered under EVERY common name a model reaches for
+	// (dateFmt/dateFormat/formatDate/date) so a reasonable template never fails
+	// with "function X not defined" over a spelling choice. All accept a layout in
+	// Go reference, YYYY-MM-DD, or %Y-%m-%d style, plus an optional time arg.
+	"dateFmt":    tmplDateFormat,
+	"dateFormat": tmplDateFormat,
+	"formatDate": tmplDateFormat,
+	"date":       tmplDateFormat,
+}
+
+// tmplNow returns the current UTC time as an RFC3339 string. Registered as
+// {{ now }} — the single most common helper models emit and the exact blocker
+// ("function \"now\" not defined") seen on generated NotebookLM workflows.
+func tmplNow() string { return time.Now().UTC().Format(time.RFC3339) }
+
+// tmplToday returns the current UTC date as YYYY-MM-DD ({{ today }}).
+func tmplToday() string { return time.Now().UTC().Format("2006-01-02") }
+
+// tmplNowUnix returns the current unix time in seconds ({{ nowUnix }}).
+func tmplNowUnix() int64 { return time.Now().Unix() }
+
+// tmplDateFormat formats a time with a layout, defaulting to now (UTC). The
+// layout may be Go reference ("2006-01-02"), token style ("YYYY-MM-DD"), or
+// strftime ("%Y-%m-%d") — all normalized. An optional second arg supplies the
+// time to format (a time.Time, an RFC3339/date string, or a unix number);
+// absent or unparseable, it formats the current time. Never errors — a bad
+// layout just formats with what it has — so a generated template always renders.
+func tmplDateFormat(layout string, t ...any) string {
+	lay := normalizeDateLayout(layout)
+	base := time.Now().UTC()
+	if len(t) > 0 {
+		if parsed, ok := coerceTime(t[0]); ok {
+			base = parsed
+		}
+	}
+	return base.Format(lay)
+}
+
+// dateLayoutReplacer translates the common token/strftime date layouts models
+// emit into Go's reference layout. Longer tokens are listed first so they win.
+var dateLayoutReplacer = strings.NewReplacer(
+	"YYYY", "2006", "YY", "06",
+	"MMMM", "January", "MMM", "Jan", "MM", "01",
+	"DDDD", "Monday", "DDD", "Mon", "DD", "02",
+	"HH", "15", "hh", "03",
+	"mm", "04", "ss", "05", "A", "PM",
+	"%Y", "2006", "%m", "01", "%d", "02",
+	"%H", "15", "%M", "04", "%S", "05",
+)
+
+// normalizeDateLayout converts a date layout to Go's reference form. An empty
+// layout becomes RFC3339; a Go-reference layout passes through unchanged.
+func normalizeDateLayout(layout string) string {
+	if strings.TrimSpace(layout) == "" {
+		return time.RFC3339
+	}
+	return dateLayoutReplacer.Replace(layout)
+}
+
+// coerceTime turns a parsed-JSON value into a time.Time when it can: a time.Time,
+// an RFC3339 / common date string, or a unix-seconds number. ok=false otherwise.
+func coerceTime(v any) (time.Time, bool) {
+	switch x := v.(type) {
+	case time.Time:
+		return x, true
+	case string:
+		for _, f := range []string{time.RFC3339, "2006-01-02", "2006-01-02 15:04:05", time.RFC1123} {
+			if p, err := time.Parse(f, strings.TrimSpace(x)); err == nil {
+				return p.UTC(), true
+			}
+		}
+	case float64:
+		return time.Unix(int64(x), 0).UTC(), true
+	case int64:
+		return time.Unix(x, 0).UTC(), true
+	case int:
+		return time.Unix(int64(x), 0).UTC(), true
+	}
+	return time.Time{}, false
 }
 
 // FlowTemplateFuncs exposes the template functions available inside node Input /
@@ -241,6 +327,22 @@ func tmplPluck(a, b any) []any {
 		}
 	}
 	return out
+}
+
+// tmplDict creates a dictionary from a list of alternating keys and values.
+func tmplDict(values ...any) map[string]any {
+	if len(values)%2 != 0 {
+		values = append(values, "")
+	}
+	dict := make(map[string]any, len(values)/2)
+	for i := 0; i < len(values); i += 2 {
+		key, ok := values[i].(string)
+		if !ok {
+			key = fmt.Sprintf("%v", values[i])
+		}
+		dict[key] = values[i+1]
+	}
+	return dict
 }
 
 // renderTemplate executes a Go text/template over the flow vars (same

@@ -11,7 +11,7 @@ import (
 // the identifier immediately after a dot, e.g. `.articles` in
 // `{{ toJson .articles }}` or `{{ .notebook_id }}`. It deliberately ignores
 // method-style chains (only the leading identifier matters for our purpose).
-var tmplVarRe = regexp.MustCompile(`\.([A-Za-z_][A-Za-z0-9_]*)`)
+var tmplVarRe = regexp.MustCompile(`(?:{{|\s)\.([A-Za-z_][A-Za-z0-9_]*)`)
 
 // checkDataFlow validates cross-step data dependencies (Story #3): every flow
 // variable a node references in its Input template must be PRODUCED by another
@@ -44,9 +44,13 @@ func checkDataFlow(draft Draft, add func(sev, kind, node, msg, fix string)) {
 		for _, v := range referencedVars(n.Input) {
 			prod, ok := producer[v]
 			if !ok {
+				fix := "Add a step that outputs \"" + v + "\" before this one, or fix the variable name."
+				if strings.Contains(n.Input, "range ") || v == "url" || v == "id" {
+					fix += " If you are trying to extract a list of fields from an array of objects, use {{ pluck \"" + v + "\" .upstream_var | toJson }} instead of loops."
+				}
 				add("block", "dependency", n.ID,
 					"Step references {{ ."+v+" }} but no earlier step produces \""+v+"\".",
-					"Add a step that outputs \""+v+"\" before this one, or fix the variable name.")
+					fix)
 				continue
 			}
 			if prod == n.ID {

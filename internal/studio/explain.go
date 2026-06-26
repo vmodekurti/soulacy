@@ -40,26 +40,36 @@ func ExplainDraft(draft Draft) DraftExplanation {
 		Trigger: describeTrigger(draft.Trigger),
 	}
 
-	byID := make(map[string]sdkr.FlowNode, len(draft.Flow.Nodes))
-	for _, n := range draft.Flow.Nodes {
-		byID[n.ID] = n
-	}
-	for _, id := range orderedNodeIDs(draft.Flow) {
-		if n, ok := byID[id]; ok {
-			exp.Steps = append(exp.Steps, describeNode(n))
-		}
-	}
-
-	// Distinct tools + agents the workflow uses, in first-seen order.
-	seenTool, seenAgent := map[string]bool{}, map[string]bool{}
-	for _, n := range draft.Flow.Nodes {
-		if t := strings.TrimSpace(n.Tool); t != "" && !seenTool[t] {
-			seenTool[t] = true
+	if draft.IsAgent() {
+		exp.Steps = append(exp.Steps, "Dynamically execute the strategy using ReAct planning.")
+		for _, t := range draft.Tools {
 			exp.Tools = append(exp.Tools, friendlyToolName(t))
 		}
-		if a := strings.TrimSpace(n.Agent); a != "" && !seenAgent[a] {
-			seenAgent[a] = true
-			exp.Agents = append(exp.Agents, a)
+		for _, a := range draft.NewAgents {
+			exp.Agents = append(exp.Agents, a.ID)
+		}
+	} else {
+		byID := make(map[string]sdkr.FlowNode, len(draft.Flow.Nodes))
+		for _, n := range draft.Flow.Nodes {
+			byID[n.ID] = n
+		}
+		for _, id := range orderedNodeIDs(draft.Flow) {
+			if n, ok := byID[id]; ok {
+				exp.Steps = append(exp.Steps, describeNode(n))
+			}
+		}
+
+		// Distinct tools + agents the workflow uses, in first-seen order.
+		seenTool, seenAgent := map[string]bool{}, map[string]bool{}
+		for _, n := range draft.Flow.Nodes {
+			if t := strings.TrimSpace(n.Tool); t != "" && !seenTool[t] {
+				seenTool[t] = true
+				exp.Tools = append(exp.Tools, friendlyToolName(t))
+			}
+			if a := strings.TrimSpace(n.Agent); a != "" && !seenAgent[a] {
+				seenAgent[a] = true
+				exp.Agents = append(exp.Agents, a)
+			}
 		}
 	}
 	exp.Channels = append(exp.Channels, draft.Channels...)
@@ -113,6 +123,12 @@ func friendlyToolName(tool string) string {
 // recommendation (Story #4) when the model didn't supply one. It mirrors the
 // reasoning the compiler prompt asks the model to apply, in plain language.
 func inferArchitecture(draft Draft) Recommendation {
+	if draft.IsAgent() {
+		return Recommendation{
+			Mode:      "react",
+			Rationale: "This task requires dynamic execution, API polling, or reasoning that a fixed DAG workflow cannot reliably handle.",
+		}
+	}
 	// A scheduled, fixed pipeline is the canonical "workflow" case.
 	if strings.EqualFold(strings.TrimSpace(draft.Trigger.Type), "schedule") {
 		return Recommendation{

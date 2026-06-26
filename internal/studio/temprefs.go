@@ -75,34 +75,69 @@ func checkTemplateReferences(draft Draft, add func(sev, kind, node, msg, fix str
 					continue // dangling (checkDataFlow) or self-ref
 				}
 
-				// Case B: a repeated adjacent segment like `.notebook.notebook`
-				// almost always means the author drilled into the object's own
-				// nested copy instead of the scalar field they wanted.
-				if hasRepeatedAdjacentSegment(segs) {
+				// Case B: the path ENDS with a repeated segment like
+				// `.notebook.notebook` — the author stopped at the nested object
+				// instead of reaching a single field. (A path that continues to a
+				// field, e.g. `.notebook.notebook.id`, is fine and must not be
+				// flagged, or the one-click fix would keep appending ".id".)
+				if endsWithRepeatedSegment(segs) {
 					if key := "B:" + path; !seen[key] {
 						seen[key] = true
 						add("warn", "template", n.ID,
-							"This step references {{ ."+path+" }}, which points at a nested object, not a single value — it typically renders as a Go map like \"map[id:… title:…]\" instead of the value you want.",
-							"Reference the exact scalar field instead, e.g. {{ ."+root+".id }}.")
+							"This step stops at the nested \""+root+"\" object where it needs a single value (like an ID) — passing a nested object, not a field. It would send text like \"map[id:… title:…]\" and the step would fail.",
+							"Point to the exact field — change {{ ."+path+" }} to {{ ."+path+".id }} (or whichever field holds the value you want).")
 					}
 					continue
 				}
 
 				// Case A: a bare whole-object interpolation ({{ .notebook }})
-				// of a structured value, with no coercing helper, gets rendered
-				// as "map[…]" and corrupts the downstream JSON.
+				// of a structured value, with no coercing helper.
 				structured := accessedWithField[root] || producerEmitsObject(prod)
 				if len(segs) == 1 && structured && !coerced {
 					if key := "A:" + root; !seen[key] {
 						seen[key] = true
 						add("warn", "template", n.ID,
-							"This step passes the whole \""+root+"\" object via {{ ."+root+" }}. An object renders as \"map[…]\", not JSON, so the downstream step receives a malformed value.",
-							"Pass a scalar field like {{ ."+root+".id }}, or use {{ toJson ."+root+" }} to send the whole object as JSON.")
+							"This step sends the whole \""+root+"\" object where a single value is expected. The next step would receive \"map[…]\" instead of a usable value and fail.",
+							"Use one field, e.g. {{ ."+root+".id }} — or {{ toJson ."+root+" }} to send the whole object as JSON on purpose.")
 					}
 				}
 			}
 		}
 	}
+}
+
+// ApplyTemplateFixes deterministically corrects the clear template-reference
+// bugs (whole-object interpolation and repeated nested paths) in a freshly
+// generated draft, so generation self-heals regardless of how well the model
+// followed the rules. Returns the number of node inputs changed. Safe to call
+// repeatedly — once a reference reaches a scalar field it is no longer flagged,
+// so it never compounds.
+func ApplyTemplateFixes(draft *Draft) int {
+	if draft == nil {
+		return 0
+	}
+	fixes := SuggestTemplateFixes(*draft)
+	if len(fixes) == 0 {
+		return 0
+	}
+	changed := 0
+	for i := range draft.Flow.Nodes {
+		in := draft.Flow.Nodes[i].Input
+		if !strings.Contains(in, "{{") {
+			continue
+		}
+		orig := in
+		for _, f := range fixes {
+			if f.Find != "" && strings.Contains(in, f.Find) {
+				in = strings.ReplaceAll(in, f.Find, f.Replace)
+			}
+		}
+		if in != orig {
+			draft.Flow.Nodes[i].Input = in
+			changed++
+		}
+	}
+	return changed
 }
 
 // templateActions returns the inner text of each {{ … }} action in s.
@@ -135,29 +170,113 @@ func templatePaths(s string) []string {
 	return out
 }
 
-// producerEmitsObject reports whether a node's output is likely a structured
-// object/array (so interpolating it bare would render as "map[…]"). Conservative
-// to avoid false positives: agent nodes return text (scalar), python nodes and
-// MCP tools return structured JSON; unknown builtin tools are treated as scalar.
+// producerEmitsObject reports whether a node's output is DEFINITELY likely a
+// structured object/array (so interpolating it bare would render as "map[…]").
+// Conservative to avoid false positives: only MCP tools are assumed to return
+// structured JSON. Agent nodes return text, and a python node can return either
+// a scalar (e.g. a date string from a get_date step) or an object — so we do NOT
+// assume python is structured here; a python output is only flagged when it is
+// independently proven to be an object by a field access elsewhere
+// (accessedWithField in checkTemplateReferences).
 func producerEmitsObject(n sdkr.FlowNode) bool {
-	switch strings.TrimSpace(n.Kind) {
-	case sdkr.FlowNodeAgent:
+	if strings.TrimSpace(n.Kind) == sdkr.FlowNodeAgent {
 		return false
-	case sdkr.FlowNodePython:
-		return true
 	}
 	return strings.HasPrefix(strings.TrimSpace(n.Tool), "mcp__")
 }
 
-// hasRepeatedAdjacentSegment reports whether a dotted path repeats a segment
-// back-to-back (e.g. notebook.notebook) — a strong signal of a wrong nested ref.
-func hasRepeatedAdjacentSegment(segs []string) bool {
-	for i := 1; i < len(segs); i++ {
-		if segs[i] == segs[i-1] && segs[i] != "" {
-			return true
+// TemplateFix is a machine-applicable suggestion for a flagged template
+// reference: replace the exact Find string with Replace in the SOUL.yaml. The
+// GUI offers this as a one-click "Fix". The replacement appends the most common
+// scalar accessor (".id"); it's a best-effort default the user can adjust, since
+// the real field name depends on the tool's actual output shape.
+type TemplateFix struct {
+	NodeID  string `json:"nodeId,omitempty"`
+	Find    string `json:"find"`
+	Replace string `json:"replace"`
+	Reason  string `json:"reason,omitempty"`
+}
+
+// SuggestTemplateFixes mirrors checkTemplateReferences but returns concrete
+// find/replace edits for each auto-fixable reference (whole-object or repeated
+// nested path). Deduped by the exact template action so applying the set fixes
+// every occurrence (e.g. the same {{ .notebook.notebook }} used by three steps).
+func SuggestTemplateFixes(draft Draft) []TemplateFix {
+	nodes := draft.Flow.Nodes
+	if len(nodes) == 0 {
+		return nil
+	}
+	producer := map[string]sdkr.FlowNode{}
+	for _, n := range nodes {
+		if v := strings.TrimSpace(n.Output); v != "" {
+			producer[v] = n
 		}
 	}
-	return false
+	accessedWithField := map[string]bool{}
+	for _, n := range nodes {
+		for _, path := range templatePaths(n.Input) {
+			if segs := strings.Split(path, "."); len(segs) >= 2 {
+				accessedWithField[segs[0]] = true
+			}
+		}
+	}
+
+	var fixes []TemplateFix
+	seen := map[string]bool{}
+	for _, n := range nodes {
+		if !strings.Contains(n.Input, "{{") {
+			continue
+		}
+		for _, full := range tmplActionRe.FindAllString(n.Input, -1) { // full "{{ … }}"
+			if mentionsAny(full, objectCoercers) {
+				continue
+			}
+			for _, path := range templatePaths(full) {
+				segs := strings.Split(path, ".")
+				root := segs[0]
+				prod, ok := producer[root]
+				if !ok || prod.ID == n.ID {
+					continue
+				}
+				apply := false
+				if endsWithRepeatedSegment(segs) {
+					apply = true // .notebook.notebook -> .notebook.notebook.id
+				} else if len(segs) == 1 && (accessedWithField[root] || producerEmitsObject(prod)) {
+					apply = true // .notebook -> .notebook.id
+				}
+				if !apply {
+					continue
+				}
+				replaceWith := strings.Replace(full, "."+path, "."+path+".id", 1)
+				if replaceWith == full {
+					continue
+				}
+				key := full
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				fixes = append(fixes, TemplateFix{
+					NodeID:  n.ID,
+					Find:    full,
+					Replace: replaceWith,
+					Reason:  "reference the scalar field instead of the whole object",
+				})
+			}
+		}
+	}
+	return fixes
+}
+
+// endsWithRepeatedSegment reports whether a dotted path ENDS with a repeated
+// segment (e.g. notebook.notebook) — the author stopped at the nested object
+// rather than reaching a scalar field. A path that continues past the repeat
+// (notebook.notebook.id) is intentionally NOT flagged: it already reaches a
+// field, so it's a valid target — and not re-flagging it is what stops the
+// one-click fix from compounding (.id.id.id).
+func endsWithRepeatedSegment(segs []string) bool {
+	n := len(segs)
+	return n >= 2 && segs[n-1] != "" && segs[n-1] == segs[n-2]
 }
 
 // mentionsAny reports whether s contains any of the given substrings.
