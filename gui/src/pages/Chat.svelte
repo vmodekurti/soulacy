@@ -5,6 +5,7 @@
   import RunMetrics from '../lib/RunMetrics.svelte'
   import { entryIdForMessage, nextBranchLabel, entriesToMessages } from '../lib/chatbranch.js'
   import { deltaMetrics, deltaLabel, deltaTitle } from '../lib/chatmetrics.js'
+  import { parseMarkdown, richRenderer } from '../lib/markdown.js'
   import {
     nextVoiceState, realtimeCallURL, classifyRealtimeEvent,
     addUsage, voiceUsageLabel, voiceHint,
@@ -676,7 +677,11 @@
                         title="Fork the conversation from this message"
                         aria-label="Fork conversation from message {mi + 1}">⑂</button>
               {/if}
-              <div class="btext">{msg.text}</div>
+              {#if msg.role === 'user'}
+                <div class="btext">{msg.text}</div>
+              {:else}
+                <div class="btext markdown-body" use:richRenderer={msg.text}>{@html parseMarkdown(msg.text)}</div>
+              {/if}
               {#if msg.parts && msg.parts.length}
                 <div class="msg-parts">
                   {#each msg.parts as part}

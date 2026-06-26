@@ -1,6 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte'
   import { api } from '../lib/api.js'
+  import { parseMarkdown, richRenderer } from '../lib/markdown.js'
   import { apiKey, editAgent } from '../lib/stores.js'
   import ChipPicker from '../lib/ChipPicker.svelte'
   import FilePicker from '../lib/FilePicker.svelte'
@@ -1450,7 +1451,11 @@ console.log(reply);` : ''
             {#each playMessages as msg}
               <div class="msg-row" class:user={msg.role==='user'} class:sys={msg.role==='system'}>
                 <div class="bubble">
-                  <div class="btext">{msg.text}</div>
+                  {#if msg.role === 'user'}
+                    <div class="btext">{msg.text}</div>
+                  {:else}
+                    <div class="btext markdown-body" use:richRenderer={msg.text}>{@html parseMarkdown(msg.text)}</div>
+                  {/if}
                   <div class="btime">{fmtTime(msg.ts)}</div>
                 </div>
               </div>

@@ -864,6 +864,13 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 		Handler: e.webSearch,
 	})
 
+	// generate_chart — render an interactive data chart for the user. Always
+	// available (Gate ""), so any agent can visualize numbers without the user
+	// wiring a tool. The handler builds + validates a Chart.js spec and the
+	// engine appends it to the final reply, where the GUI renders it as a live
+	// chart. Agents can opt out via `builtins: []` in SOUL.yaml.
+	tools = append(tools, e.buildChartBuiltin())
+
 	// Skill built-ins are only added when a skill loader is configured;
 	// other built-ins (kb_search, …) are appended below regardless.
 	if e.skillLoader != nil {
@@ -1483,6 +1490,11 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// Stamp session ID onto the context so nested helpers (audit, confirm) can
 	// retrieve it without threading msg through every call.
 	ctx = context.WithValue(ctx, inboundMsgKey{}, msg)
+
+	// Attach a run-scoped collector so the generate_chart builtin can stash
+	// chart specs that we append to the final reply (rendered by the GUI),
+	// without depending on the model to echo the spec verbatim.
+	ctx = withChartSink(ctx)
 
 	// Task #32 — OTEL span for this agent run.
 	if e.tracer != nil {
@@ -2226,6 +2238,12 @@ func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess 
 	})
 	sess.mu.Unlock()
 
+	// Append any charts produced by the generate_chart builtin during this run.
+	// Doing it here (rather than trusting the model to echo the spec) guarantees
+	// the chart reaches the user, and dedupes against a spec the model already
+	// included on its own.
+	finalContent = appendCollectedCharts(finalContent, chartSinkFrom(ctx))
+
 	// Persist reply to session memory
 	if err := e.memory.Write(memory.Entry{
 		AgentID: msg.AgentID, SessionID: msg.SessionID,
@@ -2843,6 +2861,11 @@ func (e *Engine) buildSystemPrefix(def *agent.Definition) string {
 				catalog
 		}
 	}
+	// Encourage charts when the visualization tool is available to this agent.
+	if agentHasChartTool(def) {
+		systemPrompt += "\n\n" + chartToolGuide
+	}
+
 	// System-capable agents have shell access and are the ones that try to
 	// "install" things. Teach them the framework's own commands + canonical
 	// PERSISTENT paths so they stop reinventing the wheel with raw shell and
