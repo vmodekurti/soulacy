@@ -49,17 +49,12 @@ type TraceEvent struct {
 	Error     string         `json:"error,omitempty"`   // non-empty when this event records a failure
 }
 
-// Recorder is the durable sink for trace events. Implementations are a no-op,
-// an in-memory mirror, a JSONL file writer, and a fan-out multi.
+// Recorder is the durable sink for trace events. Implementations are an
+// in-memory mirror, a JSONL file writer, and a fan-out multi.
 type Recorder interface {
 	Record(TraceEvent)
 	Close() error
 }
-
-type nopRecorder struct{}
-
-func (nopRecorder) Record(TraceEvent) {}
-func (nopRecorder) Close() error      { return nil }
 
 // memoryRecorder keeps every event in order so the trace can be read back for
 // the GUI/report. It is always one of a BuildTrace's sinks.
