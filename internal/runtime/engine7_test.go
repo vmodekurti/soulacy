@@ -202,6 +202,9 @@ func TestBuildSystemPrefix_NilSkillLoaderNoSkillBlock(t *testing.T) {
 	def := &agent.Definition{
 		ID:           "no-skill-agent",
 		SystemPrompt: "Plain prompt.",
+		// Opt out of built-ins so the always-on generate_chart guide isn't
+		// appended; this test is about the absence of a SKILL block.
+		Builtins: &[]string{},
 	}
 	prefix := e.buildSystemPrefix(def)
 	if prefix != "Plain prompt." {

@@ -389,10 +389,28 @@ func TestBuildSystemPrefix_EmptyCatalogs(t *testing.T) {
 	def := &agent.Definition{
 		ID:           "simple",
 		SystemPrompt: "You are a simple bot.",
+		// Opt out of built-ins so the always-on generate_chart guide isn't
+		// appended — this test verifies that no skill/knowledge/agent CATALOG
+		// block is added when the agent declares none.
+		Builtins: &[]string{},
 	}
 	prefix := e.buildSystemPrefix(def)
 	if prefix != "You are a simple bot." {
 		t.Errorf("prefix = %q, want unchanged system prompt", prefix)
+	}
+}
+
+// The generate_chart guide is appended to a default agent's prompt (the tool is
+// always-on), and suppressed when the agent opts out of built-ins.
+func TestBuildSystemPrefix_ChartGuideByDefault(t *testing.T) {
+	e := newMinimalEngine(t)
+	def := &agent.Definition{ID: "charty", SystemPrompt: "Hi."}
+	if got := e.buildSystemPrefix(def); !strings.Contains(got, chartToolGuide) {
+		t.Errorf("default agent prefix should include the chart guide; got %q", got)
+	}
+	def.Builtins = &[]string{} // opt out of built-ins
+	if got := e.buildSystemPrefix(def); strings.Contains(got, chartToolGuide) {
+		t.Errorf("builtins-opted-out agent should NOT get the chart guide; got %q", got)
 	}
 }
 
