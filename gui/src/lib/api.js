@@ -267,11 +267,14 @@ export const api = {
         body: JSON.stringify({ intent, catalog, light }),
       }),
     /** Compile an intent (+ optional clarifying answers) into a draft workflow. */
-    compile: ({ intent, catalog, answers } = {}) =>
+    compile: ({ intent, catalog, answers, rawIntent } = {}) =>
       apiFetch('/studio/compile', {
         method: 'POST',
-        body: JSON.stringify({ intent, catalog, answers }),
+        body: JSON.stringify({ intent, catalog, answers, raw_intent: rawIntent }),
       }),
+    /** Run an UNSAVED reasoning agent against one sample question (ephemeral). */
+    tryAgent: ({ workflow, question } = {}) =>
+      apiFetch('/studio/try-agent', { method: 'POST', body: JSON.stringify({ workflow, question }) }),
     /** Serialize the current draft to SOUL.yaml for the Code view. */
     yaml: ({ workflow } = {}) =>
       apiFetch('/studio/yaml', { method: 'POST', body: JSON.stringify({ workflow }) }),
@@ -284,6 +287,24 @@ export const api = {
     /** Full validation of edited SOUL.yaml: syntax + definition + graph + runtime. */
     validateYaml: ({ yaml } = {}) =>
       apiFetch('/studio/validate-yaml', { method: 'POST', body: JSON.stringify({ yaml }) }),
+    /** Ask the framework LLM to rewrite the SOUL.yaml so all issues are fixed. */
+    fixYaml: ({ yaml } = {}) =>
+      apiFetch('/studio/fix-yaml', { method: 'POST', body: JSON.stringify({ yaml }) }),
+    /** Rules-grounded LLM review of the YAML (semantic checks the linter misses). */
+    reviewYaml: ({ yaml } = {}) =>
+      apiFetch('/studio/review-yaml', { method: 'POST', body: JSON.stringify({ yaml }) }),
+    /** Compile a plain-language connector gate into a flow predicate (Phase B). */
+    compileGate: ({ phrase, vars } = {}) =>
+      apiFetch('/studio/compile-gate', { method: 'POST', body: JSON.stringify({ phrase, vars }) }),
+    /** Compile ONE node from its plain-language intent into concrete config (Phase C). */
+    compileNode: (req = {}) =>
+      apiFetch('/studio/compile-node', { method: 'POST', body: JSON.stringify(req) }),
+    /** The coarse composite-block catalog (Phase 2). */
+    compositeBlocks: () => apiFetch('/studio/composite-blocks'),
+    /** The editable SOUL.yaml authoring rulebook (injected into generate + fix). */
+    getRules: () => apiFetch('/studio/rules'),
+    saveRules: ({ rules } = {}) =>
+      apiFetch('/studio/rules', { method: 'PUT', body: JSON.stringify({ rules }) }),
     /**
      * Generate a ReAct/Plan-Execute AGENT (no fixed flow) — for intents that
      * need a reasoning loop. Returns a draft with strategy + tools allowlist.
@@ -360,6 +381,43 @@ export const api = {
      * @returns {Promise<{runs:{id,agentId,agentName,error,attempts,failedAt,healable}[]}>}
      */
     failedRuns: () => apiFetch('/studio/failed-runs'),
+    /**
+     * Per-block run trace (input/output/duration/error per executed block) for a
+     * flow run. Pass runId for a specific run, or agentId for the agent's most
+     * recent run. Returns an empty trace (not an error) when nothing is retained.
+     * @returns {Promise<{agentId,runId,startedAt,updatedAt,entries:{nodeId,kind,input,output,error,durationMs,wiredPorts}[]}>}
+     */
+    runTrace: (agentId, runId) => {
+      const q = new URLSearchParams()
+      if (agentId) q.set('agentId', agentId)
+      if (runId) q.set('runId', runId)
+      return apiFetch('/studio/run-trace?' + q.toString())
+    },
+    /**
+     * Complete run history for an agent — EVERY retained run (scheduled and
+     * on-demand), newest first, each with its trigger source and verdict.
+     * @returns {Promise<{agentId, runs:{runId,trigger,startedAt,updatedAt,steps,ok,error}[]}>}
+     */
+    runHistory: (agentId) => apiFetch('/studio/run-history?agentId=' + encodeURIComponent(agentId || '')),
+    /**
+     * Full structured trace of an autonomous build (every phase — snapshot,
+     * preflight, each repair, each verify, result — with timings and detail).
+     * Pass id for a specific build, or omit for the most recent. Returns an
+     * empty trace (not an error) when nothing is retained.
+     * @returns {Promise<{id,intent,start,events:{seq,at,elapsed_ms,dur_ms,kind,phase,attempt,message,data,error}[]}>}
+     */
+    buildTrace: (id) => {
+      const q = new URLSearchParams()
+      if (id) q.set('id', id)
+      const qs = q.toString()
+      return apiFetch('/studio/build-trace' + (qs ? '?' + qs : ''))
+    },
+    /**
+     * Compact summaries of retained builds (newest first) for a recent-builds
+     * picker. dir reports the on-disk JSONL location, or "" when memory-only.
+     * @returns {Promise<{traces:{id,intent,start,events,last}[], dir:string}>}
+     */
+    buildTraces: () => apiFetch('/studio/build-traces'),
     /**
      * Diagnose a failed run and self-heal its saved agent: repair against the
      * real error, then validate/re-run. Returns the healed draft + transcript.

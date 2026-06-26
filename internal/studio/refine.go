@@ -63,8 +63,10 @@ func Refine(ctx context.Context, llm LLM, draft Draft, nodeID, instruction strin
 
 	// Hard contract: a refine that produces an invalid graph is rejected and
 	// NOT returned. The caller keeps the original draft.
-	if _, err := reasoning.CompileFlow(updated.spec()); err != nil {
-		return Draft{}, fmt.Errorf("studio: refined workflow is invalid: %w", err)
+	if !updated.IsAgent() {
+		if _, err := reasoning.CompileFlow(updated.spec()); err != nil {
+			return Draft{}, fmt.Errorf("studio: refined workflow is invalid: %w", err)
+		}
 	}
 
 	return updated, nil

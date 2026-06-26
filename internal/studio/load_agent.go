@@ -24,9 +24,10 @@ func HasWorkflow(def agent.Definition) bool {
 // edits the WORKFLOW, and a re-save regenerates those.
 func FromAgentDefinition(def agent.Definition) Draft {
 	d := Draft{
-		Name:     def.Name,
-		Intent:   def.StudioIntent,
-		Refined:  def.StudioRefined,
+		Name:      def.Name,
+		Intent:    def.StudioIntent,
+		Refined:   def.StudioRefined,
+		RawIntent: def.StudioRawIntent,
 		Trigger:  Trigger{Type: triggerTypeFromKind(def.Trigger)},
 		Channels: append([]string(nil), def.Channels...),
 	}
@@ -36,15 +37,68 @@ func FromAgentDefinition(def agent.Definition) Draft {
 	if def.Schedule != nil && strings.TrimSpace(def.Schedule.Cron) != "" {
 		d.Trigger.Config = map[string]any{"cron": def.Schedule.Cron}
 	}
+
+	// A reasoning agent (ReAct/Plan-Execute) has NO workflow graph — its substance
+	// is the strategy + system prompt + tool/skill allowlist. Preserve those so the
+	// round-trip is LOSSLESS: re-opening or switching to Canvas keeps it an agent
+	// (IsAgent stays true → no `workflow:` block is added on save) and the mode
+	// toggle reflects the real strategy. Without this the agent silently degraded
+	// into an (empty) workflow.
+	if strat := strings.ToLower(strings.TrimSpace(def.Reasoning.Strategy)); strat == "react" || strat == "plan_execute" {
+		d.Strategy = strat
+		d.SystemPrompt = def.SystemPrompt
+		d.Unattended = def.Unattended
+		d.Tools = agentToolList(def)
+		d.Skills = append([]string(nil), def.Skills...)
+		d.Knowledge = append([]string(nil), def.Knowledge...)
+		// Preserve the reasoning-loop budgets so a re-save doesn't reset values the
+		// user tuned in SOUL.yaml back to Studio defaults.
+		d.StepTimeout = def.Reasoning.StepTimeout
+		d.TotalTimeout = def.Reasoning.TotalTimeout
+		d.MaxTurns = def.MaxTurns
+		for _, id := range def.Agents {
+			if id = strings.TrimSpace(id); id != "" {
+				d.NewAgents = append(d.NewAgents, NewAgent{ID: id})
+			}
+		}
+		return d
+	}
+
+	// Workflow agent: preserve the fields the canvas OWNS but didn't used to round
+	// trip — attached knowledge bases, the unattended opt-in, peer agents, and the
+	// node-execution budget — so opening in canvas and re-saving doesn't silently
+	// wipe them.
+	d.Knowledge = append([]string(nil), def.Knowledge...)
+	d.Unattended = def.Unattended
+	for _, id := range def.Agents {
+		if id = strings.TrimSpace(id); id != "" {
+			d.NewAgents = append(d.NewAgents, NewAgent{ID: id})
+		}
+	}
 	if def.Workflow != nil {
 		d.Flow = Flow{
-			Nodes:  append(def.Workflow.Nodes[:0:0], def.Workflow.Nodes...),
-			Edges:  append(def.Workflow.Edges[:0:0], def.Workflow.Edges...),
-			Entry:  def.Workflow.Entry,
-			Output: def.Workflow.Output,
+			Nodes:             append(def.Workflow.Nodes[:0:0], def.Workflow.Nodes...),
+			Edges:             append(def.Workflow.Edges[:0:0], def.Workflow.Edges...),
+			Entry:             def.Workflow.Entry,
+			Output:            def.Workflow.Output,
+			MaxNodeExecutions: def.Workflow.MaxNodeExecutions,
 		}
 	}
 	return d
+}
+
+// agentToolList reassembles the draft's flat tool allowlist (builtin + mcp__
+// names) from the definition's split Builtins/MCPTools — the inverse of how
+// toReActAgentDefinition splits draft.Tools on save.
+func agentToolList(def agent.Definition) []string {
+	var out []string
+	if def.Builtins != nil {
+		out = append(out, *def.Builtins...)
+	}
+	if def.MCPTools != nil {
+		out = append(out, *def.MCPTools...)
+	}
+	return out
 }
 
 // triggerTypeFromKind is the inverse of mapTrigger: agent TriggerKind → the

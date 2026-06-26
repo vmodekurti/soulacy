@@ -397,6 +397,27 @@ func (l *Loader) Upsert(dir string, def *agent.Definition) error {
 	return nil
 }
 
+// Register adds a definition to the in-memory registry WITHOUT touching disk, so
+// the engine can run it but it is never persisted. Used for ephemeral agents like
+// a Studio "try this" run. Pair every Register with an Unregister (defer).
+func (l *Loader) Register(def *agent.Definition) {
+	if def == nil || def.ID == "" {
+		return
+	}
+	l.mu.Lock()
+	l.agents[def.ID] = def
+	l.mu.Unlock()
+}
+
+// Unregister drops an in-memory-only definition added via Register. It never
+// touches disk, so it is safe even if a same-id persisted agent exists (callers
+// must use a unique ephemeral id to avoid evicting a real agent).
+func (l *Loader) Unregister(id string) {
+	l.mu.Lock()
+	delete(l.agents, id)
+	l.mu.Unlock()
+}
+
 // Delete removes an agent definition from disk and memory.
 func (l *Loader) Delete(id string) error {
 	l.mu.Lock()

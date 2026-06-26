@@ -33,6 +33,60 @@ func TestCompileAgent_ProducesReActDraft(t *testing.T) {
 	}
 }
 
+// End-to-end grounding through CompileAgent: a near-miss skill the model named is
+// corrected to the installed one, an installed skill the intent clearly references
+// but the model omitted is injected, and a named-but-uninstalled skill surfaces as
+// a "Needs setup" suggestion rather than vanishing.
+func TestCompileAgent_GroundsSkillsEndToEnd(t *testing.T) {
+	out := `{
+	  "name": "Finance QA",
+	  "system_prompt": "Answer questions about stocks using the right finance skill.",
+	  "trigger": {"type":"channel"},
+	  "channels": ["http"],
+	  "tools": ["web_search"],
+	  "skills": ["yahoo finance", "totally-made-up-skill"],
+	  "knowledge": [],
+	  "rationale": "Dynamic skill routing."
+	}`
+	cat := Catalog{Skills: []CatalogSkill{
+		{Name: "yfinance", Description: "Yahoo Finance market data: stock quotes, history"},
+		{Name: "market-news", Description: "Latest market news headlines"},
+	}}
+	res, err := CompileAgent(context.Background(),
+		fakeLLM{out: out},
+		"on-demand assistant that answers stock questions and the latest market-news",
+		cat, "react", nil)
+	if err != nil {
+		t.Fatalf("CompileAgent: %v", err)
+	}
+	has := func(list []string, want string) bool {
+		for _, s := range list {
+			if s == want {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(res.Workflow.Skills, "yfinance") {
+		t.Errorf("near-miss 'yahoo finance' should be corrected to installed 'yfinance'; got %v", res.Workflow.Skills)
+	}
+	if !has(res.Workflow.Skills, "market-news") {
+		t.Errorf("'market-news' referenced in intent should be injected; got %v", res.Workflow.Skills)
+	}
+	if has(res.Workflow.Skills, "totally-made-up-skill") {
+		t.Errorf("an uninstalled skill must not be kept on the agent; got %v", res.Workflow.Skills)
+	}
+	var flaggedMissing bool
+	for _, sg := range res.Suggestions {
+		if sg.Kind == "skill" && sg.Name == "totally-made-up-skill" && !sg.Installed {
+			flaggedMissing = true
+		}
+	}
+	if !flaggedMissing {
+		t.Errorf("uninstalled named skill should surface as a Needs-setup suggestion; got %+v", res.Suggestions)
+	}
+}
+
 func TestToAgentDefinition_ReActHasNoWorkflow(t *testing.T) {
 	d := Draft{
 		Name:         "Daily AI Podcast",

@@ -41,6 +41,11 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	}
 	agentID := msg.AgentID
 
+	// Record this run in the agent's run history at start, tagged with its trigger
+	// source (the channel: telegram/http/schedule/…), so the history lists EVERY
+	// run — scheduled or on-demand — even one that fails before any block records.
+	w.engine.TagFlowRun(agentID, runID, msg.Channel)
+
 	// Conversation continuity: pull a compact transcript of recent turns for
 	// this session so the flow's entry agent can resolve follow-up references
 	// ("its price", "that company") without the user restating context. Empty
@@ -62,6 +67,32 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	}
 
 	hooks := reasoning.FlowHooks{}
+	// Per-block run trace (Story S0.3 Phase 1): record every executed block's
+	// input/output/duration/error and stream it as a flow.node event so the GUI
+	// can render a legible run trace. Independent of the checkpoint store.
+	hooks.Observe = func(rec reasoning.FlowNodeRun) {
+		w.engine.recordFlowNode(agentID, runID, rec)
+		if w.engine.sink == nil {
+			return
+		}
+		w.engine.sink.Emit(message.Event{
+			Type:      "flow.node",
+			AgentID:   agentID,
+			SessionID: msg.SessionID,
+			Timestamp: time.Now().UTC(),
+			Payload: map[string]any{
+				"runId":      runID,
+				"visitKey":   rec.VisitKey,
+				"nodeId":     rec.NodeID,
+				"kind":       rec.Kind,
+				"input":      rec.Input,
+				"output":     rec.Output,
+				"error":      rec.Error,
+				"durationMs": rec.DurationMS,
+				"wiredPorts": rec.WiredPorts,
+			},
+		})
+	}
 	if w.store != nil {
 		hooks.Restore = func(visitKey string) (json.RawMessage, bool) {
 			cp, gerr := w.store.Get(ctx, agentID, runID, visitKey)
@@ -93,6 +124,23 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	}
 
 	runNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
+		// Per-node timeout — the framework wraps EVERY block with its own budget.
+		// Precedence: an explicit FlowNode.Timeout (the inspector "timeout" field)
+		// wins; else a wait/timeout argument the node declares (max_wait, timeout_s);
+		// else a generous default for external MCP tools; else the global default.
+		// The value carries on the context so the tool/python call uses it as its
+		// budget, AND a hard deadline wraps the WHOLE block (any kind — tool, python,
+		// agent) as a backstop, so a developer can always cap a slow block from the
+		// node itself without touching global config.
+		if d := nodeExecTimeout(node, renderedInput); d > 0 {
+			ctx = WithToolTimeout(ctx, d)
+			// The inner tool/python timeout is exactly d and fires first with a clear
+			// "exceeded the … timeout" message; this outer deadline (small grace) is
+			// the catch-all that bounds any non-tool work in the block too.
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, d+5*time.Second)
+			defer cancel()
+		}
 		// Studio "Custom Python" node with inline code: execute it in the
 		// sandboxed Python executor. The rendered input is delivered as the
 		// run(inputs) argument. (A python node that instead references a deployed
@@ -160,8 +208,27 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		if rerr != nil {
 			return nil, rerr
 		}
-
 		outBytes := []byte(outStr)
+
+		// Auto-poll async work: when this is a status/poll node (e.g. a NotebookLM
+		// studio_status / research_status) and its result is still "in progress",
+		// re-poll on an interval until it reaches a terminal state or the poll
+		// budget runs out — so the developer never has to hand-wire a poll loop,
+		// a sleep node, or a max_wait the tool may not even accept. The re-call is
+		// the SAME idempotent status check; create/side-effecting nodes don't match
+		// the poll pattern, so they're never re-invoked.
+		if node.Kind == sdkr.FlowNodeTool && isPollNode(node) {
+			polled, perr := autoPollNode(ctx, node, renderedInput, outBytes,
+				func(c context.Context) ([]byte, error) {
+					s, e := w.engine.runTool(c, def, msg.SessionID, tc)
+					return []byte(s), e
+				})
+			if perr != nil {
+				return nil, perr
+			}
+			outBytes = polled
+		}
+
 		if json.Valid(outBytes) {
 			return unwrapToolJSON(outBytes), nil
 		}
@@ -170,6 +237,9 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	}
 
 	out, err := reasoning.RunFlow(ctx, g, vars, runNode, hooks)
+	// Durably persist the finished run (success OR failure) to the run history, so
+	// it survives a gateway restart and a failed run is still inspectable.
+	w.engine.PersistFlowRun(agentID, runID)
 	if err != nil {
 		w.log.Error("workflow flow failed",
 			zap.String("run_id", runID), zap.Error(err))

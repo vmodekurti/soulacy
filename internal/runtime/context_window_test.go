@@ -24,6 +24,25 @@ func TestModelContextLimit(t *testing.T) {
 	}
 }
 
+// gemma and hosted-cloud providers must NOT fall through to the tiny 8192 default
+// that over-trimmed history and made tool-using agents loop (the gemma4:31b bug).
+func TestModelContextLimit_GemmaAndCloud(t *testing.T) {
+	if got := modelContextLimit("ollama_cloud", "gemma4:31b"); got <= defaultContextLimit {
+		t.Errorf("gemma should get a generous window, got %d", got)
+	}
+	if got := modelContextLimit("ollama", "gemma2:9b"); got <= defaultContextLimit {
+		t.Errorf("gemma (local) should still be recognised, got %d", got)
+	}
+	// An UNKNOWN model on a hosted cloud provider must beat the tiny local default.
+	if got := modelContextLimit("ollama_cloud", "some-new-hosted-model"); got <= defaultContextLimit {
+		t.Errorf("unknown model on a cloud provider should not get the tiny local default, got %d", got)
+	}
+	// An unknown model on a LOCAL provider keeps the conservative default.
+	if got := modelContextLimit("ollama", "some-new-local-model"); got != defaultContextLimit {
+		t.Errorf("unknown local model should keep the conservative default, got %d", got)
+	}
+}
+
 func TestTrimMessagesToFit(t *testing.T) {
 	big := strings.Repeat("x", 4000) // ~1000 tokens each
 	msgs := []llm.ChatMessage{

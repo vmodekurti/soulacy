@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync/atomic"
 
 	"github.com/soulacy/soulacy/pkg/message"
@@ -191,8 +192,17 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 
 	var result struct {
 		Message struct {
-			Role      string `json:"role"`
-			Content   string `json:"content"`
+			Role    string `json:"role"`
+			Content string `json:"content"`
+			// Reasoning models (qwen3, deepseek-r1, …) on Ollama >= 0.9 return
+			// their chain-of-thought in a SEPARATE "thinking" field and the
+			// user-facing answer in "content". When the model wraps its whole
+			// reply in <think>…</think>, Ollama extracts the block into
+			// "thinking" and "content" can come back EMPTY — which previously
+			// caused the engine to discard a completed run as "(no final
+			// response produced)". We capture it so the engine can recover the
+			// post-think answer when content is empty.
+			Thinking  string `json:"thinking"`
 			ToolCalls []struct {
 				Function struct {
 					Name      string         `json:"name"`
@@ -208,8 +218,17 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		return nil, fmt.Errorf("ollama: decode response: %w", err)
 	}
 
+	// Surface the real answer. Some Ollama builds leave inline <think>…</think>
+	// blocks in content; strip them to the post-think tail. If content is then
+	// empty but the model put a final answer after its reasoning inside the
+	// "thinking" field, recover that tail so a completed run is never lost.
+	content := stripThinkBlocks(result.Message.Content)
+	if strings.TrimSpace(content) == "" {
+		content = stripThinkBlocks(result.Message.Thinking)
+	}
+
 	r := &CompletionResponse{
-		Content:      result.Message.Content,
+		Content:      content,
 		InputTokens:  result.PromptEvalCount,
 		OutputTokens: result.EvalCount,
 	}
@@ -220,6 +239,42 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 
 	return r, nil
+}
+
+// stripThinkBlocks removes <think>…</think> reasoning blocks that some Ollama
+// builds leave inline in the message content and returns the surrounding
+// user-facing text. Reasoning models (qwen3, deepseek-r1) emit their
+// chain-of-thought in such blocks; when the block is the entire message we want
+// the post-think tail, not the reasoning. A defensively-unclosed <think> (no
+// closing tag) drops everything from the tag onward. Returns the input trimmed
+// when there is no think block to strip.
+func stripThinkBlocks(s string) string {
+	if !strings.Contains(s, "<think>") && !strings.Contains(s, "</think>") {
+		return strings.TrimSpace(s)
+	}
+	var b strings.Builder
+	rest := s
+	for {
+		open := strings.Index(rest, "<think>")
+		if open < 0 {
+			// No further opening tag. A stray closing tag (reasoning that began
+			// before this chunk) means everything up to it was think content.
+			if close := strings.Index(rest, "</think>"); close >= 0 {
+				rest = rest[close+len("</think>"):]
+			}
+			b.WriteString(rest)
+			break
+		}
+		b.WriteString(rest[:open])
+		after := rest[open+len("<think>"):]
+		close := strings.Index(after, "</think>")
+		if close < 0 {
+			// Unclosed think block — drop the remainder (it's all reasoning).
+			break
+		}
+		rest = after[close+len("</think>"):]
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func cloneOptions(in map[string]any) map[string]any {

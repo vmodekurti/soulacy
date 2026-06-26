@@ -3,7 +3,7 @@ package studio
 import (
 	"testing"
 
-	reasoning "github.com/soulacy/soulacy/internal/reasoning"
+	"github.com/soulacy/soulacy/internal/reasoning"
 )
 
 // The concrete few-shot example embedded in the prompt MUST itself be a valid,

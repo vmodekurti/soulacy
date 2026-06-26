@@ -464,6 +464,12 @@ type Definition struct {
 	// full re-refine. Studio-only metadata; the runtime does not use it.
 	StudioRefined bool `yaml:"studio_refined,omitempty" json:"studio_refined,omitempty"`
 
+	// StudioRawIntent is the user's ORIGINAL plain-language prompt, before the
+	// refine pass turned it into the detailed StudioIntent spec. Persisted so the
+	// Studio prompt editor can show both the original and the refined prompt and
+	// let the user edit the original and re-refine. Studio-only metadata.
+	StudioRawIntent string `yaml:"studio_raw_intent,omitempty" json:"studio_raw_intent,omitempty"`
+
 	// RunTimeout caps the total wall-clock duration of one full agent run
 	// (across all LLM turns and tool calls). Go duration syntax: "5m", "30m",
 	// "1h". Empty = use the gateway default (15m). Bump this for agents that

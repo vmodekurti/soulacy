@@ -13,12 +13,17 @@
   import { bridge } from '../lib/studio/studioApi.js'
   import { editAgent, studioSession } from '../lib/stores.js'
   import { toFlow, kindMeta } from '../lib/studio/graph.js'
+  import { validateConnection } from '../lib/studio/portcompat.js'
+  import { computeRunState } from '../lib/studio/runstate.js'
   import Palette from '../lib/studio/Palette.svelte'
   import Inspector from '../lib/studio/Inspector.svelte'
   import YamlView from '../lib/studio/YamlView.svelte'
+  import BuildInspector from '../lib/studio/BuildInspector.svelte'
+  import Collapsible from '../lib/studio/Collapsible.svelte'
   import StudioNode from '../lib/studio/nodes/StudioNode.svelte'
   import TriggerNode from '../lib/studio/nodes/TriggerNode.svelte'
   import OutputNode from '../lib/studio/nodes/OutputNode.svelte'
+  import LiveEdge from '../lib/studio/LiveEdge.svelte'
   import '../lib/studio/studio.css'
 
   // (Removed) The old iframe build scrubbed the plugin token from the URL
@@ -30,12 +35,26 @@
     studioTrigger: TriggerNode,
     studioOutput: OutputNode,
   }
+  // Custom edge with weight + a heartbeat: glowing particles flow along it while
+  // a build/run is in flight (see LiveEdge + the `building`→edge.active effect).
+  const edgeTypes = { live: LiveEdge }
 
   // ── Palette (Wave 1) ──────────────────────────────────────────────────────
   let catalog = null
   let paletteStatus = 'Loading capabilities…'
   let paletteStatusKind = ''
   let paletteError = ''
+
+  // Map each connected MCP tool's full name → its published param hint
+  // ("title*:string, …"), so the Inspector can show a tool node's allowed
+  // parameters and let you add one with a click.
+  $: toolParams = (() => {
+    const m = {}
+    for (const t of (catalog && catalog.mcp_tools) || []) {
+      if (t && t.full_name) m[t.full_name] = t.params || ''
+    }
+    return m
+  })()
 
   async function loadCatalog() {
     paletteStatus = 'Loading capabilities…'
@@ -47,6 +66,36 @@
       paletteError = 'Unavailable'
       paletteStatus = 'Could not load capabilities: ' + (e.message || 'error')
       paletteStatusKind = 'error'
+    }
+  }
+
+  // ── Credentials (first-class): set the API keys an agent's tools/MCP need,
+  // without leaving Studio. Loaded once; `set` marks which are already provided.
+  let secrets = []
+  let secretVals = {}     // { [name]: typed value }
+  let secretBusy = ''     // name currently being saved
+  let secretMsg = ''
+  $: unsetSecrets = (secrets || []).filter((s) => s && s.set === false)
+  async function loadSecrets() {
+    try {
+      const r = await bridge.listSecrets()
+      secrets = (r && Array.isArray(r.secrets)) ? r.secrets : []
+    } catch (_) { secrets = [] }
+  }
+  async function setSecretVal(name) {
+    const v = (secretVals[name] || '').trim()
+    if (!v || secretBusy) return
+    secretBusy = name
+    secretMsg = ''
+    try {
+      await bridge.setSecret(name, v)
+      secretVals = { ...secretVals, [name]: '' }
+      secretMsg = `Saved ${name}.`
+      await loadSecrets()
+    } catch (e) {
+      secretMsg = (e && e.message) ? `Could not save ${name}: ${e.message}` : `Could not save ${name}`
+    } finally {
+      secretBusy = ''
     }
   }
 
@@ -122,8 +171,52 @@
   // state; null when closed.
   let promptViewer = false     // full-prompt read/edit modal open
   let refinement = null        // { original, refined_intent, summary, assumptions[], questions[] }
+  let agentRoute = null        // { mode, reason } when Studio built an agent instead of a workflow
   let refining = false         // refine request in flight
   let refineAnswers = {}       // { [questionId]: value } for refinement questions
+  let rawPrompt = ''           // the user's ORIGINAL prompt (intent holds the refined one)
+  let modalRefining = false    // inline refine (from the prompt editor) in flight
+  let promptError = ''         // error shown inside the prompt editor
+
+  // ── SOUL.yaml authoring rulebook (auto-injected into generate + fix) ───────
+  let rulesOpen = false
+  let rulesText = ''
+  let rulesDefault = ''
+  let rulesIsDefault = true
+  let rulesLoading = false
+  let rulesSaving = false
+  let rulesMsg = ''
+
+  async function openRules() {
+    rulesOpen = true
+    rulesLoading = true
+    rulesMsg = ''
+    try {
+      const r = await bridge.getRules()
+      rulesText = (r && r.rules) || ''
+      rulesDefault = (r && r.default) || ''
+      rulesIsDefault = !!(r && r.isDefault)
+    } catch (e) {
+      rulesMsg = '✗ ' + ((e && e.message) || 'Could not load rules')
+    }
+    rulesLoading = false
+  }
+  async function saveRules() {
+    if (rulesSaving) return
+    rulesSaving = true
+    rulesMsg = ''
+    try {
+      const r = await bridge.saveRules(rulesText)
+      rulesIsDefault = !!(r && r.isDefault)
+      rulesMsg = '✓ Saved'
+    } catch (e) {
+      rulesMsg = '✗ ' + ((e && e.message) || 'Save failed')
+    }
+    rulesSaving = false
+  }
+  function resetRulesToDefault() {
+    if (rulesDefault) rulesText = rulesDefault
+  }
 
   // ── Missing-capability suggestions (M4) ───────────────────────────────────
   // The compile response may carry `suggestions:[{kind,name,reason,installed}]`
@@ -235,14 +328,39 @@
   let validation = null       // { ok, errors[], warnings[] } | null
   let validateTimer = null
 
+  // Per-node execution status from the last build (id -> 'ok'|'repaired'|
+  // 'problem'|'idle'), threaded into the graph so nodes carry a semantic accent.
+  let nodeRunState = {}
+  // When the Build Inspector's replay scrubber is active it sends a per-frame
+  // status map that OVERRIDES the final-build status, so the canvas replays the
+  // loop attempt-by-attempt. null = no replay (show the final build outcome).
+  let replayOverride = null
+
   function rebuildGraph() {
     if (!workflow) {
       nodes.set([]); edges.set([]); return
     }
-    const flow = toFlow(workflow, validation)
+    const flow = toFlow(workflow, validation, nodeRunState)
     nodes.set(flow.nodes)
     edges.set(flow.edges)
   }
+
+  // Recompute node run-state whenever a build finishes (or its preflight
+  // updates), or follow the inspector's replay scrubber when active, and re-render
+  // the graph so the canvas shows the success/repaired/problem accents.
+  $: {
+    nodeRunState = replayOverride || computeRunState({ report: buildReport, preflight })
+    rebuildGraph()
+  }
+
+  // Heartbeat: while an autonomous build is in flight, light every edge so the
+  // LiveEdge particles flow — the canvas visibly pulses with the run (principle:
+  // "if a workflow is running, the canvas should gently pulse"). Reactive on
+  // `building`; rebuildGraph resets edges to rest when the graph itself changes.
+  function setEdgesActive(on) {
+    edges.update((es) => es.map((e) => (e && e.data ? { ...e, data: { ...e.data, active: on } } : e)))
+  }
+  $: setEdgesActive(building)
 
   // ── Palette drag-and-drop (create nodes by dropping) ──────────────────────
   // Palette items carry an `application/studio-node` payload. Dropping one on
@@ -367,6 +485,38 @@ def run(inputs):
       return
     }
 
+    // Trigger / Exit -> structural endpoint blocks (Phase A). A trigger becomes
+    // the flow entry; an exit is a terminal delivery block. Config lives in
+    // node.params and is edited in the Inspector; on save the backend projects it
+    // onto the workflow trigger/channels (DeriveEndpoints).
+    if (drag.kind === 'trigger' || drag.kind === 'exit') {
+      const eid = uniqueNodeId(drag.kind)
+      const enode = {
+        id: eid,
+        kind: drag.kind,
+        description: drag.kind === 'trigger' ? 'Trigger — starts the flow' : 'Exit — delivers the result',
+        input: '', output: '', inputs: [], outputs: [],
+        params: drag.kind === 'trigger'
+          ? { kind: 'cron', config: { cron: '0 9 * * *' } }
+          : { route: 'console', config: {} },
+        x: Math.round(at.x),
+        y: Math.round(at.y),
+      }
+      if (!workflow) {
+        workflow = { ...emptyWorkflow(), flow: { nodes: [enode], edges: [], entry: drag.kind === 'trigger' ? eid : '' } }
+      } else {
+        const flow = workflow.flow || { nodes: [], edges: [], entry: '' }
+        const baked = bakePositions(flow.nodes)
+        const entry = drag.kind === 'trigger' ? eid : (flow.entry || '')
+        workflow = { ...workflow, flow: { ...flow, nodes: [...baked, enode], entry } }
+      }
+      selectedNode = enode
+      selectedEdge = null
+      rebuildGraph()
+      scheduleValidate()
+      return
+    }
+
     // Agent / tool / python / skill -> a new flow node at the drop point.
     // A skill becomes a `read_skill` tool node pre-pointed at the skill name
     // (read_skill takes a skill_name argument), so it's runnable immediately.
@@ -399,6 +549,44 @@ def run(inputs):
     selectedEdge = null
     rebuildGraph()
     scheduleValidate()
+  }
+
+  // Phase B: compile a plain-language connector gate into a flow predicate.
+  // Passed to the Inspector; returns the predicate string (or throws on error).
+  async function compileGate(phrase, vars) {
+    const res = await bridge.compileGate(phrase, vars)
+    return (res && res.predicate) || ''
+  }
+
+  // Phase C: compile a node's plain-language intent into concrete config, then
+  // merge the compiled tool/agent/python fields into the node on the canvas.
+  async function compileNode(intent, node) {
+    if (!node) return
+    // Upstream outputs (var names) so the per-node compiler can wire by field.
+    // When a recent dry-run captured real output shapes, attach them so the model
+    // compiles against actual data instead of guessing the payload format.
+    const shapeByName = {}
+    for (const s of lastShapes) { if (s && s.name) shapeByName[s.name] = s.shape || '' }
+    const upstream = ((workflow && workflow.flow && workflow.flow.nodes) || [])
+      .filter((n) => n && n.id !== node.id && n.output)
+      .map((n) => {
+        const name = String(n.output).trim()
+        return shapeByName[name] ? { name, shape: shapeByName[name] } : { name }
+      })
+    const res = await bridge.compileNode({ intent, nodeId: node.id, kind: node.kind || '', upstream })
+    const compiled = res && res.node
+    if (!compiled) return
+    // Keep id/position; take the compiled kind/config/intent.
+    applyNodePatch(node.id, {
+      kind: compiled.kind,
+      tool: compiled.tool || '',
+      agent: compiled.agent || '',
+      code: compiled.code || '',
+      input: compiled.input || '',
+      output: compiled.output || node.output || '',
+      requires: compiled.requires || [],
+      intent,
+    })
   }
 
   // ── Delete a node / edge from the canvas ──────────────────────────────────
@@ -450,6 +638,12 @@ def run(inputs):
   // Delete/Backspace removes the selected node (or edge) — but never while the
   // user is typing in a field (intent box, inspector inputs, refine textarea).
   function onCanvasKeydown(e) {
+    // Esc restores the split layout from any maximized frame.
+    if (e.key === 'Escape' && maximizedFrame) {
+      e.preventDefault()
+      maximizedFrame = ''
+      return
+    }
     if (e.key !== 'Delete' && e.key !== 'Backspace') return
     const el = document.activeElement
     if (el && (/^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) || el.isContentEditable)) return
@@ -466,7 +660,10 @@ def run(inputs):
   // gracefully: clear the strip rather than block editing.
   function scheduleValidate() {
     if (validateTimer) clearTimeout(validateTimer)
-    if (!workflow) { validation = null; return }
+    // Skip flow validation for reasoning agents — they have no graph, so the
+    // workflow validator only produces node/edge errors that don't apply and
+    // confuse the user. The agent's own validity is checked on save / in YAML.
+    if (!workflow || workflow.strategy) { validation = null; return }
     validateTimer = setTimeout(runValidate, 350)
   }
 
@@ -518,6 +715,10 @@ def run(inputs):
       // session, or a re-opened workflow that was saved as refined), run a fast
       // LIGHT touch-up that respects the user's edits instead of a full rewrite.
       const light = !!(workflow && workflow.refined)
+      // Capture the ORIGINAL prompt: on a full refine the text being refined IS
+      // the raw prompt. Don't overwrite an original the user typed in the editor,
+      // and don't clobber it on a light re-refine of already-refined text.
+      if (!light && !rawPrompt.trim()) rawPrompt = text
       const data = await bridge.refinePrompt(text, compactCatalog(catalog), light)
       refineAnswers = {}
       refinement = {
@@ -526,12 +727,18 @@ def run(inputs):
         summary: (data && data.summary) || '',
         assumptions: (data && Array.isArray(data.assumptions)) ? data.assumptions : [],
         questions: (data && Array.isArray(data.questions)) ? data.questions : [],
+        // The framework's architecture call ('workflow' | 'react' | 'plan_execute')
+        // and why — so confirmRefinement can build the AGENT directly instead of
+        // drawing a fixed flow that a reasoning task can never satisfy.
+        recommended_mode: (data && data.recommended_mode) || '',
+        recommended_reason: (data && (data.recommended_reason || data.recommendation_rationale)) || '',
       }
     } catch (e) {
       // Refine should never block generation; if it fails, fall back to
       // compiling the original intent directly.
       compileError = (e && e.message) ? `Could not refine prompt (${e.message}); generating from your original text.` : ''
       await runCompile(text, undefined)
+      await escalateIfReasoningFit()
     } finally {
       refining = false
     }
@@ -557,12 +764,44 @@ def run(inputs):
     const text = (refinement.refined_intent || '').trim() || refinement.original
     const ans = Object.keys(refineAnswers).length ? { ...refineAnswers } : undefined
     const mode = (refinement.recommended_mode || 'workflow')
+    const reason = refinement.recommended_reason || ''
     refinement = null
     if (mode === 'react' || mode === 'plan_execute') {
+      // A reasoning task: build the AGENT directly (never a doomed flow), take the
+      // user to SOUL.yaml, and explain via a modal.
       await runAgentCompile(text, mode, ans)
+      if (workflow && workflow.strategy) routeToAgent(mode, reason)
     } else {
       await runCompile(text, ans)
+      // Safety net: the compiler may only realise it's reasoning-fit after trying
+      // to build the flow (it returns a workflow carrying a react recommendation).
+      await escalateIfReasoningFit()
     }
+  }
+
+  // routeToAgent finalises the "this is an agent, not a workflow" handoff: show
+  // SOUL.yaml (where the agent actually lives) and raise the explainer modal.
+  function routeToAgent(mode, reason) {
+    agentRoute = {
+      mode,
+      reason: reason || (workflow && workflow.recommendation && workflow.recommendation.rationale) || '',
+    }
+    showCodeView()
+  }
+
+  // escalateIfReasoningFit converts a freshly-compiled WORKFLOW into the agent it
+  // should have been, when the compiler judged the task reasoning-fit. This is
+  // what makes "if it can't be a workflow, don't build a workflow" true even when
+  // the verdict only emerges from the compile result. Manual toggles never hit
+  // this path (they call runAgentCompile/runCompile directly).
+  async function escalateIfReasoningFit() {
+    const rec = workflow && !workflow.strategy ? workflow.recommendation : null
+    const m = rec && rec.mode
+    if (m !== 'react' && m !== 'plan_execute') return
+    const text = ((intent || (workflow && workflow.intent) || rawPrompt || '')).trim()
+    if (!text) return
+    await runAgentCompile(text, m)
+    if (workflow && workflow.strategy) routeToAgent(m, rec.rationale || '')
   }
 
   // Generate a ReAct/Plan-Execute agent (no flow). The result draft carries
@@ -577,7 +816,7 @@ def run(inputs):
       applyCompile(data)
       // Mark the prompt as refined so a later edit + Generate uses the fast
       // LIGHT touch-up pass; persists via the workflow's `refined` field.
-      if (workflow) workflow = { ...workflow, intent: text, refined: true }
+      if (workflow) workflow = { ...workflow, intent: text, refined: true, raw_intent: rawPrompt }
       intent = text
     } catch (e) {
       compileError = e.message || 'agent generation failed'
@@ -591,6 +830,86 @@ def run(inputs):
     refinement = null
   }
 
+  // ── Output → delivery auto-wiring ──────────────────────────────────────────
+  // Add/remove a delivery channel on the current draft. Surfaced as one-click
+  // suggestions when a draft has no channel wired, so the result actually goes
+  // somewhere instead of being produced and dropped.
+  function addDeliveryChannel(id) {
+    if (!workflow || !id) return
+    const ch = Array.isArray(workflow.channels) ? workflow.channels.slice() : []
+    if (!ch.includes(id)) ch.push(id)
+    workflow = { ...workflow, channels: ch }
+  }
+  function removeDeliveryChannel(id) {
+    if (!workflow) return
+    const ch = (workflow.channels || []).filter((c) => c !== id)
+    workflow = { ...workflow, channels: ch }
+  }
+  // True when the draft produces output but has nowhere to send it. A
+  // channel-triggered agent replies on its trigger channel, so it's exempt.
+  $: needsDelivery = !!workflow
+    && (!workflow.channels || workflow.channels.length === 0)
+    && !(workflow.trigger && workflow.trigger.type === 'channel')
+    && channelOptions.length > 0
+
+  // ── Try the agent: run the UNSAVED reasoning agent against one question ─────
+  let tryQuestion = ''
+  let tryResult = null   // { reply, error } | null
+  let trying = false
+  async function tryAgent() {
+    if (trying || !workflow) return
+    const isAgent = !!workflow.strategy
+    const runnable = isAgent || (workflow.flow && (workflow.flow.nodes || []).length)
+    if (!runnable) return
+    // Agents take a free-form question; workflows take the sample input.
+    const q = (isAgent ? tryQuestion : sampleInput).trim()
+    if (!q) { compileError = 'Enter a sample input to run.'; return }
+    trying = true
+    tryResult = null
+    try {
+      const res = await bridge.tryAgent(workflow, q)
+      tryResult = {
+        reply: (res && res.reply) || '',
+        error: (res && res.error) || '',
+        trace: (res && Array.isArray(res.trace)) ? res.trace : [],
+      }
+    } catch (e) {
+      tryResult = { reply: '', error: (e && e.message) || 'run failed' }
+    } finally {
+      trying = false
+    }
+  }
+
+  // ── Execution-mode override (Workflow ⇄ ReAct ⇄ Plan-Execute) ──────────────
+  // The current draft's mode: a fixed workflow (no strategy) or a reasoning agent.
+  $: currentMode = workflow && workflow.strategy ? String(workflow.strategy).toLowerCase() : 'workflow'
+
+  // switchMode lets the developer override how Studio classified the task —
+  // converting a result that's better as a reasoning agent (e.g. an autonomous
+  // skill router built as a brittle fixed flow) into a ReAct/Plan-Execute agent,
+  // or back to a workflow. It re-compiles the original intent in the chosen mode,
+  // reusing the same agent/flow compilers Generate uses.
+  async function switchMode(mode) {
+    if (compiling || mode === currentMode) return
+    const text = ((intent || (workflow && workflow.intent) || rawPrompt || '')).trim()
+    if (!text) {
+      compileError = 'Add a prompt (Generate from a description) before switching mode.'
+      return
+    }
+    // Switching modes RE-COMPILES from the prompt and discards any manual edits to
+    // the current draft (system prompt, tools, skills, or canvas wiring). Confirm
+    // before throwing that work away.
+    if (workflow) {
+      let ok = true
+      try {
+        ok = window.confirm(`Switch to ${recoLabel(mode)}? This regenerates from your prompt and discards any manual edits to the current ${currentMode === 'workflow' ? 'workflow' : 'agent'}.`)
+      } catch (_) { ok = true }
+      if (!ok) return
+    }
+    if (mode === 'workflow') await runCompile(text)
+    else await runAgentCompile(text, mode)
+  }
+
   // runCompile performs the actual compile + canvas rebuild from a finalized
   // (refined) intent. Shared by the confirm path and the refine-failure
   // fallback.
@@ -599,12 +918,12 @@ def run(inputs):
     compiling = true
     compileError = ''
     try {
-      const data = await bridge.compile(text, ans, compactCatalog(catalog))
+      const data = await bridge.compile(text, ans, compactCatalog(catalog), rawPrompt)
       applyCompile(data)
       // Remember the prompt on the draft so it persists through save/load and
       // the box stays populated for further edits. Mark it refined so a later
       // edit + Generate uses the fast LIGHT touch-up pass.
-      if (workflow) workflow = { ...workflow, intent: text, refined: true }
+      if (workflow) workflow = { ...workflow, intent: text, refined: true, raw_intent: rawPrompt }
       // Surface the refined intent in the editor so further edits start from the
       // clarified version, not the original rough text.
       intent = text
@@ -613,6 +932,40 @@ def run(inputs):
     } finally {
       compiling = false
     }
+  }
+
+  // Prompt editor — "Refine": take the user's ORIGINAL prompt (rawPrompt) and
+  // run the refine pass, dropping the result into the refined box (intent).
+  async function refineFromModal() {
+    const raw = rawPrompt.trim()
+    if (!raw || modalRefining) return
+    modalRefining = true
+    promptError = ''
+    try {
+      const data = await bridge.refinePrompt(raw, compactCatalog(catalog), false)
+      intent = (data && data.refined_intent) || raw
+      if (workflow) workflow = { ...workflow, raw_intent: raw }
+    } catch (e) {
+      promptError = (e && e.message) ? `Could not refine (${e.message})` : 'Could not refine the prompt'
+    } finally {
+      modalRefining = false
+    }
+  }
+
+  // Prompt editor — "Generate": build the workflow straight from the REFINED
+  // prompt (intent), skipping a re-refine. Falls back to the original if the
+  // refined box is empty (e.g. the user only filled the original and hit go).
+  async function generateFromModal() {
+    const text = (intent.trim() || rawPrompt.trim())
+    if (!text || compiling || refining) return
+    if (workflow && workflow.flow && (workflow.flow.nodes || []).length) {
+      let ok = true
+      try { ok = window.confirm('Generate from this prompt? It replaces the current workflow on the canvas.') } catch (_) { ok = true }
+      if (!ok) return
+    }
+    promptViewer = false
+    if (workflow && workflow.strategy) await runAgentCompile(text, workflow.strategy, undefined)
+    else await runCompile(text, undefined)
   }
 
   async function applyAnswers() {
@@ -638,7 +991,37 @@ def run(inputs):
     return mode || 'Workflow'
   }
 
+  // resetTransientDraftState clears everything tied to a SPECIFIC prior draft so
+  // it can't bleed into a freshly generated/loaded one. Without this, a new draft
+  // inherited the previous agent's run history, build report, a leftover preflight
+  // (which silently disabled Save), or a stale agent-route modal. Called by both
+  // applyCompile (post-generate) and setWorkflow (template/load/import).
+  function resetTransientDraftState() {
+    loadedAgentId = null
+    runTrace = null
+    runHistory = []
+    selectedRunId = null
+    runTraceErr = ''
+    buildReport = null
+    buildLog = []
+    buildGlue = []
+    buildTraceId = null
+    agentRoute = null
+    preflight = null
+    consent = null
+    plan = null
+    validation = null
+    tryQuestion = ''
+    tryResult = null
+    // Swapping in a different draft invalidates the SOUL.yaml view's serialization
+    // (which is only re-generated on entry). Drop back to canvas so a stale YAML
+    // can't be shown — or, worse, saved over the new draft. routeToAgent re-opens
+    // SOUL.yaml afterwards when it wants the code view.
+    if (viewMode === 'code') { viewMode = 'canvas'; codeYaml = ''; codeOrig = '' }
+  }
+
   function applyCompile(data) {
+    resetTransientDraftState()
     workflow = (data && data.workflow) || null
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
@@ -651,8 +1034,6 @@ def run(inputs):
     discoverState = {}
     selectedNode = null
     selectedEdge = null
-    plan = null               // a fresh compile invalidates any prior plan/tier
-    validation = null         // clear stale highlights until re-validated
     rebuildGraph()
     scheduleValidate()        // validate the fresh draft (debounced)
     autosaveDraft()           // persist the just-generated work so it's recoverable from Drafts
@@ -663,11 +1044,16 @@ def run(inputs):
   // round-trip. Mirrors the post-compile reset so the canvas, inspector,
   // plan/tier and validation all refresh consistently.
   function setWorkflow(wf, { name } = {}) {
+    // Clear prior-draft state first; callers that re-establish identity (e.g.
+    // openAgentOnCanvas setting loadedAgentId) do so AFTER this returns.
+    resetTransientDraftState()
     workflow = wf || null
     if (workflow && name && !workflow.name) workflow = { ...workflow, name }
     // Restore the generating prompt into the intent box so the user can see and
     // edit the original instruction, then Generate to re-create the workflow.
     if (workflow && typeof workflow.intent === 'string') intent = workflow.intent
+    // Restore the original (pre-refine) prompt for the dual-pane editor.
+    rawPrompt = (workflow && typeof workflow.raw_intent === 'string') ? workflow.raw_intent : ''
     questions = []
     notes = []
     explanation = null
@@ -756,7 +1142,12 @@ def run(inputs):
     if (isFramingId(source) || isFramingId(target)) return false
     const ids = realNodeIds()
     if (!ids.has(source) || !ids.has(target)) return false
-    return !edgeExists(source, target, sourceHandle, targetHandle)
+    if (edgeExists(source, target, sourceHandle, targetHandle)) return false
+    // Design-time type safety: a wire whose producer port type does not
+    // structurally satisfy the consumer port type is rejected DURING the drag,
+    // so the wrong connection is physically impossible to draw (principle #1).
+    const rawNodes = (workflow && workflow.flow && workflow.flow.nodes) || []
+    return validateConnection({ nodes: rawNodes, source, target, sourceHandle, targetHandle }).ok
   }
 
   function edgeExists(from, to, fromPort, toPort) {
@@ -767,10 +1158,17 @@ def run(inputs):
       (e.toPort || '') === (toPort || ''))
   }
 
-  // A connection was drawn on the canvas — append it as a real flow edge.
-  function onConnect(event) {
-    const c = (event && event.detail && (event.detail.connection || event.detail)) || null
-    if (!c) return
+  // A connection was drawn on the canvas — persist it as a real flow edge.
+  //
+  // IMPORTANT: @xyflow/svelte delivers connections via the `onconnect` CALLBACK
+  // PROP (it dispatches no Svelte `connect` event), and it passes the Connection
+  // object DIRECTLY — not wrapped in `event.detail`. The library also optimistically
+  // adds a default edge to its own store; persisting here + rebuildGraph() replaces
+  // that optimistic edge with our real, typed flow edge so it survives the next
+  // re-render (previously, drawing then dropping a block wiped the connection).
+  function onConnect(conn) {
+    const c = (conn && (conn.connection || conn.detail || conn)) || null
+    if (!c || !c.source || !c.target) return
     // Dragging from the trigger re-points the entry rather than adding an edge.
     if (c.source === TRIGGER_ID) { setEntry(c.target); return }
     // Dragging a node onto the output box designates it as the flow's output.
@@ -790,6 +1188,11 @@ def run(inputs):
     const ids = realNodeIds()
     if (!ids.has(from) || !ids.has(to)) return
     if (edgeExists(from, to, fromPort, toPort)) return
+    // Same design-time type gate as the canvas drag, so the Inspector's manual
+    // "Add connection" can't introduce a type-mismatched wire either.
+    const rawNodes = (workflow.flow && workflow.flow.nodes) || []
+    const compat = validateConnection({ nodes: rawNodes, source: from, target: to, sourceHandle: fromPort, targetHandle: toPort })
+    if (!compat.ok) { toast(compat.reason || 'Incompatible connection'); return }
     const flow = workflow.flow
     const edges = Array.isArray(flow.edges) ? flow.edges : []
     const newEdge = { from, to, if: '' }
@@ -841,9 +1244,23 @@ def run(inputs):
   // lives in component memory only and is lost on reload — surfaced to the user.
   let testing = false
   let testError = ''
-  let testResult = null       // { trace, result, assertions, passed, mode, warnings }
+  let testResult = null       // { trace, result, assertions, passed, mode, warnings, shapes }
+  // Phase D: the last run's captured output shapes (var -> sample), fed into the
+  // per-node compiler so it wires downstream steps against REAL data.
+  let lastShapes = []
+  $: if (testResult && Array.isArray(testResult.shapes) && testResult.shapes.length) lastShapes = testResult.shapes
   let sampleInput = 'hello'
   let testMode = 'dry'        // 'dry' (default) | 'live' (rendered DISABLED)
+
+  // The saved/loaded agent this draft corresponds to (set on save or when a
+  // workflow is loaded onto the canvas). Enables fetching the agent's live
+  // per-block run trace — what really happened on its last real run.
+  let loadedAgentId = ''
+  let runTrace = null         // { agentId, runId, startedAt, entries:[...] }
+  let runTraceErr = ''
+  let runTraceLoading = false
+  let runHistory = []         // [{runId, trigger, startedAt, ok, error, steps}] — every run
+  let selectedRunId = ''      // which run's trace is shown ('' = latest)
 
   // Per-node mock editor state, keyed by node id: { text } (raw JSON the user
   // typed). Parsed lazily at run time; parse errors surface per-node via
@@ -851,6 +1268,7 @@ def run(inputs):
   let mockText = {}           // { [nodeId]: string }
   let mockErrors = {}         // { [nodeId]: string }
   let showMocks = false       // collapsed by default to keep the panel tidy
+  let showAssertions = true   // each bench sub-section folds independently
 
   // ── Workspace layout: collapse/resize the test panels + inspector ─────────
   // Lets the user reclaim space for the canvas (hide the bottom test/self-heal
@@ -859,21 +1277,26 @@ def run(inputs):
   let showTests     = true
   let showInspector = true
   let inspectorWidth = 280     // px; clamped on resize
+  let benchHeight   = 280      // px; height of the bottom workbench frame (drag-resizable)
+  let maximizedFrame = ''      // '' | 'canvas' | 'bench' | 'inspector' — one frame fills the editor
   try {
     if (typeof localStorage !== 'undefined') {
       const p = JSON.parse(localStorage.getItem('studio.layout') || '{}')
       if (typeof p.showTests === 'boolean') showTests = p.showTests
       if (typeof p.showInspector === 'boolean') showInspector = p.showInspector
       if (typeof p.inspectorWidth === 'number') inspectorWidth = p.inspectorWidth
+      if (typeof p.benchHeight === 'number') benchHeight = p.benchHeight
     }
   } catch (_) { /* ignore malformed/blocked storage */ }
   function persistLayout() {
     try {
       if (typeof localStorage !== 'undefined') {
-        localStorage.setItem('studio.layout', JSON.stringify({ showTests, showInspector, inspectorWidth }))
+        localStorage.setItem('studio.layout', JSON.stringify({ showTests, showInspector, inspectorWidth, benchHeight }))
       }
     } catch (_) { /* ignore */ }
   }
+  // Maximize one frame to fill the editor (toggle off to restore the split view).
+  function toggleMax(frame) { maximizedFrame = maximizedFrame === frame ? '' : frame }
   function toggleTests() { showTests = !showTests; persistLayout() }
   function toggleInspector() { showInspector = !showInspector; persistLayout() }
 
@@ -888,8 +1311,10 @@ def run(inputs):
   let codeWarnings = []
   let codeError = ''
   let codeLoading = false
-  let codeValidation = null    // { ok, errors, warnings, items[] }
+  let codeValidation = null    // { ok, errors, warnings, items[], fixes[] }
   let codeValidating = false
+  let codeFixing = false       // AI fix in progress
+  let reviewing = false        // rules-grounded AI review in progress
 
   async function showCodeView() {
     if (viewMode === 'code' || !workflow) return
@@ -942,6 +1367,27 @@ def run(inputs):
     codeValidating = false
   }
 
+  // Rules-grounded AI review: ask the model to check the YAML against the
+  // rulebook for judgment-call problems the deterministic validator can't catch,
+  // and merge its findings into the validation panel.
+  async function reviewWithAI() {
+    if (reviewing) return
+    reviewing = true
+    codeError = ''
+    try {
+      const r = await bridge.reviewYaml(codeYaml)
+      const aiItems = (r && Array.isArray(r.items)) ? r.items : []
+      const base = codeValidation || { items: [], fixes: [] }
+      const items = [...((base.items) || []).filter((i) => i.source !== 'ai'), ...aiItems]
+      const errors = items.filter((i) => i.severity === 'error').length
+      const warnings = items.filter((i) => i.severity === 'warning').length
+      codeValidation = { ok: errors === 0, errors, warnings, items, fixes: (base.fixes) || [] }
+    } catch (e) {
+      codeError = (e && e.message) || 'AI review failed'
+    }
+    reviewing = false
+  }
+
   // One-click fix: rewrite each flagged template reference to the suggested
   // scalar accessor (e.g. {{ .notebook.notebook }} -> {{ .notebook.notebook.id }})
   // across the whole YAML, then re-validate so the panel refreshes.
@@ -954,6 +1400,23 @@ def run(inputs):
     }
     codeYaml = text
     await validateCode()
+  }
+
+  // Fix with AI: ask the framework model to rewrite the whole SOUL.yaml so every
+  // issue is resolved (handles cases the deterministic quick-fix can't — picking
+  // the right field, restructuring), then re-validate.
+  async function fixWithAI() {
+    if (codeFixing) return
+    codeFixing = true
+    codeError = ''
+    try {
+      const r = await bridge.fixYaml(codeYaml)
+      if (r && r.yaml) codeYaml = r.yaml
+      await validateCode()
+    } catch (e) {
+      codeError = (e && e.message) || 'AI fix failed — try again or fix manually'
+    }
+    codeFixing = false
   }
 
   // Save directly from the authoritative YAML (bypasses the draft round-trip so
@@ -986,6 +1449,24 @@ def run(inputs):
   function startInspResize(e) {
     const onMove = (ev) => {
       inspectorWidth = Math.max(240, Math.min(760, window.innerWidth - ev.clientX))
+    }
+    const onUp = () => {
+      persistLayout()
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    e.preventDefault()
+  }
+
+  // Drag the splitter above the bottom workbench to resize its height. Height is
+  // taken from the editor's bottom edge upward (the workbench is the bottom frame).
+  function startBenchResize(e) {
+    const main = e.currentTarget.closest('main')
+    const bottom = main ? main.getBoundingClientRect().bottom : window.innerHeight
+    const onMove = (ev) => {
+      benchHeight = Math.max(120, Math.min(bottom - 180, bottom - ev.clientY))
     }
     const onUp = () => {
       persistLayout()
@@ -1325,6 +1806,8 @@ def run(inputs):
   let buildReport = null // { workflow, ok, verified, attempts[], summary, residual[] }
   let buildGlue = []
   let buildLog = [] // live progress lines while building: [{kind, message}]
+  let buildTraceId = null // id of the last build's durable trace (build inspector)
+  let showBuildInspector = false
   async function buildUntilWorks() {
     if (!workflow || building) return
     building = true
@@ -1341,6 +1824,7 @@ def run(inputs):
       })
       if (res && res.report) {
         buildReport = res.report
+        buildTraceId = res.traceId || null
         if (res.report.workflow) setWorkflow(res.report.workflow, { name: workflow.name })
         preflight = res.preflight && !res.preflight.ok ? res.preflight : null
         toast(res.report.summary || 'Build complete.')
@@ -1404,6 +1888,7 @@ def run(inputs):
     try {
       const res = await bridge.save(workflow, acceptPrivilegedExposure, grants)
       const id = res.agentId
+      loadedAgentId = id || loadedAgentId
       saveMsg = `Saved as disabled agent ${id} — enable it from the Agents page.`
       $editAgent = res.agentId
       window.location.hash = '#agents'
@@ -1417,6 +1902,37 @@ def run(inputs):
       }
       saveError = e.message || 'save failed'
       consent = null
+    }
+  }
+
+  // Fetch the saved agent's most recent live run trace — the per-block record
+  // of what actually ran (input, output, duration, error, whether the input came
+  // from typed port wires). Surfaced so a non-technical user can see WHERE a real
+  // run went wrong, not just that it failed.
+  async function loadRunTrace(runId = '') {
+    if (!loadedAgentId || runTraceLoading) return
+    runTraceLoading = true
+    runTraceErr = ''
+    selectedRunId = runId || ''
+    try {
+      // Fetch the chosen run's trace AND refresh the full run history (every run,
+      // scheduled or on-demand) so the picker stays current.
+      const [res, hist] = await Promise.all([
+        bridge.runTrace(loadedAgentId, runId || undefined),
+        bridge.runHistory(loadedAgentId).catch(() => ({ runs: [] })),
+      ])
+      runTrace = res || null
+      runHistory = (hist && hist.runs) || []
+      if (!selectedRunId && runTrace && runTrace.runId) selectedRunId = runTrace.runId
+      if (!res || !res.entries || !res.entries.length) {
+        runTraceErr = runHistory.length
+          ? 'Select a run above to view its trace.'
+          : 'No runs yet — enable the agent and let it run once (on schedule or on demand).'
+      }
+    } catch (e) {
+      runTraceErr = e.message || 'could not load run trace'
+    } finally {
+      runTraceLoading = false
     }
   }
 
@@ -1481,6 +1997,55 @@ def run(inputs):
     if (v == null) return ''
     if (typeof v === 'object') return JSON.stringify(v, null, 2)
     return String(v)
+  }
+
+  // prettyJSON renders a value as indented JSON — and, crucially, parses a STRING
+  // that holds JSON (the rendered node input arrives as a string) so it reads as
+  // formatted JSON instead of one long escaped line.
+  function prettyJSON(v) {
+    if (v == null) return ''
+    if (typeof v === 'string') {
+      const s = v.trim()
+      if (s && (s[0] === '{' || s[0] === '[')) {
+        try { return JSON.stringify(JSON.parse(s), null, 2) } catch (_) { /* not JSON */ }
+      }
+      return v
+    }
+    try { return JSON.stringify(v, null, 2) } catch (_) { return String(v) }
+  }
+
+  // asObject coerces a step's output (object or JSON string) to an object, or null.
+  function asObject(v) {
+    if (v && typeof v === 'object') return v
+    if (typeof v === 'string') { try { return JSON.parse(v) } catch (_) { return null } }
+    return null
+  }
+
+  // stepToolError surfaces a TOOL-LEVEL error that the transport hid: a node can
+  // return `error:""` (the MCP call succeeded) while its OUTPUT carries
+  // {"status":"error","error":"…"}. This returns that human error message (or the
+  // node's own runtime error), else "" — so a failed step reads as failed.
+  function stepToolError(step) {
+    if (step && step.error) return step.error
+    const o = asObject(step && step.output)
+    if (o && (o.status === 'error' || o.status === 'failed')) return o.error || o.message || 'tool returned an error'
+    if (o && o.error) return String(o.error)
+    return ''
+  }
+
+  // stepSummary gives a one-line, human read of a successful step: its status plus
+  // the most useful identifying field and any message — so you rarely need to open
+  // the raw JSON at all.
+  function stepSummary(step) {
+    const o = asObject(step && step.output)
+    if (!o) return ''
+    const bits = []
+    if (o.status) bits.push(o.status)
+    for (const k of ['notebook_id', 'task_id', 'artifact_id', 'id', 'imported_count', 'sources_found', 'count']) {
+      if (o[k] != null) { bits.push(`${k}: ${String(o[k]).slice(0, 48)}`); break }
+    }
+    if (o.message) bits.push(String(o.message).slice(0, 120))
+    return bits.join(' · ')
   }
 
   const kinds = ['tool', 'agent', 'branch']
@@ -1647,6 +2212,8 @@ def run(inputs):
       const wf = (data && data.workflow) || null
       if (!wf) { toast('This agent has no editable workflow.'); return }
       setWorkflow(wf, { name: wf.name })
+      loadedAgentId = id
+      runTrace = null
       toast('Loaded workflow — edit and Save to update the agent.')
     } catch (e) {
       toast(e.message || 'Could not load agent workflow')
@@ -1679,6 +2246,8 @@ def run(inputs):
       const wf = (data && data.workflow) || null
       if (!wf) throw new Error('agent has no editable workflow')
       setWorkflow(wf, { name: wf.name || a.name })
+      loadedAgentId = a.id
+      runTrace = null
       closeLibrary()
     } catch (e) {
       library = { ...library, busyId: '', error: e.message || 'could not load agent' }
@@ -1928,6 +2497,7 @@ def run(inputs):
   }
 
   onMount(loadCatalog)
+  onMount(loadSecrets)
   onMount(refreshPaletteDrafts)
 
   // ── Persist the working session across screen switches ─────────────────────
@@ -1964,6 +2534,8 @@ def run(inputs):
   })
 </script>
 
+<svelte:window on:keydown={(e) => { if (e.key === 'Escape' && promptViewer) promptViewer = false }} />
+
 <div id="studio-app">
   <!-- Top bar -->
   <header class="topbar">
@@ -1974,10 +2546,15 @@ def run(inputs):
     <div class="intent">
       <input
         type="text"
-        bind:value={intent}
-        placeholder="Describe what you want…"
-        aria-label="Describe what you want"
-        on:keydown={(e) => e.key === 'Enter' && generate()}
+        class="intent-trigger"
+        value={intent}
+        readonly
+        placeholder="Describe what you want…  (click to open the editor)"
+        aria-label="Open prompt editor"
+        title="Click to view and edit the full prompt"
+        on:focus={() => (promptViewer = true)}
+        on:click={() => (promptViewer = true)}
+        on:keydown={(e) => { if (e.key === 'Enter') promptViewer = true }}
       />
       <button class="intent-expand" type="button" title="Open the full prompt editor" on:click={() => (promptViewer = true)} aria-label="Open prompt editor">⤢ Editor</button>
     </div>
@@ -1988,6 +2565,7 @@ def run(inputs):
     <!-- M6: draft management toolbar -->
     <div class="toolbar" role="group" aria-label="Draft management">
       <button class="btn primary-ghost" type="button" on:click={startNewAgent} title="Start a new agent from scratch">+ New agent</button>
+      <button class="btn" type="button" on:click={openRules} title="Edit the SOUL.yaml authoring rules used when generating, validating, and fixing">📋 Rules</button>
       <button class="btn" type="button" on:click={openModelPicker} title="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
       <button class="btn" type="button" on:click={openTemplates} title="Start from a template">Templates</button>
       <button class="btn" type="button" on:click={openLibrary} title="Reopen a saved draft or an existing workflow agent">My Workflows</button>
@@ -2017,7 +2595,7 @@ def run(inputs):
     <div class="strip strip-ok toast-strip">✓ {toastMsg}</div>
   {/if}
 
-  <main class="body">
+  <main class="body" class:max-canvas={maximizedFrame === 'canvas'} class:max-bench={maximizedFrame === 'bench'} class:max-inspector={maximizedFrame === 'inspector'}>
     <Palette
       {catalog}
       status={paletteStatus}
@@ -2036,13 +2614,61 @@ def run(inputs):
     <!-- Center: canvas + transparency strips + panels -->
     <section class="center">
       {#if workflow}
-        <div class="view-switch" role="tablist" aria-label="Editor view">
-          <button class="vs-btn" class:active={viewMode === 'canvas'} type="button"
-                  role="tab" aria-selected={viewMode === 'canvas'} on:click={showCanvasView}>⬚ Canvas</button>
-          <button class="vs-btn" class:active={viewMode === 'code'} type="button"
-                  role="tab" aria-selected={viewMode === 'code'} on:click={showCodeView}>{'</> SOUL.yaml'}</button>
-          {#if viewMode === 'code' && codeYaml !== codeOrig}<span class="vs-dirty" title="Unsaved YAML edits">●</span>{/if}
+        <div class="toolbar-row">
+          <div class="view-switch" role="tablist" aria-label="Editor view">
+            <button class="vs-btn" class:active={viewMode === 'canvas'} type="button"
+                    role="tab" aria-selected={viewMode === 'canvas'} on:click={showCanvasView}>{currentMode === 'workflow' ? '⬚ Canvas' : '🧠 Agent'}</button>
+            <button class="vs-btn" class:active={viewMode === 'code'} type="button"
+                    role="tab" aria-selected={viewMode === 'code'} on:click={showCodeView}>{'</> SOUL.yaml'}</button>
+            {#if viewMode === 'code' && codeYaml !== codeOrig}<span class="vs-dirty" title="Unsaved YAML edits">●</span>{/if}
+          </div>
+          <!-- Execution-mode override: a fixed workflow, or a reasoning agent. -->
+          <div class="mode-switch" role="group" aria-label="Execution mode"
+            title="How this agent runs. Workflow = a fixed graph. ReAct / Plan-Execute = a reasoning agent that chooses its tools/skills at runtime. Switching re-generates from your prompt.">
+            <span class="ms-label">mode</span>
+            <button class="ms-btn" class:active={currentMode === 'workflow'} type="button"
+                    disabled={compiling} on:click={() => switchMode('workflow')}>Workflow</button>
+            <button class="ms-btn" class:active={currentMode === 'react'} type="button"
+                    disabled={compiling} on:click={() => switchMode('react')}>ReAct</button>
+            <button class="ms-btn" class:active={currentMode === 'plan_execute'} type="button"
+                    disabled={compiling} on:click={() => switchMode('plan_execute')}>Plan-Execute</button>
+          </div>
         </div>
+      {/if}
+
+      {#if needsDelivery && viewMode === 'canvas'}
+        <div class="strip strip-delivery" title="Where this agent's result is sent">
+          <span class="strip-label">Deliver to</span>
+          <span class="dlv-hint">This {currentMode === 'workflow' ? 'workflow' : 'agent'} produces a result but has no delivery channel. Send it to:</span>
+          {#each channelOptions as ch}
+            <button class="dlv-btn" type="button" on:click={() => addDeliveryChannel(ch.id)}>+ {ch.name}</button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if workflow && unsetSecrets.length && viewMode === 'canvas'}
+        <Collapsible id="credentials" title="Credentials" sub={`${unsetSecrets.length} key${unsetSecrets.length === 1 ? '' : 's'} not set — your tools/MCP may need them`} open={false}>
+          <div class="creds">
+            <p class="creds-hint">Set the API keys your tools and MCP servers need, without leaving Studio. Values are stored in the gateway's secret store, never in the agent file.</p>
+            {#each unsetSecrets as sec (sec.name)}
+              <div class="cred-row">
+                <div class="cred-meta">
+                  <span class="cred-name">{sec.name}</span>
+                  {#if sec.env_var}<code class="cred-env">{sec.env_var}</code>{/if}
+                  {#if sec.description}<span class="cred-desc">{sec.description}</span>{/if}
+                </div>
+                <div class="cred-set">
+                  <input class="cred-input" type="password" placeholder="paste value…"
+                    bind:value={secretVals[sec.name]}
+                    on:keydown={(e) => { if (e.key === 'Enter') setSecretVal(sec.name) }} />
+                  <button class="btn btn-sm" type="button" disabled={secretBusy === sec.name || !(secretVals[sec.name] || '').trim()}
+                    on:click={() => setSecretVal(sec.name)}>{secretBusy === sec.name ? 'Saving…' : 'Set'}</button>
+                </div>
+              </div>
+            {/each}
+            {#if secretMsg}<div class="creds-msg">{secretMsg}</div>{/if}
+          </div>
+        </Collapsible>
       {/if}
 
       {#if codeWarnings.length}
@@ -2085,14 +2711,11 @@ def run(inputs):
         <div class="strip strip-reco" title="Suggested execution model for this agent">
           <span class="strip-label">Recommended: {recoLabel(workflow.recommendation.mode)}</span>
           <span>{workflow.recommendation.rationale}</span>
-          {#if workflow.recommendation.mode !== 'workflow'}
-            <span class="reco-how">
-              Studio still draws a fixed flow, and the agent runs it as-is until you switch modes.
-              To use <strong>{recoLabel(workflow.recommendation.mode)}</strong>, edit the agent's SOUL.yaml:
-              remove the <code>workflow:</code> block and add
-              <code>reasoning:&nbsp;strategy:&nbsp;{workflow.recommendation.mode}</code>.
-              The agent then drives its tools dynamically instead of following the frozen graph.
-            </span>
+          {#if workflow.recommendation.mode !== 'workflow' && currentMode === 'workflow'}
+            <button class="btn ma-btn" type="button" disabled={compiling}
+              on:click={() => switchMode(workflow.recommendation.mode)}>
+              Rebuild as {recoLabel(workflow.recommendation.mode)}
+            </button>
           {/if}
         </div>
       {/if}
@@ -2244,9 +2867,15 @@ def run(inputs):
                     {#if codeValidation.warnings}<span class="cv-badge warn">{codeValidation.warnings} warning{codeValidation.warnings === 1 ? '' : 's'}</span>{/if}
                   {/if}
                   {#if codeValidation.fixes && codeValidation.fixes.length}
-                    <button class="btn btn-sm cv-fixbtn" on:click={applyTemplateFixes} disabled={codeValidating}
-                            title="Rewrite the flagged template references to the suggested scalar field">
-                      ⚡ Auto-fix {codeValidation.fixes.length} reference{codeValidation.fixes.length === 1 ? '' : 's'}
+                    <button class="btn btn-sm cv-fixbtn" on:click={applyTemplateFixes} disabled={codeValidating || codeFixing}
+                            title="Instantly rewrite the flagged references to the suggested field">
+                      ⚡ Quick-fix {codeValidation.fixes.length}
+                    </button>
+                  {/if}
+                  {#if codeValidation.errors || codeValidation.warnings}
+                    <button class="btn btn-sm cv-fixbtn cv-aibtn" on:click={fixWithAI} disabled={codeFixing || codeValidating}
+                            title="Let the model rewrite the whole SOUL.yaml to fix every issue">
+                      {codeFixing ? '✨ Fixing…' : '✨ Fix with AI'}
                     </button>
                   {/if}
                   <button class="icon-btn" title="Dismiss" on:click={() => (codeValidation = null)}>✕</button>
@@ -2296,6 +2925,8 @@ def run(inputs):
               <span class="agent-badge on">{recoLabel(workflow.strategy)} agent</span>
               <span class="agent-spec-name">{workflow.name || 'Untitled agent'}</span>
               <span class="agent-spec-note">Reasons over its tools — no fixed graph. Loops & polls as needed.</span>
+              <button class="agent-yaml-link" type="button" on:click={showCodeView}
+                title="Open the full SOUL.yaml — validate, AI-fix, and edit every field">{'</> Edit SOUL.yaml'}</button>
             </div>
 
             <label class="agent-field-label" for="agent-sys">System prompt (how the agent works)</label>
@@ -2304,15 +2935,72 @@ def run(inputs):
             <label class="agent-field-label" for="agent-tools">Tools the agent may call (one per line — exact builtin or mcp__server__tool names)</label>
             <textarea id="agent-tools" class="agent-tools" rows="5"
               value={(workflow.tools || []).join('\n')}
-              on:change={(e) => { workflow = { ...workflow, tools: e.target.value.split('\n').map(s => s.trim()).filter(Boolean) } }}
+              on:input={(e) => { workflow = { ...workflow, tools: e.target.value.split('\n') } }}
+            ></textarea>
+
+            <label class="agent-field-label" for="agent-skills">Skills the agent may use (one per line — deployed skill names)</label>
+            <textarea id="agent-skills" class="agent-tools" rows="4"
+              value={(workflow.skills || []).join('\n')}
+              on:input={(e) => { workflow = { ...workflow, skills: e.target.value.split('\n') } }}
             ></textarea>
 
             <div class="agent-spec-meta">
-              {#if workflow.skills && workflow.skills.length}<span><strong>Skills:</strong> {workflow.skills.join(', ')}</span>{/if}
               {#if workflow.knowledge && workflow.knowledge.length}<span><strong>Knowledge:</strong> {workflow.knowledge.join(', ')}</span>{/if}
               {#if workflow.new_agents && workflow.new_agents.length}<span><strong>Peer agents:</strong> {workflow.new_agents.map(a => a.name || a.id).join(', ')}</span>{/if}
-              {#if workflow.channels && workflow.channels.length}<span><strong>Delivers to:</strong> {workflow.channels.join(', ')}</span>{/if}
+              {#if workflow.channels && workflow.channels.length}
+                <span><strong>Delivers to:</strong>
+                  {#each workflow.channels as c}<span class="dlv-chip">{c}<button class="dlv-x" type="button" title="Remove delivery channel" on:click={() => removeDeliveryChannel(c)}>×</button></span>{/each}
+                </span>
+              {/if}
               {#if workflow.trigger && workflow.trigger.type}<span><strong>Runs:</strong> {workflow.trigger.type}{#if workflow.trigger.config && workflow.trigger.config.cron} ({workflow.trigger.config.cron}){/if}</span>{/if}
+            </div>
+
+            <!-- Try it: run the unsaved agent against one sample question -->
+            <div class="agent-try">
+              <label class="agent-field-label" for="agent-try-q">Try it — ask a sample question (runs the agent for real; the reply is shown here, not delivered to a channel)</label>
+              <div class="agent-try-row">
+                <input id="agent-try-q" class="agent-try-input" type="text" bind:value={tryQuestion}
+                  placeholder="e.g. How has AAPL performed this quarter?"
+                  on:keydown={(e) => { if (e.key === 'Enter') tryAgent() }} />
+                <button class="btn primary" type="button" disabled={trying || !tryQuestion.trim()} on:click={tryAgent}>
+                  {trying ? 'Running…' : 'Run'}
+                </button>
+              </div>
+              {#if trying}
+                <div class="agent-try-running"><span class="live-dot"></span> Running the agent — reasoning over its skills…</div>
+              {/if}
+              {#if tryResult}
+                <div class="agent-try-result" class:err={!!tryResult.error}>
+                  {#if tryResult.error}<div class="agent-try-err">⚠ {tryResult.error}</div>{/if}
+                  {#if tryResult.reply}<div class="agent-try-reply">{tryResult.reply}</div>{/if}
+                  {#if !tryResult.reply && !tryResult.error}<div class="agent-try-reply muted">(no text reply)</div>{/if}
+                </div>
+                {#if tryResult.trace && tryResult.trace.length}
+                  <div class="agent-try-trace">
+                    <div class="att-label">Skills & tools it called ({tryResult.trace.length}) — click a step for details</div>
+                    <ol class="att-list">
+                      {#each tryResult.trace as t, i}
+                        <li class="att-item" class:err={t.error}>
+                          <button class="att-row" type="button" on:click={() => { t._open = !t._open; tryResult = tryResult }} title="Show arguments & result">
+                            <span class="att-n">{i + 1}</span>
+                            <span class="att-dot">{t.error ? '✕' : '✓'}</span>
+                            <span class="att-name">{t.name}{#if t.detail} <span class="att-detail">→ {t.detail}</span>{/if}</span>
+                            {#if t.args || t.result}<span class="att-caret">{t._open ? '▾' : '▸'}</span>{/if}
+                          </button>
+                          {#if t._open}
+                            <div class="att-detail-box">
+                              {#if t.args}<div class="att-kv"><span class="att-k">args</span><code>{t.args}</code></div>{/if}
+                              {#if t.result}<div class="att-kv"><span class="att-k">result</span><code>{t.result}</code></div>{/if}
+                            </div>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ol>
+                  </div>
+                {:else if !tryResult.error}
+                  <div class="att-label muted">No skills or tools were called (answered directly).</div>
+                {/if}
+              {/if}
             </div>
           </div>
         {:else}
@@ -2320,9 +3008,10 @@ def run(inputs):
             {nodes}
             {edges}
             {nodeTypes}
+            {edgeTypes}
             fitView
             {isValidConnection}
-            on:connect={onConnect}
+            onconnect={onConnect}
             on:nodeclick={onNodeClick}
             on:edgeclick={onEdgeClick}
             on:paneclick={() => { selectedNode = null; selectedEdge = null }}
@@ -2331,6 +3020,10 @@ def run(inputs):
             <Controls />
             <MiniMap pannable zoomable />
           </SvelteFlow>
+          <!-- Maximize / restore the canvas frame -->
+          <button class="frame-max canvas-max" type="button"
+            title={maximizedFrame === 'canvas' ? 'Restore layout (Esc)' : 'Maximize canvas'}
+            on:click={() => toggleMax('canvas')}>{maximizedFrame === 'canvas' ? '⤡' : '⤢'}</button>
           <!-- Kind legend -->
           <div class="legend">
             {#each kinds as k}
@@ -2347,7 +3040,9 @@ def run(inputs):
       {#if workflow}
         <!-- Action bar -->
         <div class="actions">
-          {#if viewMode === 'canvas'}
+          <!-- Workflow-only bench controls. Reasoning agents are exercised via the
+               "Try it" panel in the agent editor, not the flow test bench. -->
+          {#if viewMode === 'canvas' && currentMode === 'workflow'}
           <input
             class="sample"
             type="text"
@@ -2373,6 +3068,10 @@ def run(inputs):
           </div>
           <button class="btn" on:click={runTest} disabled={testing}>
             {testing ? 'Testing…' : 'Test'}
+          </button>
+          <button class="btn" on:click={tryAgent} disabled={trying || !(workflow.flow && (workflow.flow.nodes || []).length)}
+            title="Run the workflow for real with the sample input and show the result + tool trace">
+            {trying ? 'Running…' : '▶ Run live'}
           </button>
           <button
             class="btn architect"
@@ -2411,6 +3110,10 @@ def run(inputs):
             <button class="btn" on:click={validateCode} disabled={codeValidating}>
               {codeValidating ? 'Validating…' : '✓ Validate'}
             </button>
+            <button class="btn" on:click={reviewWithAI} disabled={reviewing}
+                    title="Ask the model to review the YAML against your rules (catches judgment-call issues the linter can't)">
+              {reviewing ? 'Reviewing…' : '🔍 AI review'}
+            </button>
           {/if}
           <button class="btn primary"
                   on:click={() => (viewMode === 'code' ? saveFromCode() : save())}
@@ -2421,6 +3124,60 @@ def run(inputs):
 
         {#if saveMsg}<div class="strip strip-ok">✓ {saveMsg}</div>{/if}
         {#if saveError}<div class="strip strip-error">⚠ {saveError}</div>{/if}
+
+        {#if viewMode === 'canvas' && currentMode === 'workflow'}
+          <!-- Drag this splitter to give the bottom workbench more/less height. -->
+          <div class="wb-splitter" role="separator" aria-orientation="horizontal"
+            title="Drag to resize the workbench" on:pointerdown={startBenchResize}></div>
+        {/if}
+        <div class="workbench" style={maximizedFrame === 'bench' ? '' : `max-height:${benchHeight}px`}>
+          {#if viewMode === 'canvas' && currentMode === 'workflow'}
+            <div class="wb-bar">
+              <span class="wb-title">Workbench</span>
+              <button class="frame-max" type="button"
+                title={maximizedFrame === 'bench' ? 'Restore layout (Esc)' : 'Maximize workbench'}
+                on:click={() => toggleMax('bench')}>{maximizedFrame === 'bench' ? '⤡' : '⤢'}</button>
+            </div>
+          {/if}
+
+        <!-- ── Live run result (real run with the sample input) ───────────── -->
+        {#if currentMode === 'workflow' && (trying || tryResult)}
+          <div class="panel build-progress">
+            {#if trying}
+              <div class="agent-try-running"><span class="live-dot"></span> Running the workflow with your sample input…</div>
+            {/if}
+            {#if tryResult}
+              <div class="agent-try-result" class:err={!!tryResult.error}>
+                {#if tryResult.error}<div class="agent-try-err">⚠ {tryResult.error}</div>{/if}
+                {#if tryResult.reply}<div class="agent-try-reply">{tryResult.reply}</div>{/if}
+                {#if !tryResult.reply && !tryResult.error}<div class="agent-try-reply muted">(no text result)</div>{/if}
+              </div>
+              {#if tryResult.trace && tryResult.trace.length}
+                <div class="agent-try-trace">
+                  <div class="att-label">Steps it ran ({tryResult.trace.length}) — click for details</div>
+                  <ol class="att-list">
+                    {#each tryResult.trace as t, i}
+                      <li class="att-item" class:err={t.error}>
+                        <button class="att-row" type="button" on:click={() => { t._open = !t._open; tryResult = tryResult }}>
+                          <span class="att-n">{i + 1}</span>
+                          <span class="att-dot">{t.error ? '✕' : '✓'}</span>
+                          <span class="att-name">{t.name}{#if t.detail} <span class="att-detail">→ {t.detail}</span>{/if}</span>
+                          {#if t.args || t.result}<span class="att-caret">{t._open ? '▾' : '▸'}</span>{/if}
+                        </button>
+                        {#if t._open}
+                          <div class="att-detail-box">
+                            {#if t.args}<div class="att-kv"><span class="att-k">args</span><code>{t.args}</code></div>{/if}
+                            {#if t.result}<div class="att-kv"><span class="att-k">result</span><code>{t.result}</code></div>{/if}
+                          </div>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ol>
+                </div>
+              {/if}
+            {/if}
+          </div>
+        {/if}
 
         <!-- ── Architect live progress: streamed while the loop runs ──────── -->
         {#if building || (buildLog.length && !buildReport)}
@@ -2444,14 +3201,14 @@ def run(inputs):
 
         <!-- ── Architect build report: what was wrong, and how it was fixed ── -->
         {#if buildReport}
-          <div class="panel build-report" class:ok={buildReport.ok}>
-            <div class="build-head">
+          <Collapsible id="build-report" title="Build report" sub={buildReport.summary}>
+            <svelte:fragment slot="actions">
               <span class="build-badge" class:ok={buildReport.ok}>
                 {buildReport.verified ? '✓ Verified by running it' : buildReport.ok ? '✓ Validated' : '⚠ Needs attention'}
               </span>
-              <span class="build-summary">{buildReport.summary}</span>
+              <button class="icon-btn" title="Inspect every step of this build" on:click={() => (showBuildInspector = true)}>🔍 Inspect</button>
               <button class="icon-btn" title="Dismiss" on:click={() => (buildReport = null)}>✕</button>
-            </div>
+            </svelte:fragment>
             {#if buildGlue && buildGlue.length}
               <ul class="build-glue">
                 {#each buildGlue as g}<li>🧩 {g}</li>{/each}
@@ -2478,10 +3235,21 @@ def run(inputs):
                 <ul>{#each buildReport.residual as r}<li>{r}</li>{/each}</ul>
               </div>
             {/if}
-          </div>
+            {#if buildReport.diagnosis}
+              <div class="build-diagnosis">
+                <div class="bd-text">💡 {buildReport.diagnosis}</div>
+                {#if buildReport.suggest_mode}
+                  <button class="bd-action" type="button" disabled={compiling}
+                    on:click={() => switchMode(buildReport.suggest_mode)}>
+                    Rebuild as {recoLabel(buildReport.suggest_mode)}
+                  </button>
+                {/if}
+              </div>
+            {/if}
+          </Collapsible>
         {/if}
 
-        {#if showTests && viewMode === 'canvas'}
+        {#if showTests && viewMode === 'canvas' && currentMode === 'workflow'}
         <!-- ── Runtime self-heal: failed (incl. scheduled) runs ──────────── -->
         <div class="panel bench">
           <div class="bench-section">
@@ -2573,11 +3341,15 @@ def run(inputs):
 
           <!-- Assertions (S5.2) -->
           <div class="bench-section">
-            <div class="bench-head static">
-              <h3 class="panel-title">Assertions</h3>
-              <span class="bench-sub">Check a node’s output or the final result after a run.</span>
+            <div class="bench-head split">
+              <button class="bench-head-toggle" type="button" on:click={() => (showAssertions = !showAssertions)}>
+                <span class="caret">{showAssertions ? '▾' : '▸'}</span>
+                <h3 class="panel-title">Assertions</h3>
+                <span class="bench-sub">Check a node’s output or the final result after a run.</span>
+              </button>
               <button class="btn btn-sm" type="button" on:click={addAssertion}>+ Add</button>
             </div>
+            {#if showAssertions}
             {#if assertions.length}
               <ul class="assert-list">
                 {#each assertions as a, i}
@@ -2621,13 +3393,13 @@ def run(inputs):
             {:else}
               <p class="muted">No assertions — add one to verify outputs.</p>
             {/if}
+            {/if}
           </div>
         </div>
 
         <!-- Clarify panel -->
         {#if questions.length}
-          <div class="panel clarify">
-            <h3 class="panel-title">Clarify</h3>
+          <Collapsible id="clarify" title="Clarify">
             {#each questions as q (q.id)}
               <div class="q">
                 <label for={'q-' + q.id}>{q.text}</label>
@@ -2646,7 +3418,7 @@ def run(inputs):
             <button class="btn primary" on:click={applyAnswers} disabled={compiling}>
               Apply answers
             </button>
-          </div>
+          </Collapsible>
         {/if}
 
         <!-- Test results -->
@@ -2659,7 +3431,7 @@ def run(inputs):
           </div>
         {/if}
         {#if testResult}
-          <div class="panel test">
+          <Collapsible id="test-result" title="Test result">
             <!-- Overall pass/fail banner (only when assertions ran) -->
             {#if testResult.assertions && testResult.assertions.length}
               <div class="overall {testResult.passed ? 'overall-pass' : 'overall-fail'}">
@@ -2682,18 +3454,30 @@ def run(inputs):
             {#if testResult.trace && testResult.trace.length}
               <ol class="trace">
                 {#each testResult.trace as step, i}
-                  <li>
+                  {@const toolErr = stepToolError(step)}
+                  <li class:step-failed={!!toolErr}>
                     <span class="step-n">{i + 1}</span>
                     <div class="step-body">
                       <div class="step-head">
+                        {#if toolErr}<span class="status-dot fail" title="This step failed">✕</span>{:else}<span class="status-dot ok" title="This step succeeded">✓</span>{/if}
                         <strong>{step.nodeId}</strong>
                         {#if step.kind}<span class="step-kind">{step.kind}</span>{/if}
+                        {#if step.wiredPorts}<span class="wired-badge" title="Input assembled from typed port wires — no template">⮑ wired</span>{/if}
                         {#if step.mocked}<span class="mock-badge" title="Output was mocked, node was not run">mocked</span>{/if}
+                        {#if step.durationMs != null}<span class="dur-badge" title="Wall-clock duration">{step.durationMs}ms</span>{/if}
                       </div>
-                      <div class="step-io">
-                        <span class="io-label">in</span><pre>{fmt(step.input)}</pre>
-                        <span class="io-label">out</span><pre>{fmt(step.output)}</pre>
-                      </div>
+                      {#if toolErr}
+                        <div class="step-line err">{toolErr}</div>
+                      {:else if stepSummary(step)}
+                        <div class="step-line ok">{stepSummary(step)}</div>
+                      {/if}
+                      <details class="step-details">
+                        <summary>input / output</summary>
+                        <div class="step-io">
+                          <span class="io-label">in</span><pre>{prettyJSON(step.input)}</pre>
+                          <span class="io-label">out</span><pre>{prettyJSON(step.output)}</pre>
+                        </div>
+                      </details>
                     </div>
                   </li>
                 {/each}
@@ -2724,17 +3508,77 @@ def run(inputs):
                 </ul>
               </div>
             {/if}
-          </div>
+          </Collapsible>
+        {/if}
+
+        <!-- ── Live run trace (Phase 1): the saved agent's last REAL run ──── -->
+        {#if loadedAgentId}
+          <Collapsible id="run-trace" title="Run history" sub="Every run of this agent — scheduled or on-demand. Pick one to view its per-block trace.">
+            <svelte:fragment slot="actions">
+              <button class="btn btn-sm" type="button" on:click={() => loadRunTrace()} disabled={runTraceLoading}>
+                {runTraceLoading ? 'Loading…' : '↻ Refresh'}
+              </button>
+            </svelte:fragment>
+            {#if runHistory.length}
+              <ul class="run-list">
+                {#each runHistory as r (r.runId)}
+                  <li>
+                    <button class="run-row" class:active={selectedRunId === r.runId} type="button"
+                      on:click={() => loadRunTrace(r.runId)}>
+                      <span class="run-badge {r.ok ? 'ok' : 'fail'}">{r.ok ? '✓' : '✕'}</span>
+                      <span class="run-when">{r.startedAt ? new Date(r.startedAt).toLocaleString() : '—'}</span>
+                      {#if r.trigger}<span class="run-trigger">{r.trigger}</span>{/if}
+                      <span class="run-steps">{r.steps} step{r.steps === 1 ? '' : 's'}</span>
+                      {#if !r.ok && r.error}<span class="run-err">{r.error}</span>{/if}
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+            {#if runTraceErr}
+              <p class="muted">{runTraceErr}</p>
+            {/if}
+            {#if runTrace && runTrace.entries && runTrace.entries.length}
+              <ol class="trace">
+                {#each runTrace.entries as step, i}
+                  {@const toolErr = stepToolError(step)}
+                  <li class:step-failed={!!toolErr}>
+                    <span class="step-n">{i + 1}</span>
+                    <div class="step-body">
+                      <div class="step-head">
+                        {#if toolErr}<span class="status-dot fail" title="This step failed">✕</span>{:else}<span class="status-dot ok" title="This step succeeded">✓</span>{/if}
+                        <strong>{step.nodeId}</strong>
+                        {#if step.kind}<span class="step-kind">{step.kind}</span>{/if}
+                        {#if step.wiredPorts}<span class="wired-badge" title="Input assembled from typed port wires — no template">⮑ wired</span>{/if}
+                        {#if step.durationMs != null}<span class="dur-badge" title="Wall-clock duration">{step.durationMs}ms</span>{/if}
+                      </div>
+                      {#if toolErr}
+                        <div class="step-line err">{toolErr}</div>
+                      {:else if stepSummary(step)}
+                        <div class="step-line ok">{stepSummary(step)}</div>
+                      {/if}
+                      <details class="step-details">
+                        <summary>input / output</summary>
+                        <div class="step-io">
+                          <span class="io-label">in</span><pre>{prettyJSON(step.input)}</pre>
+                          <span class="io-label">out</span><pre>{prettyJSON(step.output)}</pre>
+                          {#if step.error}<span class="io-label">err</span><pre class="io-err">{step.error}</pre>{/if}
+                        </div>
+                      </details>
+                    </div>
+                  </li>
+                {/each}
+              </ol>
+            {/if}
+          </Collapsible>
         {/if}
 
         <!-- ── Run history (S5.4): last ~10 runs, IN MEMORY only ──────────── -->
         {#if history.length}
-          <div class="panel history">
-            <div class="hist-head">
-              <h3 class="panel-title">Run history</h3>
-              <span class="hist-note">Session-only — cleared on reload (no storage in the sandbox).</span>
+          <Collapsible id="run-history" title="Run history" sub="Session-only — cleared on reload (no storage in the sandbox).">
+            <svelte:fragment slot="actions">
               <button class="btn btn-sm" type="button" on:click={clearHistory}>Clear</button>
-            </div>
+            </svelte:fragment>
             <ul class="hist-list">
               {#each history as h (h.ts)}
                 <li class="hist-item" class:active={activeHistoryId === h.ts}>
@@ -2753,13 +3597,14 @@ def run(inputs):
                 </li>
               {/each}
             </ul>
-          </div>
+          </Collapsible>
         {/if}
         {/if}
+        </div><!-- /.workbench -->
       {/if}
     </section>
 
-    {#if showInspector && viewMode === 'canvas'}
+    {#if showInspector && viewMode === 'canvas' && currentMode === 'workflow'}
       <div
         class="insp-splitter"
         role="separator"
@@ -2767,7 +3612,10 @@ def run(inputs):
         title="Drag to resize the inspector"
         on:pointerdown={startInspResize}
       ></div>
-      <div class="insp-host" style="width:{inspectorWidth}px">
+      <div class="insp-host" style={maximizedFrame === 'inspector' ? '' : `width:${inspectorWidth}px`}>
+        <button class="frame-max insp-max" type="button"
+          title={maximizedFrame === 'inspector' ? 'Restore layout (Esc)' : 'Maximize inspector'}
+          on:click={() => toggleMax('inspector')}>{maximizedFrame === 'inspector' ? '⤡' : '⤢'}</button>
         <Inspector
           node={selectedNode}
           {selectedEdge}
@@ -2783,8 +3631,11 @@ def run(inputs):
           {refineState}
           onDelete={deleteNode}
           onNodeChange={applyNodePatch}
+          {toolParams}
           {scaffolds}
           onGenerateCode={generateNodeCode}
+          onCompileGate={compileGate}
+          onCompileNode={compileNode}
         />
       </div>
     {/if}
@@ -2932,25 +3783,55 @@ def run(inputs):
     <div class="modal-backdrop" on:click|self={() => (promptViewer = false)} role="presentation">
       <div class="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
         <h2 id="prompt-title" class="modal-title">Prompt editor</h2>
-        <p class="modal-body">
-          {#if workflow && workflow.refined}
-            This is the refined prompt your agent was built from. Edit it here, then re-generate.
-          {:else}
-            The full instruction Studio refines and builds from. Write or paste a longer prompt here comfortably.
-          {/if}
+
+        {#if promptError}<div class="strip strip-error">⚠ {promptError}</div>{/if}
+
+        <label class="pe-label" for="pe-raw">Your prompt (original)</label>
+        <p class="pe-hint">What you want, in your own words. Edit it and click <strong>Refine</strong> to turn it into a detailed, build-ready spec.</p>
+        <textarea id="pe-raw" class="pe-area" bind:value={rawPrompt}
+          placeholder="e.g. Every morning, find the top AI news, make a NotebookLM podcast, and post the link to Telegram."></textarea>
+        <div class="pe-row">
+          <button class="btn" on:click={refineFromModal} disabled={modalRefining || !rawPrompt.trim()}>
+            {modalRefining ? 'Refining…' : '✨ Refine →'}
+          </button>
+        </div>
+
+        <label class="pe-label" for="pe-refined">Refined prompt</label>
+        <p class="pe-hint">The detailed specification Studio builds from. Edit it directly if you like, then <strong>Generate</strong>.</p>
+        <textarea id="pe-refined" class="pe-area" bind:value={intent}
+          placeholder="Appears here after you Refine — or write/paste a detailed prompt directly."></textarea>
+
+        <div class="modal-actions">
+          <button class="btn" on:click={() => (promptViewer = false)}>OK</button>
+          <button class="btn primary" on:click={generateFromModal}
+                  disabled={compiling || refining || modalRefining || !(intent.trim() || rawPrompt.trim())}>
+            {compiling ? 'Generating…' : 'Generate from refined'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- SOUL.yaml authoring rules editor -->
+  {#if rulesOpen}
+    <div class="modal-backdrop" on:click|self={() => (rulesOpen = false)} role="presentation">
+      <div class="modal prompt-modal" role="dialog" aria-modal="true" aria-labelledby="rules-title">
+        <h2 id="rules-title" class="modal-title">SOUL.yaml Rules</h2>
+        <p class="pe-hint">
+          These rules are auto-injected whenever Studio <strong>generates</strong>, and when you run <strong>Fix with AI</strong>.
+          Edit or add rules, and list your tools' input/output shapes under “Tier 2”. Saved to your workspace.
+          {#if rulesIsDefault}<em>(currently using the built-in default — saving creates your own copy)</em>{/if}
         </p>
-        <textarea class="prompt-editor-area" bind:value={intent} placeholder="Describe what you want your agent to do…"></textarea>
-        {#if workflow && workflow.intent && workflow.intent !== intent}
-          <div class="refine-section">
-            <div class="refine-heading">Prompt this draft was generated from</div>
-            <div class="prompt-readonly">{workflow.intent}</div>
-          </div>
+        {#if rulesLoading}
+          <div class="canvas-state">Loading…</div>
+        {:else}
+          <textarea class="pe-area rules-area" bind:value={rulesText} spellcheck="false" placeholder="Authoring rules…"></textarea>
         {/if}
         <div class="modal-actions">
-          <button class="btn" on:click={() => (promptViewer = false)}>Close</button>
-          <button class="btn primary" on:click={() => { promptViewer = false; generate() }} disabled={!intent.trim() || compiling || refining}>
-            {refining ? 'Refining…' : compiling ? 'Generating…' : 'Generate from this'}
-          </button>
+          <button class="btn" on:click={resetRulesToDefault} title="Replace the editor contents with the built-in default rules">Reset to default</button>
+          <button class="btn" on:click={() => (rulesOpen = false)}>Close</button>
+          <button class="btn primary" on:click={saveRules} disabled={rulesSaving || rulesLoading}>{rulesSaving ? 'Saving…' : 'Save'}</button>
+          {#if rulesMsg}<span class="save-msg" class:ok={rulesMsg.startsWith('✓')}>{rulesMsg}</span>{/if}
         </div>
       </div>
     </div>
@@ -3065,7 +3946,7 @@ def run(inputs):
         {#if refinement.recommended_mode && refinement.recommended_mode !== 'workflow'}
           <div class="refine-mode">
             <strong>Recommended build: {recoLabel(refinement.recommended_mode)} agent</strong>
-            {#if refinement.mode_reason} — {refinement.mode_reason}{/if}
+            {#if refinement.recommended_reason} — {refinement.recommended_reason}{/if}
             <div class="refine-mode-sub">This task reasons over its tools (looping/polling), so Studio will build a reasoning agent instead of a fixed flow canvas.</div>
           </div>
         {/if}
@@ -3113,7 +3994,36 @@ def run(inputs):
         <div class="modal-actions">
           <button class="btn" on:click={cancelRefinement} disabled={compiling}>Cancel</button>
           <button class="btn primary" on:click={confirmRefinement} disabled={compiling || !((refinement.refined_intent || '').trim())}>
-            {compiling ? 'Generating…' : 'Generate workflow'}
+            {compiling ? 'Generating…' : (refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoLabel(refinement.recommended_mode)} agent` : 'Generate workflow'}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if agentRoute}
+    <div class="modal-backdrop" on:click|self={() => (agentRoute = null)} role="presentation">
+      <div class="modal agent-route-modal" role="dialog" aria-modal="true" aria-labelledby="agentroute-title">
+        <h2 id="agentroute-title" class="modal-title">Built as a {recoLabel(agentRoute.mode)} agent</h2>
+        <p class="modal-body">
+          This task reasons over its tools — it decides which skill or tool to use
+          per request — so it can't be expressed as a fixed workflow graph. Studio
+          built it as a <strong>{recoLabel(agentRoute.mode)}</strong> agent instead
+          and opened its <strong>SOUL.yaml</strong>, where the agent actually lives.
+        </p>
+        {#if agentRoute.reason}
+          <div class="agent-route-reason">{agentRoute.reason}</div>
+        {/if}
+        <p class="modal-body agent-route-hint">
+          Edit the prompt, tools, and skills in the SOUL.yaml below, then Save. To
+          build a fixed flow instead, use the <strong>Workflow</strong> toggle.
+        </p>
+        <div class="modal-actions">
+          <button class="btn" on:click={() => { agentRoute = null; switchMode('workflow') }} disabled={compiling}>
+            Build as workflow anyway
+          </button>
+          <button class="btn primary" on:click={() => (agentRoute = null)}>
+            Edit the SOUL.yaml
           </button>
         </div>
       </div>
@@ -3177,6 +4087,14 @@ def run(inputs):
       </div>
     </div>
   {/if}
+
+  <!-- Build inspector: the durable build transcript, every step made visible. -->
+  <BuildInspector
+    open={showBuildInspector}
+    traceId={buildTraceId}
+    on:frame={(e) => (replayOverride = e.detail)}
+    on:close={() => { showBuildInspector = false; replayOverride = null }}
+  />
 </div>
 
 <style>
@@ -3217,6 +4135,8 @@ def run(inputs):
   }
   .intent input::placeholder { color: var(--text-muted); }
   .intent input:focus { border-color: var(--accent); }
+  .intent-trigger { cursor: pointer; }
+  .intent-trigger:hover { border-color: var(--accent); }
 
 
   .btn {
@@ -3307,14 +4227,107 @@ def run(inputs):
     transition: background .12s;
   }
   .insp-splitter:hover { background: var(--accent); }
+
+  /* ── Three resizable / maximizable frames: canvas · workbench · inspector ── */
+  .insp-host { position: relative; }
+  .insp-host :global(.inspector) { padding-top: 0; }
+
+  /* Bottom workbench: a scrollable, height-resizable frame holding the panels. */
+  .workbench {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    overflow-y: auto;
+    border-top: 1px solid var(--border);
+    background: var(--bg-elev);
+    padding: 0 14px 12px;
+  }
+  .wb-bar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0 4px;
+    background: var(--bg-elev);
+  }
+  .wb-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); flex: 1; }
+
+  .wb-splitter {
+    flex: 0 0 auto;
+    height: 6px;
+    cursor: row-resize;
+    background: var(--border);
+    transition: background 120ms ease;
+  }
+  .wb-splitter:hover { background: var(--accent); }
+
+  /* Maximize / restore buttons (corner of each frame). */
+  .frame-max {
+    border: 1px solid var(--border);
+    background: var(--bg-elev-2);
+    color: var(--text-muted);
+    border-radius: 6px;
+    width: 26px;
+    height: 24px;
+    font-size: 13px;
+    cursor: pointer;
+    flex: none;
+  }
+  .frame-max:hover { color: var(--text); border-color: var(--accent); }
+  .canvas-max { position: absolute; top: 10px; right: 10px; z-index: 5; }
+  .insp-max { position: absolute; top: 8px; right: 10px; z-index: 5; }
+
+  /* Maximize states: one frame fills the editor, the others fold away. */
+  .body.max-canvas .workbench, .body.max-canvas .wb-splitter,
+  .body.max-canvas .insp-host, .body.max-canvas .insp-splitter { display: none; }
+  .body.max-bench .canvas, .body.max-bench .wb-splitter,
+  .body.max-bench .insp-host, .body.max-bench .insp-splitter { display: none; }
+  .body.max-bench .workbench { flex: 1 1 auto; max-height: none !important; }
+  .body.max-inspector .center { display: none; }
+  .body.max-inspector .insp-splitter { display: none; }
+  .body.max-inspector .insp-host { flex: 1 1 auto; }
   .view-toggle { white-space: nowrap; }
+
+  /* Toolbar row: view switch (left) + execution-mode switch (right) */
+  .toolbar-row {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; flex-wrap: wrap;
+    padding: 8px 14px 0;
+    flex-shrink: 0;
+  }
 
   /* Canvas ⇄ Code view switch */
   .view-switch {
     display: flex; align-items: center; gap: 2px;
-    padding: 8px 14px 0;
     flex-shrink: 0;
   }
+
+  /* Workflow ⇄ ReAct ⇄ Plan-Execute execution-mode switch */
+  .mode-switch {
+    display: flex; align-items: center; gap: 2px;
+    flex-shrink: 0;
+  }
+  .ms-label {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin-right: 8px;
+  }
+  .ms-btn {
+    font-size: 12px; font-weight: 600;
+    padding: 6px 12px;
+    color: var(--text-muted);
+    background: var(--bg-elev);
+    border: 1px solid var(--border);
+    border-left: 0;
+    cursor: pointer;
+  }
+  .ms-btn:first-of-type { border-radius: 7px 0 0 7px; border-left: 1px solid var(--border); }
+  .ms-btn:last-of-type { border-radius: 0 7px 7px 0; }
+  .ms-btn.active { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .ms-btn:disabled { opacity: 0.5; cursor: not-allowed; }
   .vs-btn {
     font-size: 12px; font-weight: 600;
     padding: 6px 14px;
@@ -3359,8 +4372,11 @@ def run(inputs):
   .cv-badge.ok   { color: #4caf82; background: rgba(76,175,130,.14); }
   .cv-badge.err  { color: #f06060; background: rgba(240,96,96,.14); }
   .cv-badge.warn { color: #e7b765; background: rgba(231,183,101,.14); }
-  .cv-fixbtn { margin-left: auto; white-space: nowrap; color: var(--accent); border-color: var(--accent); }
+  .cv-fixbtn { white-space: nowrap; color: var(--accent); border-color: var(--accent); }
   .cv-fixbtn:hover { background: rgba(108,140,255,.12); }
+  .cv-fixbtn:first-of-type { margin-left: auto; }   /* push the fix buttons to the right */
+  .cv-aibtn { color: #fff; background: var(--accent); border-color: var(--accent); }
+  .cv-aibtn:hover { filter: brightness(1.08); background: var(--accent); }
   .cv-summary .icon-btn { margin-left: 4px; }
   .cv-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
   .cv-item { display: flex; gap: 8px; padding: 7px 8px; border-radius: 6px; background: var(--bg); }
@@ -3452,6 +4468,34 @@ def run(inputs):
   .attempt-action { color: var(--text); }
   .build-residual { margin-top: 8px; font-size: 12px; color: var(--error); }
   .build-residual ul { margin: 4px 0 0; padding-left: 18px; }
+
+  /* Non-convergence verdict: a flow fighting a reasoning task → offer agent mode */
+  .build-diagnosis {
+    margin-top: 10px; padding: 10px 12px;
+    background: rgba(124, 132, 255, 0.10);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .build-diagnosis .bd-text { font-size: 12.5px; line-height: 1.5; color: var(--text); }
+  .build-diagnosis .bd-action {
+    align-self: flex-start;
+    font-size: 12px; font-weight: 600;
+    padding: 6px 14px; border-radius: 7px;
+    color: #fff; background: var(--accent); border: 0; cursor: pointer;
+  }
+  .build-diagnosis .bd-action:disabled { opacity: 0.5; cursor: not-allowed; }
+
+  /* "Built as an agent, not a workflow" explainer modal */
+  .agent-route-modal { max-width: 560px; }
+  .agent-route-reason {
+    margin: 12px 0; padding: 10px 12px;
+    background: rgba(124, 132, 255, 0.10);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    font-size: 13px; line-height: 1.5; color: var(--text);
+  }
+  .agent-route-hint { font-size: 12.5px; color: var(--text-muted); }
   .failed-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .failed-item {
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
@@ -3681,13 +4725,69 @@ def run(inputs):
   pre {
     margin: 0;
     white-space: pre-wrap;
+    word-break: break-word;
     font-family: ui-monospace, monospace;
     font-size: 12px;
     background: var(--bg-elev-2);
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 4px 8px;
+    /* Long tool outputs (e.g. a NotebookLM report) are fully reachable by scroll
+       instead of being clipped or flooding the panel. */
+    max-height: 320px;
+    overflow: auto;
   }
+
+  /* Status dot + the always-visible one-line read of each step. */
+  .status-dot { flex: none; font-size: 12px; font-weight: 700; }
+  .status-dot.ok { color: var(--ok, #38c172); }
+  .status-dot.fail { color: var(--error, #ff6b81); }
+  .step-line {
+    margin-top: 3px;
+    font-size: 12px;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .step-line.ok { color: var(--text-muted, #9aa3b2); }
+  .step-line.err {
+    color: var(--error, #ff6b81);
+    background: rgba(255, 107, 129, 0.08);
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-weight: 500;
+  }
+  .step-details > summary {
+    cursor: pointer;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-muted, #8b93ab);
+    margin-top: 4px;
+    list-style: revert;
+  }
+  .step-details[open] > summary { margin-bottom: 4px; }
+  /* Run history list: every run, clickable to load its trace. */
+  .run-list { list-style: none; margin: 0 0 10px; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .run-row {
+    width: 100%; display: flex; align-items: center; gap: 10px;
+    background: var(--bg-elev-2); border: 1px solid var(--border);
+    border-radius: 6px; padding: 6px 10px; cursor: pointer; text-align: left;
+    color: var(--text); font-size: 12px;
+  }
+  .run-row:hover { border-color: var(--accent); }
+  .run-row.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .run-badge { flex: none; font-weight: 700; }
+  .run-badge.ok { color: var(--ok, #38c172); }
+  .run-badge.fail { color: var(--error, #ff6b81); }
+  .run-when { flex: none; color: var(--text); font-variant-numeric: tabular-nums; }
+  .run-trigger {
+    flex: none; font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-muted); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+  }
+  .run-steps { flex: none; color: var(--text-muted); }
+  .run-err { flex: 1; min-width: 0; color: var(--error, #ff6b81); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
   .result { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; }
   .muted { color: var(--text-muted); font-size: 12px; }
 
@@ -3715,6 +4815,21 @@ def run(inputs):
   /* ── Test bench editors (mocks + assertions) ──────────────────────────── */
   .bench { display: flex; flex-direction: column; gap: 14px; }
   .bench-section { display: flex; flex-direction: column; gap: 8px; }
+  /* A bench header that folds its body (toggle on the left, action on the right). */
+  .bench-head.split { display: flex; align-items: center; gap: 8px; }
+  .bench-head-toggle {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    color: inherit;
+  }
   .bench-head {
     display: flex;
     align-items: baseline;
@@ -3792,6 +4907,36 @@ def run(inputs):
     border: 1px solid var(--warn, #f5a742);
     background: rgba(245, 167, 66, 0.12);
   }
+
+  /* Per-block trace badges: wired (typed-port handoff), duration, error. */
+  .wired-badge,
+  .dur-badge,
+  .err-badge {
+    font-size: 10px;
+    letter-spacing: 0.3px;
+    font-weight: 700;
+    border-radius: 999px;
+    padding: 0 6px;
+  }
+  .wired-badge {
+    text-transform: uppercase;
+    color: var(--accent, #4f8cff);
+    border: 1px solid var(--accent, #4f8cff);
+    background: rgba(79, 140, 255, 0.12);
+  }
+  .dur-badge {
+    color: var(--text-muted);
+    border: 1px solid var(--border, #3a3a3a);
+    background: transparent;
+  }
+  .err-badge {
+    text-transform: uppercase;
+    color: var(--danger, #e5534b);
+    border: 1px solid var(--danger, #e5534b);
+    background: rgba(229, 83, 75, 0.12);
+  }
+  .step-failed { background: rgba(229, 83, 75, 0.06); border-radius: 6px; }
+  .io-err { color: var(--danger, #e5534b); white-space: pre-wrap; }
 
   /* Overall pass/fail banner */
   .overall {
@@ -3920,21 +5065,37 @@ def run(inputs):
   .modal-backdrop {
     position: fixed;
     inset: 0;
-    background: rgba(8, 11, 20, 0.6);
+    background: rgba(8, 11, 20, 0.5);
+    -webkit-backdrop-filter: blur(6px) saturate(120%);
+    backdrop-filter: blur(6px) saturate(120%);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 50;
+    animation: backdrop-in 160ms ease-out;
   }
+  @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
   .modal {
     width: min(460px, 92vw);
     max-height: 86vh;
     overflow-y: auto;
-    background: var(--bg-elev);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    /* Frosted glass: translucent surface over the blurred backdrop. */
+    background: color-mix(in srgb, var(--bg-elev) 82%, transparent);
+    -webkit-backdrop-filter: blur(18px) saturate(140%);
+    backdrop-filter: blur(18px) saturate(140%);
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: 14px;
     padding: 20px;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+    /* Spring-ish pop on open. */
+    animation: modal-pop 220ms cubic-bezier(0.22, 1.2, 0.36, 1);
+  }
+  @keyframes modal-pop {
+    from { opacity: 0; transform: translateY(8px) scale(0.97); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .modal-backdrop, .modal { animation: none; }
   }
   .modal-title { margin: 0 0 10px; font-size: 15px; color: var(--text); }
   .modal-body { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
@@ -3969,13 +5130,25 @@ def run(inputs):
   }
   .consent-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .consent-scope select { width: auto; flex: 1; }
-  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .modal-actions .btn { white-space: normal; }
 
   /* ── Pre-generation refinement dialog ───────────────────────────────────── */
   .refine-modal { max-width: 640px; width: 92vw; max-height: 84vh; overflow-y: auto; }
 
   /* Prompt editor modal: roomy editor for writing/editing the (refined) prompt */
   .prompt-modal { max-width: 820px; width: 92vw; max-height: 88vh; overflow-y: auto; }
+  .pe-label { display: block; font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin: 14px 0 2px; }
+  .pe-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 6px; line-height: 1.45; }
+  .pe-area {
+    width: 100%; box-sizing: border-box; resize: vertical; min-height: 150px;
+    font: inherit; font-size: 14px; line-height: 1.6; padding: 12px 14px;
+    border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg-elev); color: var(--text);
+  }
+  .pe-area:focus { outline: none; border-color: var(--accent); }
+  .pe-row { display: flex; justify-content: flex-start; margin: 8px 0 2px; }
+  .rules-area { min-height: 420px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; line-height: 1.55; white-space: pre; }
   .prompt-editor-area {
     width: 100%; box-sizing: border-box; resize: vertical;
     min-height: 320px;
@@ -4062,6 +5235,13 @@ def run(inputs):
   .agent-spec-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
   .agent-spec-name { font-size: 15px; font-weight: 600; color: var(--text); }
   .agent-spec-note { font-size: 12px; color: var(--text-muted); }
+  .agent-yaml-link {
+    margin-left: auto; font-size: 12px; font-weight: 600;
+    padding: 5px 12px; border-radius: 7px;
+    color: var(--accent); background: rgba(124, 132, 255, 0.10);
+    border: 1px solid var(--accent); cursor: pointer; white-space: nowrap;
+  }
+  .agent-yaml-link:hover { background: rgba(124, 132, 255, 0.18); }
   .agent-field-label { display: block; font-size: 12px; font-weight: 600; color: var(--text-muted); margin: 12px 0 4px; }
   .agent-sys, .agent-tools {
     width: 100%; box-sizing: border-box; resize: vertical; font: inherit; font-size: 13px;
@@ -4071,6 +5251,89 @@ def run(inputs):
   }
   .agent-tools { font-family: ui-monospace, monospace; font-size: 12px; }
   .agent-spec-meta { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; font-size: 12px; color: var(--text-muted); }
+
+  /* Try-it panel inside the agent editor */
+  .agent-try { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--border); }
+  .agent-try-row { display: flex; gap: 8px; align-items: center; }
+  .agent-try-input {
+    flex: 1 1 auto; font-size: 13px; padding: 8px 10px;
+    color: var(--text); background: var(--bg-elev);
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  .agent-try-result {
+    margin-top: 10px; padding: 10px 12px; border-radius: 8px;
+    background: var(--bg-elev); border: 1px solid var(--border);
+    font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word;
+  }
+  .agent-try-result.err { border-color: var(--error); }
+  .agent-try-err { color: var(--error); margin-bottom: 6px; }
+  .agent-try-reply.muted { color: var(--text-muted); }
+  .agent-try-trace { margin-top: 10px; }
+  .att-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+  .att-label.muted { text-transform: none; letter-spacing: 0; font-weight: 500; }
+  .att-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+  .att-item { font-size: 12.5px; border-radius: 6px; background: var(--bg-elev); overflow: hidden; }
+  .att-item.err { background: rgba(255, 90, 90, 0.10); }
+  .att-row { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; background: transparent; border: 0; cursor: pointer; padding: 5px 8px; color: inherit; font-size: inherit; }
+  .att-n { color: var(--text-muted); font-variant-numeric: tabular-nums; min-width: 14px; }
+  .att-dot { color: #36d399; }
+  .att-item.err .att-dot { color: var(--error); }
+  .att-name { color: var(--text); font-family: ui-monospace, monospace; flex: 1 1 auto; }
+  .att-detail { color: var(--accent); }
+  .att-caret { color: var(--text-muted); }
+  .att-detail-box { padding: 2px 10px 8px 30px; display: flex; flex-direction: column; gap: 5px; }
+  .att-kv { display: flex; gap: 8px; align-items: baseline; }
+  .att-k { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); min-width: 42px; }
+  .att-kv code { font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--text); white-space: pre-wrap; word-break: break-word; background: var(--bg-elev-2, rgba(0,0,0,0.2)); border-radius: 4px; padding: 2px 6px; }
+
+  /* Output → delivery auto-wiring */
+  .strip-delivery { background: rgba(124, 132, 255, 0.08); }
+  .dlv-hint { color: var(--text-muted); font-size: 12px; }
+  .dlv-btn {
+    font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 6px;
+    color: var(--accent); background: var(--bg-elev);
+    border: 1px solid var(--accent); cursor: pointer; margin-left: 4px;
+  }
+  .dlv-btn:hover { background: rgba(124, 132, 255, 0.15); }
+  .dlv-chip { display: inline-flex; align-items: center; gap: 3px; margin-left: 5px; padding: 1px 4px 1px 7px; border-radius: 10px; background: var(--bg-elev); border: 1px solid var(--border); }
+  .dlv-x { border: 0; background: transparent; color: var(--text-muted); cursor: pointer; font-size: 14px; line-height: 1; padding: 0 2px; }
+  .dlv-x:hover { color: var(--error); }
+
+  /* Credentials (first-class secret binding) */
+  .creds { padding: 4px 2px; }
+  .creds-hint { font-size: 12px; color: var(--text-muted); margin: 0 0 10px; line-height: 1.5; }
+  .cred-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-top: 1px solid var(--border); flex-wrap: wrap; }
+  .cred-meta { display: flex; flex-direction: column; gap: 2px; min-width: 180px; }
+  .cred-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .cred-env { font-size: 11px; color: var(--text-muted); font-family: ui-monospace, monospace; }
+  .cred-desc { font-size: 11.5px; color: var(--text-muted); }
+  .cred-set { display: flex; gap: 6px; align-items: center; }
+  .cred-input { font-size: 13px; padding: 6px 10px; border-radius: 7px; color: var(--text); background: var(--bg-elev); border: 1px solid var(--border); min-width: 220px; }
+  .creds-msg { margin-top: 8px; font-size: 12px; color: var(--accent); }
+
+  /* Runtime live-state + motion polish */
+  .agent-try-running { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 12.5px; color: var(--text-muted); }
+  .live-dot {
+    width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 60%, transparent);
+    animation: live-pulse 1.3s ease-out infinite;
+  }
+  @keyframes live-pulse {
+    0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 55%, transparent); }
+    70%  { box-shadow: 0 0 0 8px color-mix(in srgb, var(--accent) 0%, transparent); }
+    100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--accent) 0%, transparent); }
+  }
+  /* Spring-y feedback on the mode + view toggles and primary buttons. */
+  .ms-btn, .vs-btn, .btn { transition: transform 120ms cubic-bezier(0.22, 1.2, 0.36, 1), background 140ms ease, border-color 140ms ease, color 140ms ease; }
+  .ms-btn:active:not(:disabled), .vs-btn:active, .btn:active:not(:disabled) { transform: scale(0.96); }
+  .ms-btn.active { transform: translateZ(0); }
+  .agent-try-result, .agent-try-trace, .build-diagnosis, .strip-delivery { animation: rise-in 200ms cubic-bezier(0.22, 1.1, 0.36, 1); }
+  @keyframes rise-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot { animation: none; }
+    .agent-try-result, .agent-try-trace, .build-diagnosis, .strip-delivery { animation: none; }
+    .ms-btn, .vs-btn, .btn { transition: none; }
+  }
   .intent { position: relative; display: flex; align-items: center; }
   .intent-expand {
     position: absolute; right: 6px; top: 50%; transform: translateY(-50%);

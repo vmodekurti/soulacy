@@ -266,6 +266,84 @@ func TestOpenAICompleteStreamsSSEWhenNoTools(t *testing.T) {
 	}
 }
 
+// TestOllamaRecoversThinkingWhenContentEmpty reproduces the qwen3-coder bug:
+// a reasoning model spends its whole turn inside its reasoning channel and
+// returns EMPTY message.content while putting the final answer in
+// message.thinking. The parser must surface that answer into Content so the
+// engine doesn't discard a completed run.
+func TestOllamaRecoversThinkingWhenContentEmpty(t *testing.T) {
+	provider := NewOllamaProvider("http://ollama.test", "qwen3-coder", "", nil)
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(200, `{
+			"message": {
+				"role": "assistant",
+				"content": "",
+				"thinking": "Let me reason... <think>internal</think>\nThe final report: all systems nominal."
+			},
+			"prompt_eval_count": 100,
+			"eval_count": 758
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Model:    "qwen3-coder",
+		Messages: []ChatMessage{{Role: "user", Content: "status?"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.OutputTokens != 758 {
+		t.Fatalf("output tokens = %d, want 758", resp.OutputTokens)
+	}
+	if strings.TrimSpace(resp.Content) == "" {
+		t.Fatal("content empty: thinking-field answer was not recovered")
+	}
+	if !strings.Contains(resp.Content, "all systems nominal") {
+		t.Fatalf("content = %q, want recovered post-think answer", resp.Content)
+	}
+	if strings.Contains(resp.Content, "<think>") || strings.Contains(resp.Content, "internal") {
+		t.Fatalf("content still contains think block: %q", resp.Content)
+	}
+}
+
+// TestOllamaStripsInlineThinkBlock covers content that carries an inline
+// <think>…</think> block followed by the real answer.
+func TestOllamaStripsInlineThinkBlock(t *testing.T) {
+	provider := NewOllamaProvider("http://ollama.test", "qwen3", "", nil)
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(200, `{
+			"message": {"role": "assistant", "content": "<think>weighing options</think>\nFinal answer here."},
+			"prompt_eval_count": 10,
+			"eval_count": 20
+		}`), nil
+	})
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "go"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Content != "Final answer here." {
+		t.Fatalf("content = %q, want %q", resp.Content, "Final answer here.")
+	}
+}
+
+func TestStripThinkBlocks(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"plain", "plain"},
+		{"<think>x</think>answer", "answer"},
+		{"pre <think>x</think> post", "pre  post"},
+		{"only <think>reasoning with no close", "only"},
+		{"trailing </think>tail", "tail"},
+		{"<think>a</think><think>b</think>done", "done"},
+	}
+	for _, c := range cases {
+		if got := stripThinkBlocks(c.in); got != c.want {
+			t.Errorf("stripThinkBlocks(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

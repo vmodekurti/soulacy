@@ -7,6 +7,7 @@ import (
 	"text/template"
 
 	"github.com/soulacy/soulacy/internal/reasoning"
+	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
 // preflightTemplateFuncs uses the EXACT function set the flow renderer
@@ -146,12 +147,17 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 				if server != "" && !mcpConnected(in.ConnectedMCP, server) {
 					add("block", "mcp", n.ID, "Uses MCP tool \""+tool+"\" but its server \""+server+"\" is not connected.", "Connect the \""+server+"\" MCP server in Settings, then re-save.")
 				}
-				// Required-argument check: every required arg of the MCP tool
-				// must be present and non-placeholder in the node's input.
+				// Required-argument check: every required arg of the MCP tool must
+				// be present and non-placeholder in the node's input — OR supplied by
+				// a typed input PORT (the template-free handoff). Without the port
+				// check, a node whose arg was lowered to a port reads as "empty" and
+				// the build loop repairs it forever (the LLM re-adds the arg, the
+				// portizer re-wires it). Port name OR Field may carry the arg key.
 				for _, want := range mcpToolReq[tool] {
-					if !argFilled(n.Input, want) {
-						add("block", "dependency", n.ID, "Required argument \""+want+"\" for \""+tool+"\" is empty or a placeholder.", "Provide a real value, or feed it from an upstream step's output.")
+					if argFilled(n.Input, want) || nodeSuppliesViaPort(n, want) {
+						continue
 					}
+					add("block", "dependency", n.ID, "Required argument \""+want+"\" for \""+tool+"\" is empty or a placeholder.", "Provide a real value, or feed it from an upstream step's output.")
 				}
 			} else if len(toolSet) > 0 && !toolSet[strings.ToLower(tool)] {
 				// Builtin/unknown tool not in the grounded catalog: warn (the
@@ -326,6 +332,47 @@ func requiredParams(hint string) []string {
 		}
 	}
 	return out
+}
+
+// paramTypes parses a compact MCP param hint ("title*:string, count:number")
+// into arg name -> declared type (lowercased; "" when a param lists no type).
+// The trailing required-marker "*" is stripped from names.
+func paramTypes(hint string) map[string]string {
+	out := map[string]string{}
+	for _, part := range strings.Split(hint, ",") {
+		p := strings.TrimSpace(part)
+		if p == "" {
+			continue
+		}
+		name, typ := p, ""
+		if i := strings.IndexByte(p, ':'); i >= 0 {
+			name = strings.TrimSpace(p[:i])
+			typ = strings.TrimSpace(p[i+1:])
+		}
+		name = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(name), "*"))
+		if name == "" {
+			continue
+		}
+		out[name] = strings.ToLower(typ)
+	}
+	return out
+}
+
+// nodeSuppliesViaPort reports whether a declared input port binds the given
+// argument key — i.e. the value arrives by typed-port wire rather than in the
+// node's Input. The bind key is the port's Field override when set, else its Name
+// (matching the runtime's resolvePortInputs).
+func nodeSuppliesViaPort(n sdkr.FlowNode, arg string) bool {
+	for _, p := range n.Inputs {
+		key := p.Name
+		if p.Field != "" {
+			key = p.Field
+		}
+		if key == arg {
+			return true
+		}
+	}
+	return false
 }
 
 // argFilled reports whether the node's Input (a JSON object template) contains a

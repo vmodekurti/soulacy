@@ -580,6 +580,100 @@ func TestHandleDuplicateToolCallRunsToolOnlyOnceThenSynthesizes(t *testing.T) {
 	}
 }
 
+// TestHandleSynthesisEmptyContentRecoversReply reproduces the real qwen3-coder
+// bug: a tool-using run gathers data, then the forced final-synthesis call
+// returns EMPTY Content (the model spent its turn inside a <think> block). The
+// engine's empty-synthesis retry ALSO comes back empty. Previously the user got
+// "(no final response produced)" and all the gathered work was discarded. The
+// fix must surface a useful reply built from the gathered tool results.
+func TestHandleSynthesisEmptyContentRecoversReply(t *testing.T) {
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID:           "assistant",
+		Name:         "Assistant",
+		Enabled:      true,
+		SystemPrompt: "Use tools.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		Builtins:     strListPtr("lookup"),
+	})
+	e.builtins = []BuiltinTool{{
+		Name:        "lookup",
+		Description: "Looks up a value.",
+		Parameters:  map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			return "Soulacy ships agent runtimes.", nil
+		},
+	}}
+	provider.responses = []llm.CompletionResponse{
+		// Turn 1: model calls the tool.
+		{ToolCalls: []message.ToolCall{{ID: "call-1", Name: "lookup", Arguments: map[string]any{"query": "soulacy"}}}},
+		// Turn 2: model emits a tool call again with no text → loop forces synthesis.
+		{ToolCalls: []message.ToolCall{{ID: "call-2", Name: "lookup", Arguments: map[string]any{"query": "soulacy"}}}},
+		// Turn 3 (synthesis): empty content — the bug.
+		{Content: "", OutputTokens: 758},
+		// Turn 4 (empty-synthesis retry): STILL empty.
+		{Content: "", OutputTokens: 412},
+	}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("assistant", "session-1", "what is soulacy?"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	got := flattenParts(reply.Parts)
+	if strings.Contains(got, "no final response produced") {
+		t.Fatalf("regression: completed run discarded as %q", got)
+	}
+	if !strings.Contains(got, "Soulacy ships agent runtimes.") {
+		t.Fatalf("reply did not recover gathered tool result: %q", got)
+	}
+}
+
+// TestHandleSynthesisRetryRecoversReply verifies the think-discouraging retry:
+// the first synthesis returns empty Content but the retry produces real text.
+func TestHandleSynthesisRetryRecoversReply(t *testing.T) {
+	e, provider := newHandleTestEngine(t, &agent.Definition{
+		ID:           "assistant",
+		Name:         "Assistant",
+		Enabled:      true,
+		SystemPrompt: "Use tools.",
+		LLM:          agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		MaxTurns:     3,
+		Builtins:     strListPtr("lookup"),
+	})
+	e.builtins = []BuiltinTool{{
+		Name:        "lookup",
+		Description: "Looks up a value.",
+		Parameters:  map[string]any{"type": "object"},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			return "raw data", nil
+		},
+	}}
+	duplicateCall := message.ToolCall{ID: "call-1", Name: "lookup", Arguments: map[string]any{"query": "same"}}
+	provider.responses = []llm.CompletionResponse{
+		{ToolCalls: []message.ToolCall{duplicateCall}},
+		{ToolCalls: []message.ToolCall{duplicateCall}},
+		{Content: "", OutputTokens: 758},                  // synthesis: empty
+		{Content: "Here is the synthesized final report."}, // retry: real text
+	}
+
+	reply, err := e.Handle(context.Background(), testUserMessage("assistant", "session-1", "go"))
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+	if got := flattenParts(reply.Parts); got != "Here is the synthesized final report." {
+		t.Fatalf("reply = %q, want the retry text", got)
+	}
+	// The retry must omit tools, like the first synthesis pass.
+	reqs := provider.requestsSnapshot()
+	last := reqs[len(reqs)-1]
+	if len(last.Tools) != 0 {
+		t.Fatalf("synthesis retry must omit tools, got %#v", last.Tools)
+	}
+	if !chatMessagesContain(last.Messages, "system", "<think>") {
+		t.Fatalf("retry should carry the think-discouraging instruction: %#v", last.Messages)
+	}
+}
+
 func TestHandleRetriesInvalidStructuredOutput(t *testing.T) {
 	schema := map[string]any{
 		"type": "object",

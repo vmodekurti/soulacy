@@ -469,38 +469,81 @@ func TestCompileFlow_ParamsPreserved(t *testing.T) {
 // TestRunFlow_PortsAndParamsRegression proves a flow that declares ports
 // and params still compiles, runs, and templates Input EXACTLY as a
 // portless/paramless flow would — ports/params are inert at runtime.
-func TestRunFlow_PortsAndParamsRegression(t *testing.T) {
-	r := &recRunner{results: map[string]string{
-		"fetch":   `{"items": 3}`,
-		"publish": `"done"`,
-	}}
+// TestRunFlow_ParamsPreservedAtRuntime verifies Params remain inert at run time:
+// a node carrying Params executes exactly as if it had none (Params are
+// pass-through config, not input).
+func TestRunFlow_ParamsPreservedAtRuntime(t *testing.T) {
+	r := &recRunner{results: map[string]string{"a": `"ok"`}}
 	g, err := CompileFlow(sdkr.FlowSpec{
 		Nodes: []sdkr.FlowNode{
-			{
-				ID: "fetch", Tool: "web_search", Input: `{"q":"{{.trigger}}"}`, Output: "found",
-				Outputs: []sdkr.FlowPort{{Name: "result", Type: "json"}},
-				Params:  map[string]any{"k": "v"},
-			},
-			{
-				ID: "publish", Tool: "post", Input: `{"count":{{.found.items}}}`,
-				Inputs: []sdkr.FlowPort{{Name: "payload"}},
-			},
+			{ID: "a", Tool: "t", Input: `{"q":"{{.trigger}}"}`, Params: map[string]any{"k": "v"}},
 		},
-		Edges: []sdkr.FlowEdge{{From: "fetch", To: "publish", FromPort: "result", ToPort: "payload"}},
+		Edges: []sdkr.FlowEdge{{From: "a", To: "end"}},
 	})
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	out, err := RunFlow(context.Background(), g, map[string]any{"trigger": "news"}, r.run, FlowHooks{})
+	if _, err := RunFlow(context.Background(), g, map[string]any{"trigger": "news"}, r.run, FlowHooks{}); err != nil {
+		t.Fatalf("RunFlow: %v", err)
+	}
+	if want := []string{`a:{"q":"news"}`}; len(r.calls) != 1 || r.calls[0] != want[0] {
+		t.Errorf("calls = %v, want %v (params must not alter execution)", r.calls, want)
+	}
+}
+
+// TestRunFlow_TypedPortHandoff is the Story S0.3 runtime-resolution contract:
+// a node with a wired to_port receives its input ASSEMBLED from the upstream
+// output port — no Go template. A specific from_port name ("id") carries that
+// field; a generic one ("result") carries the whole output. Static constants the
+// consumer declares in Input are preserved and the wires overlay on top.
+func TestRunFlow_TypedPortHandoff(t *testing.T) {
+	r := &recRunner{results: map[string]string{
+		"create": `{"id":"nb-42","title":"My Notebook"}`,
+		"gen":    `{"id":"nb-42","audio_url":"https://x/a.mp3"}`,
+		"post":   `"sent"`,
+	}}
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "create", Tool: "create_notebook", Output: "notebook",
+				Outputs: []sdkr.FlowPort{{Name: "id"}}},
+			// gen carries a static constant (action) in Input and receives the
+			// notebook id via a wired port — no template anywhere.
+			{ID: "gen", Tool: "generate_audio", Input: `{"action":"generate"}`, Output: "audio",
+				Inputs:  []sdkr.FlowPort{{Name: "notebook_id"}},
+				Outputs: []sdkr.FlowPort{{Name: "audio_url"}, {Name: "result"}}},
+			{ID: "post", Tool: "post_link",
+				Inputs: []sdkr.FlowPort{{Name: "url"}, {Name: "whole"}}},
+		},
+		Edges: []sdkr.FlowEdge{
+			{From: "create", To: "gen", FromPort: "id", ToPort: "notebook_id"},
+			{From: "gen", To: "post", FromPort: "audio_url", ToPort: "url"},
+			// A generic from_port ("result") + no such field → whole output wired.
+			{From: "gen", To: "post", FromPort: "result", ToPort: "whole"},
+			{From: "post", To: "end"},
+		},
+		Entry: "create",
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	out, err := RunFlow(context.Background(), g, map[string]any{}, r.run, FlowHooks{})
 	if err != nil {
 		t.Fatalf("RunFlow: %v", err)
 	}
-	if string(out) != `"done"` {
+	if string(out) != `"sent"` {
 		t.Errorf("final output = %s", out)
 	}
-	want := []string{`fetch:{"q":"news"}`, `publish:{"count":3}`}
-	if len(r.calls) != 2 || r.calls[0] != want[0] || r.calls[1] != want[1] {
-		t.Errorf("calls = %v, want %v (ports/params must not alter execution)", r.calls, want)
+	// create: no input. gen: constant + wired id. post: wired url + whole object.
+	wantGen := `gen:{"action":"generate","notebook_id":"nb-42"}`
+	wantPost := `post:{"url":"https://x/a.mp3","whole":{"audio_url":"https://x/a.mp3","id":"nb-42"}}`
+	if len(r.calls) != 3 {
+		t.Fatalf("calls = %v (want 3)", r.calls)
+	}
+	if r.calls[1] != wantGen {
+		t.Errorf("gen call = %q\n          want %q", r.calls[1], wantGen)
+	}
+	if r.calls[2] != wantPost {
+		t.Errorf("post call = %q\n           want %q", r.calls[2], wantPost)
 	}
 }
 

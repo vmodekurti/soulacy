@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -74,6 +75,80 @@ func TestWorkflowExecutor_GraphMode_BoundedCycle(t *testing.T) {
 	assertCheckpointStatus(t, store, "workflow-agent", "flow-run-1", "judge#1", CheckpointCompleted)
 	assertCheckpointStatus(t, store, "workflow-agent", "flow-run-1", "judge#3", CheckpointCompleted)
 	assertCheckpointStatus(t, store, "workflow-agent", "flow-run-1", "ship#1", CheckpointCompleted)
+}
+
+// TestWorkflowExecutor_TypedPortHandoffAndTrace is the Phase 1 end-to-end check
+// through the real executor: a NotebookLM-shaped flow hands a created notebook's
+// id to a later tool via a TYPED PORT WIRE (no {{ }} template), and the per-block
+// run trace records what each block received, with the handoff marked wired.
+func TestWorkflowExecutor_TypedPortHandoffAndTrace(t *testing.T) {
+	store := newTestCheckpointStore(t)
+	e := &Engine{}
+	var genInput string
+	e.builtins = []BuiltinTool{
+		{
+			Name: "create_nb",
+			Handler: func(_ context.Context, _ map[string]any) (string, error) {
+				return `{"id":"nb-1","title":"AI news"}`, nil
+			},
+		},
+		{
+			Name: "gen_audio",
+			Handler: func(_ context.Context, args map[string]any) (string, error) {
+				// Capture the assembled args to prove the wired id arrived without
+				// any template.
+				if v, ok := args["notebook_id"].(string); ok {
+					genInput = v
+				}
+				return `{"audio_url":"https://x/a.mp3"}`, nil
+			},
+		},
+	}
+
+	w := NewWorkflowExecutor(agent.WorkflowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "create", Tool: "create_nb", Output: "notebook",
+				Outputs: []sdkr.FlowPort{{Name: "id"}}},
+			{ID: "gen", Tool: "gen_audio", Input: `{"action":"generate"}`, Output: "audio",
+				Inputs: []sdkr.FlowPort{{Name: "notebook_id"}}},
+		},
+		Edges: []sdkr.FlowEdge{
+			{From: "create", To: "gen", FromPort: "id", ToPort: "notebook_id"},
+			{From: "gen", To: "end"},
+		},
+		Entry: "create",
+	}, e, store, zap.NewNop())
+
+	if _, err := w.Run(context.Background(), workflowTestMessage("go"), "trace-run-1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The wired notebook id reached the second tool's argument — no template.
+	if genInput != "nb-1" {
+		t.Fatalf("gen received notebook_id %q, want %q (typed-port handoff)", genInput, "nb-1")
+	}
+
+	// The run trace recorded both blocks; the handoff block is marked wired and
+	// its input carries the id and the static constant.
+	tr, ok := e.FlowTrace("trace-run-1")
+	if !ok {
+		t.Fatal("no flow trace recorded")
+	}
+	if len(tr.Entries) != 2 {
+		t.Fatalf("trace entries = %d, want 2: %+v", len(tr.Entries), tr.Entries)
+	}
+	gen := tr.Entries[1]
+	if gen.NodeID != "gen" || !gen.WiredPorts {
+		t.Errorf("gen entry = %+v, want NodeID=gen WiredPorts=true", gen)
+	}
+	if !strings.Contains(gen.Input, `"notebook_id":"nb-1"`) || !strings.Contains(gen.Input, `"action":"generate"`) {
+		t.Errorf("gen input = %q, want wired id + static constant", gen.Input)
+	}
+
+	// LatestFlowTrace resolves the same run for the agent.
+	if lt, ok := e.LatestFlowTrace("workflow-agent"); !ok || lt.RunID != "trace-run-1" {
+		t.Errorf("LatestFlowTrace = %+v ok=%v, want run trace-run-1", lt, ok)
+	}
 }
 
 func TestWorkflowExecutor_GraphMode_ResumeSkipsCompletedVisits(t *testing.T) {

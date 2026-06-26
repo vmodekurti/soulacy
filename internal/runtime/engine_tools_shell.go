@@ -176,6 +176,40 @@ func (e *Engine) buildShellTools() []BuiltinTool {
 			},
 		},
 		{
+			Name:        "python_eval",
+			Gate:        "",
+			Description: "Execute inline Python code dynamically. Useful for data munging, JSON parsing, algorithms, and formatting that are easier done in code. Returns the stdout/stderr of the execution.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"code": map[string]any{
+						"type":        "string",
+						"description": "Python code to execute. Can be a script with multiple lines and functions.",
+					},
+				},
+				"required": []string{"code"},
+			},
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
+				code := argString(args, "code")
+				tctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+				defer cancel()
+				cmd := exec.CommandContext(tctx, "python3", "-c", code)
+				cmd.Env = e.shellEnviron()
+				var out bytes.Buffer
+				cmd.Stdout = &out
+				cmd.Stderr = &out
+				runErr := cmd.Run()
+				result := strings.TrimSpace(out.String())
+				if len(result) > 8000 {
+					result = result[:8000] + "\n[output truncated]"
+				}
+				if runErr != nil {
+					return fmt.Sprintf("exit_code: non-zero\n%s\nerror: %v", result, runErr), nil
+				}
+				return result, nil
+			},
+		},
+		{
 			Name:        "install_library",
 			Gate:        "",
 			Description: "Install a library or package using pip (Python), npm (Node.js), brew (macOS), or apt (Linux). Returns installation output.",

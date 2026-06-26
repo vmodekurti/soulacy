@@ -151,7 +151,7 @@ function highlightMaps(validation) {
  * @param {object} [validation] { errors[], warnings[] } to drive highlights
  * @returns {{ nodes: Array, edges: Array }} xyflow-ready arrays.
  */
-export function toFlow(workflow, validation = null) {
+export function toFlow(workflow, validation = null, runState = null) {
   const flow = (workflow && workflow.flow) || {}
   const rawNodes = Array.isArray(flow.nodes) ? flow.nodes : []
   const rawEdges = Array.isArray(flow.edges) ? flow.edges : []
@@ -188,6 +188,10 @@ export function toFlow(workflow, validation = null) {
         isEntry: n.id === entry,
         invalid: errNodes.has(n.id),
         warn: warnNodes.has(n.id),
+        // Post-build execution status ('ok'|'repaired'|'problem'|'idle') for the
+        // node's semantic accent. Distinct from `invalid`/`warn` (author-time
+        // validation): this reflects what the autonomous build actually did.
+        runState: (runState && runState[n.id]) || 'idle',
       },
     }
   })
@@ -214,6 +218,7 @@ export function toFlow(workflow, validation = null) {
     ].filter(Boolean).join(' ')
     edges.push({
       id: 'e-' + e.from + '-' + e.to + '-' + i,
+      type: 'live',
       source: e.from,
       target: e.to,
       sourceHandle: e.fromPort || undefined,
@@ -221,7 +226,9 @@ export function toFlow(workflow, validation = null) {
       label: hasIf ? e.if : (isElse ? 'else' : undefined),
       animated: false,
       class: cls,
-      data: { index: i, edge: e },
+      // cond drives the conditional dash; active (set by the page while a build/
+      // run is in flight) drives the flowing particles — the canvas heartbeat.
+      data: { index: i, edge: e, cond: hasIf, active: false },
     })
   })
 

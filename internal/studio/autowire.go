@@ -3,6 +3,7 @@ package studio
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 	"strings"
 
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
@@ -18,7 +19,290 @@ func RepairWiring(draft *Draft, cat Catalog) int {
 	if draft == nil {
 		return 0
 	}
-	return AutoWire(draft, cat) + ReconcileVars(draft) + fixTemplateTypos(draft)
+	if draft == nil {
+		return 0
+	}
+	// Output vars first: every executable node must have one, or its result is
+	// dropped (applyFlowResult skips Output=="") and downstream wires/templates
+	// read null. The other passes rely on these names, so assign before them.
+	n := ensureOutputVars(&draft.Flow)
+	n += AutoWire(draft, cat) + ReconcileVars(draft) + reconcileFieldRefs(draft) +
+		fixDoubledSegmentPaths(draft) + fixWholeValueInterpolations(draft) + fixTemplateTypos(draft)
+	// Auto-set a block's timeout from the wait it already declares (e.g. a poll
+	// node with max_wait:1200) so long-running steps work without the developer
+	// also setting the per-node timeout by hand. Runs before portization so it
+	// reads the node's original argument object. Only fills an empty Timeout.
+	n += deriveNodeTimeouts(draft)
+	// Final step: lower the now-correct whole-value handoff templates to typed
+	// port wires (the default, template-free handoff). The reconcile passes above
+	// have already pointed each ref at the right producer/field; PortizeHandoffs
+	// turns those references into structural wires the runtime resolves without
+	// templating, retiring the whole template-handoff bug class on the default
+	// authoring path. Idempotent, so safe on every RepairWiring call.
+	n += PortizeHandoffs(draft, cat)
+	return n
+}
+
+// dottedPathRe matches a run of dotted field accesses inside a template, e.g.
+// `.notebook_id.notebook_id.id`.
+var dottedPathRe = regexp.MustCompile(`(?:\.[A-Za-z_][A-Za-z0-9_]*)+`)
+
+// fixDoubledSegmentPaths repairs the systemic "over-reached doubled segment"
+// template bug: a model wires a handoff as {{ .notebook_id.notebook_id.id }},
+// where `.notebook_id.notebook_id` is already the scalar id and the trailing `.id`
+// makes the runtime crash ("can't evaluate field id in type interface {}"). A
+// CONSECUTIVE repeated segment (`.X.X`) is the unmistakable signal the model
+// duplicated and then kept reaching — so we truncate everything after the doubled
+// pair, leaving {{ .notebook_id.notebook_id }}. Go's RE2 has no backreferences, so
+// the duplicate is found by walking segments. Applied only inside {{ … }} actions
+// (node inputs + edge predicates); a path with no consecutive duplicate is left
+// untouched. Returns the number of paths rewritten.
+func fixDoubledSegmentPaths(draft *Draft) int {
+	if draft == nil {
+		return 0
+	}
+	fixOne := func(s string) (string, bool) {
+		if !strings.Contains(s, "{{") {
+			return s, false
+		}
+		changed := false
+		out := templateActionRe.ReplaceAllStringFunc(s, func(act string) string {
+			return dottedPathRe.ReplaceAllStringFunc(act, func(path string) string {
+				segs := strings.Split(strings.TrimPrefix(path, "."), ".")
+				for i := 0; i+1 < len(segs); i++ {
+					// A consecutive duplicate WITH trailing segments = over-reach.
+					if segs[i] == segs[i+1] && i+2 < len(segs) {
+						segs = segs[:i+2]
+						changed = true
+						break
+					}
+				}
+				return "." + strings.Join(segs, ".")
+			})
+		})
+		return out, changed
+	}
+	fixed := 0
+	for i := range draft.Flow.Nodes {
+		if v, c := fixOne(draft.Flow.Nodes[i].Input); c {
+			draft.Flow.Nodes[i].Input = v
+			fixed++
+		}
+	}
+	for i := range draft.Flow.Edges {
+		if v, c := fixOne(draft.Flow.Edges[i].If); c {
+			draft.Flow.Edges[i].If = v
+			fixed++
+		}
+	}
+	return fixed
+}
+
+// varSanitizeRe matches characters not allowed in a flow-var identifier.
+var varSanitizeRe = regexp.MustCompile(`[^A-Za-z0-9_]+`)
+
+// ensureOutputVars guarantees every EXECUTABLE node (tool/agent/python) has an
+// Output var, so its result is stored in the flow vars and any downstream step —
+// a {{ .var }} template OR a typed-port wire — can read it. Without this, a node
+// with a blank output var produces a value the engine drops (applyFlowResult
+// skips Output==""), so a wired consumer receives null (the "{\"urls\": null}"
+// handoff failure). Defaults the var to a sanitized form of the node id, kept
+// unique; never overwrites a var the node already has; skips structural
+// (trigger/exit/branch) nodes, which produce no value. Returns the count assigned.
+func ensureOutputVars(f *Flow) int {
+	if f == nil {
+		return 0
+	}
+	used := map[string]bool{}
+	for _, n := range f.Nodes {
+		if v := strings.TrimSpace(n.Output); v != "" {
+			used[v] = true
+		}
+	}
+	fixed := 0
+	for i := range f.Nodes {
+		n := &f.Nodes[i]
+		if sdkr.IsStructuralKind(n.Kind) || strings.TrimSpace(n.Output) != "" {
+			continue
+		}
+		base := strings.Trim(varSanitizeRe.ReplaceAllString(strings.TrimSpace(n.ID), "_"), "_")
+		if base == "" {
+			base = "out"
+		}
+		name := base
+		for k := 2; used[name]; k++ {
+			name = base + "_" + itoa(k)
+		}
+		n.Output = name
+		used[name] = true
+		fixed++
+	}
+	return fixed
+}
+
+// wholeValueKeyRe matches a JSON object member whose value is EXACTLY one
+// template action and nothing else, capturing the key and the inner expression:
+// `"urls": "{{ .urls }}"` -> key="urls", inner=".urls". The inner [^{}"]+ forbids
+// other text/quotes, so prose like "Summarize {{ .x }}" (surrounding text) and a
+// quote immediately before {{ are required, so only WHOLE-value members match.
+var wholeValueKeyRe = regexp.MustCompile(`"([A-Za-z_][A-Za-z0-9_]*)"\s*:\s*"\{\{\s*([^{}"]+?)\s*\}\}"`)
+
+// bareVarRe matches a single whole flow var (".urls"), not a field path
+// (".notebook.id") — the latter is already a scalar and renders fine quoted.
+var bareVarRe = regexp.MustCompile(`^\.[A-Za-z_][A-Za-z0-9_]*$`)
+
+// isScalarKey reports whether a JSON key names a single scalar value (an id,
+// name, status, url, …). Passing a whole object into such a key means "that
+// object's <key>", which is a FIELD-level fix (.notebook.id), not a JSON dump —
+// so fixWholeValueInterpolations leaves these for the field-ref/LLM repair.
+func isScalarKey(k string) bool {
+	switch strings.ToLower(k) {
+	case "id", "name", "title", "status", "url", "uri", "key", "token", "query":
+		return true
+	}
+	lk := strings.ToLower(k)
+	return strings.HasSuffix(lk, "_id") || strings.HasSuffix(lk, "id")
+}
+
+// fixWholeValueInterpolations is the framework-level fix for the nastiest
+// data-handoff bug: a tool/python step whose input passes a WHOLE upstream
+// COLLECTION through as a quoted interpolation — `{"urls": "{{ .urls }}"}`. When
+// that value is a list/object, Go's text/template renders it as
+// `[map[title:… url:…] …]` (Go syntax, NOT JSON), so the consuming step receives
+// garbage and fails ("No valid URLs to process"). The user should never have to
+// know to type `toJson`/unquote — so we rewrite it automatically:
+//
+//	"urls": "{{ .urls }}"   ->   "urls": {{ toJson .urls }}
+//
+// which emits real JSON. It fires ONLY when the value is a bare WHOLE var (".urls",
+// not a field path) AND the destination key is NOT scalar-ish (so `"id":
+// "{{ .notebook }}"` is left for the field-level repair to make `.notebook.id`).
+// Applied only to tool/python inputs (JSON); agent prompts (prose) are untouched.
+// Idempotent. Returns the number of members rewritten.
+func fixWholeValueInterpolations(draft *Draft) int {
+	if draft == nil {
+		return 0
+	}
+	fixed := 0
+	for i := range draft.Flow.Nodes {
+		n := &draft.Flow.Nodes[i]
+		if n.Kind != sdkr.FlowNodeTool && n.Kind != sdkr.FlowNodePython {
+			continue
+		}
+		if !strings.Contains(n.Input, "{{") {
+			continue
+		}
+		out := wholeValueKeyRe.ReplaceAllStringFunc(n.Input, func(m string) string {
+			sub := wholeValueKeyRe.FindStringSubmatch(m)
+			if sub == nil {
+				return m
+			}
+			key := sub[1]
+			inner := strings.TrimSpace(sub[2])
+			// Normalize: strip an existing leading toJson/json so we don't double it.
+			inner = strings.TrimSpace(strings.TrimPrefix(inner, "toJson"))
+			inner = strings.TrimSpace(strings.TrimPrefix(inner, "json"))
+			// Only a bare WHOLE var into a NON-scalar key. A field path
+			// (.notebook.id) is already a scalar and fine; a scalar key wants a
+			// field, not a JSON dump.
+			if !bareVarRe.MatchString(inner) || isScalarKey(key) {
+				return m
+			}
+			fixed++
+			return `"` + key + `": {{ toJson ` + inner + ` }}`
+		})
+		n.Input = out
+	}
+	return fixed
+}
+
+// objectFieldRefs are bare field names a model commonly references as a LEADING
+// template ref (e.g. {{ .id }}) when it actually means "the <field> of an object
+// produced upstream" (e.g. {{ .notebook.id }}). These are the dangling refs that
+// hard-block an otherwise-correct create→use sequence. "Format" is deliberately
+// excluded — it has no obvious object owner and is usually a hallucination, left
+// for the LLM/user.
+var objectFieldRefs = map[string]bool{
+	"id": true, "url": true, "uri": true, "status": true,
+	"title": true, "name": true, "audio_url": true, "audiourl": true,
+}
+
+// reconcileFieldRefs rewrites a DANGLING leading bare-field ref ({{ .id }}, with
+// no node producing "id") to {{ .<producer>.id }}, choosing <producer> as the
+// EARLIEST upstream (ancestor) producer — i.e. the create-style step that owns
+// the object. This deterministically fixes the create→add→use template dance
+// (where every later step references the created object's {{ .id }}) without the
+// LLM. Conservative: only curated object-field names, only when the earliest
+// ancestor producer is UNIQUE (no tie), so it never guesses on an ambiguous
+// graph. Returns the number of references rewritten.
+func reconcileFieldRefs(draft *Draft) int {
+	if draft == nil || len(draft.Flow.Nodes) == 0 {
+		return 0
+	}
+	producer := map[string]string{} // output var -> producing node id
+	for _, n := range draft.Flow.Nodes {
+		if v := strings.TrimSpace(n.Output); v != "" {
+			producer[v] = n.ID
+		}
+	}
+	anc := ancestors(draft.Flow.Edges, draft.Flow.Nodes)
+
+	fixed := 0
+	for i := range draft.Flow.Nodes {
+		n := &draft.Flow.Nodes[i]
+		for _, ref := range referencedVars(n.Input) {
+			if _, produced := producer[ref]; produced {
+				continue // not dangling
+			}
+			if !objectFieldRefs[strings.ToLower(ref)] {
+				continue // not a known object field — leave for LLM/user
+			}
+			// Candidate ancestor producers, ranked by how early they run (fewest
+			// ancestors = closest to the trigger = the create step).
+			type cand struct {
+				varName string
+				depth   int
+			}
+			var cands []cand
+			for v, pid := range producer {
+				if a := anc[n.ID]; a != nil && a[pid] {
+					cands = append(cands, cand{v, len(anc[pid])})
+				}
+			}
+			if len(cands) == 0 {
+				continue
+			}
+			sort.Slice(cands, func(a, b int) bool {
+				if cands[a].depth != cands[b].depth {
+					return cands[a].depth < cands[b].depth
+				}
+				return cands[a].varName < cands[b].varName
+			})
+			if len(cands) > 1 && cands[0].depth == cands[1].depth {
+				continue // ambiguous earliest producer — don't guess
+			}
+			if v := prefixFieldRef(n.Input, ref, cands[0].varName); v != n.Input {
+				n.Input = v
+				fixed++
+			}
+		}
+	}
+	return fixed
+}
+
+// prefixFieldRef rewrites a LEADING field ref `.<field>` to `.<prod>.<field>`,
+// only inside {{ … }} actions (so real text/URLs are never touched) and only
+// when the dot is at an action boundary (after {{ , whitespace, '(' or '|'),
+// which is exactly where a leading ref appears — never the trailing `.id` of an
+// existing chain like `.notebook.id`.
+func prefixFieldRef(input, field, prod string) string {
+	if !strings.Contains(input, "{{") {
+		return input
+	}
+	inner := regexp.MustCompile(`(^|[\s({|])\.` + regexp.QuoteMeta(field) + `\b`)
+	return templateActionRe.ReplaceAllStringFunc(input, func(act string) string {
+		return inner.ReplaceAllString(act, `${1}.`+prod+`.`+field)
+	})
 }
 
 // templateActionRe matches a {{ … }} template action (no nested braces).

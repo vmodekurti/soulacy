@@ -92,6 +92,11 @@ type Engine struct {
 	sink        EventSink
 	sessions    sync.Map // sessionID → *Session
 
+	// flowTraces holds the per-block run traces of recent flow runs (Story S0.3
+	// Phase 1 logging), lazily created via ftStore(). In-memory + bounded.
+	flowTraceOnce sync.Once
+	flowTraces    *flowTraceStore
+
 	// Skills support
 	skillLoader SkillLoader
 	builtins    []BuiltinTool
@@ -605,6 +610,38 @@ func (e *Engine) RunTool(ctx context.Context, toolName string, argsJSON string) 
 			return json.RawMessage(raw), nil
 		}
 	}
+
+	// MCP tools (mcp__<server>__<tool>) are not in the builtin registry — route
+	// them to the MCP client, mirroring the agent-loop runTool path. Without this,
+	// callers that use the PUBLIC RunTool (notably the Studio "Build until it works"
+	// verifier, via studioRealRunner) would get "tool not found" for every MCP tool
+	// and could never verify an MCP-based flow. Honors the per-node timeout override
+	// carried on ctx and returns the same actionable deadline message.
+	if e.mcpClient != nil && strings.HasPrefix(toolName, mcp.FullNamePrefix) {
+		args := map[string]any{}
+		if strings.TrimSpace(argsJSON) != "" {
+			if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+				return nil, fmt.Errorf("RunTool: decode args for %q: %w", toolName, err)
+			}
+		}
+		to := e.effectiveToolTimeout(ctx)
+		tctx, cancel := context.WithTimeout(ctx, to)
+		defer cancel()
+		out, callErr := e.mcpClient.Call(tctx, toolName, args)
+		if callErr != nil {
+			return nil, toolTimeoutError(toolName, to, ctx.Err(), callErr)
+		}
+		trimmed := strings.TrimSpace(out)
+		if json.Valid([]byte(trimmed)) {
+			return json.RawMessage(trimmed), nil
+		}
+		wrapped, merr := json.Marshal(out)
+		if merr != nil {
+			return nil, fmt.Errorf("RunTool: marshal MCP result for %q: %w", toolName, merr)
+		}
+		return json.RawMessage(wrapped), nil
+	}
+
 	return nil, fmt.Errorf("tool %q not found", toolName)
 }
 
@@ -625,6 +662,15 @@ func (e *Engine) RunInlinePython(ctx context.Context, code string, argsJSON []by
 	}
 	if len(argsJSON) == 0 {
 		argsJSON = []byte("{}")
+	}
+	// Respect an explicit per-node timeout override when the flow node set one
+	// (e.g. a long data-transform block). Only applied when present, so inline
+	// python with no declared timeout keeps its prior behavior (bounded only by
+	// the run context).
+	if d, ok := toolTimeoutOverride(ctx); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, d)
+		defer cancel()
 	}
 	out, err := e.pyExecutor.Run(ctx, "", "run", code, argsJSON)
 	if err != nil {
@@ -1767,6 +1813,14 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	seen := make(map[string]string)
 	var seenMu sync.Mutex
 
+	// Per-tool repeat counter (loop guard for weak models). The exact-args dedup
+	// above misses a model that RE-WORDS its arguments every turn (e.g. gemma
+	// reissuing web_search with slightly different queries). When a non-stateful
+	// tool is called more than repeatToolNudgeAt times, we inject a one-time
+	// system steer telling the model it already has enough from that tool.
+	toolNameCount := make(map[string]int)
+	const repeatToolNudgeAt = 3
+
 	var finalContent string
 	for turn := 0; turn < maxTurns; turn++ {
 		// S3.1 — budget gate. Check BEFORE issuing the call so we never spend
@@ -1971,6 +2025,26 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		// Execute each tool call
 		toolResults := e.executeToolCalls(ctx, def, msg.SessionID, resp.ToolCalls, seen, &seenMu)
 
+		// Loop guard: count repeats of each (non-stateful) tool across the run and,
+		// the first time one crosses the threshold, steer the model off it. This
+		// catches the "reworded same search 10 times" failure that the exact-args
+		// dedup can't, without ever blocking a legitimately varied tool sequence.
+		var nudges []string
+		for _, tc := range resp.ToolCalls {
+			name := normalizeToolCallName(tc.Name)
+			if name == "shell_exec" || name == "run_script" || name == "http_request" {
+				continue
+			}
+			toolNameCount[name]++
+			if toolNameCount[name] == repeatToolNudgeAt+1 {
+				nudges = append(nudges, fmt.Sprintf(
+					"You have called %q %d times already and have enough from it. Do NOT call %q again — "+
+						"use a DIFFERENT skill/tool to get the data you still need (e.g. read_skill for a specialized skill), "+
+						"or write your final answer now from what you already have. Do not fabricate data you did not retrieve.",
+					name, toolNameCount[name], name))
+			}
+		}
+
 		// Append assistant + tool result turns for next loop iteration.
 		// NOTE: release sess.mu BEFORE calling buildContext — buildContext locks
 		// sess.mu itself, and Go mutexes are not reentrant, so holding it here
@@ -1983,6 +2057,11 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 			turns = append(turns, llm.ChatMessage{
 				Role: "tool", Content: tr.Content, ToolCallID: tr.CallID, Name: tr.Name,
 			})
+		}
+		// A loop-guard steer (if any) rides along as a system turn so the model
+		// sees it on the very next iteration.
+		for _, n := range nudges {
+			turns = append(turns, llm.ChatMessage{Role: "system", Content: n})
 		}
 		e.appendHistoryLocked(sess, turns...)
 		sess.mu.Unlock()
@@ -2015,10 +2094,23 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	}
 
 	if strings.TrimSpace(finalContent) == "" {
-		finalContent = "(no final response produced)"
+		// Synthesis still produced nothing usable. Rather than throw away a
+		// completed run's work, fall back to the best content we already have:
+		// the last substantive assistant message, else a concise digest of the
+		// gathered tool results. Keep the warning event for observability but
+		// make the reply useful to the user.
+		finalContent = bestEffortFinal(chatMsgs)
+		stage := "loop"
+		level := "warn"
+		errText := "synthesis empty; recovered best-effort final from context"
+		if strings.TrimSpace(finalContent) == "" {
+			finalContent = "(no final response produced)"
+			level = "error"
+			errText = "no final response produced after synthesis"
+		}
 		e.sink.Emit(message.Event{
-			Type: "error", AgentID: msg.AgentID, SessionID: msg.SessionID,
-			Payload:   map[string]any{"stage": "loop", "error": "no final response produced after synthesis"},
+			Type: level, AgentID: msg.AgentID, SessionID: msg.SessionID,
+			Payload:   map[string]any{"stage": stage, "error": errText},
 			Timestamp: time.Now().UTC(),
 		})
 	}
@@ -2183,6 +2275,58 @@ func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess 
 	return reply
 }
 
+// bestEffortFinal recovers a usable reply from the conversation context when
+// every synthesis attempt yielded empty content (e.g. a reasoning model that
+// kept spending its turns inside <think> blocks). It prefers the last
+// substantive assistant message; failing that, it builds a concise digest of
+// the gathered tool results so the user receives the information that was
+// collected instead of "(no final response produced)". Returns "" only when
+// there is genuinely nothing to surface.
+func bestEffortFinal(chatMsgs []llm.ChatMessage) string {
+	// 1) Last substantive assistant message.
+	for i := len(chatMsgs) - 1; i >= 0; i-- {
+		m := chatMsgs[i]
+		if m.Role == "assistant" {
+			if c := strings.TrimSpace(m.Content); c != "" {
+				return c
+			}
+		}
+	}
+	// 2) Digest of tool results (most recent first, capped for sanity).
+	const maxToolResults = 6
+	const maxPerResult = 1200
+	var collected []string
+	for i := len(chatMsgs) - 1; i >= 0 && len(collected) < maxToolResults; i-- {
+		m := chatMsgs[i]
+		if m.Role != "tool" {
+			continue
+		}
+		c := strings.TrimSpace(m.Content)
+		if c == "" {
+			continue
+		}
+		if len(c) > maxPerResult {
+			c = c[:maxPerResult] + "…"
+		}
+		label := m.Name
+		if label == "" {
+			label = "result"
+		}
+		collected = append(collected, "- "+label+": "+c)
+	}
+	if len(collected) == 0 {
+		return ""
+	}
+	// Reverse back to chronological order for readability.
+	for l, r := 0, len(collected)-1; l < r; l, r = l+1, r-1 {
+		collected[l], collected[r] = collected[r], collected[l]
+	}
+	var b strings.Builder
+	b.WriteString("Based on the information gathered:\n\n")
+	b.WriteString(strings.Join(collected, "\n"))
+	return b.String()
+}
+
 // finalSynthesis makes one LLM call with NO tools, forcing the model to produce
 // a plain-text answer from the context it already gathered. Used when a model
 // won't stop emitting tool calls on its own (common with local/Ollama models).
@@ -2230,6 +2374,36 @@ func (e *Engine) finalSynthesis(ctx context.Context, def *agent.Definition, agen
 		},
 		Timestamp: time.Now().UTC(),
 	})
+
+	// Recovery: a reasoning model (qwen3, deepseek-r1) can burn its whole
+	// turn inside a <think> block and hand back EMPTY content even though it
+	// produced hundreds of tokens. The provider parser now surfaces post-think
+	// text, but if content is STILL empty do ONE retry with an explicit,
+	// think-discouraging instruction so a completed run is never discarded.
+	if strings.TrimSpace(resp.Content) == "" {
+		e.sink.Emit(message.Event{
+			Type: "warn", AgentID: agentID, SessionID: sessionID,
+			Payload:   map[string]any{"stage": "final-synthesis", "error": "empty content", "retry": true},
+			Timestamp: time.Now().UTC(),
+		})
+		retryMsgs := make([]llm.ChatMessage, 0, len(chatMsgs)+1)
+		retryMsgs = append(retryMsgs, chatMsgs...)
+		retryMsgs = append(retryMsgs, llm.ChatMessage{
+			Role: "system",
+			Content: "Output ONLY the final report as plain text. Do not call tools. " +
+				"Do not include any <think> blocks or analysis — write the user-facing answer now.",
+		})
+		retryResp, retryErr := e.llmRouter.Complete(ctx, def.LLM.Provider, llm.CompletionRequest{
+			Model:       def.LLM.Model,
+			Messages:    retryMsgs,
+			Temperature: def.LLM.Temperature,
+			MaxTokens:   def.LLM.MaxTokens,
+			// Tools still omitted so the model must answer in text.
+		})
+		if retryErr == nil && strings.TrimSpace(retryResp.Content) != "" {
+			return retryResp.Content
+		}
+	}
 	return resp.Content
 }
 
@@ -2806,6 +2980,9 @@ func (e *Engine) executeToolCalls(ctx context.Context, def *agent.Definition, se
 
 		results[i] = message.ToolResult{CallID: tc.ID, Name: tc.Name, Content: result, IsError: isErr}
 
+		// (The ToolObserver fires inside runTool so it captures both reasoning-loop
+		// and fixed-workflow tool calls uniformly.)
+
 		e.sink.Emit(message.Event{
 			Type: "tool.result", AgentID: def.ID, SessionID: sessionID,
 			Payload: results[i], Timestamp: time.Now().UTC(),
@@ -2869,15 +3046,98 @@ func normalizeWebSearchArgs(args map[string]any) map[string]any {
 	return args
 }
 
+// toolTimeoutOverrideKey carries a per-node tool-timeout override down the
+// context to runTool, so a single flow node can widen (or tighten) its own
+// execution budget without changing the global runtime.tool_timeout.
+type toolTimeoutOverrideKey struct{}
+
+// WithToolTimeout returns a context that makes d the tool-timeout for any tool or
+// inline-python call executed under it. d<=0 is a no-op (keeps the global).
+func WithToolTimeout(ctx context.Context, d time.Duration) context.Context {
+	if d <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, toolTimeoutOverrideKey{}, d)
+}
+
+type toolObserverKey struct{}
+
+// ToolObserver is invoked after each tool call during a run with the call, its
+// result content, and whether it errored. It is a lightweight, in-process,
+// synchronous tap (distinct from the async event hub) so a caller like Studio's
+// "try it" can collect the exact sequence of skills/tools an agent invoked —
+// with arguments and a result preview — to answer "did it route right, and what
+// did it actually do?".
+type ToolObserver func(call message.ToolCall, result string, isError bool)
+
+// WithToolObserver attaches a ToolObserver for the duration of a run.
+func WithToolObserver(ctx context.Context, fn ToolObserver) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, toolObserverKey{}, fn)
+}
+
+func toolObserverFrom(ctx context.Context) ToolObserver {
+	fn, _ := ctx.Value(toolObserverKey{}).(ToolObserver)
+	return fn
+}
+
+// toolTimeoutOverride reads a per-node override set by WithToolTimeout.
+func toolTimeoutOverride(ctx context.Context) (time.Duration, bool) {
+	d, ok := ctx.Value(toolTimeoutOverrideKey{}).(time.Duration)
+	return d, ok && d > 0
+}
+
+// effectiveToolTimeout is the timeout a tool call should use: a per-node override
+// when present, otherwise the engine's global tool_timeout.
+func (e *Engine) effectiveToolTimeout(ctx context.Context) time.Duration {
+	if d, ok := toolTimeoutOverride(ctx); ok {
+		return d
+	}
+	return e.toolTimeout
+}
+
+// toolTimeoutError turns a bare "context deadline exceeded" from a tool call
+// into an actionable message that names the clock that fired (the per-tool
+// tool_timeout) and how to extend it — mirroring the LLM-call diagnostics so a
+// slow-by-design tool (e.g. NotebookLM research/audio polling) doesn't leave the
+// user guessing. It only enriches a deadline error caused by OUR tool timeout:
+// when the OUTER run context is already done (outerCtxErr != nil) the cause is
+// the run_timeout or a cancel, so the error passes through unchanged, as does any
+// non-deadline error.
+func toolTimeoutError(name string, d time.Duration, outerCtxErr, callErr error) error {
+	if callErr == nil {
+		return nil
+	}
+	if outerCtxErr == nil && errors.Is(callErr, context.DeadlineExceeded) {
+		return fmt.Errorf("tool %q exceeded the %s tool_timeout — for slow-by-design tools (e.g. NotebookLM research/audio polling) raise runtime.tool_timeout, set a longer per-tool timeout, or poll in a bounded loop: %w", name, d, callErr)
+	}
+	return callErr
+}
+
+// runTool dispatches a single tool call, notifying any in-context ToolObserver
+// with the call + result. This wraps runToolDispatch so EVERY tool execution —
+// reasoning-loop OR fixed-workflow (both go through here) — is observed from one
+// place, which powers Studio's "try it" trace for agents and workflows alike.
 func (e *Engine) runTool(ctx context.Context, def *agent.Definition, sessionID string, call message.ToolCall) (string, error) {
+	out, err := e.runToolDispatch(ctx, def, sessionID, call)
+	if obs := toolObserverFrom(ctx); obs != nil {
+		obs(call, out, err != nil)
+	}
+	return out, err
+}
+
+func (e *Engine) runToolDispatch(ctx context.Context, def *agent.Definition, sessionID string, call message.ToolCall) (string, error) {
 	// MCP tools — namespaced as mcp__<server>__<tool>. Route to the MCP client.
 	if e.mcpClient != nil && strings.HasPrefix(call.Name, mcp.FullNamePrefix) {
 		if !mcpToolAllowed(def, call.Name) {
 			return "", fmt.Errorf("MCP tool %q is not allowed for agent %q", call.Name, def.ID)
 		}
-		tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+		tctx, cancel := context.WithTimeout(ctx, e.effectiveToolTimeout(ctx))
 		defer cancel()
-		return e.mcpClient.Call(tctx, call.Name, call.Arguments)
+		out, callErr := e.mcpClient.Call(tctx, call.Name, call.Arguments)
+		return out, toolTimeoutError(call.Name, e.toolTimeout, ctx.Err(), callErr)
 	}
 
 	// Plugin tools — namespaced as plugin__<pluginID>__<tool>. Execute as a
@@ -2915,7 +3175,7 @@ print(result if isinstance(result, str) else json.dumps(result))
 			limits := e.sandboxLimits
 			limits.EnvAllow = def.Env
 			argv := sandbox.Wrap(e.selfPath, limits, []string{e.pythonBin, "-c", script})
-			tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+			tctx, cancel := context.WithTimeout(ctx, e.effectiveToolTimeout(ctx))
 			defer cancel()
 			cmd := exec.CommandContext(tctx, argv[0], argv[1:]...)
 			cmd.Stdin = bytes.NewReader(argsJSON)
@@ -2950,7 +3210,7 @@ print(result if isinstance(result, str) else json.dumps(result))
 		}
 
 		tstart := time.Now()
-		tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+		tctx, cancel := context.WithTimeout(ctx, e.effectiveToolTimeout(ctx))
 		defer cancel()
 		result, err := b.Handler(tctx, call.Arguments)
 
@@ -3004,7 +3264,7 @@ print(result if isinstance(result, str) else json.dumps(result))
 		}
 
 		tstart := time.Now()
-		tctx, cancel := context.WithTimeout(ctx, e.toolTimeout)
+		tctx, cancel := context.WithTimeout(ctx, e.effectiveToolTimeout(ctx))
 		defer cancel()
 		result, err := b.Handler(tctx, call.Arguments)
 
@@ -3085,10 +3345,11 @@ print(result if isinstance(result, str) else json.dumps(result))
 		return "", fmt.Errorf("tool %q has neither python_file nor inline", call.Name)
 	}
 
-	// Per-tool timeout (toolDef.Timeout, e.g. "30m") overrides the global
-	// runtime.tool_timeout. Useful for slow-by-design tools (notebooklm audio
-	// generation, large data exports) so we don't have to weaken the global
-	// safety net for every tool.
+	// Timeout precedence (most specific wins): a per-NODE override (FlowNode.Timeout,
+	// carried on the context) beats a per-TOOL timeout (toolDef.Timeout, e.g. "30m"),
+	// which beats the global runtime.tool_timeout. This lets a developer fix one slow
+	// block — a notebooklm audio/research poll, a large export — without weakening the
+	// global safety net for every other node.
 	timeout := e.toolTimeout
 	if toolDef.Timeout != "" {
 		if d, perr := time.ParseDuration(toolDef.Timeout); perr == nil && d > 0 {
@@ -3099,6 +3360,9 @@ print(result if isinstance(result, str) else json.dumps(result))
 				zap.String("timeout", toolDef.Timeout),
 			)
 		}
+	}
+	if d, ok := toolTimeoutOverride(ctx); ok {
+		timeout = d // the node's own budget is the most specific — it wins
 	}
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
