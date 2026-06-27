@@ -18,6 +18,7 @@ import (
 
 	reasoning "github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/studio/codeclass"
+	"github.com/soulacy/soulacy/pkg/agent"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
@@ -185,6 +186,11 @@ type Draft struct {
 	StepTimeout  string `json:"step_timeout,omitempty"`
 	TotalTimeout string `json:"total_timeout,omitempty"`
 	MaxTurns     int    `json:"max_turns,omitempty"`
+	// LLM carries the agent's provider/model/temperature/etc. so they survive a
+	// Studio round-trip. Without this, FromAgentDefinition dropped the block and
+	// ToAgentDefinition re-emitted a hard-coded default, silently clobbering a
+	// provider/model the user set on the Agents screen or directly in SOUL.yaml.
+	LLM agent.LLMConfig `json:"llm,omitempty"`
 }
 
 // IsAgent reports whether the draft is a reasoning agent (ReAct/Plan-Execute)

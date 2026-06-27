@@ -21,6 +21,19 @@ import (
 // a human-readable name becomes a stable, filesystem-safe agent id.
 var slugRE = regexp.MustCompile(`[^a-z0-9]+`)
 
+// llmConfigFor derives the saved agent's LLM block from the draft. The draft's
+// LLM is populated by FromAgentDefinition on load, so an existing agent's
+// provider/model/etc. survive a Studio round-trip instead of being reset. For a
+// freshly generated draft (no temperature set yet) it falls back to the historic
+// Studio default of 0.7 so behaviour is unchanged for new agents.
+func llmConfigFor(draft Draft) agent.LLMConfig {
+	llm := draft.LLM
+	if llm.Temperature == 0 {
+		llm.Temperature = 0.7
+	}
+	return llm
+}
+
 // StudioPrivilegeAckLabel is the agent-definition label key under which
 // Studio records that the USER acknowledged, at save time, that this
 // workflow is Privileged-tier and bound to a (non-web) channel.
@@ -92,9 +105,7 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		Enabled:  false,
 		MaxTurns: 15,
 		Memory:   agent.MemoryPolicy{MaxTokens: 8000},
-		LLM: agent.LLMConfig{
-			Temperature: 0.7,
-		},
+		LLM:      llmConfigFor(draft),
 	}
 
 	// Only attach a workflow block when there's an actual graph. A 0-node draft
@@ -195,7 +206,7 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 		Enabled:         false, // staged for review, like every Studio save
 		MaxTurns:        maxTurnsOr(draft.MaxTurns, 15),
 		Memory:          agent.MemoryPolicy{MaxTokens: 8000},
-		LLM:             agent.LLMConfig{Temperature: 0.7},
+		LLM:             llmConfigFor(draft),
 		// The reasoning loop — the whole point. No Workflow block. Studio sets
 		// sensible reasoning timeouts up front (the engine's bare defaults of
 		// 30s/step and 180s total are tuned for fast cloud calls and trip the

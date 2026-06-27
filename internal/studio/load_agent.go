@@ -30,6 +30,10 @@ func FromAgentDefinition(def agent.Definition) Draft {
 		RawIntent: def.StudioRawIntent,
 		Trigger:  Trigger{Type: triggerTypeFromKind(def.Trigger)},
 		Channels: append([]string(nil), def.Channels...),
+		// Preserve the agent's LLM config (provider/model/temperature/...) so a
+		// Studio round-trip is lossless. Applies to BOTH the ReAct and workflow
+		// branches below since they share this initial construction.
+		LLM: def.LLM,
 	}
 	if d.Name == "" {
 		d.Name = def.ID
