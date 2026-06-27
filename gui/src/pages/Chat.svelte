@@ -1,5 +1,6 @@
 <script>
   import { onDestroy, onMount, tick } from 'svelte'
+  import { slide } from 'svelte/transition'
   import { api, apiFetch, createEventSocket } from '../lib/api.js'
   import { chatActiveThreadId, chatThreads, connected } from '../lib/stores.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
@@ -417,6 +418,26 @@
     return ''
   }
 
+  // Human-readable label for what the agent is doing *right now*, derived from
+  // the most recent runtime event. Drives the pulsing live row while a run is
+  // in flight, so the panel reads like a live status instead of a dead log.
+  function liveActivity(thinking) {
+    const evs = thinking?.events || []
+    if (!evs.length) return 'Starting up…'
+    const last = evs[evs.length - 1]
+    const p = last.payload || {}
+    switch (last.type) {
+      case 'tool.call':   return `Running ${p.name || 'tool'}…`
+      case 'llm.call':    return `Thinking… (${p.model || 'model'}${p.turn ? `, turn ${p.turn}` : ''})`
+      case 'tool.result':
+      case 'tool.log':    return 'Reading the result…'
+      case 'llm.result':  return p.tool_calls ? 'Preparing tool calls…' : 'Writing the answer…'
+      case 'reasoning.start':
+      case 'reasoning.step': return 'Reasoning…'
+      default:            return 'Working…'
+    }
+  }
+
   function snippet(s, n = 180) {
     s = String(s ?? '')
     return s.length > n ? s.slice(0, n) + '…' : s
@@ -739,29 +760,30 @@
             <div class="bubble">
               <div class="typing"><span/><span/><span/></div>
               {#if activeThread?.thinking}
-                <div class="thinking open">
+                <div class="thinking open live">
                   <button class="thinking-head" type="button" on:click={() => toggleThinking(activeThread.thinking)}>
                     <span class="chev">{activeThread.thinking.open ? '▾' : '▸'}</span>
+                    <span class="live-dot" aria-hidden="true"></span>
                     <span class="thinking-title">Thinking</span>
                     <span class="thinking-meta">{thinkingSummary(activeThread.thinking)}</span>
                   </button>
                   {#if activeThread.thinking.open}
                     <div class="thinking-body">
-                      {#if activeThread.thinking.events.length === 0}
-                        <div class="thinking-empty">Waiting for the first runtime event…</div>
-                      {:else}
-                        {#each activeThread.thinking.events as ev}
-                          <div class="think-event {eventClass(ev.type)}">
-                            <div class="think-main">
-                              <span class="think-type">{ev.type}</span>
-                              <span class="think-text">{eventTitle(ev)}</span>
-                            </div>
-                            {#if eventDetail(ev)}
-                              <div class="think-detail">{eventDetail(ev)}</div>
-                            {/if}
+                      {#each activeThread.thinking.events as ev (ev)}
+                        <div class="think-event {eventClass(ev.type)}" transition:slide|local={{ duration: 220 }}>
+                          <div class="think-main">
+                            <span class="think-type">{ev.type}</span>
+                            <span class="think-text">{eventTitle(ev)}</span>
                           </div>
-                        {/each}
-                      {/if}
+                          {#if eventDetail(ev)}
+                            <div class="think-detail">{eventDetail(ev)}</div>
+                          {/if}
+                        </div>
+                      {/each}
+                      <div class="think-live">
+                        <span class="think-spinner" aria-hidden="true"></span>
+                        <span class="think-live-text">{liveActivity(activeThread.thinking)}</span>
+                      </div>
                     </div>
                   {/if}
                 </div>
@@ -1010,6 +1032,53 @@
     line-height: 1.35;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  /* ── Live in-progress indicator ──────────────────────────────────────── */
+  .thinking.live { border-color: rgba(139, 133, 255, .4); }
+  .thinking.live .thinking-head { grid-template-columns: 16px 8px auto 1fr; }
+  .live-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #8b85ff;
+    animation: live-pulse 1.5s ease-out infinite;
+  }
+  @keyframes live-pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(139, 133, 255, .55); }
+    70%  { box-shadow: 0 0 0 6px rgba(139, 133, 255, 0); }
+    100% { box-shadow: 0 0 0 0 rgba(139, 133, 255, 0); }
+  }
+  .think-live {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    padding: .4rem .45rem;
+    border-radius: 6px;
+    background: linear-gradient(90deg, rgba(139, 133, 255, .13), rgba(139, 133, 255, .03));
+    border-left: 2px solid #8b85ff;
+  }
+  .think-spinner {
+    width: 12px;
+    height: 12px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    border: 2px solid rgba(139, 133, 255, .28);
+    border-top-color: #8b85ff;
+    animation: think-spin .7s linear infinite;
+  }
+  @keyframes think-spin { to { transform: rotate(360deg); } }
+  .think-live-text {
+    color: #cfd2ee;
+    font-size: .75rem;
+    line-height: 1.3;
+    animation: live-breathe 1.9s ease-in-out infinite;
+  }
+  @keyframes live-breathe { 0%, 100% { opacity: .72; } 50% { opacity: 1; } }
+
+  @media (prefers-reduced-motion: reduce) {
+    .live-dot, .think-spinner, .think-live-text { animation: none; }
+    .think-spinner { border-top-color: #8b85ff; }
   }
 
   /* Typing indicator */
