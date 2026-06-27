@@ -84,6 +84,9 @@ function ensureMermaid() {
     securityLevel: 'strict',
     theme: 'dark',
     fontFamily: 'inherit',
+    // Throw on bad diagrams instead of injecting Mermaid's raw "Syntax error in
+    // text" graphic — we render our own clean fallback in the catch below.
+    suppressErrorRendering: true,
   })
   mermaidReady = true
 }
@@ -264,6 +267,69 @@ function showBlockError(pre, msg) {
   pre.replaceWith(note)
 }
 
+// Parse a Mermaid `xychart-beta` block into an ECharts option, so a model that
+// insists on emitting Mermaid for data (some coder models do, even via a script)
+// still gets a real themed chart instead of a fragile Mermaid render. Returns
+// null when the block isn't a usable xychart.
+//
+// Grammar handled (Mermaid xychart-beta):
+//   xychart-beta [horizontal]
+//   title "…"
+//   x-axis ["a","b",…]        (or a bare/numeric list)
+//   y-axis "label" min --> max  (label/range ignored — ECharts autoscales)
+//   line  [n, n, …]            (one or more series)
+//   bar   [n, n, …]
+function xychartToECharts(src) {
+  const lines = String(src)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  let title = ''
+  let labels = []
+  let horizontal = false
+  const series = []
+  for (const line of lines) {
+    if (/^xychart/i.test(line)) {
+      if (/\bhorizontal\b/i.test(line)) horizontal = true
+      continue
+    }
+    let m
+    if ((m = line.match(/^title\s+"?(.+?)"?\s*$/i))) {
+      title = m[1]
+    } else if ((m = line.match(/^x-axis\s+\[(.*)\]\s*$/i))) {
+      labels = m[1]
+        .split(',')
+        .map((t) => t.trim().replace(/^["']|["']$/g, ''))
+        .filter((t) => t !== '')
+    } else if (/^y-axis\b/i.test(line)) {
+      // axis label/range — ECharts handles scaling; ignore.
+    } else if ((m = line.match(/^line\s+\[(.*)\]/i))) {
+      series.push({ type: 'line', data: xyNums(m[1]) })
+    } else if ((m = line.match(/^bar\s+\[(.*)\]/i))) {
+      series.push({ type: 'bar', data: xyNums(m[1]) })
+    }
+  }
+  if (!series.length || series.every((s) => s.data.length === 0)) return null
+
+  const cat = { type: 'category', data: labels }
+  const val = { type: 'value' }
+  const option = {
+    series: series.map((s) => ({ type: s.type, data: s.data })),
+    // Mermaid "horizontal" swaps the axes.
+    xAxis: horizontal ? val : cat,
+    yAxis: horizontal ? cat : val,
+  }
+  if (title) option.title = { text: title }
+  return option
+}
+
+function xyNums(s) {
+  return s
+    .split(',')
+    .map((t) => parseFloat(t.trim()))
+    .filter((n) => !Number.isNaN(n))
+}
+
 /**
  * Svelte action for a container holding parsed markdown. Pass the message text
  * as the parameter (`use:richRenderer={msg.text}`) so it re-runs when the bubble
@@ -287,6 +353,29 @@ export function richRenderer(node) {
       } catch (_) {
         /* already gone */
       }
+    }
+  }
+
+  // Replace an element with a themed, responsive ECharts chart and track it for
+  // cleanup. Shared by the ```chart path and the Mermaid-xychart conversion.
+  function mountEChart(replaceEl, option) {
+    const wrap = document.createElement('div')
+    wrap.className = 'chart-canvas'
+    const host = document.createElement('div')
+    host.className = 'chart-echarts'
+    wrap.appendChild(host)
+    replaceEl.replaceWith(wrap)
+    try {
+      const inst = echarts.init(host, null, { renderer: 'canvas' })
+      inst.setOption(themeEChartsOption(option))
+      let ro
+      if (typeof ResizeObserver !== 'undefined') {
+        ro = new ResizeObserver(() => inst.resize())
+        ro.observe(wrap)
+      }
+      liveCharts.push({ inst, ro })
+    } catch (err) {
+      showBlockError(wrap, 'Chart could not be rendered: ' + ((err && err.message) || 'invalid option'))
     }
   }
 
@@ -321,6 +410,22 @@ export function richRenderer(node) {
         pre.dataset.done = '1'
         const src = (codeEl.textContent || '').trim()
         if (!src) return
+        // Mermaid is for DIAGRAMS, not data plots. Models sometimes emit an
+        // `xychart` to chart data — which is the generate_chart tool's job and
+        // also frequently fails to parse. Don't even try: show an on-message note
+        // so the user never sees a raw Mermaid error and the intent is clear.
+        const isDataChart = (codeEl.className || '').includes('language-xychart') || /^xychart/i.test(src)
+        if (isDataChart) {
+          // Don't hand data plots to Mermaid — convert to a real ECharts chart so
+          // the user always gets a themed chart, even when the model emits Mermaid.
+          const option = xychartToECharts(src)
+          if (option) {
+            mountEChart(pre, option)
+          } else {
+            showBlockError(pre, 'Data charts are rendered with the generate_chart tool, not Mermaid — ask again and the agent will draw it.')
+          }
+          return
+        }
         try {
           const { svg } = await mermaid.render('sm-chart-' + ++chartSeq, src)
           const wrap = document.createElement('div')
@@ -352,24 +457,7 @@ export function richRenderer(node) {
         showBlockError(pre, 'Chart needs a "series".')
         return
       }
-      const wrap = document.createElement('div')
-      wrap.className = 'chart-canvas'
-      const host = document.createElement('div')
-      host.className = 'chart-echarts'
-      wrap.appendChild(host)
-      pre.replaceWith(wrap)
-      try {
-        const inst = echarts.init(host, null, { renderer: 'canvas' })
-        inst.setOption(themeEChartsOption(option))
-        let ro
-        if (typeof ResizeObserver !== 'undefined') {
-          ro = new ResizeObserver(() => inst.resize())
-          ro.observe(wrap)
-        }
-        liveCharts.push({ inst, ro })
-      } catch (err) {
-        showBlockError(wrap, 'Chart could not be rendered: ' + ((err && err.message) || 'invalid option'))
-      }
+      mountEChart(pre, option)
     })
   }
 

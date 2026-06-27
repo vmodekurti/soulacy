@@ -127,6 +127,81 @@ func TestBuildChartSpec_FallbackBareDataArray(t *testing.T) {
 	}
 }
 
+// Some models cram the whole payload into a stringified `data` field instead of
+// passing labels/datasets separately — we must unwrap and still build a chart.
+func TestBuildChartSpec_UnwrapsStringifiedData(t *testing.T) {
+	spec, _, err := buildChartSpec(map[string]any{
+		"chart_type": "line",
+		"data":       `{"labels":["Jul 2021","Aug 2021"],"datasets":[{"label":"AAPL","data":[142.18,148.0]}]}`,
+	})
+	if err != nil {
+		t.Fatalf("expected stringified data wrapper to be accepted, got: %v", err)
+	}
+	m := decodeSpec(t, spec)
+	if got := m["xAxis"].(map[string]any)["data"].([]any); len(got) != 2 {
+		t.Errorf("labels not lifted from wrapper: %v", got)
+	}
+	s0 := m["series"].([]any)[0].(map[string]any)
+	if s0["name"] != "AAPL" || len(s0["data"].([]any)) != 2 {
+		t.Errorf("series not lifted from wrapper: %v", s0)
+	}
+}
+
+// datasets passed as a JSON string should also decode.
+func TestBuildChartSpec_UnwrapsStringifiedDatasets(t *testing.T) {
+	spec, _, err := buildChartSpec(map[string]any{
+		"chart_type": "bar",
+		"labels":     []any{"A", "B"},
+		"datasets":   `[{"label":"x","data":[1,2]}]`,
+	})
+	if err != nil {
+		t.Fatalf("expected stringified datasets to be accepted, got: %v", err)
+	}
+	m := decodeSpec(t, spec)
+	if len(m["series"].([]any)) != 1 {
+		t.Error("expected one series from stringified datasets")
+	}
+}
+
+// qwen3-coder-next invents a `chart_code` arg and stuffs Chart.js-shaped JSON in
+// it: {"chart_code":"{\"type\":\"line\",\"data\":{\"labels\":[...],\"datasets\":[...]}}"}.
+func TestBuildChartSpec_ChartCodeAliasChartJSShape(t *testing.T) {
+	spec, _, err := buildChartSpec(map[string]any{
+		"chart_code": `{"type":"line","data":{"labels":["Jul 21","Jan 22"],"datasets":[{"label":"AAPL","data":[142.18,170.87]}]}}`,
+	})
+	if err != nil {
+		t.Fatalf("expected chart_code+Chart.js shape to be accepted, got: %v", err)
+	}
+	m := decodeSpec(t, spec)
+	s := m["series"].([]any)
+	if len(s) != 1 || s[0].(map[string]any)["type"] != "line" {
+		t.Fatalf("expected one line series, got %v", s)
+	}
+	if len(s[0].(map[string]any)["data"].([]any)) != 2 {
+		t.Errorf("series data not lifted: %v", s[0])
+	}
+	if len(m["xAxis"].(map[string]any)["data"].([]any)) != 2 {
+		t.Errorf("labels not lifted from nested data: %v", m["xAxis"])
+	}
+}
+
+// {"chart_code":"[1,2,3]","chart_type":"bar","labels":[...]} — bare array in the alias.
+func TestBuildChartSpec_ChartCodeBareArray(t *testing.T) {
+	spec, _, err := buildChartSpec(map[string]any{
+		"chart_code": "[142.18, 170.87, 159.31]",
+		"chart_type": "bar",
+		"labels":     []any{"a", "b", "c"},
+	})
+	if err != nil {
+		t.Fatalf("expected chart_code bare array to be accepted, got: %v", err)
+	}
+	m := decodeSpec(t, spec)
+	s0 := m["series"].([]any)[0].(map[string]any)
+	if s0["type"] != "bar" || len(s0["data"].([]any)) != 3 {
+		t.Errorf("bare array not used as series data: %v", s0)
+	}
+}
+
 func TestBuildChartSpec_Errors(t *testing.T) {
 	if _, _, err := buildChartSpec(map[string]any{"chart_type": "sankey", "datasets": []any{map[string]any{"data": []any{1.0}}}}); err == nil {
 		t.Error("expected error for unsupported chart_type")
