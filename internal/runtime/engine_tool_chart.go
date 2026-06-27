@@ -22,11 +22,14 @@ const chartToolGuide = "## Visualizing data\n" +
 	"over a long table or prose: call `generate_chart` with the data, then give a one-line " +
 	"takeaway. The chart is shown to the user automatically, so don't restate every value. " +
 	"For a single number or a tiny list, plain text is still better.\n" +
-	"IMPORTANT: do NOT try to draw charts by writing raw HTML, <canvas>, <script>, <style>, " +
-	"SVG, CDN-loaded JavaScript, or a hand-written chart spec/JSON in your reply. For security those " +
-	"are not executed, and the app already applies a consistent visual theme. The ONLY way to show a " +
-	"real chart is to call `generate_chart` with just the data (chart_type, labels, datasets) — do " +
-	"not specify colors, styles, or chart options yourself; the app themes every chart for you."
+	"IMPORTANT: do NOT draw a data chart any other way. Specifically, never use a Mermaid " +
+	"```mermaid block (including xychart / xychart-beta or pie), ASCII art, raw HTML, <canvas>, " +
+	"<script>, <style>, SVG, CDN-loaded JavaScript, or a hand-written chart spec/JSON. Mermaid is " +
+	"only for diagrams (flowcharts, sequence) — never for plotting data, and its xychart syntax often " +
+	"fails to render. The app already applies a consistent visual theme. The ONLY way to show a real " +
+	"data chart (a trend, comparison, breakdown, distribution, or ranking) is to call `generate_chart` " +
+	"with just the data (chart_type, labels, datasets) — do not specify colors, styles, or chart " +
+	"options yourself; the app themes every chart for you."
 
 // agentHasChartTool reports whether generate_chart is offered to this agent,
 // mirroring the allowlist logic in allToolSchemas. generate_chart has Gate "",
@@ -175,6 +178,7 @@ func (e *Engine) generateChart(ctx context.Context, args map[string]any) (string
 // optional title); the GUI restyles it (gradients, smooth lines, rounded bars,
 // tooltip, palette) so the agent never has to know ECharts.
 func buildChartSpec(args map[string]any) (specJSON, summary string, err error) {
+	normalizeChartArgs(args)
 	ct := strings.ToLower(strings.TrimSpace(argString(args, "chart_type")))
 	if ct == "" {
 		ct = "bar"
@@ -263,6 +267,92 @@ func buildChartSpec(args map[string]any) (specJSON, summary string, err error) {
 		summary += fmt.Sprintf(" with %d series.", len(datasets))
 	}
 	return string(b), summary, nil
+}
+
+// normalizeChartArgs is liberal in what it accepts. Some models (notably coder
+// models that learned a different chart tool) cram the whole payload into a
+// single stringified `data` field, e.g.
+//
+//	{"chart_type":"line","data":"{\"labels\":[...],\"datasets\":[...]}"}
+//
+// or pass `labels`/`datasets` as JSON strings rather than arrays. Unwrap those
+// in place so buildChartSpec sees the documented shape instead of erroring.
+func normalizeChartArgs(args map[string]any) {
+	// (1) Some models invent a single payload key (chart_code, spec, …) and cram
+	// everything into it. Treat the first one we find as `data`.
+	for _, alias := range []string{"chart_code", "chart_data", "chartData", "spec", "config", "code", "chart"} {
+		if _, hasData := args["data"]; hasData {
+			break
+		}
+		if v, ok := args[alias]; ok {
+			args["data"] = v
+			delete(args, alias)
+			break
+		}
+	}
+
+	// (2) `type` is a frequent alias for `chart_type`.
+	if strings.TrimSpace(argString(args, "chart_type")) == "" {
+		if t := strings.TrimSpace(argString(args, "type")); t != "" {
+			args["chart_type"] = t
+		}
+	}
+
+	// (3) `data` given as a JSON string → decode to an object or an array.
+	if s, ok := args["data"].(string); ok {
+		s = strings.TrimSpace(s)
+		var obj map[string]any
+		var arr []any
+		if json.Unmarshal([]byte(s), &obj) == nil {
+			args["data"] = obj
+		} else if json.Unmarshal([]byte(s), &arr) == nil {
+			args["data"] = arr
+		}
+	}
+
+	// (4) `data` as a wrapper OBJECT → lift chart_type/title/labels/datasets out.
+	// Handles the Chart.js shape {type, data:{labels, datasets}}, the flat
+	// {labels, datasets}, and {data:[numbers], labels}.
+	if obj, ok := args["data"].(map[string]any); ok {
+		if strings.TrimSpace(argString(args, "chart_type")) == "" {
+			if t := strings.TrimSpace(argString(obj, "type")); t != "" {
+				args["chart_type"] = t
+			}
+		}
+		if _, has := args["title"]; !has {
+			if tv, ok := obj["title"]; ok {
+				args["title"] = tv
+			}
+		}
+		// The series container is obj itself, or a nested obj["data"] object.
+		container := obj
+		if nested, ok := obj["data"].(map[string]any); ok {
+			container = nested
+		}
+		if _, has := args["labels"]; !has {
+			if v, ok := container["labels"]; ok {
+				args["labels"] = v
+			}
+		}
+		if ds, ok := container["datasets"]; ok {
+			args["datasets"] = ds
+			delete(args, "data")
+		} else if nums, ok := container["data"].([]any); ok {
+			args["data"] = nums // bare numeric series
+		} else {
+			delete(args, "data") // wrapper held nothing usable
+		}
+	}
+
+	// (5) datasets / labels given as JSON strings → decode to arrays.
+	for _, key := range []string{"datasets", "labels"} {
+		if s, ok := args[key].(string); ok {
+			var arr []any
+			if json.Unmarshal([]byte(strings.TrimSpace(s)), &arr) == nil {
+				args[key] = arr
+			}
+		}
+	}
 }
 
 // numsOf returns the numeric data slice a dataset map carries (set by parseDatasets).
