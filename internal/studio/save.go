@@ -61,7 +61,13 @@ const StudioPrivilegeAckLabel = "studio.privilege_acknowledged"
 // accept_privileged_exposure on the config.yaml binding at deploy time
 // (internal/app/channels.go). The agent is saved disabled regardless.
 func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Definition, error) {
-	id := slug(draft.Name)
+	// Prefer the existing agent id (set when an saved agent was opened for
+	// editing) so a re-save UPDATES that agent rather than creating a new one
+	// under a freshly slugged name. Fall back to the name slug for new drafts.
+	id := strings.TrimSpace(draft.ID)
+	if id == "" {
+		id = slug(draft.Name)
+	}
 	if id == "" {
 		return agent.Definition{}, fmt.Errorf("studio: cannot derive an agent id from an empty workflow name")
 	}
@@ -102,10 +108,11 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		StudioRawIntent: strings.TrimSpace(draft.RawIntent),
 		// Disabled by construction: a Studio save stages an agent for the
 		// operator to review and enable.
-		Enabled:  false,
-		MaxTurns: 15,
-		Memory:   agent.MemoryPolicy{MaxTokens: 8000},
-		LLM:      llmConfigFor(draft),
+		Enabled:    false,
+		MaxTurns:   15,
+		Memory:     agent.MemoryPolicy{MaxTokens: 8000},
+		LLM:        llmConfigFor(draft),
+		RunTimeout: strings.TrimSpace(draft.RunTimeout),
 	}
 
 	// Only attach a workflow block when there's an actual graph. A 0-node draft
@@ -207,6 +214,7 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 		MaxTurns:        maxTurnsOr(draft.MaxTurns, 15),
 		Memory:          agent.MemoryPolicy{MaxTokens: 8000},
 		LLM:             llmConfigFor(draft),
+		RunTimeout:      strings.TrimSpace(draft.RunTimeout),
 		// The reasoning loop — the whole point. No Workflow block. Studio sets
 		// sensible reasoning timeouts up front (the engine's bare defaults of
 		// 30s/step and 180s total are tuned for fast cloud calls and trip the
@@ -287,6 +295,11 @@ func dedupeNonEmpty(in []string) []string {
 // reactSystemPrompt builds the agent's system prompt: the model-authored prompt
 // (which should already carry the task + ordered approach) plus a short loop
 // directive so the agent uses its tools methodically.
+// reactLoopGuidance is the standard ReAct operating instruction appended to a
+// reasoning agent's system prompt. It is a fixed constant so we can detect it
+// already being present (and dedupe stacked copies) on re-save.
+const reactLoopGuidance = "Work the task by reasoning step by step: decide the next action, call ONE tool, read its result, then decide the next step from what actually happened — never assume a step succeeded. Loop until the goal is met. For lists, act on each item; for asynchronous jobs, poll status until ready before continuing. On a tool error, adapt or stop gracefully with a clear message."
+
 func reactSystemPrompt(draft Draft) string {
 	var b strings.Builder
 	if p := strings.TrimSpace(draft.SystemPrompt); p != "" {
@@ -298,12 +311,40 @@ func reactSystemPrompt(draft Draft) string {
 		}
 		fmt.Fprintf(&b, "You are %q, an autonomous agent built in Soulacy Studio.", name)
 	}
-	b.WriteString("\n\nWork the task by reasoning step by step: decide the next action, call ONE tool, read its result, then decide the next step from what actually happened — never assume a step succeeded. Loop until the goal is met. For lists, act on each item; for asynchronous jobs, poll status until ready before continuing. On a tool error, adapt or stop gracefully with a clear message.")
-	if t := strings.TrimSpace(draft.Intent); t != "" {
-		b.WriteString("\n\nGoal: ")
-		b.WriteString(t)
+	// Append the loop guidance only if the prompt doesn't already carry it. The
+	// prompt round-trips through draft.SystemPrompt (which already includes this
+	// paragraph after a prior save), so appending unconditionally stacked a new
+	// copy on every save.
+	if !strings.Contains(b.String(), reactLoopGuidance) {
+		b.WriteString("\n\n")
+		b.WriteString(reactLoopGuidance)
 	}
-	return b.String()
+	if t := strings.TrimSpace(draft.Intent); t != "" {
+		if goal := "Goal: " + t; !strings.Contains(b.String(), goal) {
+			b.WriteString("\n\n")
+			b.WriteString(goal)
+		}
+	}
+	// Self-heal prompts that already accumulated duplicate guidance paragraphs
+	// from earlier saves: keep the first occurrence, drop the rest, tidy blanks.
+	return dedupeParagraph(b.String(), reactLoopGuidance)
+}
+
+// dedupeParagraph keeps the first occurrence of para in text and removes every
+// later one, then collapses any 3+ newline runs the removals leave behind into a
+// single clean paragraph break.
+func dedupeParagraph(text, para string) string {
+	if para == "" || !strings.Contains(text, para) {
+		return text
+	}
+	idx := strings.Index(text, para)
+	head := text[:idx+len(para)]
+	tail := strings.ReplaceAll(text[idx+len(para):], para, "")
+	res := head + tail
+	for strings.Contains(res, "\n\n\n") {
+		res = strings.ReplaceAll(res, "\n\n\n", "\n\n")
+	}
+	return strings.TrimRight(res, "\n ")
 }
 
 // defaultReasoningConfig returns a reasoning config with sensible, explicit

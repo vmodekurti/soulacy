@@ -2,6 +2,7 @@ package studio
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -59,9 +60,10 @@ func TestAgentDefinitionRoundTrip(t *testing.T) {
 func TestAgentDefinitionRoundTrip_PreservesLLM(t *testing.T) {
 	// ReAct agent form (the daily-stock-screener case).
 	orig := agent.Definition{
-		ID:        "daily-stock-screener",
-		Name:      "Daily Stock Screener",
-		Reasoning: agent.ReasoningConfig{Strategy: "react"},
+		ID:         "daily-stock-screener",
+		Name:       "Daily Stock Screener",
+		Reasoning:  agent.ReasoningConfig{Strategy: "react"},
+		RunTimeout: "20m",
 		LLM: agent.LLMConfig{
 			Provider:    "ollama",
 			Model:       "qwen3:32b",
@@ -73,9 +75,21 @@ func TestAgentDefinitionRoundTrip_PreservesLLM(t *testing.T) {
 	if draft.LLM.Provider != "ollama" || draft.LLM.Model != "qwen3:32b" {
 		t.Fatalf("FromAgentDefinition dropped LLM: %+v", draft.LLM)
 	}
+	if draft.ID != "daily-stock-screener" {
+		t.Fatalf("FromAgentDefinition dropped ID: %q", draft.ID)
+	}
+	if draft.RunTimeout != "20m" {
+		t.Fatalf("FromAgentDefinition dropped run_timeout: %q", draft.RunTimeout)
+	}
 	back, err := ToAgentDefinition(draft, false)
 	if err != nil {
 		t.Fatalf("ToAgentDefinition: %v", err)
+	}
+	if back.ID != "daily-stock-screener" {
+		t.Fatalf("id not preserved: %q", back.ID)
+	}
+	if back.RunTimeout != "20m" {
+		t.Fatalf("run_timeout not preserved: %q", back.RunTimeout)
 	}
 	if back.LLM.Provider != "ollama" {
 		t.Fatalf("provider not preserved: %q", back.LLM.Provider)
@@ -88,6 +102,27 @@ func TestAgentDefinitionRoundTrip_PreservesLLM(t *testing.T) {
 	}
 	if back.LLM.MaxTokens != 2048 {
 		t.Fatalf("max_tokens not preserved: %d", back.LLM.MaxTokens)
+	}
+
+	// Rename must NOT spawn a new agent: editing the name keeps the original id,
+	// so Save updates in place instead of creating a duplicate.
+	renamed := draft
+	renamed.Name = "Daily Stock Screener (v2)"
+	renamedBack, err := ToAgentDefinition(renamed, false)
+	if err != nil {
+		t.Fatalf("ToAgentDefinition(renamed): %v", err)
+	}
+	if renamedBack.ID != "daily-stock-screener" {
+		t.Fatalf("rename changed id (would create a duplicate agent): %q", renamedBack.ID)
+	}
+
+	// A brand-new draft with no id still derives one from the name.
+	newish, err := ToAgentDefinition(Draft{Name: "Fresh Agent", Strategy: "react"}, false)
+	if err != nil {
+		t.Fatalf("ToAgentDefinition(new): %v", err)
+	}
+	if newish.ID != "fresh-agent" {
+		t.Fatalf("new draft id: got %q, want fresh-agent", newish.ID)
 	}
 
 	// Workflow agent form must preserve LLM too.
@@ -116,6 +151,66 @@ func TestAgentDefinitionRoundTrip_PreservesLLM(t *testing.T) {
 	}
 	if fresh.LLM.Temperature != 0.7 {
 		t.Fatalf("fresh draft should default temperature to 0.7, got %v", fresh.LLM.Temperature)
+	}
+}
+
+// Re-saving a reasoning agent must NOT stack duplicate copies of the ReAct loop
+// guidance: the prompt round-trips through draft.SystemPrompt, so the guidance is
+// already present and must be appended at most once (regression for the
+// "instructions repeat after every save" bug).
+func TestReactSystemPrompt_IdempotentGuidance(t *testing.T) {
+	draft := Draft{Name: "Screener", Strategy: "react", SystemPrompt: "You are the screener."}
+
+	first := reactSystemPrompt(draft)
+	if n := strings.Count(first, reactLoopGuidance); n != 1 {
+		t.Fatalf("first build should contain guidance once, got %d", n)
+	}
+
+	// Feed the built prompt back in (what FromAgentDefinition does on reopen) and
+	// rebuild repeatedly — the count must stay at 1.
+	for i := 0; i < 5; i++ {
+		draft.SystemPrompt = reactSystemPrompt(draft)
+	}
+	if n := strings.Count(draft.SystemPrompt, reactLoopGuidance); n != 1 {
+		t.Fatalf("guidance duplicated across re-saves: got %d copies", n)
+	}
+
+	// A prompt that ALREADY accumulated duplicates self-heals down to one.
+	dupes := "You are X.\n\n" + reactLoopGuidance + "\n\n" + reactLoopGuidance + "\n\n" + reactLoopGuidance
+	healed := reactSystemPrompt(Draft{Name: "X", Strategy: "react", SystemPrompt: dupes})
+	if n := strings.Count(healed, reactLoopGuidance); n != 1 {
+		t.Fatalf("self-heal failed: got %d copies", n)
+	}
+}
+
+// "auto" is the recommended default strategy: a tool agent (no workflow graph)
+// whose execution mode the engine resolves at run time. It must be treated as an
+// agent — not silently converted into an (empty) workflow — through save+load.
+func TestAutoStrategy_IsToolAgentRoundTrip(t *testing.T) {
+	orig := Draft{
+		Name:         "Flight Finder",
+		Strategy:     "auto",
+		SystemPrompt: "You help find flights.",
+		Trigger:      Trigger{Type: "channel"},
+		Channels:     []string{"chat"},
+		Tools:        []string{"mcp__letsfg__search_flights"},
+	}
+	if !orig.IsAgent() {
+		t.Fatal("an 'auto' draft must report IsAgent()")
+	}
+	def, err := ToAgentDefinition(orig, false)
+	if err != nil {
+		t.Fatalf("ToAgentDefinition: %v", err)
+	}
+	if HasWorkflow(def) {
+		t.Fatal("'auto' agent must NOT carry a workflow graph")
+	}
+	if strings.ToLower(def.Reasoning.Strategy) != "auto" {
+		t.Fatalf("strategy not preserved: %q", def.Reasoning.Strategy)
+	}
+	back := FromAgentDefinition(def)
+	if !back.IsAgent() || strings.ToLower(back.Strategy) != "auto" {
+		t.Fatalf("auto strategy lost on reload: %q (IsAgent=%v)", back.Strategy, back.IsAgent())
 	}
 }
 
@@ -201,7 +296,7 @@ func TestAgentRoundTrip_PreservesReasoningBudgets(t *testing.T) {
 // open-in-canvas → re-save (regression for the silent-wipe bug).
 func TestWorkflowRoundTrip_PreservesKnowledgeAndUnattended(t *testing.T) {
 	orig := Draft{
-		Name:       "Flow", Trigger: Trigger{Type: "manual"},
+		Name: "Flow", Trigger: Trigger{Type: "manual"},
 		Knowledge:  []string{"sec_filings"},
 		Unattended: true,
 		Flow: Flow{Entry: "a", Nodes: []sdkr.FlowNode{

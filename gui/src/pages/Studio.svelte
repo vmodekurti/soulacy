@@ -766,9 +766,10 @@ def run(inputs):
     const mode = (refinement.recommended_mode || 'workflow')
     const reason = refinement.recommended_reason || ''
     refinement = null
-    if (mode === 'react' || mode === 'plan_execute') {
-      // A reasoning task: build the AGENT directly (never a doomed flow), take the
-      // user to SOUL.yaml, and explain via a modal.
+    if (mode === 'auto' || mode === 'react' || mode === 'plan_execute') {
+      // A tool/reasoning agent (no fixed flow): build the AGENT directly, take the
+      // user to SOUL.yaml, and explain via a modal. "auto" is the recommended
+      // default — the engine runs it as a reliable native tool-calling loop.
       await runAgentCompile(text, mode, ans)
       if (workflow && workflow.strategy) routeToAgent(mode, reason)
     } else {
@@ -797,7 +798,7 @@ def run(inputs):
   async function escalateIfReasoningFit() {
     const rec = workflow && !workflow.strategy ? workflow.recommendation : null
     const m = rec && rec.mode
-    if (m !== 'react' && m !== 'plan_execute') return
+    if (m !== 'auto' && m !== 'react' && m !== 'plan_execute') return
     const text = ((intent || (workflow && workflow.intent) || rawPrompt || '')).trim()
     if (!text) return
     await runAgentCompile(text, m)
@@ -1021,8 +1022,19 @@ def run(inputs):
   }
 
   function applyCompile(data) {
+    // Remember which saved agent we were editing BEFORE reset clears it.
+    const prevAgentId = loadedAgentId
     resetTransientDraftState()
     workflow = (data && data.workflow) || null
+    // If we were editing an existing saved agent, keep the freshly generated
+    // draft bound to that agent so re-generating from a tweaked prompt UPDATES
+    // it instead of silently saving a brand-new duplicate (the "Flight Finder →
+    // Flight Deal Finder" bug). Use "New agent" to intentionally start a
+    // separate one — that path clears loadedAgentId first.
+    if (prevAgentId && workflow) {
+      loadedAgentId = prevAgentId
+      workflow.id = prevAgentId
+    }
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
     explanation = (data && data.explanation) || null
@@ -1308,6 +1320,11 @@ def run(inputs):
   let viewMode = 'canvas'     // 'canvas' | 'code'
   let codeYaml = ''
   let codeOrig = ''           // last-synced text (dirty detection)
+  // Tracks the agent id whose RAW on-disk SOUL.yaml we've loaded into the code
+  // editor, so we read the real file once per loaded reasoning agent instead of
+  // re-deriving (lossily) from the draft. Reset implicitly when loadedAgentId
+  // changes (the guard compares the two).
+  let codeRawForId = ''
   let codeWarnings = []
   let codeError = ''
   let codeLoading = false
@@ -1322,8 +1339,25 @@ def run(inputs):
     codeLoading = true
     viewMode = 'code'
     try {
-      const r = await bridge.toYaml(workflow)
-      codeYaml = (r && r.yaml) || ''
+      const isAgent = ['react', 'plan_execute'].includes(String(workflow.strategy || '').toLowerCase())
+      const dirty = codeYaml !== codeOrig
+      let yamlText = ''
+      // Source of truth for a SAVED reasoning agent is its on-disk SOUL.yaml, not
+      // the draft (which can't model every field — run_timeout, memory scopes,
+      // confirm_tools, …). Read the real file once per loaded agent, as long as
+      // there are no unsaved code edits to preserve.
+      if (loadedAgentId && isAgent && !dirty && codeRawForId !== loadedAgentId) {
+        try {
+          const raw = await bridge.agentYaml(loadedAgentId)
+          yamlText = (raw && raw.yaml) || ''
+          if (yamlText) codeRawForId = loadedAgentId
+        } catch (_) { /* fall through to the draft-derived YAML below */ }
+      }
+      if (!yamlText) {
+        const r = await bridge.toYaml(workflow)
+        yamlText = (r && r.yaml) || ''
+      }
+      codeYaml = yamlText
       codeOrig = codeYaml
     } catch (e) {
       codeError = (e && e.message) || 'Could not generate YAML'
