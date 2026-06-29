@@ -124,5 +124,9 @@ func ActivationFromConfig(m map[string]any, defaultIgnoreGroups bool) Activation
 		IgnoreGroups:     ParseBoolValue(m["ignore_groups"], defaultIgnoreGroups),
 		AllowedThreadIDs: ParseDelimitedList(m["allowed_chat_ids"]),
 		AllowedUserIDs:   userIDs,
+		// Config-driven channels are real chat platforms: a direct message
+		// activates the agent without needing the trigger phrase (the phrase
+		// only gates noisy group chats).
+		DirectActivatesWithoutPhrase: true,
 	}
 }
