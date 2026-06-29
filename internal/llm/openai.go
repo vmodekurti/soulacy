@@ -187,6 +187,9 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	if err != nil {
 		return nil, err
 	}
+	httpReq.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(payload)), nil
+	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if p.apiKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
