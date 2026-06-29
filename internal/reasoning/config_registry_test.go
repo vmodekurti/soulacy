@@ -181,7 +181,7 @@ func TestLoopConfigFromDefinition_EmptyStrategy(t *testing.T) {
 	def := &agent.Definition{
 		Reasoning: agent.ReasoningConfig{}, // Strategy is empty
 	}
-	_, ok := reasoning.LoopConfigFromDefinition(def, "sys")
+	_, ok := reasoning.LoopConfigFromDefinition(def, "sys", true)
 	if ok {
 		t.Error("expected ok=false when strategy is empty")
 	}
@@ -198,7 +198,7 @@ func TestLoopConfigFromDefinition_ReactStrategy(t *testing.T) {
 			{Name: "memory_read"},
 		},
 	}
-	cfg, ok := reasoning.LoopConfigFromDefinition(def, "you are helpful")
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "you are helpful", true)
 	if !ok {
 		t.Fatal("expected ok=true for react strategy")
 	}
@@ -225,7 +225,7 @@ func TestLoopConfigFromDefinition_PlanExecuteStrategy(t *testing.T) {
 			TotalTimeout: "300s",
 		},
 	}
-	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys")
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys", true)
 	if !ok {
 		t.Fatal("expected ok=true for plan_execute strategy")
 	}
@@ -250,7 +250,7 @@ func TestLoopConfigFromDefinition_EnforceSystemReact(t *testing.T) {
 		},
 		Capabilities: []string{"system"},
 	}
-	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys")
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys", true)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -269,7 +269,7 @@ func TestLoopConfigFromDefinition_DefaultValues(t *testing.T) {
 			// all other fields zero/empty
 		},
 	}
-	cfg, ok := reasoning.LoopConfigFromDefinition(def, "")
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "", true)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -296,7 +296,7 @@ func TestLoopConfigFromDefinition_InvalidDurations(t *testing.T) {
 			TotalTimeout: "also-not-valid",
 		},
 	}
-	cfg, ok := reasoning.LoopConfigFromDefinition(def, "")
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "", true)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -313,7 +313,7 @@ func TestLoopConfigFromDefinition_NoTools(t *testing.T) {
 		Reasoning: agent.ReasoningConfig{Strategy: "react"},
 		// no Tools
 	}
-	cfg, ok := reasoning.LoopConfigFromDefinition(def, "")
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "", true)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}

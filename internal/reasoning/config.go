@@ -205,25 +205,65 @@ func isLargeQwen(model string) bool {
 		(strings.Contains(m, "72b") || strings.Contains(m, "32b") || strings.Contains(m, "14b"))
 }
 
-// LoopConfigFromDefinition builds a LoopConfig from an agent Definition's
-// reasoning: YAML block (RL-04). Returns (config, true) when the agent has a
-// valid strategy configured; returns (zero, false) when the reasoning block is
-// absent or strategy is empty (agent uses the classic single-call path).
-func LoopConfigFromDefinition(def *agent.Definition, systemPrompt string) (LoopConfig, bool) {
+// providersWithoutNativeTools lists provider IDs whose completion API does NOT
+// accept a tools/functions parameter. Every provider Soulacy ships today speaks
+// native function-calling, so this is empty — it is the single extension point
+// for marking a future provider/model that can't, so that an agent left on the
+// default ("auto") strategy falls back to the prompt-based ReAct protocol on it
+// instead of silently failing to call tools.
+var providersWithoutNativeTools = map[string]bool{}
+
+// ProviderSupportsNativeTools reports whether a provider can call tools through
+// the native completion API (the reliable path). Used to resolve the default
+// ("auto"/unset) execution strategy: native-capable → classic tool loop;
+// otherwise → ReAct.
+func ProviderSupportsNativeTools(provider string) bool {
+	return !providersWithoutNativeTools[strings.ToLower(strings.TrimSpace(provider))]
+}
+
+// LoopConfigFromDefinition is the SINGLE source of truth for choosing an agent's
+// execution mode. It returns (config, true) when the agent should run through
+// the multi-step reasoning Loop, and (zero, false) when it should use the
+// classic native-tool-calling loop instead.
+//
+// Resolution rules:
+//   - explicit strategy ("react" / "plan_execute" / a registered custom name) → that loop
+//   - unset or "auto":
+//     · agents holding the "system" capability → ReAct (system tools need it)
+//     · model supports native tool-calling → classic loop (more reliable; the
+//     common, recommended default)
+//     · model has NO native tool-calling → ReAct (prompt-based fallback)
+//
+// supportsNativeTools is supplied by the engine, which knows the agent's
+// effective provider. Every creation surface (Studio, Agent Builder, Agents
+// screen, CLI, templates, raw YAML) just leaves the strategy unset/"auto" — the
+// decision lives here, so behaviour is identical no matter how the agent was made.
+func LoopConfigFromDefinition(def *agent.Definition, systemPrompt string, supportsNativeTools bool) (LoopConfig, bool) {
 	rc := def.Reasoning
-	if rc.Strategy == "" {
-		return LoopConfig{}, false
+	strat := strings.ToLower(strings.TrimSpace(rc.Strategy))
+	system := def.HasCapability("system")
+
+	if strat == "" || strat == StrategyAuto {
+		// Default: the classic native-tool-calling loop handles every agent —
+		// including system-capability agents — reliably. Only fall back to the
+		// prompt-based ReAct protocol when the model can't do native tool calls.
+		// (The system→ReAct force below applies only to EXPLICIT strategies, to
+		// keep plan_execute from breaking on highly-parameterized system tools.)
+		if supportsNativeTools {
+			return LoopConfig{}, false // classic loop
+		}
+		strat = StrategyReAct
 	}
 
 	cfg := LoopConfig{
-		Strategy:     LoopStrategy(rc.Strategy),
+		Strategy:     LoopStrategy(strat),
 		SystemPrompt: systemPrompt,
 	}
 
 	// SEC-3: System tools (shell_exec, write_file, etc.) are highly parameterized
 	// and are fundamentally incompatible with plan_execute's single "task" argument.
 	// Force the react strategy to prevent the agent from breaking itself.
-	if def.HasCapability("system") {
+	if system {
 		cfg.Strategy = LoopStrategy(StrategyReAct)
 	}
 

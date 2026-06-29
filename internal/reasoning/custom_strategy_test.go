@@ -69,7 +69,7 @@ func TestCustomStrategyInjectedAndRun(t *testing.T) {
 func TestCustomStrategyNameFromDefinition(t *testing.T) {
 	def := &agent.Definition{ID: "a1"}
 	def.Reasoning.Strategy = "echo_conformance"
-	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys")
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys", true)
 	if !ok {
 		t.Fatal("reasoning block with strategy must enable the loop")
 	}
