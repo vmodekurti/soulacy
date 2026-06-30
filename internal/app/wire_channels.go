@@ -7,6 +7,7 @@ package app
 // inline block.
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -46,14 +47,24 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 						if token == "" {
 							continue
 						}
-						if !bindingDecision(adapterIDForLog("telegram", i, agentID), agentID, "telegram", botMap, loader, log) {
-							continue
-						}
 						// Primary bot keeps the canonical "telegram" ID for backwards
 						// compatibility; additional bots get "telegram-<agentID>".
 						adapterID := "telegram"
 						if i > 0 {
-							adapterID = "telegram-" + sanitizeID(agentID)
+							suffix := sanitizeID(agentID)
+							if suffix == "" {
+								suffix = sanitizeID(botName)
+							}
+							if suffix == "" {
+								suffix = fmt.Sprintf("%d", i+1)
+							}
+							adapterID = "telegram-" + suffix
+						}
+						outboundOnly, _ := botMap["outbound_only"].(bool)
+						if agentID != "" && !outboundOnly {
+							if !bindingDecision(adapterID, agentID, "telegram", botMap, loader, log) {
+								continue
+							}
 						}
 						tg, cerr := buildChannel("telegram", adapterID, botMap, log)
 						if cerr != nil {
@@ -72,7 +83,8 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 				token, _ := tgCfg["token"].(string)
 				agentID, _ := tgCfg["agent_id"].(string)
 				if token != "" {
-					if bindingDecision("telegram", agentID, "telegram", tgCfg, loader, log) {
+					outboundOnly, _ := tgCfg["outbound_only"].(bool)
+					if agentID == "" || outboundOnly || bindingDecision("telegram", agentID, "telegram", tgCfg, loader, log) {
 						if tg, cerr := buildChannel("telegram", "telegram", tgCfg, log); cerr != nil {
 							log.Warn("telegram channel skipped", zap.Error(cerr))
 						} else {

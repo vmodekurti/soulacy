@@ -195,18 +195,21 @@
   function mappingRows(ch) {
     if (ch.bots?.length) {
       return ch.bots.map((bot, i) => ({
-        adapter_id: bot._adapter_id || (i === 0 ? ch.id : `${ch.id}-${bot.agent_id || i + 1}`),
+        adapter_id: bot._adapter_id || botAdapterID(ch.id, bot, i),
         bot_name: bot.bot_name || bot.name || '',
-        agent_id: bot.agent_id || '—',
+        agent_id: bot.outbound_only ? 'Send only' : (bot.agent_id || '—'),
+        outbound_only: isTruthy(bot.outbound_only),
         connected: bot._connected,
         detail: bot._detail,
       }))
     }
     const agent = ch.settings?.agent_id
-    return agent ? [{
+    const outboundOnly = isTruthy(ch.settings?.outbound_only)
+    return (agent || outboundOnly) ? [{
       adapter_id: ch.id,
       bot_name: ch.settings?.bot_name || '',
-      agent_id: agent,
+      agent_id: outboundOnly ? 'Send only' : agent,
+      outbound_only: outboundOnly,
       connected: ch.status?.connected,
       detail: ch.status?.detail,
     }] : []
@@ -219,12 +222,46 @@
     botsForm = [...botsForm, row]
   }
 
+  function addOutboundBotMapping() {
+    if (!editing) return
+    const row = {}
+    for (const f of editing.bot_schema || editing.schema || []) row[f.key] = ''
+    row.outbound_only = true
+    row.bot_name = editing.id === 'telegram' ? 'Daily Stock Screener' : ''
+    botsForm = [...botsForm, row]
+  }
+
   function removeBotMapping(index) {
     botsForm = botsForm.filter((_, i) => i !== index)
   }
 
   function updateBotField(index, key, value) {
     botsForm = botsForm.map((bot, i) => i === index ? { ...bot, [key]: value } : bot)
+  }
+
+  function isTruthy(value) {
+    return value === true || String(value).toLowerCase() === 'true'
+  }
+
+  function sanitizeAdapterSuffix(value = '') {
+    const s = String(value || '').replace(/[^A-Za-z0-9_-]/g, '-')
+    return s.replace(/-+/g, '-').replace(/^-|-$/g, '')
+  }
+
+  function botAdapterID(channelID, bot, index) {
+    if (index === 0) return channelID
+    const suffix = sanitizeAdapterSuffix(bot.agent_id) || sanitizeAdapterSuffix(bot.bot_name) || String(index + 1)
+    return `${channelID}-${suffix}`
+  }
+
+  function botHeaderLabel(channelID, bot, index) {
+    return bot._adapter_id || botAdapterID(channelID, bot, index)
+  }
+
+  function shouldShowChannelField(f, values = {}) {
+    if (editing?.id === 'telegram' && f.key === 'agent_id' && isTruthy(values.outbound_only)) return false
+    if (editing?.id === 'telegram' && ['trigger_phrase', 'ignore_groups', 'allowed_chat_ids', 'allowed_user_ids'].includes(f.key) && isTruthy(values.outbound_only)) return false
+    return true
   }
 
   function agentLabel(agent) {
@@ -338,7 +375,7 @@
                       {#if row.bot_name}<em>{row.adapter_id}</em>{/if}
                       <span>{row.connected ? 'connected' : (row.detail || 'pending restart')}</span>
                     </div>
-                    <strong>{row.agent_id}</strong>
+                    <strong class:send-only={row.outbound_only}>{row.agent_id}</strong>
                   </div>
                 {/each}
               </div>
@@ -471,33 +508,35 @@
       {:else}
         <div class="fields">
           {#each editing.schema as f}
-            <label class="field">
-              <span class="field-label">
-                {f.label}{#if f.required}<span class="req">*</span>{/if}
-              </span>
-              {#if f.type === 'password'}
-                <input type="password" bind:value={form[f.key]}
-                  placeholder={editing.settings?.[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
-            {:else if f.key === 'agent_id' && agents.length}
-              <select bind:value={form[f.key]}>
-                <option value="">Select an agent…</option>
-                {#each agents as agent}
-                  <option value={agent.id}>{agentLabel(agent)}</option>
-                {/each}
-              </select>
-            {:else if f.key === 'ignore_groups'}
-              <label class="check-row compact">
-                <input type="checkbox" bind:checked={form[f.key]} />
-                <span>Enabled</span>
+            {#if shouldShowChannelField(f, form)}
+              <label class="field">
+                <span class="field-label">
+                  {f.label}{#if f.required && !(editing.id === 'telegram' && f.key === 'agent_id' && isTruthy(form.outbound_only))}<span class="req">*</span>{/if}
+                </span>
+                {#if f.type === 'password'}
+                  <input type="password" bind:value={form[f.key]}
+                    placeholder={editing.settings?.[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
+                {:else if f.type === 'checkbox' || f.key === 'ignore_groups'}
+                  <label class="check-row compact">
+                    <input type="checkbox" bind:checked={form[f.key]} />
+                    <span>{f.key === 'outbound_only' ? 'Use this bot only for scheduled output' : 'Enabled'}</span>
+                  </label>
+                {:else if f.key === 'agent_id' && agents.length}
+                  <select bind:value={form[f.key]}>
+                    <option value="">Select an agent…</option>
+                    {#each agents as agent}
+                      <option value={agent.id}>{agentLabel(agent)}</option>
+                    {/each}
+                  </select>
+                {:else}
+                  <input type="text" bind:value={form[f.key]} placeholder={f.help || ''} />
+                {/if}
+                {#if f.help}<span class="field-help">{f.help}</span>{/if}
+                {#if activeGuide?.fields?.[f.key]}
+                  <span class="field-help guide-hint">💡 {@html renderInline(activeGuide.fields[f.key])}</span>
+                {/if}
               </label>
-            {:else}
-              <input type="text" bind:value={form[f.key]} placeholder={f.help || ''} />
             {/if}
-              {#if f.help}<span class="field-help">{f.help}</span>{/if}
-              {#if activeGuide?.fields?.[f.key]}
-                <span class="field-help guide-hint">💡 {@html renderInline(activeGuide.fields[f.key])}</span>
-              {/if}
-            </label>
           {/each}
         </div>
       {/if}
@@ -507,9 +546,14 @@
           <div class="bot-editor-head">
             <div>
               <h3>Bot mappings</h3>
-              <p>Each row creates one channel adapter and routes that bot to its agent.</p>
+              <p>{editing.id === 'telegram' ? 'Interactive rows route messages to an agent. Send-only rows are available as scheduled output bots.' : 'Each row creates one channel adapter and routes that bot to its agent.'}</p>
             </div>
-            <button class="btn-secondary small-btn" type="button" on:click={addBotMapping}>+ Add bot</button>
+            <div class="bot-editor-actions">
+              {#if editing.id === 'telegram'}
+                <button class="btn-secondary small-btn" type="button" on:click={addOutboundBotMapping}>+ Add output bot</button>
+              {/if}
+              <button class="btn-secondary small-btn" type="button" on:click={addBotMapping}>+ Add bot</button>
+            </div>
           </div>
 
           {#if botsForm.length === 0}
@@ -520,39 +564,49 @@
                 <div class="bot-card">
                   <div class="bot-card-head">
                     <div>
-                      <strong>{i === 0 ? editing.id : `${editing.id}-${bot.agent_id || i + 1}`}</strong>
-                      <span>{bot.bot_name || 'adapter ID'}</span>
+                      <strong>{botHeaderLabel(editing.id, bot, i)}</strong>
+                      <span>{isTruthy(bot.outbound_only) ? 'scheduled output only' : (bot.bot_name || 'interactive bot mapping')}</span>
                     </div>
                     <button class="btn-danger tiny" type="button" on:click={() => removeBotMapping(i)}>Remove</button>
                   </div>
                   <div class="bot-fields">
                     {#each editing.bot_schema as f}
-                      <label class="field">
-                        <span class="field-label">
-                          {f.label}{#if f.required}<span class="req">*</span>{/if}
-                        </span>
-                        {#if f.type === 'password'}
-                          <input type="password"
-                            value={bot[f.key] || ''}
-                            on:input={(e) => updateBotField(i, f.key, e.currentTarget.value)}
-                            placeholder={bot[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
-                        {:else if f.key === 'agent_id' && agents.length}
-                          <select
-                            value={bot[f.key] || ''}
-                            on:change={(e) => updateBotField(i, f.key, e.currentTarget.value)}
-                          >
-                            <option value="">Select an agent…</option>
-                            {#each agents as agent}
-                              <option value={agent.id}>{agentLabel(agent)}</option>
-                            {/each}
-                          </select>
-                        {:else}
-                          <input type="text"
-                            value={bot[f.key] || ''}
-                            on:input={(e) => updateBotField(i, f.key, e.currentTarget.value)}
-                            placeholder={f.help || ''} />
-                        {/if}
-                      </label>
+                      {#if shouldShowChannelField(f, bot)}
+                        <label class="field">
+                          <span class="field-label">
+                            {f.label}{#if f.required && !(editing.id === 'telegram' && f.key === 'agent_id' && isTruthy(bot.outbound_only))}<span class="req">*</span>{/if}
+                          </span>
+                          {#if f.type === 'password'}
+                            <input type="password"
+                              value={bot[f.key] || ''}
+                              on:input={(e) => updateBotField(i, f.key, e.currentTarget.value)}
+                              placeholder={bot[f.key] === '***' ? '•••• (unchanged)' : (f.help || '')} />
+                          {:else if f.type === 'checkbox' || f.key === 'ignore_groups'}
+                            <label class="check-row compact">
+                              <input type="checkbox"
+                                checked={isTruthy(bot[f.key])}
+                                on:change={(e) => updateBotField(i, f.key, e.currentTarget.checked)} />
+                              <span>{f.key === 'outbound_only' ? 'Send scheduled output only' : 'Enabled'}</span>
+                            </label>
+                          {:else if f.key === 'agent_id' && agents.length}
+                            <select
+                              value={bot[f.key] || ''}
+                              on:change={(e) => updateBotField(i, f.key, e.currentTarget.value)}
+                            >
+                              <option value="">Select an agent…</option>
+                              {#each agents as agent}
+                                <option value={agent.id}>{agentLabel(agent)}</option>
+                              {/each}
+                            </select>
+                          {:else}
+                            <input type="text"
+                              value={bot[f.key] || ''}
+                              on:input={(e) => updateBotField(i, f.key, e.currentTarget.value)}
+                              placeholder={f.help || ''} />
+                          {/if}
+                          {#if f.help}<span class="field-help">{f.help}</span>{/if}
+                        </label>
+                      {/if}
                     {/each}
                   </div>
                 </div>
@@ -621,6 +675,7 @@
   .mapping-row em { color: #6b7294; font-size: .66rem; font-family: monospace; font-style: normal; }
   .mapping-row span { color: #555a7a; font-size: .68rem; }
   .mapping-row strong { color: #c8cadf; font-size: .78rem; text-align: right; word-break: break-word; }
+  .mapping-row strong.send-only { color: #4caf82; }
   .ch-footer { padding: .75rem 1rem; border-top: 1px solid #1a1e36; display: flex; gap: .5rem; justify-content: flex-end; }
   .small-btn { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }
   .ch-footer button { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }
@@ -692,6 +747,7 @@
   .tiny { padding: .22rem .5rem; font-size: .72rem; border-radius: 5px; }
   .bot-editor { border-top: 1px solid #2a2f4a; padding-top: 1rem; display: flex; flex-direction: column; gap: .85rem; }
   .bot-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; }
+  .bot-editor-actions { display: flex; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
   .bot-editor h3 { font-size: .9rem; font-weight: 600; }
   .bot-editor p { font-size: .76rem; color: #7b82a8; margin-top: .2rem; }
   .bot-empty { color: #6b7294; background: #101323; border: 1px dashed #2a2f4a; border-radius: 8px; padding: .8rem; font-size: .8rem; }
