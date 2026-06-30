@@ -1122,14 +1122,14 @@ console.log(reply);` : ''
             </div>
 
             <!-- ── Reasoning loop ── -->
-            <div class="sep">Reasoning loop <span class="optional">(multi-step ReAct / Plan-Execute)</span></div>
+            <div class="sep">Execution strategy <span class="optional">(how the agent runs its tools)</span></div>
             <div class="field">
               <span class="field-label">Strategy</span>
               <div class="strategy-cards">
                 {#each [
-                  { val: '',             icon: '⚡', title: 'None',          desc: 'Classic single-call (default)' },
-                  { val: 'react',        icon: '🔄', title: 'ReAct',         desc: 'Iterative think → act → observe' },
-                  { val: 'plan_execute', icon: '📋', title: 'Plan-Execute',  desc: 'Decompose → execute plan steps' },
+                  { val: '',             icon: '✨', title: 'Auto',          desc: 'Recommended — native tool-calling; engine picks the loop' },
+                  { val: 'react',        icon: '🔄', title: 'ReAct',         desc: 'Force iterative think → act → observe' },
+                  { val: 'plan_execute', icon: '📋', title: 'Plan-Execute',  desc: 'Force decompose → execute plan steps' },
                 ] as s}
                   <button
                     class="strategy-card {(editing.reasoning?.strategy||'') === s.val ? 'active' : ''}"

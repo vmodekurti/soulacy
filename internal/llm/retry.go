@@ -58,6 +58,13 @@ func DoWithRetry(ctx context.Context, client *http.Client, req *http.Request, cf
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		if attempt > 1 && req.GetBody != nil {
+			body, err := req.GetBody()
+			if err != nil {
+				return nil, err
+			}
+			req.Body = body
+		}
 
 		resp, err := client.Do(req)
 		lastResp = resp

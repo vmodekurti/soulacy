@@ -23,14 +23,130 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
+	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/metrics"
 	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 )
+
+// routerCompleter adapts the engine's llm.Router to reasoning.Completer, so the
+// reasoning loop can run on ANY provider the router serves — not just the few
+// with a hand-written native backend. This is what makes ReAct/Plan-Execute
+// agents work with google/gemini, ollama_cloud, grok, etc.
+type routerCompleter struct {
+	router   *llm.Router
+	provider string
+}
+
+func (rc routerCompleter) Complete(ctx context.Context, model, system, user string, maxTokens int) (string, error) {
+	resp, err := rc.router.Complete(ctx, rc.provider, llm.CompletionRequest{
+		Model: model,
+		Messages: []llm.ChatMessage{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+		MaxTokens:   maxTokens,
+		Temperature: 0.1,
+		// Best-effort structured output: providers that support it return JSON;
+		// the rest ignore the hint and the strict prompt + lenient parse cover it.
+		ResponseFormat: "json",
+	})
+	if err != nil {
+		return "", err
+	}
+	if resp == nil {
+		return "", fmt.Errorf("reasoning: router returned a nil response for provider %q", rc.provider)
+	}
+	return resp.Content, nil
+}
+
+// captureBackend wraps an LLMBackend to remember the most recent error from any
+// phase. The reasoning strategies intentionally swallow Think/Reflect errors
+// (a failed step still reflects on partial work), which means a model that
+// can't be reached surfaces only as the opaque "loop produced empty output".
+// Capturing the error lets handleWithReasoning explain WHY — e.g. provider not
+// connected, unknown model, or bad key.
+type captureBackend struct {
+	inner   reasoning.LLMBackend
+	lastErr error
+}
+
+func (c *captureBackend) Think(ctx context.Context, req reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	r, err := c.inner.Think(ctx, req)
+	if err != nil {
+		c.lastErr = err
+	}
+	return r, err
+}
+
+func (c *captureBackend) Plan(ctx context.Context, systemPrompt, taskInput string, maxSteps int) (reasoning.Plan, error) {
+	p, err := c.inner.Plan(ctx, systemPrompt, taskInput, maxSteps)
+	if err != nil {
+		c.lastErr = err
+	}
+	return p, err
+}
+
+func (c *captureBackend) Reflect(ctx context.Context, req reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	r, err := c.inner.Reflect(ctx, req)
+	if err != nil {
+		c.lastErr = err
+	}
+	return r, err
+}
+
+// emptyReasoningMessage turns a blank reasoning result into a clear, actionable
+// message for the user instead of a silent "(no final response produced)".
+func (e *Engine) emptyReasoningMessage(def *agent.Definition, lastErr error) string {
+	prov := strings.TrimSpace(def.LLM.Provider)
+	if prov == "" && e.llmRouter != nil {
+		prov = e.llmRouter.DefaultProvider()
+	}
+	model := strings.TrimSpace(def.LLM.Model)
+
+	switch {
+	case model == "":
+		return fmt.Sprintf("This agent has no model configured (llm.model is empty), so it can't run. "+
+			"Set a provider and model — for example provider %q with a model you have available — then try again.", prov)
+	case e.llmRouter != nil && e.llmRouter.Provider(strings.ToLower(prov)) == nil:
+		return fmt.Sprintf("The provider %q isn't connected, so the agent's model %q couldn't be reached. "+
+			"Connect it on the Providers page (or pick a provider that's set up), then try again.", prov, model)
+	case lastErr != nil:
+		return fmt.Sprintf("The agent's model didn't return a response. Provider %q (model %q) reported: %s. "+
+			"Check that the provider is connected and the model name is correct.", prov, model, lastErr.Error())
+	default:
+		return "(no final response produced — the model returned an empty answer)"
+	}
+}
+
+// reasoningBackendFor selects the LLM backend for an agent's reasoning loop:
+// a test/embedder override if set; the native hand-written backend when one
+// exists for the provider (anthropic/openai-family/ollama); otherwise the
+// router-backed backend, which covers every other provider the gateway serves.
+func (e *Engine) reasoningBackendFor(def *agent.Definition) reasoning.LLMBackend {
+	if e.reasoningBackendFactory != nil {
+		return e.reasoningBackendFactory(def)
+	}
+	rdef := e.reasoningDef(def)
+	prov := strings.ToLower(strings.TrimSpace(rdef.LLM.Provider))
+	if prov == "" && e.llmRouter != nil {
+		prov = strings.ToLower(strings.TrimSpace(e.llmRouter.DefaultProvider()))
+	}
+	if reasoning.BackendAvailable(prov, e.reasoningKeys) {
+		return reasoning.DefaultBackendFor(rdef, e.reasoningKeys)
+	}
+	if e.llmRouter != nil && e.llmRouter.Provider(prov) != nil {
+		return reasoning.NewRouterBackend(routerCompleter{router: e.llmRouter, provider: prov}, rdef.LLM.Model)
+	}
+	// No native backend and the router doesn't know this provider — keep the
+	// historic local-Ollama fallback so behaviour is unchanged in that corner.
+	return reasoning.DefaultBackendFor(rdef, e.reasoningKeys)
+}
 
 // SetReasoningKeys wires cloud-provider API keys for reasoning LLM backends.
 // Called from internal/app at boot; safe to call before traffic starts.
@@ -123,12 +239,7 @@ func (e *Engine) handleWithReasoning(ctx context.Context, def *agent.Definition,
 		}
 	}
 
-	var backend reasoning.LLMBackend
-	if e.reasoningBackendFactory != nil {
-		backend = e.reasoningBackendFactory(def)
-	} else {
-		backend = reasoning.DefaultBackendFor(e.reasoningDef(def), e.reasoningKeys)
-	}
+	backend := &captureBackend{inner: e.reasoningBackendFor(def)}
 	executor := reasoningToolExecutor{e: e, def: def, sessionID: msg.SessionID}
 	loop := reasoning.New(loopCfg, backend, executor)
 
@@ -197,10 +308,17 @@ func (e *Engine) handleWithReasoning(ctx context.Context, def *agent.Definition,
 
 	finalContent := result.Output
 	if finalContent == "" {
-		finalContent = "(no final response produced)"
+		// Explain WHY instead of a silent blank: no model, provider offline, or
+		// the captured backend error (bad key, unknown model, latency, …).
+		diag := e.emptyReasoningMessage(def, backend.lastErr)
+		finalContent = diag
+		errText := "loop produced empty output"
+		if backend.lastErr != nil {
+			errText = backend.lastErr.Error()
+		}
 		e.sink.Emit(message.Event{
 			Type: "error", AgentID: msg.AgentID, SessionID: msg.SessionID,
-			Payload:   map[string]any{"stage": "reasoning", "error": "loop produced empty output"},
+			Payload:   map[string]any{"stage": "reasoning", "error": errText, "detail": diag},
 			Timestamp: time.Now().UTC(),
 		})
 	}

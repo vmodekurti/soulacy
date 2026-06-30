@@ -18,6 +18,7 @@ import (
 
 	reasoning "github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/studio/codeclass"
+	"github.com/soulacy/soulacy/pkg/agent"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
@@ -141,6 +142,11 @@ type Recommendation struct {
 
 // Draft is the workflow the compiler produces.
 type Draft struct {
+	// ID is the existing agent's id when a saved agent was opened for editing.
+	// Empty for a brand-new draft (the id is then derived from Name on save).
+	// Carrying it makes Save target the SAME agent instead of creating a new one
+	// when the name doesn't slug back to the original id (e.g. after a rename).
+	ID           string `json:"id,omitempty"`
 	Name         string `json:"name"`
 	SystemPrompt string `json:"system_prompt,omitempty"`
 	Intent       string `json:"intent,omitempty"` // the prompt that generated this workflow (Studio editor)
@@ -185,13 +191,36 @@ type Draft struct {
 	StepTimeout  string `json:"step_timeout,omitempty"`
 	TotalTimeout string `json:"total_timeout,omitempty"`
 	MaxTurns     int    `json:"max_turns,omitempty"`
+	// RunTimeout is the whole-run wall-clock cap (top-level agent field, distinct
+	// from the reasoning step/total budgets). Carried so it survives a Studio
+	// round-trip — without it the code view re-rendered SOUL.yaml without the
+	// run_timeout the user had set on disk.
+	RunTimeout string `json:"run_timeout,omitempty"`
+	// LLM carries the agent's provider/model/temperature/etc. so they survive a
+	// Studio round-trip. Without this, FromAgentDefinition dropped the block and
+	// ToAgentDefinition re-emitted a hard-coded default, silently clobbering a
+	// provider/model the user set on the Agents screen or directly in SOUL.yaml.
+	LLM agent.LLMConfig `json:"llm,omitempty"`
 }
 
-// IsAgent reports whether the draft is a reasoning agent (ReAct/Plan-Execute)
-// rather than a fixed workflow.
+// IsAgent reports whether the draft is a reasoning/tool agent (no fixed flow
+// graph). "auto" is the recommended default — it produces a tool agent whose
+// execution mode the engine resolves at run time (classic native-tool-calling
+// for capable models, ReAct otherwise). "react"/"plan_execute" pin an explicit
+// strategy.
 func (d Draft) IsAgent() bool {
-	s := strings.ToLower(strings.TrimSpace(d.Strategy))
-	return s == "react" || s == "plan_execute"
+	return isAgentStrategy(d.Strategy)
+}
+
+// isAgentStrategy reports whether a strategy string denotes a tool agent (as
+// opposed to a fixed workflow). Centralised so every surface agrees.
+func isAgentStrategy(strategy string) bool {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "auto", "react", "plan_execute":
+		return true
+	default:
+		return false
+	}
 }
 
 // Question is one clarifying question. Options, when present, suggest a
@@ -324,7 +353,7 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- WRITE REUSABLE AGENT PERSONAS: a helper agent like a summarizer or notifier may be reused across many tasks, so its `system_prompt` must be a complete, standalone persona — NOT a one-liner. Include: (1) its role and expertise, (2) exactly how it should behave and reason, (3) the precise OUTPUT format it must produce, and (4) how to handle empty/erroneous input gracefully. Aim for 3-6 sentences. The overarching agent's `system_prompt` contains the workflow plan; the helper agent's `system_prompt` is its durable, scenario-independent character.\n")
 	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), do NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name, then add it to the `skills` array.\n")
 	sb.WriteString("- PREFER TYPED CAPABILITIES OVER GUESSED CODE: the tools, skills, and MCP tools listed below come with their REAL argument names. When a step's operation is covered by one of them, ALWAYS emit a `tool` node that calls it with those EXACT named arguments — a typed contract that always works — one operation per node. NEVER re-implement a typed tool inside a `python` node, and NEVER shell out to a CLI (subprocess) for something an MCP/tool already exposes: the model would have to guess CLI flags, which is exactly what breaks. For a multi-step MCP job, emit the discrete tool nodes IN SEQUENCE and wire each step's output into the next via typed ports (or {{ toJson .var }}). Reach for a `python` node ONLY for glue no tool covers. Do NOT invent tool/MCP names; if truly nothing fits, then a python node.\n")
-	sb.WriteString("- EXECUTION MODE: judge which execution model best fits the intent and include a top-level \"recommendation\": {\"mode\":\"workflow|react|plan_execute\", \"rationale\":\"<1-2 sentences>\"}. Pick \"workflow\" as the strong default (a clear sequence of tool/MCP/agent nodes, with python only for glue). Only pick \"react\" if the task requires deeply dynamic tool reasoning where a workflow graph is impossible.\n\n")
+	sb.WriteString("- EXECUTION MODE: judge which execution model best fits the intent and include a top-level \"recommendation\": {\"mode\":\"workflow|auto|react|plan_execute\", \"rationale\":\"<1-2 sentences>\"}. Pick \"workflow\" when the task is a clear FIXED sequence of tool/MCP/agent nodes (python only for glue). Pick \"auto\" — the recommended default for a CONVERSATIONAL or TOOL-USING agent that decides which tools to call as it goes (e.g. a flight finder, a research assistant): the engine runs it as a reliable native tool-calling loop, no fixed graph. Only pick \"react\" or \"plan_execute\" for genuinely open-ended, long-horizon REASONING where the agent must explicitly plan and adapt over many steps — NOT merely for ordinary tool use, which \"auto\" handles better.\n\n")
 
 	// User-editable authoring rulebook (same rules the validator + AI fixer use),
 	// so generation follows them up front instead of being corrected after.

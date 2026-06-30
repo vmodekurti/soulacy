@@ -7,6 +7,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -600,6 +601,41 @@ func TestOpenAICompleteStreamWithToolsDoesNotStream(t *testing.T) {
 	}
 	if resp.Stream != nil {
 		t.Error("Stream channel should be nil when tools are present")
+	}
+}
+
+// TestOpenAICompleteRetryReplaysBody verifies transient retry attempts send a
+// fresh request body instead of reusing a drained reader.
+func TestOpenAICompleteRetryReplaysBody(t *testing.T) {
+	attempts := 0
+	var second map[string]any
+	p := NewOpenAIProvider("openai", "http://openai.test", "key", "gpt")
+	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		if attempts == 1 {
+			_, _ = io.ReadAll(r.Body)
+			return jsonResponse(502, `bad gateway`), nil
+		}
+		if err := json.NewDecoder(r.Body).Decode(&second); err != nil {
+			t.Fatalf("decode retry body: %v", err)
+		}
+		return jsonResponse(200, `{"choices":[{"message":{"content":"ok"}}],"usage":{}}`), nil
+	})
+	resp, err := p.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSchema{{Name: "t", Parameters: map[string]any{}}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if second["model"] != "gpt" || len(second["messages"].([]any)) != 1 {
+		t.Fatalf("retry body missing expected fields: %#v", second)
 	}
 }
 

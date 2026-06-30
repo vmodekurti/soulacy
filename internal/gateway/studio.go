@@ -1385,6 +1385,14 @@ func (s *Server) handleStudioSaveYAML(c *fiber.Ctx) error {
 	if len(s.cfg.AgentDirs) > 0 {
 		dir = s.cfg.AgentDirs[0]
 	}
+	// If this agent already exists, write back into its OWN directory and carry
+	// its source path, so Save updates the agent in place instead of dropping a
+	// duplicate copy under the first configured agent dir. SourcePath is
+	// <baseDir>/<id>/SOUL.yaml, so the base dir is the parent of the agent dir.
+	if existing := s.loader.Get(def.ID); existing != nil && existing.SourcePath != "" {
+		def.SourcePath = existing.SourcePath
+		dir = filepath.Dir(filepath.Dir(existing.SourcePath))
+	}
 	if err := s.loader.Upsert(dir, &def); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}

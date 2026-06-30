@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 // Version is injected at build time via ldflags.
@@ -664,6 +665,14 @@ func Load(cfgPath string) (*Config, string, error) {
 		return nil, "", fmt.Errorf("unmarshalling config: %w", err)
 	}
 
+	// Viper lowercases EVERY key, which corrupts case-sensitive map *values*
+	// such as MCP server env-var names (e.g. LETSFG_PYTHON → letsfg_python) and
+	// HTTP header names. The spawned MCP process then can't find the variable it
+	// expects, and the GUI shows the mangled name. Re-read those specific maps
+	// straight from the YAML file (yaml.v3 preserves case) and overwrite the
+	// lowercased copies. No-op when no file was read (first run, env-only).
+	restoreCaseSensitiveMaps(cfg, resolvedPath)
+
 	// Story 5 / S8.1: strict fail-fast validation. A bad duration or an
 	// out-of-range numeric must produce a loud startup error, not a silent
 	// fallback to a default that masks the operator's mistake.
@@ -672,6 +681,47 @@ func Load(cfgPath string) (*Config, string, error) {
 	}
 
 	return cfg, resolvedPath, nil
+}
+
+// restoreCaseSensitiveMaps fixes the keys Viper lowercased on load for the maps
+// where case is significant: each MCP server's `env` (environment variable
+// names are case-sensitive on Unix) and `headers` (HTTP header *values* are
+// matched case-insensitively, but some servers care). It re-reads only those
+// maps from the raw YAML at path and overwrites the lowercased versions in cfg,
+// matching servers case-insensitively (Viper also lowercased the server IDs).
+func restoreCaseSensitiveMaps(cfg *Config, path string) {
+	if path == "" || cfg == nil || len(cfg.MCP.Servers) == 0 {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	var raw struct {
+		MCP struct {
+			Servers map[string]struct {
+				Env     map[string]string `yaml:"env"`
+				Headers map[string]string `yaml:"headers"`
+			} `yaml:"servers"`
+		} `yaml:"mcp"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return
+	}
+	for name, rs := range raw.MCP.Servers {
+		key := strings.ToLower(strings.TrimSpace(name))
+		sc, ok := cfg.MCP.Servers[key]
+		if !ok {
+			continue
+		}
+		if len(rs.Env) > 0 {
+			sc.Env = rs.Env
+		}
+		if len(rs.Headers) > 0 {
+			sc.Headers = rs.Headers
+		}
+		cfg.MCP.Servers[key] = sc
+	}
 }
 
 func setHomeDefaults(v *viper.Viper, ws Paths) {

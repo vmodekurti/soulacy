@@ -24,12 +24,18 @@ func HasWorkflow(def agent.Definition) bool {
 // edits the WORKFLOW, and a re-save regenerates those.
 func FromAgentDefinition(def agent.Definition) Draft {
 	d := Draft{
+		ID:        def.ID,
 		Name:      def.Name,
 		Intent:    def.StudioIntent,
 		Refined:   def.StudioRefined,
 		RawIntent: def.StudioRawIntent,
-		Trigger:  Trigger{Type: triggerTypeFromKind(def.Trigger)},
-		Channels: append([]string(nil), def.Channels...),
+		Trigger:   Trigger{Type: triggerTypeFromKind(def.Trigger)},
+		Channels:  append([]string(nil), def.Channels...),
+		// Preserve the agent's LLM config (provider/model/temperature/...) and the
+		// whole-run timeout so a Studio round-trip is lossless. Applies to BOTH the
+		// ReAct and workflow branches below since they share this construction.
+		LLM:        def.LLM,
+		RunTimeout: def.RunTimeout,
 	}
 	if d.Name == "" {
 		d.Name = def.ID
@@ -44,7 +50,7 @@ func FromAgentDefinition(def agent.Definition) Draft {
 	// (IsAgent stays true → no `workflow:` block is added on save) and the mode
 	// toggle reflects the real strategy. Without this the agent silently degraded
 	// into an (empty) workflow.
-	if strat := strings.ToLower(strings.TrimSpace(def.Reasoning.Strategy)); strat == "react" || strat == "plan_execute" {
+	if strat := strings.ToLower(strings.TrimSpace(def.Reasoning.Strategy)); isAgentStrategy(strat) {
 		d.Strategy = strat
 		d.SystemPrompt = def.SystemPrompt
 		d.Unattended = def.Unattended

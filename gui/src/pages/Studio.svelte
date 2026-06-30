@@ -766,9 +766,10 @@ def run(inputs):
     const mode = (refinement.recommended_mode || 'workflow')
     const reason = refinement.recommended_reason || ''
     refinement = null
-    if (mode === 'react' || mode === 'plan_execute') {
-      // A reasoning task: build the AGENT directly (never a doomed flow), take the
-      // user to SOUL.yaml, and explain via a modal.
+    if (mode === 'auto' || mode === 'react' || mode === 'plan_execute') {
+      // A tool/reasoning agent (no fixed flow): build the AGENT directly, take the
+      // user to SOUL.yaml, and explain via a modal. "auto" is the recommended
+      // default — the engine runs it as a reliable native tool-calling loop.
       await runAgentCompile(text, mode, ans)
       if (workflow && workflow.strategy) routeToAgent(mode, reason)
     } else {
@@ -797,7 +798,7 @@ def run(inputs):
   async function escalateIfReasoningFit() {
     const rec = workflow && !workflow.strategy ? workflow.recommendation : null
     const m = rec && rec.mode
-    if (m !== 'react' && m !== 'plan_execute') return
+    if (m !== 'auto' && m !== 'react' && m !== 'plan_execute') return
     const text = ((intent || (workflow && workflow.intent) || rawPrompt || '')).trim()
     if (!text) return
     await runAgentCompile(text, m)
@@ -1021,8 +1022,19 @@ def run(inputs):
   }
 
   function applyCompile(data) {
+    // Remember which saved agent we were editing BEFORE reset clears it.
+    const prevAgentId = loadedAgentId
     resetTransientDraftState()
     workflow = (data && data.workflow) || null
+    // If we were editing an existing saved agent, keep the freshly generated
+    // draft bound to that agent so re-generating from a tweaked prompt UPDATES
+    // it instead of silently saving a brand-new duplicate (the "Flight Finder →
+    // Flight Deal Finder" bug). Use "New agent" to intentionally start a
+    // separate one — that path clears loadedAgentId first.
+    if (prevAgentId && workflow) {
+      loadedAgentId = prevAgentId
+      workflow.id = prevAgentId
+    }
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
     explanation = (data && data.explanation) || null
@@ -1308,6 +1320,11 @@ def run(inputs):
   let viewMode = 'canvas'     // 'canvas' | 'code'
   let codeYaml = ''
   let codeOrig = ''           // last-synced text (dirty detection)
+  // Tracks the agent id whose RAW on-disk SOUL.yaml we've loaded into the code
+  // editor, so we read the real file once per loaded reasoning agent instead of
+  // re-deriving (lossily) from the draft. Reset implicitly when loadedAgentId
+  // changes (the guard compares the two).
+  let codeRawForId = ''
   let codeWarnings = []
   let codeError = ''
   let codeLoading = false
@@ -1322,8 +1339,25 @@ def run(inputs):
     codeLoading = true
     viewMode = 'code'
     try {
-      const r = await bridge.toYaml(workflow)
-      codeYaml = (r && r.yaml) || ''
+      const isAgent = ['react', 'plan_execute'].includes(String(workflow.strategy || '').toLowerCase())
+      const dirty = codeYaml !== codeOrig
+      let yamlText = ''
+      // Source of truth for a SAVED reasoning agent is its on-disk SOUL.yaml, not
+      // the draft (which can't model every field — run_timeout, memory scopes,
+      // confirm_tools, …). Read the real file once per loaded agent, as long as
+      // there are no unsaved code edits to preserve.
+      if (loadedAgentId && isAgent && !dirty && codeRawForId !== loadedAgentId) {
+        try {
+          const raw = await bridge.agentYaml(loadedAgentId)
+          yamlText = (raw && raw.yaml) || ''
+          if (yamlText) codeRawForId = loadedAgentId
+        } catch (_) { /* fall through to the draft-derived YAML below */ }
+      }
+      if (!yamlText) {
+        const r = await bridge.toYaml(workflow)
+        yamlText = (r && r.yaml) || ''
+      }
+      codeYaml = yamlText
       codeOrig = codeYaml
     } catch (e) {
       codeError = (e && e.message) || 'Could not generate YAML'
@@ -2082,6 +2116,46 @@ def run(inputs):
   let savingDraft = false
   let library = { open: false, loading: false, error: '', drafts: [], agents: [], busyId: '' }
 
+  // Read-only SOUL.yaml browser: view the raw on-disk SOUL.yaml of ANY registered
+  // agent (not only workflow-bearing ones), straight from the file — no lossy
+  // draft round-trip. Purely for inspection; editing still goes through the
+  // canvas/code views.
+  let yamlBrowser = {
+    open: false, loading: false, error: '',
+    agents: [], selectedId: '', yaml: '', path: '', yamlLoading: false, yamlError: '',
+  }
+
+  // Open the browser and load the full agent list (every agent, not just
+  // Studio-authored workflows).
+  async function openYamlBrowser() {
+    yamlBrowser = { ...yamlBrowser, open: true, loading: true, error: '', agents: [], selectedId: '', yaml: '', path: '', yamlError: '' }
+    try {
+      const res = await bridge.allAgents()
+      const agents = Array.isArray(res?.agents) ? res.agents : (Array.isArray(res) ? res : [])
+      yamlBrowser = { ...yamlBrowser, loading: false, agents }
+      // Auto-select the first agent for immediate context.
+      if (agents.length) viewAgentYaml(agents[0].id)
+    } catch (e) {
+      yamlBrowser = { ...yamlBrowser, loading: false, error: e?.message || 'Failed to load agents' }
+    }
+  }
+
+  function closeYamlBrowser() {
+    yamlBrowser = { ...yamlBrowser, open: false }
+  }
+
+  // Fetch and show the raw SOUL.yaml for one agent.
+  async function viewAgentYaml(id) {
+    if (!id) return
+    yamlBrowser = { ...yamlBrowser, selectedId: id, yamlLoading: true, yamlError: '', yaml: '', path: '' }
+    try {
+      const res = await bridge.agentYaml(id)
+      yamlBrowser = { ...yamlBrowser, yamlLoading: false, yaml: res?.yaml || '', path: res?.path || '' }
+    } catch (e) {
+      yamlBrowser = { ...yamlBrowser, yamlLoading: false, yamlError: e?.message || 'Failed to load SOUL.yaml' }
+    }
+  }
+
   // Autosave: after every successful generate, the current workflow is saved to
   // a single recoverable draft slot ("⟳ Last session") so completed work can be
   // brought back from My Workflows → Drafts even after a reload or restart — not
@@ -2569,6 +2643,7 @@ def run(inputs):
       <button class="btn" type="button" on:click={openModelPicker} title="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
       <button class="btn" type="button" on:click={openTemplates} title="Start from a template">Templates</button>
       <button class="btn" type="button" on:click={openLibrary} title="Reopen a saved draft or an existing workflow agent">My Workflows</button>
+      <button class="btn" type="button" on:click={openYamlBrowser} title="View the raw SOUL.yaml of any agent (read-only)">Browse SOUL.yaml</button>
       <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} title="Save the current draft to the library">
         {savingDraft ? 'Saving…' : 'Save draft'}
       </button>
@@ -3739,6 +3814,54 @@ def run(inputs):
         {/if}
         <div class="modal-actions">
           <button class="btn" type="button" on:click={closeLibrary}>Close</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- ── Browse SOUL.yaml: read-only viewer for every agent ────────────────── -->
+  {#if yamlBrowser.open}
+    <div class="modal-backdrop" on:click|self={closeYamlBrowser} role="presentation">
+      <div class="modal yaml-browser" role="dialog" aria-modal="true" aria-labelledby="yamlb-title">
+        <h2 id="yamlb-title" class="modal-title">Browse SOUL.yaml</h2>
+        <p class="modal-body">The raw SOUL.yaml of any agent, read straight from disk. Read-only — edit on the canvas or in the code view.</p>
+        {#if yamlBrowser.error}<div class="strip strip-error">⚠ {yamlBrowser.error}</div>{/if}
+        {#if yamlBrowser.loading}
+          <p class="muted">Loading agents…</p>
+        {:else if !yamlBrowser.agents.length}
+          <p class="muted">No agents registered yet.</p>
+        {:else}
+          <div class="yamlb-split">
+            <ul class="picker-list yamlb-list">
+              {#each yamlBrowser.agents as a (a.id)}
+                <li class="picker-item">
+                  <button class="picker-main" type="button" class:selected={yamlBrowser.selectedId === a.id}
+                          on:click={() => viewAgentYaml(a.id)} title="View this agent's SOUL.yaml">
+                    <span class="picker-name">
+                      {a.name || a.id}
+                      <span class="agent-badge {a.enabled ? 'on' : 'off'}">{a.enabled ? 'enabled' : 'disabled'}</span>
+                    </span>
+                    <span class="picker-desc">{a.id}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+            <div class="yamlb-view">
+              {#if yamlBrowser.yamlError}
+                <div class="strip strip-error">⚠ {yamlBrowser.yamlError}</div>
+              {:else if yamlBrowser.yamlLoading}
+                <p class="muted">Loading SOUL.yaml…</p>
+              {:else if yamlBrowser.yaml}
+                {#if yamlBrowser.path}<div class="yamlb-path" title={yamlBrowser.path}>{yamlBrowser.path}</div>{/if}
+                <pre class="yamlb-code">{yamlBrowser.yaml}</pre>
+              {:else}
+                <p class="muted">Select an agent to view its SOUL.yaml.</p>
+              {/if}
+            </div>
+          </div>
+        {/if}
+        <div class="modal-actions">
+          <button class="btn" type="button" on:click={closeYamlBrowser}>Close</button>
         </div>
       </div>
     </div>
@@ -5132,6 +5255,31 @@ def run(inputs):
   .consent-scope select { width: auto; flex: 1; }
   .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
   .modal-actions .btn { white-space: normal; }
+
+  /* Browse SOUL.yaml: wider modal with an agent list beside a read-only viewer. */
+  .modal.yaml-browser { width: min(920px, 94vw); }
+  .yamlb-split { display: grid; grid-template-columns: 240px 1fr; gap: 12px; min-height: 320px; }
+  .yamlb-list { max-height: 56vh; overflow-y: auto; margin: 0; }
+  .picker-main.selected { background: var(--bg-elev); border-color: var(--accent, var(--ok)); }
+  .yamlb-view {
+    display: flex; flex-direction: column; min-width: 0;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
+    overflow: hidden;
+  }
+  .yamlb-path {
+    font-family: ui-monospace, monospace; font-size: 11px; color: var(--text-muted);
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .yamlb-code {
+    margin: 0; padding: 12px; overflow: auto; max-height: 56vh;
+    font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.5;
+    color: var(--text); white-space: pre; tab-size: 2;
+  }
+  @media (max-width: 640px) {
+    .yamlb-split { grid-template-columns: 1fr; }
+    .yamlb-list { max-height: 26vh; }
+  }
 
   /* ── Pre-generation refinement dialog ───────────────────────────────────── */
   .refine-modal { max-width: 640px; width: 92vw; max-height: 84vh; overflow-y: auto; }

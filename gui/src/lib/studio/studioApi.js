@@ -190,6 +190,13 @@ export const bridge = {
   loadAgentWorkflow: (id) => api.studio.agents.get(id),
   deleteAgent: (id) => api.agents.delete(id),
 
+  // Read-only SOUL.yaml browsing for EVERY agent (not just workflow-bearing
+  // ones): allAgents lists all registered agents; agentYaml returns the raw
+  // on-disk SOUL.yaml ({ id, path, yaml }) so Studio can show it without going
+  // through the lossy draft round-trip.
+  allAgents: () => api.agents.list(),
+  agentYaml: (id) => api.agents.getYaml(id),
+
   // Framework-written Python for a node: deterministic scaffolds, or the
   // framework's own configured model writing the code (no external service).
   scaffolds: () => api.studio.scaffolds(),

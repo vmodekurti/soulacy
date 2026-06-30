@@ -2,18 +2,28 @@ package channels
 
 import "testing"
 
-func TestActivationPolicyRequiresTriggerPhrase(t *testing.T) {
-	p := ActivationPolicy{TriggerPhrase: "!soulacy", IgnoreGroups: true}
+func TestActivationPolicyTriggerPhraseGroupOnly(t *testing.T) {
+	// IgnoreGroups false so groups reach the trigger gate; DirectActivatesWithoutPhrase
+	// mirrors a real chat platform (DMs skip the phrase).
+	p := ActivationPolicy{TriggerPhrase: "!soulacy", DirectActivatesWithoutPhrase: true}
 
-	if _, ok := p.Apply("hello", "thread", "user", false); ok {
-		t.Fatal("message without trigger phrase should be ignored")
+	// In a GROUP, the phrase is required and stripped.
+	if _, ok := p.Apply("hello", "thread", "user", true); ok {
+		t.Fatal("group message without trigger phrase should be ignored")
 	}
-	text, ok := p.Apply("!soulacy hello", "thread", "user", false)
-	if !ok {
-		t.Fatal("message with trigger phrase should be accepted")
+	text, ok := p.Apply("!soulacy hello", "thread", "user", true)
+	if !ok || text != "hello" {
+		t.Fatalf("group message with trigger should be accepted+stripped, got %q ok=%v", text, ok)
 	}
-	if text != "hello" {
-		t.Fatalf("trigger phrase should be stripped, got %q", text)
+
+	// In a DIRECT message, no phrase is needed — the bot always responds.
+	text, ok = p.Apply("hello", "thread", "user", false)
+	if !ok || text != "hello" {
+		t.Fatalf("DM should activate without a trigger phrase, got %q ok=%v", text, ok)
+	}
+	// A DM that DID include the phrase still has it stripped.
+	if text, ok := p.Apply("!soulacy hello", "thread", "user", false); !ok || text != "hello" {
+		t.Fatalf("DM with phrase should strip it, got %q ok=%v", text, ok)
 	}
 }
 

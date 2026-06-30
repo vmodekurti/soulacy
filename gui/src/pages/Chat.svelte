@@ -7,6 +7,7 @@
   import { entryIdForMessage, nextBranchLabel, entriesToMessages } from '../lib/chatbranch.js'
   import { deltaMetrics, deltaLabel, deltaTitle } from '../lib/chatmetrics.js'
   import { parseMarkdown, richRenderer } from '../lib/markdown.js'
+  import { explainConfirmRequest } from '../lib/explainCommand.js'
   import {
     nextVoiceState, realtimeCallURL, classifyRealtimeEvent,
     addUsage, voiceUsageLabel, voiceHint,
@@ -173,6 +174,8 @@
   let ws        = null
   let stopEvents = false
   let confirmRequest = null
+  // Plain-English explanation of what approving the pending tool call would do.
+  $: confirmExplain = confirmRequest ? explainConfirmRequest(confirmRequest) : null
 
   // ── load agents once on mount ────────────────────────────────────────
   async function loadAgents() {
@@ -595,6 +598,23 @@
       {#if confirmRequest.reason}
         <div class="reason-box">
           <strong>Reason:</strong> {confirmRequest.reason}
+        </div>
+      {/if}
+
+      {#if confirmExplain && confirmExplain.summary}
+        <div class="explain-box">
+          <strong>What this does:</strong>
+          <p class="explain-summary">{confirmExplain.summary}</p>
+          {#if confirmExplain.steps && confirmExplain.steps.length}
+            <ul class="explain-steps">
+              {#each confirmExplain.steps as step}
+                <li>{step}</li>
+              {/each}
+            </ul>
+          {/if}
+          {#if confirmExplain.timeout}
+            <p class="explain-meta">{confirmExplain.timeout}</p>
+          {/if}
         </div>
       {/if}
 
@@ -1152,6 +1172,19 @@
     margin: 0.5rem 0 0 0; white-space: pre-wrap; word-wrap: break-word;
     color: #a3d9a5; font-family: monospace; font-size: 0.8rem;
   }
+  .explain-box {
+    background: #131526; padding: 0.75rem; border-radius: 6px;
+    font-size: 0.85rem; color: #c8cadf;
+    border: 1px solid #2a2f4a; border-left: 3px solid #6c7bff;
+  }
+  .explain-box strong { color: #fff; }
+  .explain-summary { margin: 0.4rem 0 0 0; color: #c8cadf; font-size: 0.85rem; }
+  .explain-steps {
+    margin: 0.5rem 0 0 0; padding-left: 1.1rem; display: flex;
+    flex-direction: column; gap: 0.2rem;
+  }
+  .explain-steps li { color: #b7bbd6; font-size: 0.82rem; }
+  .explain-meta { margin: 0.5rem 0 0 0; color: #8a90b0; font-size: 0.78rem; font-style: italic; }
   .confirm-actions {
     display: flex; gap: 0.75rem; justify-content: flex-end; margin-top: 0.5rem;
   }

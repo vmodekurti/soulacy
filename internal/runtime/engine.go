@@ -1709,7 +1709,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// google/gemini) DefaultBackendFor would silently fall back to local Ollama
 	// and fail. In that case we degrade to the classic tool loop, which works
 	// with every provider.
-	if loopCfg, ok := reasoning.LoopConfigFromDefinition(def, sysPrefix); ok {
+	if loopCfg, ok := reasoning.LoopConfigFromDefinition(def, sysPrefix, e.providerSupportsNativeTools(def)); ok {
 		if e.reasoningBackendAvailable(def) {
 			reply, rerr := e.handleWithReasoning(ctx, def, sess, msg, loopCfg)
 			if rerr == nil {
@@ -4056,6 +4056,17 @@ func (e *Engine) effectiveProvider(def *agent.Definition) string {
 	return p
 }
 
+// providerSupportsNativeTools reports whether the agent's effective provider can
+// call tools via the native completion API. Drives the default ("auto"/unset)
+// execution-strategy choice in LoopConfigFromDefinition.
+func (e *Engine) providerSupportsNativeTools(def *agent.Definition) bool {
+	prov := e.effectiveProvider(def)
+	if e.reasonerProvider != "" {
+		prov = e.reasonerProvider // global llm.reasoner override drives the loop
+	}
+	return reasoning.ProviderSupportsNativeTools(prov)
+}
+
 // reasoningBackendAvailable reports whether a real reasoning backend exists for
 // the agent's effective provider. When false, the engine uses the classic tool
 // loop instead of routing to a (likely absent) local Ollama. A custom backend
@@ -4065,11 +4076,21 @@ func (e *Engine) reasoningBackendAvailable(def *agent.Definition) bool {
 	if e.reasoningBackendFactory != nil {
 		return true
 	}
-	prov := e.effectiveProvider(def)
-	if e.reasonerProvider != "" {
-		prov = e.reasonerProvider // global llm.reasoner override
+	// Resolve the provider exactly as reasoningBackendFor will (including the
+	// global llm.reasoner override and its half-configured guard), so the gate
+	// and the backend selection never disagree.
+	rdef := e.reasoningDef(def)
+	prov := strings.ToLower(strings.TrimSpace(rdef.LLM.Provider))
+	if prov == "" && e.llmRouter != nil {
+		prov = strings.ToLower(strings.TrimSpace(e.llmRouter.DefaultProvider()))
 	}
-	return reasoning.BackendAvailable(prov, e.reasoningKeys)
+	if reasoning.BackendAvailable(prov, e.reasoningKeys) {
+		return true
+	}
+	// Any provider the gateway's router serves can now drive the reasoning loop
+	// via the router-backed backend (google/gemini, ollama_cloud, grok, …), so
+	// ReAct/Plan-Execute agents are no longer limited to a hand-written few.
+	return e.llmRouter != nil && e.llmRouter.Provider(prov) != nil
 }
 
 // reasoningDef returns the agent definition to use when resolving the reasoning
@@ -4080,6 +4101,14 @@ func (e *Engine) reasoningBackendAvailable(def *agent.Definition) bool {
 func (e *Engine) reasoningDef(def *agent.Definition) *agent.Definition {
 	if e.reasonerProvider == "" && e.reasonerModel == "" {
 		return def
+	}
+	// Guard against a half-configured override: switching the provider WITHOUT a
+	// reasoner model carries the agent's model name onto the new provider, which
+	// usually doesn't have it (e.g. a "gemini-2.5-pro" name sent to local Ollama
+	// → "model not found"). Require both provider and model to switch providers.
+	if e.reasonerProvider != "" && e.reasonerModel == "" &&
+		!strings.EqualFold(e.reasonerProvider, def.LLM.Provider) {
+		return def // incomplete override → fall back to the agent's own provider/model
 	}
 	cp := *def
 	if e.reasonerProvider != "" {
