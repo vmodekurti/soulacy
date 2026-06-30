@@ -539,6 +539,9 @@ schedule:
           <span>Scheduled output</span>
           {#if outputBotOptions.length === 0}<em>No channel bots configured</em>{/if}
         </div>
+        <div class="field-help output-help">
+          Add or rotate Telegram output bot tokens in <a href="#channels">Channels</a>, then restart the gateway and select the bot here.
+        </div>
         <label class="field">
           <span class="field-label">Bot</span>
           <select value={editOutputChannel} on:change={(e) => selectOutputChannel(e.currentTarget.value)} disabled={outputBotOptions.length === 0}>

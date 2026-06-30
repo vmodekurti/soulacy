@@ -215,11 +215,20 @@ func TestNormalizeChannelValue_AllowedUserIDs_InvalidPartSkipped(t *testing.T) {
 	}
 }
 
+func TestNormalizeChannelValue_BoolFields(t *testing.T) {
+	if got := normalizeChannelValue("outbound_only", "true"); got != true {
+		t.Fatalf("outbound_only true normalized to %#v", got)
+	}
+	if got := normalizeChannelValue("ignore_groups", "false"); got != false {
+		t.Fatalf("ignore_groups false normalized to %#v", got)
+	}
+}
+
 // ── channelAdapterID: index 0 with agentID still returns channelID ────────────
 
 func TestChannelAdapterID_Index0WithAgentID(t *testing.T) {
 	// At index 0, agentID is ignored; always returns channelID.
-	got := channelAdapterID("telegram", "my-bot", 0)
+	got := channelAdapterID("telegram", "my-bot", "", 0)
 	if got != "telegram" {
 		t.Fatalf("channelAdapterID at index 0 = %q, want telegram", got)
 	}
@@ -227,9 +236,16 @@ func TestChannelAdapterID_Index0WithAgentID(t *testing.T) {
 
 func TestChannelAdapterID_Index2WithAgentID(t *testing.T) {
 	// Non-zero index with agentID → channelID-agentID
-	got := channelAdapterID("telegram", "second-bot", 2)
+	got := channelAdapterID("telegram", "second-bot", "", 2)
 	if got != "telegram-second-bot" {
 		t.Fatalf("channelAdapterID at index 2 = %q, want telegram-second-bot", got)
+	}
+}
+
+func TestChannelAdapterID_OutboundOnlyUsesBotName(t *testing.T) {
+	got := channelAdapterID("telegram", "", "Daily Stock Screener", 1)
+	if got != "telegram-Daily-Stock-Screener" {
+		t.Fatalf("channelAdapterID outbound-only = %q, want telegram-Daily-Stock-Screener", got)
 	}
 }
 

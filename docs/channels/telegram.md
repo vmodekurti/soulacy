@@ -66,6 +66,42 @@ You can configure this from the GUI: **Channels → Telegram → Edit → Bot ma
 
 ---
 
+## Send Scheduled Output To Telegram
+
+For cron agents that only need to post results, configure Telegram as
+`outbound_only`. In this mode Soulacy registers the bot for sends, but does not
+poll Telegram for inbound messages and does not expose the agent to Telegram
+users.
+
+```yaml title="config.yaml"
+channels:
+  telegram:
+    enabled: true
+    token: "1234567890:AAH..."
+    outbound_only: true
+```
+
+Then point the cron agent's `schedule.output` at that adapter and set `to` to
+the Telegram chat, user, group, or channel id:
+
+```yaml title="agents/daily-brief/SOUL.yaml"
+id: daily-brief
+name: Daily Brief
+trigger: cron
+schedule:
+  cron: "0 7 * * *"
+  output:
+    channel: telegram
+    to: "123456789"
+    bot_name: "Daily Brief Bot"
+    template: "{reply}"
+```
+
+For a Telegram channel, add the bot as an administrator and use the channel id
+or public handle, for example `@your_channel_name`, as `schedule.output.to`.
+
+---
+
 ## Features
 
 | Feature | Support |

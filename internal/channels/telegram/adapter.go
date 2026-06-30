@@ -12,6 +12,7 @@
 //	    allowed_user_ids: [123456789, 987654321]  # whitelist; empty = allow all
 //	    trigger_phrase: "!soulacy"                # empty = all messages
 //	    ignore_groups: true
+//	    outbound_only: false                      # true = send-only, no polling
 package telegram
 
 import (
@@ -40,6 +41,7 @@ type Adapter struct {
 	agentID        string
 	allowedUserIDs map[int64]bool // nil/empty = allow everyone
 	activation     channels.ActivationPolicy
+	outboundOnly   bool
 	client         *http.Client
 	inbox          chan<- message.Message
 	offset         int64
@@ -93,12 +95,22 @@ func NewWithIDAndActivation(id, token, agentID string, allowedUserIDs []int64, a
 	}
 }
 
+// SetOutboundOnly makes the adapter send-only. Start still marks the adapter
+// connected so registry sends work, but it does not poll Telegram updates or
+// route inbound messages to an agent.
+func (a *Adapter) SetOutboundOnly(outboundOnly bool) {
+	a.outboundOnly = outboundOnly
+}
+
 func (a *Adapter) ID() string   { return a.id }
 func (a *Adapter) Name() string { return "Telegram" }
 
 func (a *Adapter) Start(ctx context.Context, inbox chan<- message.Message) error {
 	a.inbox = inbox
 	a.connected = true
+	if a.outboundOnly || a.agentID == "" {
+		return nil
+	}
 	go a.poll(ctx)
 	return nil
 }
@@ -244,6 +256,9 @@ func (a *Adapter) Stop() error {
 }
 
 func (a *Adapter) Status() channels.AdapterStatus {
+	if a.outboundOnly || a.agentID == "" {
+		return channels.AdapterStatus{Connected: a.connected, Detail: "outbound-only"}
+	}
 	return channels.AdapterStatus{Connected: a.connected, Detail: "long-polling"}
 }
 

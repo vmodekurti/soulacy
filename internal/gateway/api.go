@@ -939,7 +939,7 @@ func (s *Server) handleToolConfirm(c *fiber.Ctx) error {
 type channelField struct {
 	Key      string `json:"key"`
 	Label    string `json:"label"`
-	Type     string `json:"type"` // "text" or "password"
+	Type     string `json:"type"` // "text", "password", or "checkbox"
 	Required bool   `json:"required"`
 	Secret   bool   `json:"secret"`
 	Help     string `json:"help,omitempty"`
@@ -960,7 +960,8 @@ var channelSpecs = []channelSpec{
 	{ID: "telegram", Name: "Telegram", Fields: []channelField{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "Get one from @BotFather"},
-		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "outbound_only", Label: "Send only", Type: "checkbox", Required: false, Help: "Use this bot only for scheduled/manual output; it will not poll Telegram or route inbound messages to an agent"},
+		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: false, Help: "Required only when this bot should respond interactively to Telegram messages"},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated Telegram chat IDs to allow"},
@@ -1073,6 +1074,9 @@ func displayChannelValue(v any) any {
 }
 
 func normalizeChannelValue(key, val string) any {
+	if key == "outbound_only" || key == "ignore_groups" {
+		return strings.EqualFold(strings.TrimSpace(val), "true") || strings.TrimSpace(val) == "1"
+	}
 	if key == "args" {
 		return strings.Fields(val)
 	}
@@ -1135,7 +1139,8 @@ func maskChannelBots(spec channelSpec, raw any, statuses map[string]channels.Ada
 			}
 		}
 		agentID, _ := bot["agent_id"].(string)
-		adapterID := channelAdapterID(spec.ID, agentID, i)
+		botName, _ := bot["bot_name"].(string)
+		adapterID := channelAdapterID(spec.ID, agentID, botName, i)
 		st := statuses[adapterID]
 		row["_adapter_id"] = adapterID
 		row["_connected"] = st.Connected
@@ -1162,14 +1167,18 @@ func rawBotList(raw any) []map[string]any {
 	}
 }
 
-func channelAdapterID(channelID, agentID string, index int) string {
+func channelAdapterID(channelID, agentID, botName string, index int) string {
 	if index == 0 {
 		return channelID
 	}
-	if agentID == "" {
-		return channelID + "-" + strconv.Itoa(index+1)
+	suffix := sanitizeChannelID(agentID)
+	if suffix == "" {
+		suffix = sanitizeChannelID(botName)
 	}
-	return channelID + "-" + sanitizeChannelID(agentID)
+	if suffix == "" {
+		suffix = strconv.Itoa(index + 1)
+	}
+	return channelID + "-" + suffix
 }
 
 func sanitizeChannelID(s string) string {

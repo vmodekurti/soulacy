@@ -10,6 +10,7 @@ import (
 	// binary gets this from cmd/soulacy/builtins_gen.go).
 	_ "github.com/soulacy/soulacy/internal/channels/telegram"
 
+	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/config"
 )
 
@@ -58,5 +59,25 @@ func TestBuildChannelInjectsIDAndLogger(t *testing.T) {
 func TestBuildChannelUnknownName(t *testing.T) {
 	if _, err := buildChannel("matrix", "", map[string]any{}, zap.NewNop()); err == nil {
 		t.Fatal("unknown channel name must error (host falls back / warns)")
+	}
+}
+
+func TestRegisterChannelsAllowsTelegramOutboundOnlyWithoutAgentBinding(t *testing.T) {
+	app := &App{log: zap.NewNop()}
+	reg := channels.NewRegistry(1)
+	app.registerChannels(map[string]map[string]any{
+		"telegram": {
+			"enabled":       true,
+			"token":         "123:abc",
+			"outbound_only": true,
+		},
+	}, reg, nil, config.Paths{})
+
+	st, ok := reg.Statuses()["telegram"]
+	if !ok {
+		t.Fatal("telegram outbound-only adapter was not registered")
+	}
+	if st.Detail != "outbound-only" {
+		t.Fatalf("status detail = %q, want outbound-only", st.Detail)
 	}
 }
