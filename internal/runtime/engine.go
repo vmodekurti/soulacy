@@ -1869,7 +1869,12 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		// for tool-call turns). Providers set resp.Stream = nil when they fall
 		// through to the non-streaming code path, so the drain below is a no-op.
 		streamCB := streamCallback(ctx)
-		wantStream := def.StreamReply && streamCB != nil && len(tools) == 0
+		// Stream the final-turn reply when the agent opts in and there are no
+		// tools on this turn. We no longer require a stream callback: even
+		// without one (the plain /chat path), we now relay tokens to the event
+		// sink as `assistant.delta` events so the web UI can render the answer
+		// live over the existing /ws/events socket.
+		wantStream := def.StreamReply && len(tools) == 0
 
 		// Story 4 / S5.1 — proactively keep the prompt within the model's
 		// context window. Reserve room for the completion, then trim the oldest
@@ -1980,6 +1985,16 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 				if streamCB != nil {
 					streamCB(token)
 				}
+				// Relay each token to the event sink so the web UI can render
+				// the reply as it arrives. Best-effort: the hub drops events for
+				// slow clients, and the authoritative full reply is returned by
+				// Handle regardless, so a dropped delta only affects the live
+				// preview, never the final message.
+				e.sink.Emit(message.Event{
+					Type: "assistant.delta", AgentID: msg.AgentID, SessionID: msg.SessionID,
+					Payload:   map[string]any{"text": token},
+					Timestamp: time.Now().UTC(),
+				})
 				sb.WriteString(token)
 			}
 			resp.Content = sb.String()
