@@ -102,6 +102,34 @@ func (s *Server) studioProviderModel() (provider, model string) {
 	return provider, model
 }
 
+// defaultAgentLLM resolves the RUNTIME default provider + model that a generated
+// agent should run on. This is distinct from studioProviderModel (the builder
+// model used to GENERATE the agent): the agent runs on the gateway's default
+// provider, not necessarily the (possibly cloud) builder model.
+func (s *Server) defaultAgentLLM() (provider, model string) {
+	provider = strings.TrimSpace(s.cfg.LLM.DefaultProvider)
+	if pc, ok := s.cfg.LLM.Providers[provider]; ok {
+		model = strings.TrimSpace(pc.Model)
+	}
+	return provider, model
+}
+
+// stampDefaultLLM fills a generated draft's empty llm.provider/model with the
+// runtime default so the choice is explicit and visible in the saved SOUL.yaml
+// (rather than blank fields that silently inherit the default at run time).
+func (s *Server) stampDefaultLLM(d *studio.Draft) {
+	if d == nil {
+		return
+	}
+	p, m := s.defaultAgentLLM()
+	if strings.TrimSpace(d.LLM.Provider) == "" {
+		d.LLM.Provider = p
+	}
+	if strings.TrimSpace(d.LLM.Model) == "" {
+		d.LLM.Model = m
+	}
+}
+
 // handleStudioModelAdvice implements GET /api/v1/studio/model-advice. Local-first
 // pivot: it reports the builder model, whether it runs locally, a supportive
 // (non-shaming) complexity note for small local models, whether using it would
@@ -1050,6 +1078,7 @@ func (s *Server) handleStudioCompileAgent(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	s.stampDefaultLLM(&res.Workflow) // make the runtime provider/model explicit in the YAML
 	studio.ApplyTemplateFixes(&res.Workflow) // deterministic self-heal (no-op when there's no flow graph)
 	if res.Explanation != nil {
 		pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog))
@@ -1102,6 +1131,7 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 			// the intended agent build didn't happen.
 			return s.errJSON(c, fiber.StatusInternalServerError, aerr)
 		}
+		s.stampDefaultLLM(&ares.Workflow) // make the runtime provider/model explicit in the YAML
 		return c.JSON(ares)
 	}
 
@@ -1109,6 +1139,7 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	s.stampDefaultLLM(&res.Workflow) // make the runtime provider/model explicit in the YAML
 
 	// Deterministic self-heal at generation, regardless of model quality:
 	//  1) RepairWiring — reconcile dangling {{ .var }} refs to the right upstream
