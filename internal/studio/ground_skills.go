@@ -125,8 +125,17 @@ func groundSkills(draft *Draft, cat Catalog) []string {
 	}
 
 	// (2) Inject installed skills the intent clearly references but the model missed.
-	intentLow := strings.ToLower(draft.Intent + " " + draft.SystemPrompt)
-	intentTokens := tokenize(draft.Intent + " " + draft.SystemPrompt)
+	// Match against the user's ORIGINAL, concise intent — NOT the generated system
+	// prompt. The system prompt is long and domain-heavy, so it shares generic
+	// tokens (e.g. "stock", "data", "send") with dozens of skills and caused
+	// massive over-injection (the "~30 skills of bloat" bug). The short raw intent
+	// keeps injection to skills the user actually asked for.
+	matchText := strings.TrimSpace(draft.RawIntent)
+	if matchText == "" {
+		matchText = draft.Intent
+	}
+	intentLow := strings.ToLower(matchText)
+	intentTokens := tokenize(matchText)
 	for _, e := range index {
 		if chosen[e.name] {
 			continue

@@ -62,6 +62,36 @@ func TestGroundSkills_InjectsRelevantInstalled(t *testing.T) {
 	}
 }
 
+// A large, domain-heavy system prompt must NOT cause unrelated installed skills
+// to be injected. Injection matches the user's SHORT raw intent, not the giant
+// generated prompt (regression for the "~30 skills of bloat" bug).
+func TestGroundSkills_NoBloatFromHugeSystemPrompt(t *testing.T) {
+	d := Draft{
+		Strategy:  "react",
+		RawIntent: "screen momentum stocks and send a telegram report",
+		Intent:    "Run a daily momentum stock screen and deliver a ranked report",
+		// Huge prompt that mentions market, news, weather, etc. — shares generic
+		// tokens with the unrelated catalog skills. This USED to over-inject.
+		SystemPrompt: strings.Repeat("financial market news stock data quotes earnings weather forecast headlines ", 40),
+		Skills:       []string{"yfinance"}, // the model's single relevant pick
+	}
+	GroundAgentCapabilities(&d, catalogWithFinanceSkills())
+	for _, s := range d.Skills {
+		if s == "market_news" || s == "weather" {
+			t.Fatalf("system prompt caused skill bloat: injected %q; skills=%v", s, d.Skills)
+		}
+	}
+	found := false
+	for _, s := range d.Skills {
+		if s == "yfinance" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the model's yfinance pick to be kept; got %v", d.Skills)
+	}
+}
+
 // A skill that doesn't exist and matches nothing is dropped (not silently kept).
 func TestGroundSkills_DropsUnknown(t *testing.T) {
 	d := Draft{Strategy: "react", Intent: "do a thing", Skills: []string{"totally_made_up_skill_xyz"}}
