@@ -1,8 +1,10 @@
 package telegram
 
 import (
+	"context"
 	"testing"
 
+	"github.com/soulacy/soulacy/pkg/message"
 	"github.com/soulacy/soulacy/sdk/registry"
 )
 
@@ -30,6 +32,25 @@ func TestRegistryFactoryDefaultID(t *testing.T) {
 	}
 	if got := a.ID(); got != "telegram" {
 		t.Fatalf("default adapter ID = %q", got)
+	}
+}
+
+func TestRegistryFactoryTokenOnlyIsOutboundOnly(t *testing.T) {
+	a, ok, err := registry.NewChannel("telegram", map[string]any{"token": "123:abc"})
+	if !ok || err != nil {
+		t.Fatalf("ok=%v err=%v", ok, err)
+	}
+	msgs := make(chan message.Message, 1)
+	if err := a.Start(context.Background(), msgs); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = a.Stop() })
+	st := a.Status()
+	if !st.Connected {
+		t.Fatal("token-only adapter should report connected for outbound sends")
+	}
+	if st.Detail != "outbound-only" {
+		t.Fatalf("status detail = %q, want outbound-only", st.Detail)
 	}
 }
 
