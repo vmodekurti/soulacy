@@ -9,6 +9,10 @@
   import { parseMarkdown, richRenderer } from '../lib/markdown.js'
   import { explainConfirmRequest } from '../lib/explainCommand.js'
   import {
+    filterThreads, suggestedPrompts, buildOverrides,
+    lastUserText, truncateForRerun, isLongOutput,
+  } from '../lib/chatactions.js'
+  import {
     nextVoiceState, realtimeCallURL, classifyRealtimeEvent,
     addUsage, voiceUsageLabel, voiceHint,
   } from '../lib/voice.js'
@@ -21,8 +25,21 @@
   let visibleMessages = []
   let isSending = false
 
+  // Conversation management (search / archive) + model controls + editing state.
+  let threadSearch = ''
+  let showArchived = false
+  let renamingId = ''
+  let renameText = ''
+  let controlsOpen = false
+  let controls = { provider: '', model: '', temperature: '', maxTokens: '', toolChoice: '' }
+  let expanded = {}            // messageKey -> bool (collapse long outputs)
+  let editingMsg = -1          // index of a user message being edited
+  let editText = ''
+  let copiedKey = ''           // transient "Copied!" feedback key
+  let searchEl, composerEl
+
   $: activeThread = $chatActiveThreadId ? ($chatThreads[$chatActiveThreadId] || null) : null
-  $: threads = Object.values($chatThreads).sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+  $: threads = filterThreads(Object.values($chatThreads), threadSearch, showArchived, agentName)
   $: visibleMessages = activeThread?.messages || []
   $: isSending = !!activeThread?.sending
 
@@ -69,6 +86,23 @@
   function agentName(id) {
     const a = agents.find(x => x.id === id)
     return a?.name || id || 'No agent'
+  }
+
+  // resolveMention parses a leading `@agent` from a typed message and routes
+  // that single turn to the mentioned agent (#9). The mention matches an agent
+  // by id or by name with spaces removed, case-insensitively, so `@FlightDeals`
+  // hits an agent named "Flight Deals". Returns null when there's no match, so
+  // an ordinary message that happens to start with "@" is left untouched.
+  function resolveMention(text) {
+    const m = /^@([A-Za-z0-9._-]+)\b[ \t]*/.exec(text || '')
+    if (!m) return null
+    const token = m[1].toLowerCase()
+    const hit = agents.find(a =>
+      (a.id || '').toLowerCase() === token ||
+      (a.name || '').toLowerCase().replace(/\s+/g, '') === token,
+    )
+    if (!hit) return null
+    return { agentId: hit.id, name: hit.name || hit.id, cleanText: text.slice(m[0].length).trim() }
   }
 
   function selectThread(id) {
@@ -202,22 +236,30 @@
   // NOTE: this function intentionally uses store setters, not local vars.
   // If the component unmounts mid-request, the async continuation still
   // runs and updates the store; the component picks it up on remount.
-  async function send() {
-    const text = input.trim()
+  async function send(textArg, overridesArg) {
+    const text = (textArg != null ? textArg : input).trim()
     if (!text || !activeThread?.agentId || isSending) return
+    const overrides = overridesArg !== undefined ? overridesArg : buildOverrides(controls)
     const threadId = activeThread.id
     const runSessionId = activeThread.sessionId
-    const runAgentId = activeThread.agentId
+    // @mention routing (#9): a leading "@agent" sends just this turn to another
+    // agent. We keep the user's typed text (mention and all) in the bubble, but
+    // send the stripped text to the routed agent and tag the reply with "via".
+    const route = resolveMention(text)
+    const runAgentId = route ? route.agentId : activeThread.agentId
+    const sendText = route ? route.cleanText : text
+    const viaName = route ? route.name : ''
     const runKey = `${runAgentId}|${runSessionId}`
     const thinking = { open: true, events: [] }
     activeRuns = { ...activeRuns, [runKey]: threadId }
-    input = ''
+    if (textArg == null) input = ''
     updateThread(threadId, t => ({
       ...t,
       title: t.messages.length ? t.title : snippet(text, 36),
       messages: [...t.messages, { role: 'user', text, ts: new Date() }],
       sending: true,
       thinking,
+      streamText: '',       // reset the live-streaming buffer for this turn
       activeRunKey: runKey,
     }))
     await scrollBottom()
@@ -230,13 +272,15 @@
     }
 
     try {
-      const res = await api.chat(runAgentId, text, 'gui-user', null, runSessionId)
+      const res = await api.chat(runAgentId, sendText, 'gui-user', overrides, runSessionId)
       const curr = await api.runs.metrics(runSessionId, runAgentId).catch(() => null)
       const delta = deltaMetrics(preTurn, curr)
       updateThread(threadId, t => ({
         ...t,
-        metricsBaseline: curr ? { ...(t.metricsBaseline || {}), [runSessionId]: curr } : (t.metricsBaseline || {}),
-        messages: [...t.messages, { role: 'assistant', text: res.reply, parts: (res.parts || []).filter(p => p && p.type && p.type !== 'text'), ts: new Date(), thinking: t.thinking || thinking, metrics: delta }],
+        // Don't pollute the thread agent's metrics baseline with a routed turn.
+        metricsBaseline: (curr && !route) ? { ...(t.metricsBaseline || {}), [runSessionId]: curr } : (t.metricsBaseline || {}),
+        streamText: '',   // final reply is authoritative; drop the live preview
+        messages: [...t.messages, { role: 'assistant', text: res.reply, via: viaName, parts: (res.parts || []).filter(p => p && p.type && p.type !== 'text'), ts: new Date(), thinking: t.thinking || thinking, metrics: route ? null : delta }],
       }))
     } catch (e) {
       updateThread(threadId, t => ({
@@ -244,7 +288,7 @@
         messages: [...t.messages, { role: 'system', text: '⚠ ' + e.message, ts: new Date(), thinking: t.thinking || thinking }],
       }))
     }
-    updateThread(threadId, t => ({ ...t, sending: false, thinking: null, activeRunKey: '' }))
+    updateThread(threadId, t => ({ ...t, sending: false, thinking: null, streamText: '', activeRunKey: '' }))
     const { [runKey]: _, ...rest } = activeRuns
     activeRuns = rest
     metricsRefresh++   // re-fetch the session metrics strip (Story 7)
@@ -279,6 +323,86 @@
 
   function onKeydown(e) {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+  }
+
+  // ── copy / collapse (rich rendering) ─────────────────────────────────
+  async function copyText(text, key) {
+    try { await navigator.clipboard.writeText(text || '') } catch (_) { return }
+    copiedKey = key
+    setTimeout(() => { if (copiedKey === key) copiedKey = '' }, 1200)
+  }
+
+  // ── save a reply to the agent's memory (#8) ──────────────────────────
+  // Writes the assistant message into the agent's episodic memory so it can be
+  // recalled in future runs. Feedback flips the button glyph to a check briefly.
+  let savedKey = ''
+  async function saveToMemory(text, key) {
+    const aid = activeThread?.agentId
+    if (!aid || !text || savedKey === key) return
+    try {
+      await api.brainMemory.writeEpisodic(aid, text, ['saved-from-chat'])
+      savedKey = key
+      setTimeout(() => { if (savedKey === key) savedKey = '' }, 1500)
+    } catch (_) { /* memory may be disabled for this agent; ignore */ }
+  }
+  function msgKey(mi) { return `${activeThread?.id || ''}:${mi}` }
+  function toggleExpand(mi) { const k = msgKey(mi); expanded = { ...expanded, [k]: !expanded[k] } }
+
+  // ── conversation management: rename / pin / archive ──────────────────
+  function startRename(t) { renamingId = t.id; renameText = t.title || agentName(t.agentId) }
+  function commitRename() {
+    if (renamingId) updateThread(renamingId, t => ({ ...t, title: renameText.trim() || t.title }))
+    renamingId = ''
+  }
+  function togglePin(id, e) { if (e) e.stopPropagation(); updateThread(id, t => ({ ...t, pinned: !t.pinned })) }
+  function toggleArchive(id, e) { if (e) e.stopPropagation(); updateThread(id, t => ({ ...t, archived: !t.archived })) }
+
+  // ── message actions: regenerate / edit-and-rerun / retry-with-model ──
+  // Re-run a turn from a point in the thread. We truncate to messages BEFORE
+  // `mi`, then send `text` as a fresh turn (the server session keeps full
+  // history; this is a UI-level replay so the thread reads cleanly).
+  function rerunFrom(mi, text, overrides) {
+    if (isSending || !activeThread) return
+    updateActiveThread(t => ({ ...t, messages: truncateForRerun(t.messages, mi) }))
+    send(text, overrides)
+  }
+  function regenerate() {
+    if (isSending || !activeThread) return
+    // Drop the trailing assistant message(s) and replay the last user turn.
+    const msgs = activeThread.messages
+    let i = msgs.length - 1
+    while (i >= 0 && msgs[i].role !== 'user') i--
+    if (i < 0) return
+    rerunFrom(i, msgs[i].text)
+  }
+  function startEdit(mi) { editingMsg = mi; editText = visibleMessages[mi]?.text || '' }
+  function commitEdit() {
+    if (editingMsg < 0) return
+    const mi = editingMsg, text = editText
+    editingMsg = -1
+    rerunFrom(mi, text)
+  }
+  function retryWithModel(mi) {
+    // Re-run the user turn that produced this assistant message, using the
+    // current model controls (lets the user switch model then retry one reply).
+    let ui = mi
+    while (ui >= 0 && visibleMessages[ui]?.role !== 'user') ui--
+    if (ui < 0) return
+    rerunFrom(ui, visibleMessages[ui].text, buildOverrides(controls))
+  }
+
+  // ── suggested prompts (per-agent empty state) ────────────────────────
+  function promptsFor(agentId) {
+    return suggestedPrompts(agents.find(a => a.id === agentId), 4)
+  }
+  function useSuggestion(s) { input = s; composerEl?.focus() }
+
+  // ── global keyboard shortcuts ────────────────────────────────────────
+  function onGlobalKey(e) {
+    const meta = e.metaKey || e.ctrlKey
+    if (meta && e.key.toLowerCase() === 'k') { e.preventDefault(); searchEl?.focus() }
+    else if (meta && e.key.toLowerCase() === 'j') { e.preventDefault(); startThread() }
+    else if (e.key === 'Escape' && isSending) { e.preventDefault(); cancelSend() }
   }
 
   async function resolveConfirm(approved) {
@@ -342,6 +466,19 @@
         const ev = JSON.parse(e.data)
         if (ev.type === 'tool_confirm') {
           confirmRequest = ev.payload
+          return
+        }
+        // Live token streaming (real streaming story): the engine relays each
+        // reply token as an `assistant.delta`. Accumulate into the thread's
+        // streamText so the in-flight bubble renders the answer as it arrives.
+        // The authoritative full reply from the POST /chat call replaces it.
+        if (ev.type === 'assistant.delta') {
+          const tid = threadIdForRunEvent(ev)
+          const tok = ev.payload?.text || ''
+          if (tid && tok) {
+            updateThread(tid, t => ({ ...t, streamText: (t.streamText || '') + tok }))
+            await scrollBottom()
+          }
           return
         }
         const threadId = threadIdForRunEvent(ev)
@@ -419,6 +556,32 @@
     if (type.startsWith('tool.')) return 'tool'
     if (type.startsWith('llm.')) return 'llm'
     return ''
+  }
+
+  // ── structured tool-call timeline (#4) ───────────────────────────────
+  // fullEventDetail returns the COMPLETE, untruncated payload for an event so
+  // the user can expand any tool call / result / error to inspect the raw
+  // inputs and outputs (vs. the one-line `eventDetail` summary).
+  function fullEventDetail(ev) {
+    const p = ev.payload || {}
+    if (ev.type === 'tool.call')   return JSON.stringify(p.arguments || {}, null, 2)
+    if (ev.type === 'tool.result') return String(p.content ?? '')
+    if (ev.type === 'tool.log')    return typeof p === 'string' ? p : (p.line || JSON.stringify(p, null, 2))
+    if (ev.type === 'error')       return String(p.error || p.message || JSON.stringify(p, null, 2))
+    if (ev.type === 'reasoning.step') return String(p.thought || '')
+    if (ev.type === 'llm.call' || ev.type === 'llm.result') return JSON.stringify(p, null, 2)
+    return ''
+  }
+  // eventDuration surfaces how long a step took, when the backend reported it.
+  function eventDuration(ev) {
+    const ms = (ev.payload || {}).duration_ms
+    return ms != null ? `${ms}ms` : ''
+  }
+  // eventExpandable hides the disclosure toggle when there's nothing useful to
+  // reveal (e.g. an empty `{}` argument object).
+  function eventExpandable(ev) {
+    const full = fullEventDetail(ev)
+    return !!full && full !== '{}' && full.trim() !== ''
   }
 
   // Human-readable label for what the agent is doing *right now*, derived from
@@ -578,6 +741,7 @@
     await loadAgents()
     await loadVoiceStatus()
     connectEvents()
+    window.addEventListener('keydown', onGlobalKey)
     // Scroll to bottom when returning to a conversation already in progress
     await scrollBottom()
   })
@@ -586,6 +750,7 @@
     stopEvents = true
     if (ws) ws.close()
     teardownVoice()
+    window.removeEventListener('keydown', onGlobalKey)
   })
 </script>
 
@@ -647,7 +812,8 @@
           {/each}
         {/if}
       </select>
-      <button class="btn-secondary" on:click={() => startThread()} disabled={!agents.length}>New chat tab</button>
+      <button class="btn-secondary" on:click={() => startThread()} disabled={!agents.length} title="New chat (⌘J)">New chat</button>
+      <button class="btn-secondary" class:on={controlsOpen} on:click={() => controlsOpen = !controlsOpen} title="Model & generation controls">⚙ Controls</button>
       <button class="btn-secondary" on:click={clearChat}>Clear</button>
       <button class="voice-btn {voiceState}"
               on:click={voiceClick}
@@ -668,20 +834,60 @@
     <div class="banner err">⚠ {error}</div>
   {/if}
 
-  {#if threads.length > 0}
+  {#if controlsOpen}
+    <div class="controls-panel" transition:slide|local={{ duration: 160 }}>
+      <div class="cp-row">
+        <label class="cp-field"><span>Provider</span>
+          <input bind:value={controls.provider} placeholder="agent default" /></label>
+        <label class="cp-field"><span>Model</span>
+          <input bind:value={controls.model} placeholder="agent default" /></label>
+        <label class="cp-field"><span>Temperature</span>
+          <input type="number" step="0.1" min="0" max="2" bind:value={controls.temperature} placeholder="—" /></label>
+        <label class="cp-field"><span>Max tokens</span>
+          <input type="number" min="1" bind:value={controls.maxTokens} placeholder="—" /></label>
+        <label class="cp-field"><span>Tool choice</span>
+          <input bind:value={controls.toolChoice} placeholder="auto" /></label>
+        <button class="mini-btn" on:click={() => controls = { provider:'', model:'', temperature:'', maxTokens:'', toolChoice:'' }}>Reset</button>
+      </div>
+      <p class="cp-hint">Blank fields use the agent's own config. Overrides apply to new messages and per-message “Retry”.</p>
+    </div>
+  {/if}
+
+  {#if Object.keys($chatThreads).length > 0}
+    <div class="thread-bar">
+      <input class="thread-search" type="search" bind:this={searchEl}
+             bind:value={threadSearch} placeholder="Search chats… (⌘K)" aria-label="Search chats" />
+      <button class="ghost-btn" class:on={showArchived} on:click={() => showArchived = !showArchived}
+              title="Show archived chats">{showArchived ? 'Hide archived' : 'Archived'}</button>
+    </div>
     <div class="threads" role="tablist" aria-label="Parallel chats">
       {#each threads as t (t.id)}
-        <div class="thread-chip" class:active={t.id === $chatActiveThreadId}
+        <div class="thread-chip" class:active={t.id === $chatActiveThreadId} class:pinned={t.pinned} class:archived={t.archived}
              role="tab" tabindex="0" aria-selected={t.id === $chatActiveThreadId}
              on:click={() => selectThread(t.id)}
              on:keydown={(e) => { if(e.key === 'Enter') selectThread(t.id) }}
-             title="{agentName(t.agentId)} · {t.sessionId}">
-          <span class="thread-title">{t.title || agentName(t.agentId)}</span>
+             on:dblclick={() => startRename(t)}
+             title="{agentName(t.agentId)} · double-click to rename">
+          {#if t.pinned}<span class="thread-pin" aria-hidden="true">📌</span>{/if}
+          {#if renamingId === t.id}
+            <!-- svelte-ignore a11y-autofocus -->
+            <input class="thread-rename" autofocus bind:value={renameText}
+                   on:click|stopPropagation
+                   on:blur={commitRename}
+                   on:keydown={(e) => { if(e.key==='Enter'){e.preventDefault();commitRename()} else if(e.key==='Escape'){renamingId=''} }} />
+          {:else}
+            <span class="thread-title">{t.title || agentName(t.agentId)}</span>
+          {/if}
           <span class="thread-agent">{agentName(t.agentId)}</span>
           {#if t.sending}<span class="thread-dot" aria-label="Running"></span>{/if}
+          <button class="thread-act" on:click|stopPropagation={(e) => togglePin(t.id, e)} title={t.pinned ? 'Unpin' : 'Pin'} aria-label="Pin chat">{t.pinned ? '★' : '☆'}</button>
+          <button class="thread-act" on:click|stopPropagation={(e) => toggleArchive(t.id, e)} title={t.archived ? 'Unarchive' : 'Archive'} aria-label="Archive chat">🗄</button>
           <button class="thread-close" on:click|stopPropagation={(e) => closeThread(t.id, e)} aria-label="Close tab">✕</button>
         </div>
       {/each}
+      {#if threads.length === 0}
+        <span class="thread-empty">No chats match “{threadSearch}”.</span>
+      {/if}
     </div>
   {/if}
 
@@ -704,24 +910,42 @@
       {#if visibleMessages.length === 0}
         <div class="empty">
           {#if activeThread?.agentId}
-            Chatting with <strong>{agentName(activeThread.agentId)}</strong>.<br>Type a message below.
+            <div class="empty-avatar" aria-hidden="true">✦</div>
+            <h2 class="empty-title">Chat with {agentName(activeThread.agentId)}</h2>
+            <p class="empty-sub">Ask anything, or start with one of these:</p>
+            <div class="suggestions">
+              {#each promptsFor(activeThread.agentId) as s}
+                <button class="suggestion" on:click={() => useSuggestion(s)}>{s}</button>
+              {/each}
+            </div>
           {:else}
-            Select an agent above to start chatting.
+            <div class="empty-avatar" aria-hidden="true">✦</div>
+            <h2 class="empty-title">Select an agent to start</h2>
+            <p class="empty-sub">Choose an agent from the menu above.</p>
           {/if}
         </div>
       {:else}
         {#each visibleMessages as msg, mi}
+          {@const k = msgKey(mi)}
+          {@const long = msg.role === 'assistant' && isLongOutput(msg.text) && !expanded[k]}
           <div class="msg-row" class:user={msg.role==='user'} class:sys={msg.role==='system'}>
             <div class="bubble">
-              {#if msg.role === 'user' || msg.role === 'assistant'}
-                <button class="fork-btn" on:click={() => forkAt(mi)} disabled={forking || isSending}
-                        title="Fork the conversation from this message"
-                        aria-label="Fork conversation from message {mi + 1}">⑂</button>
-              {/if}
-              {#if msg.role === 'user'}
-                <div class="btext">{msg.text}</div>
+              {#if msg.role === 'user' && editingMsg === mi}
+                <textarea class="edit-area" bind:value={editText}
+                          on:keydown={(e) => { if(e.key==='Enter' && !e.shiftKey){e.preventDefault();commitEdit()} else if(e.key==='Escape'){editingMsg=-1} }}></textarea>
+                <div class="edit-actions">
+                  <button class="mini-btn" on:click={() => editingMsg = -1}>Cancel</button>
+                  <button class="mini-btn primary" on:click={commitEdit}>Save &amp; rerun</button>
+                </div>
               {:else}
-                <div class="btext markdown-body" use:richRenderer={msg.text}>{@html parseMarkdown(msg.text)}</div>
+                {#if msg.role === 'user'}
+                  <div class="btext">{msg.text}</div>
+                {:else}
+                  <div class="btext markdown-body" class:clamped={long} use:richRenderer={msg.text}>{@html parseMarkdown(msg.text)}</div>
+                  {#if msg.role === 'assistant' && isLongOutput(msg.text)}
+                    <button class="show-more" on:click={() => toggleExpand(mi)}>{expanded[k] ? 'Show less ▲' : 'Show more ▼'}</button>
+                  {/if}
+                {/if}
               {/if}
               {#if msg.parts && msg.parts.length}
                 <div class="msg-parts">
@@ -751,15 +975,27 @@
                         <div class="thinking-empty">No activity captured for this run.</div>
                       {:else}
                         {#each msg.thinking.events as ev}
-                          <div class="think-event {eventClass(ev.type)}">
-                            <div class="think-main">
-                              <span class="think-type">{ev.type}</span>
-                              <span class="think-text">{eventTitle(ev)}</span>
+                          {#if eventExpandable(ev)}
+                            <details class="think-event {eventClass(ev.type)}">
+                              <summary class="think-main">
+                                <span class="think-type">{ev.type}</span>
+                                <span class="think-text">{eventTitle(ev)}</span>
+                                {#if eventDuration(ev)}<span class="think-dur">{eventDuration(ev)}</span>{/if}
+                              </summary>
+                              <pre class="think-full">{fullEventDetail(ev)}</pre>
+                            </details>
+                          {:else}
+                            <div class="think-event {eventClass(ev.type)}">
+                              <div class="think-main">
+                                <span class="think-type">{ev.type}</span>
+                                <span class="think-text">{eventTitle(ev)}</span>
+                                {#if eventDuration(ev)}<span class="think-dur">{eventDuration(ev)}</span>{/if}
+                              </div>
+                              {#if eventDetail(ev)}
+                                <div class="think-detail">{eventDetail(ev)}</div>
+                              {/if}
                             </div>
-                            {#if eventDetail(ev)}
-                              <div class="think-detail">{eventDetail(ev)}</div>
-                            {/if}
-                          </div>
+                          {/if}
                         {/each}
                       {/if}
                     </div>
@@ -768,8 +1004,24 @@
               {/if}
               <div class="bmeta">
                 <span class="btime">{fmtTime(msg.ts)}</span>
+                {#if msg.via}
+                  <span class="via-badge" title="Routed to this agent via an @mention">via {msg.via}</span>
+                {/if}
                 {#if msg.metrics && deltaLabel(msg.metrics)}
                   <span class="tok-delta" title={deltaTitle(msg.metrics)}>{deltaLabel(msg.metrics)}</span>
+                {/if}
+                {#if (msg.role === 'user' || msg.role === 'assistant') && editingMsg !== mi}
+                  <div class="msg-actions">
+                    <button class="act" on:click={() => copyText(msg.text, 'm'+k)} title="Copy message">{copiedKey === 'm'+k ? '✓' : '⧉'}</button>
+                    {#if msg.role === 'user'}
+                      <button class="act" on:click={() => startEdit(mi)} disabled={isSending} title="Edit & rerun">✎</button>
+                    {:else}
+                      <button class="act" on:click={regenerate} disabled={isSending} title="Regenerate">↻</button>
+                      <button class="act" on:click={() => retryWithModel(mi)} disabled={isSending} title="Retry with the model selected in Controls">⤺</button>
+                      <button class="act" on:click={() => saveToMemory(msg.text, 'm'+k)} title="Save this reply to the agent's memory">{savedKey === 'm'+k ? '✓' : '✚'}</button>
+                    {/if}
+                    <button class="act" on:click={() => forkAt(mi)} disabled={forking || isSending} title="Fork from here">⑂</button>
+                  </div>
                 {/if}
               </div>
             </div>
@@ -778,7 +1030,11 @@
         {#if isSending}
           <div class="msg-row">
             <div class="bubble">
-              <div class="typing"><span/><span/><span/></div>
+              {#if activeThread?.streamText}
+                <div class="btext markdown-body streaming" use:richRenderer={activeThread.streamText}>{@html parseMarkdown(activeThread.streamText)}</div>
+              {:else}
+                <div class="typing"><span/><span/><span/></div>
+              {/if}
               {#if activeThread?.thinking}
                 <div class="thinking open live">
                   <button class="thinking-head" type="button" on:click={() => toggleThinking(activeThread.thinking)}>
@@ -790,15 +1046,27 @@
                   {#if activeThread.thinking.open}
                     <div class="thinking-body">
                       {#each activeThread.thinking.events as ev (ev)}
-                        <div class="think-event {eventClass(ev.type)}" transition:slide|local={{ duration: 220 }}>
-                          <div class="think-main">
-                            <span class="think-type">{ev.type}</span>
-                            <span class="think-text">{eventTitle(ev)}</span>
+                        {#if eventExpandable(ev)}
+                          <details class="think-event {eventClass(ev.type)}" transition:slide|local={{ duration: 220 }}>
+                            <summary class="think-main">
+                              <span class="think-type">{ev.type}</span>
+                              <span class="think-text">{eventTitle(ev)}</span>
+                              {#if eventDuration(ev)}<span class="think-dur">{eventDuration(ev)}</span>{/if}
+                            </summary>
+                            <pre class="think-full">{fullEventDetail(ev)}</pre>
+                          </details>
+                        {:else}
+                          <div class="think-event {eventClass(ev.type)}" transition:slide|local={{ duration: 220 }}>
+                            <div class="think-main">
+                              <span class="think-type">{ev.type}</span>
+                              <span class="think-text">{eventTitle(ev)}</span>
+                              {#if eventDuration(ev)}<span class="think-dur">{eventDuration(ev)}</span>{/if}
+                            </div>
+                            {#if eventDetail(ev)}
+                              <div class="think-detail">{eventDetail(ev)}</div>
+                            {/if}
                           </div>
-                          {#if eventDetail(ev)}
-                            <div class="think-detail">{eventDetail(ev)}</div>
-                          {/if}
-                        </div>
+                        {/if}
                       {/each}
                       <div class="think-live">
                         <span class="think-spinner" aria-hidden="true"></span>
@@ -817,9 +1085,10 @@
     <!-- Input -->
     <div class="input-row">
       <textarea
+        bind:this={composerEl}
         bind:value={input}
         on:keydown={onKeydown}
-        placeholder="Send a message… (Enter to send, Shift+Enter for newline)"
+        placeholder="Message {activeThread?.agentId ? agentName(activeThread.agentId) : 'the agent'}…  (Enter to send, Shift+Enter for newline)"
         rows="2"
         disabled={isSending || !activeThread?.agentId}
       ></textarea>
@@ -1053,6 +1322,41 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  /* expandable structured event (#4) */
+  details.think-event > summary {
+    cursor: pointer;
+    list-style: none;
+  }
+  details.think-event > summary::-webkit-details-marker { display: none; }
+  details.think-event > summary::before {
+    content: '▸';
+    flex: 0 0 auto;
+    color: #8f95ba;
+    font-size: .6rem;
+    transition: transform .12s;
+  }
+  details.think-event[open] > summary::before { transform: rotate(90deg); }
+  .think-dur {
+    flex: 0 0 auto;
+    margin-left: auto;
+    color: #8f95ba;
+    font-size: .66rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  .think-full {
+    margin: .35rem 0 .1rem;
+    padding: .45rem .55rem;
+    max-height: 280px;
+    overflow: auto;
+    border-radius: 6px;
+    background: rgba(0,0,0,.28);
+    color: #c9cef0;
+    font-size: .7rem;
+    line-height: 1.4;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 
   /* ── Live in-progress indicator ──────────────────────────────────────── */
   .thinking.live { border-color: rgba(139, 133, 255, .4); }
@@ -1149,6 +1453,20 @@
     cursor: help; white-space: nowrap;
   }
   .tok-delta:hover { color: #8b85ff; }
+  .via-badge {
+    font-size: .62rem; padding: .05rem .35rem; border-radius: 999px;
+    background: rgba(139,133,255,.16); color: #b3aeff;
+    white-space: nowrap; align-self: center;
+  }
+  /* live-streaming reply: blinking caret at the end of the generated text */
+  .btext.streaming::after {
+    content: '▋';
+    display: inline-block;
+    margin-left: 2px;
+    color: #8b85ff;
+    animation: caret-blink 1s steps(2, start) infinite;
+  }
+  @keyframes caret-blink { 50% { opacity: 0; } }
 
   /* ── Confirm Modal ─────────────────────────────────────────────── */
   .confirm-modal-backdrop {
@@ -1190,4 +1508,130 @@
   }
   .btn-danger { background: rgba(220, 53, 69, 0.2); color: #ff6b81; border: 1px solid rgba(220, 53, 69, 0.4); }
   .btn-danger:hover { background: rgba(220, 53, 69, 0.3); }
+
+  /* ── Modern Chat Workspace ─────────────────────────────────────────── */
+  /* Center the conversation in a readable column (Claude/ChatGPT feel). */
+  .messages { padding: 1.25rem 0; }
+  .msg-row { width: 100%; max-width: 820px; margin: 0 auto; padding: 0 1rem; }
+  .bubble { max-width: 100%; }
+  .msg-row.user .bubble { max-width: 80%; }
+  .msg-row:not(.user):not(.sys) .bubble {
+    background: transparent; border: none; padding-left: 0; padding-right: 0;
+    border-radius: 0;
+  }
+  .msg-row:not(.user):not(.sys) .bubble:hover { background: transparent; }
+  .btext { font-size: .92rem; line-height: 1.65; }
+
+  /* Header control toggles */
+  .btn-secondary.on { background: rgba(108,99,255,.18); border-color: rgba(108,99,255,.5); color: #b3adff; }
+
+  /* Model controls panel */
+  .controls-panel {
+    background: #171a2c; border: 1px solid #2a2f4a; border-radius: 12px;
+    padding: .75rem .9rem; flex-shrink: 0;
+  }
+  .cp-row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; }
+  .cp-field { display: flex; flex-direction: column; gap: .2rem; font-size: .7rem; color: #8a90b0; }
+  .cp-field span { text-transform: uppercase; letter-spacing: .03em; }
+  .cp-field input { width: 130px; padding: .35rem .5rem; border-radius: 7px;
+    background: #0f1120; border: 1px solid #2a2f4a; color: #e6e8f4; font-size: .82rem; }
+  .cp-field input[type=number] { width: 90px; }
+  .cp-hint { margin: .5rem 0 0; font-size: .72rem; color: #6b7294; }
+
+  /* Thread search bar */
+  .thread-bar { display: flex; gap: .5rem; align-items: center; flex-shrink: 0; }
+  .thread-search {
+    flex: 1; max-width: 320px; padding: .4rem .7rem; border-radius: 8px;
+    background: #14172a; border: 1px solid #2a2f4a; color: #e6e8f4; font-size: .82rem;
+  }
+  .ghost-btn {
+    background: transparent; border: 1px solid #2a2f4a; color: #8a90b0;
+    padding: .35rem .65rem; border-radius: 8px; font-size: .78rem; cursor: pointer;
+  }
+  .ghost-btn.on, .ghost-btn:hover { color: #b3adff; border-color: rgba(108,99,255,.5); }
+  .thread-empty { font-size: .8rem; color: #6b7294; padding: .25rem .5rem; }
+  .thread-chip.pinned { border-color: rgba(108,99,255,.45); }
+  .thread-chip.archived { opacity: .55; }
+  .thread-pin { font-size: .7rem; }
+  .thread-act {
+    background: none; border: none; color: #5a608a; font-size: .8rem; cursor: pointer;
+    padding: 0 .1rem; opacity: 0; transition: opacity .12s;
+  }
+  .thread-chip:hover .thread-act, .thread-chip.active .thread-act { opacity: 1; }
+  .thread-act:hover { color: #b3adff; }
+  .thread-rename {
+    background: #0f1120; border: 1px solid rgba(108,99,255,.5); color: #fff;
+    border-radius: 5px; padding: .1rem .35rem; font-size: .82rem; width: 130px;
+  }
+
+  /* Empty state with suggestions */
+  .empty-avatar {
+    width: 52px; height: 52px; border-radius: 50%; display: grid; place-items: center;
+    font-size: 1.4rem; color: #fff; margin-bottom: .25rem;
+    background: linear-gradient(135deg, #6c63ff, #9b6cff);
+  }
+  .empty-title { font-size: 1.25rem; font-weight: 600; color: #e6e8f4; margin: 0; }
+  .empty-sub { font-size: .9rem; color: #8a90b0; margin: 0 0 .5rem; }
+  .suggestions { display: flex; flex-wrap: wrap; gap: .5rem; justify-content: center; max-width: 560px; }
+  .suggestion {
+    background: #171a2c; border: 1px solid #2a2f4a; color: #cfd2e8;
+    padding: .55rem .8rem; border-radius: 10px; font-size: .82rem; cursor: pointer;
+    transition: border-color .12s, transform .08s; text-align: left;
+  }
+  .suggestion:hover { border-color: rgba(108,99,255,.55); transform: translateY(-1px); color: #fff; }
+
+  /* Collapsible long output */
+  .markdown-body.clamped { max-height: 340px; overflow: hidden;
+    -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent); mask-image: linear-gradient(180deg, #000 78%, transparent); }
+  .show-more {
+    background: none; border: none; color: #8b85ff; font-size: .78rem; cursor: pointer;
+    padding: .25rem 0; align-self: flex-start;
+  }
+  .show-more:hover { text-decoration: underline; }
+
+  /* Per-message action toolbar */
+  .msg-actions { display: flex; gap: .15rem; margin-left: auto; opacity: 0; transition: opacity .12s; }
+  .msg-row:hover .msg-actions, .bubble:focus-within .msg-actions { opacity: 1; }
+  .act {
+    background: none; border: none; color: #6b7294; font-size: .82rem; cursor: pointer;
+    padding: .15rem .35rem; border-radius: 6px; line-height: 1;
+  }
+  .act:hover:not(:disabled) { background: rgba(108,99,255,.16); color: #b3adff; }
+  .act:disabled { opacity: .35; cursor: default; }
+
+  /* Inline edit of a user message */
+  .edit-area {
+    width: 100%; min-height: 64px; resize: vertical; border-radius: 8px;
+    background: rgba(0,0,0,.18); border: 1px solid rgba(255,255,255,.25); color: #fff;
+    padding: .5rem .6rem; font-size: .9rem; font-family: inherit;
+  }
+  .edit-actions { display: flex; gap: .4rem; justify-content: flex-end; margin-top: .4rem; }
+  .mini-btn {
+    background: #14172a; border: 1px solid #2a2f4a; color: #cfd2e8;
+    padding: .3rem .6rem; border-radius: 7px; font-size: .78rem; cursor: pointer;
+  }
+  .mini-btn:hover { border-color: rgba(108,99,255,.5); color: #fff; }
+  .mini-btn.primary { background: #5b52ef; border-color: transparent; color: #fff; }
+
+  /* Code-block copy button (from richRenderer) */
+  :global(.code-copy-btn) {
+    position: absolute; top: .4rem; right: .4rem; z-index: 2;
+    background: rgba(20,23,42,.85); border: 1px solid #2a2f4a; color: #b7bbd6;
+    font-size: .72rem; padding: .2rem .5rem; border-radius: 6px; cursor: pointer;
+    opacity: 0; transition: opacity .12s;
+  }
+  :global(pre:hover .code-copy-btn) { opacity: 1; }
+  :global(.code-copy-btn:hover) { color: #fff; border-color: rgba(108,99,255,.5); }
+
+  /* Responsive — narrow / mobile */
+  @media (max-width: 720px) {
+    .page { padding: .75rem; gap: .75rem; }
+    .page-header { flex-direction: column; align-items: stretch; gap: .5rem; }
+    .controls { justify-content: flex-start; }
+    .msg-row, .msg-row.user .bubble { max-width: 100%; }
+    .bubble { max-width: 100%; }
+    .cp-field input, .cp-field input[type=number] { width: 100%; }
+    .cp-field { flex: 1 1 45%; }
+    .thread-search { max-width: none; }
+  }
 </style>

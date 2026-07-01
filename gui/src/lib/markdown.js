@@ -330,6 +330,30 @@ function xyNums(s) {
     .filter((n) => !Number.isNaN(n))
 }
 
+// addCodeCopyButton adds a hover "Copy" button to a fenced code block's <pre>,
+// so users can grab code with one click (Modern Chat Workspace — rich rendering).
+function addCodeCopyButton(codeEl) {
+  const pre = codeEl.closest('pre')
+  if (!pre || pre.dataset.copyBtn) return
+  pre.dataset.copyBtn = '1'
+  pre.style.position = pre.style.position || 'relative'
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'code-copy-btn'
+  btn.textContent = 'Copy'
+  btn.setAttribute('aria-label', 'Copy code')
+  btn.addEventListener('click', async (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    try {
+      await navigator.clipboard.writeText(codeEl.textContent || '')
+      btn.textContent = 'Copied!'
+      setTimeout(() => { btn.textContent = 'Copy' }, 1200)
+    } catch (_) { /* clipboard unavailable */ }
+  })
+  pre.appendChild(btn)
+}
+
 /**
  * Svelte action for a container holding parsed markdown. Pass the message text
  * as the parameter (`use:richRenderer={msg.text}`) so it re-runs when the bubble
@@ -398,6 +422,7 @@ export function richRenderer(node) {
         /* leave the code unhighlighted on failure */
       }
       el.dataset.hl = '1'
+      addCodeCopyButton(el)
     })
 
     // (2) Replace mermaid / xychart fences with rendered SVG diagrams.
