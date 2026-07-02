@@ -31,6 +31,7 @@ import (
 
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/memory"
+	"github.com/soulacy/soulacy/internal/session"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 	"go.uber.org/zap"
@@ -881,6 +882,59 @@ func TestEngine_SetDLQStore_NilSafe(t *testing.T) {
 func TestEngine_SetCostStore_NilSafe(t *testing.T) {
 	e := newMinimalEngine(t)
 	e.SetCostStore(nil)
+}
+
+func TestBuildContextInjectsPastConversationRecallForLearningAgent(t *testing.T) {
+	e := newMinimalEngine(t)
+	hs, err := session.NewSQLiteHistoryStore(t.TempDir() + "/history.db")
+	if err != nil {
+		t.Fatalf("history store: %v", err)
+	}
+	t.Cleanup(func() { _ = hs.Close() })
+	if err := hs.Append(context.Background(), session.ConversationEntry{
+		SessionID: "older-session",
+		AgentID:   "learner",
+		Role:      "assistant",
+		Content:   "Use the stock momentum checklist with relative strength and volume confirmation.",
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := hs.Append(context.Background(), session.ConversationEntry{
+		SessionID: "current-session",
+		AgentID:   "learner",
+		Role:      "assistant",
+		Content:   "Use the stock momentum checklist in the current thread.",
+	}); err != nil {
+		t.Fatalf("Append current: %v", err)
+	}
+	e.SetHistoryStore(hs)
+
+	def := &agent.Definition{
+		ID:           "learner",
+		SystemPrompt: "Help.",
+		Learning:     agent.LearningConfig{Enabled: true},
+		Memory:       agent.MemoryPolicy{MaxTokens: 1000},
+	}
+	sess := e.getOrCreateSession("current-session", "learner")
+	msgs := e.buildContext(def, sess, testUserMessage("learner", "current-session", "stock momentum checklist"))
+	joined := ""
+	for _, msg := range msgs {
+		joined += msg.Content + "\n"
+	}
+	if !strings.Contains(joined, "Relevant Past Conversations") || !strings.Contains(joined, "older-session") {
+		t.Fatalf("past recall missing from prompt:\n%s", joined)
+	}
+	if strings.Contains(joined, "current-session, assistant") {
+		t.Fatalf("current session should be excluded from recall:\n%s", joined)
+	}
+
+	def.Learning.Enabled = false
+	msgs = e.buildContext(def, sess, testUserMessage("learner", "current-session", "stock momentum checklist"))
+	for _, msg := range msgs {
+		if strings.Contains(msg.Content, "Relevant Past Conversations") {
+			t.Fatalf("learning-disabled agent should not receive recall: %+v", msgs)
+		}
+	}
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

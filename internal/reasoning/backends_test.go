@@ -688,6 +688,9 @@ func TestOpenAIBackend_Think_Success(t *testing.T) {
 		if rf["type"] != "json_object" {
 			t.Errorf("expected response_format.type=json_object, got %v", rf["type"])
 		}
+		if body["stream"] != false {
+			t.Errorf("expected stream:false, got %v", body["stream"])
+		}
 		return jsonResponse(200, openaiOKBody(thinkJSON)), nil
 	}}
 

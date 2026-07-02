@@ -33,6 +33,8 @@ import (
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
+	"github.com/soulacy/soulacy/internal/scheduler"
+	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/internal/templates"
 	"github.com/soulacy/soulacy/internal/tier"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -362,6 +364,62 @@ func (s *Server) handleUpdateAgentYAML(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"agent": &def, "validation": report})
 }
 
+func (s *Server) handleListAgentVersions(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if s.loader.Get(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	versions, err := s.loader.AgentVersions(id)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	return c.JSON(fiber.Map{"agent_id": id, "versions": versions, "count": len(versions)})
+}
+
+func (s *Server) handleGetAgentVersion(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if s.loader.Get(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	data, version, err := s.loader.ReadAgentVersion(id, c.Params("version"))
+	if err != nil {
+		return s.errJSON(c, fiber.StatusNotFound, err)
+	}
+	return c.JSON(fiber.Map{"agent_id": id, "version": version, "yaml": string(data)})
+}
+
+func (s *Server) handleRollbackAgent(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
+	if s.loader.Get(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	var req struct {
+		Version string `json:"version"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	if strings.TrimSpace(req.Version) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "version is required")
+	}
+	dir := ""
+	if len(s.cfg.AgentDirs) > 0 {
+		dir = s.cfg.AgentDirs[0]
+	}
+	def, version, err := s.loader.RestoreAgentVersion(dir, id, req.Version)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	s.scheduler.DeregisterAgent(id)
+	if err := s.scheduler.RegisterAgent(def); err != nil {
+		s.log.Warn("scheduler re-registration failed", zap.String("agent", id), zap.Error(err))
+	}
+	return c.JSON(fiber.Map{"agent": def, "restored_version": version})
+}
+
 // handleGetAgentTier returns the capability tier for an agent plus the
 // reasons that produced it. Companion to the `sy agent tier` CLI and a
 // future GUI badge — see docs/CHANNEL_DESIGN.md Q1 and the implementation
@@ -633,12 +691,13 @@ func (s *Server) uniqueAgentID(base string) string {
 // We call engine.Handle() directly so we never touch the async inbox path.
 func (s *Server) handleChat(c *fiber.Ctx) error {
 	var req struct {
-		AgentID   string `json:"agent_id"`
-		SessionID string `json:"session_id"`
-		UserID    string `json:"user_id"`
-		Username  string `json:"username"`
-		Text      string `json:"text"`
-		Overrides struct {
+		AgentID       string   `json:"agent_id"`
+		SessionID     string   `json:"session_id"`
+		UserID        string   `json:"user_id"`
+		Username      string   `json:"username"`
+		Text          string   `json:"text"`
+		AttachmentIDs []string `json:"attachment_ids"`
+		Overrides     struct {
 			Provider    string   `json:"provider"`
 			Model       string   `json:"model"`
 			Temperature *float64 `json:"temperature"`
@@ -663,6 +722,14 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("http-%s", req.UserID)
 	}
+	text := req.Text
+	if len(req.AttachmentIDs) > 0 {
+		expanded, err := s.expandChatAttachments(c.UserContext(), req.AgentID, sessionID, req.Text, req.AttachmentIDs)
+		if err != nil {
+			return s.errJSON(c, fiber.StatusBadRequest, err)
+		}
+		text = expanded
+	}
 	def := s.loader.Get(req.AgentID)
 
 	msg := message.Message{
@@ -674,7 +741,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		UserID:    req.UserID,
 		Username:  req.Username,
 		Role:      message.RoleUser,
-		Parts:     message.Text(req.Text),
+		Parts:     message.Text(text),
 		Metadata:  chatOverrideMetadata(req.Overrides.Provider, req.Overrides.Model, req.Overrides.Temperature, req.Overrides.MaxTokens, req.Overrides.MaxTurns, req.Overrides.ToolChoice),
 		CreatedAt: time.Now().UTC(),
 	}
@@ -953,15 +1020,23 @@ type channelSpec struct {
 	Fields []channelField
 }
 
+type channelDiagnostic struct {
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Remedy   string `json:"remedy,omitempty"`
+}
+
 // channelSpecs is the catalog of every channel Soulacy supports. The GUI uses
 // this to render configuration forms even for channels not yet configured.
 var channelSpecs = []channelSpec{
 	{ID: "http", Name: "HTTP", Always: true, Fields: nil},
 	{ID: "telegram", Name: "Telegram", Fields: []channelField{
-		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
-		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "Get one from @BotFather"},
-		{Key: "outbound_only", Label: "Send only", Type: "checkbox", Required: false, Help: "Use this bot only for scheduled/manual output; it will not poll Telegram or route inbound messages to an agent"},
-		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: false, Help: "Required only when this bot should respond interactively to Telegram messages"},
+		{Key: "bot_name", Label: "Default outbound bot name", Type: "text", Required: false, Help: "Friendly name for the default sender used by scheduled/manual output"},
+		{Key: "token", Label: "Default outbound bot token", Type: "password", Required: true, Secret: true, Help: "Get one from @BotFather; this top-level bot is the default sender for cron jobs"},
+		{Key: "outbound_only", Label: "Send only", Type: "checkbox", Required: false, Help: "Recommended for the default outbound bot; interactive agents should use bot mappings below"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default chat/channel ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
+		{Key: "agent_id", Label: "Default interactive agent ID", Type: "text", Required: false, Help: "Legacy single-bot mode only; prefer Add bot mapping for interactive agents"},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated Telegram chat IDs to allow"},
@@ -970,6 +1045,8 @@ var channelSpecs = []channelSpec{
 	{ID: "discord", Name: "Discord", Fields: []channelField{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore servers", Type: "text", Required: false, Help: "true by default; set false only for deliberate server usage"},
@@ -981,6 +1058,8 @@ var channelSpecs = []channelSpec{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "bot_token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "xoxb-..."},
 		{Key: "app_token", Label: "App token", Type: "password", Required: true, Secret: true, Help: "xapp-..."},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore channels", Type: "text", Required: false, Help: "true by default; set false only for deliberate channel usage"},
@@ -993,12 +1072,16 @@ var channelSpecs = []channelSpec{
 		{Key: "access_token", Label: "Access token", Type: "password", Required: true, Secret: true},
 		{Key: "verify_token", Label: "Verify token", Type: "password", Required: true, Secret: true},
 		{Key: "app_secret", Label: "App secret", Type: "password", Required: true, Secret: true, Help: "Meta app secret used to verify webhook signatures"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default phone/user ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "allowed_user_ids", Label: "Allowed phone numbers", Type: "text", Required: false, Help: "Optional comma-separated WhatsApp sender IDs to allow"},
 	}},
 	{ID: "whatsapp_web", Name: "WhatsApp Web (experimental)", Fields: []channelField{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default chat JID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated WhatsApp chat JIDs to allow"},
@@ -1125,9 +1208,10 @@ func normalizeChannelBots(spec channelSpec, bots []map[string]any, existingRaw a
 	return out
 }
 
-func maskChannelBots(spec channelSpec, raw any, statuses map[string]channels.AdapterStatus) []fiber.Map {
-	botList := rawBotList(raw)
+func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]channels.AdapterStatus) []fiber.Map {
+	botList := rawBotList(cfg["bots"])
 	out := make([]fiber.Map, 0, len(botList))
+	defaultReserved := valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"])
 	for i, bot := range botList {
 		row := fiber.Map{}
 		for _, f := range spec.Fields {
@@ -1140,12 +1224,67 @@ func maskChannelBots(spec channelSpec, raw any, statuses map[string]channels.Ada
 		}
 		agentID, _ := bot["agent_id"].(string)
 		botName, _ := bot["bot_name"].(string)
-		adapterID := channelAdapterID(spec.ID, agentID, botName, i)
+		adapterID := channelAdapterID(spec.ID, agentID, botName, i, defaultReserved)
 		st := statuses[adapterID]
 		row["_adapter_id"] = adapterID
 		row["_connected"] = st.Connected
 		row["_detail"] = st.Detail
 		out = append(out, row)
+	}
+	return out
+}
+
+func channelDiagnostics(spec channelSpec, cfg map[string]any, enabled, registered bool, st channels.AdapterStatus, bots []fiber.Map) []channelDiagnostic {
+	var out []channelDiagnostic
+	add := func(severity, message, remedy string) {
+		out = append(out, channelDiagnostic{Severity: severity, Message: message, Remedy: remedy})
+	}
+	if spec.Always {
+		return out
+	}
+	if cfg == nil || !enabled {
+		add("info", "Channel is disabled.", "Enable it after saving required settings.")
+		return out
+	}
+	for _, f := range spec.Fields {
+		if !f.Required {
+			continue
+		}
+		if channelSupportsBots(spec.ID) && len(bots) > 0 && !valuePresent(cfg[f.Key]) {
+			continue
+		}
+		if f.Key == "agent_id" && spec.ID == "telegram" && channels.ParseBoolValue(cfg["outbound_only"], false) {
+			continue
+		}
+		if !valuePresent(cfg[f.Key]) {
+			add("fail", f.Label+" is missing.", "Open channel settings and fill this field.")
+		}
+	}
+	if !registered {
+		add("warn", "Adapter is not registered in the live gateway.", "Restart the gateway after saving channel settings.")
+	} else if !st.Connected {
+		detail := strings.TrimSpace(st.Detail)
+		if detail == "" {
+			detail = "adapter is offline"
+		}
+		add("warn", "Adapter is not connected: "+detail+".", "Check credentials, allowlists, network access, then restart or reconnect.")
+	}
+	if valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"]) || valuePresent(cfg["access_token"]) {
+		if !valuePresent(cfg["default_output_to"]) {
+			add("info", "No default output destination is configured.", "Set a default output destination if cron agents should send here without per-agent schedule.output.to.")
+		}
+	}
+	for _, bot := range bots {
+		agentID, _ := bot["agent_id"].(string)
+		adapterID, _ := bot["_adapter_id"].(string)
+		connected, _ := bot["_connected"].(bool)
+		outboundOnly := channels.ParseBoolValue(bot["outbound_only"], false)
+		if !outboundOnly && strings.TrimSpace(agentID) == "" {
+			add("fail", "Bot mapping "+adapterID+" has no agent.", "Select an agent for interactive bot mappings or mark the row send-only.")
+		}
+		if !connected {
+			add("warn", "Bot mapping "+adapterID+" is not connected.", "Restart the gateway or check that the bot token is valid.")
+		}
 	}
 	return out
 }
@@ -1167,8 +1306,8 @@ func rawBotList(raw any) []map[string]any {
 	}
 }
 
-func channelAdapterID(channelID, agentID, botName string, index int) string {
-	if index == 0 {
+func channelAdapterID(channelID, agentID, botName string, index int, defaultReserved bool) string {
+	if index == 0 && !defaultReserved {
 		return channelID
 	}
 	suffix := sanitizeChannelID(agentID)
@@ -1224,7 +1363,7 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 				settings[f.Key] = displayChannelValue(raw)
 			}
 		}
-		bots := maskChannelBots(spec, cfg["bots"], statuses)
+		bots := maskChannelBots(spec, cfg, statuses)
 		if len(bots) > 0 {
 			configured = true
 		}
@@ -1232,17 +1371,18 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 		st, registered := statuses[spec.ID]
 
 		out = append(out, fiber.Map{
-			"id":         spec.ID,
-			"name":       spec.Name,
-			"always":     spec.Always,
-			"enabled":    enabled,
-			"configured": configured,
-			"registered": registered,
-			"schema":     spec.Fields,
-			"bot_schema": spec.Fields,
-			"multi_bot":  channelSupportsBots(spec.ID),
-			"bots":       bots,
-			"settings":   settings,
+			"id":          spec.ID,
+			"name":        spec.Name,
+			"always":      spec.Always,
+			"enabled":     enabled,
+			"configured":  configured,
+			"registered":  registered,
+			"schema":      spec.Fields,
+			"bot_schema":  spec.Fields,
+			"multi_bot":   channelSupportsBots(spec.ID),
+			"bots":        bots,
+			"settings":    settings,
+			"diagnostics": channelDiagnostics(spec, cfg, enabled, registered, st, bots),
 			"status": fiber.Map{
 				"connected": st.Connected,
 				"detail":    st.Detail,
@@ -1670,6 +1810,195 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 		}()),
 	)
 	return c.JSON(fiber.Map{"result": replyText})
+}
+
+func (s *Server) handleReplayAgentRun(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
+	def := s.loader.Get(id)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	if s.actions == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "action logging disabled")
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.SessionID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "session_id is required")
+	}
+
+	events, err := s.actions.Tail(id, 5000)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	orig, found, err := replaySourceMessage(events, id, req.SessionID)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	if !found {
+		return s.errMsg(c, fiber.StatusNotFound, "message.in event not found for session")
+	}
+
+	if !s.scheduler.TryStartRun(id) {
+		return s.errMsg(c, fiber.StatusConflict, "agent is already running")
+	}
+	defer s.scheduler.FinishRun(id)
+
+	replaySession := fmt.Sprintf("replay-%s-%s", req.SessionID, uuid.NewString()[:8])
+	msg := orig
+	msg.ID = uuid.NewString()
+	msg.SessionID = replaySession
+	msg.AgentID = id
+	msg.Channel = "http"
+	msg.ThreadID = "replay:" + req.SessionID
+	if msg.UserID == "" {
+		msg.UserID = "replay"
+	}
+	if msg.Username == "" {
+		msg.Username = "replay"
+	}
+	msg.Role = message.RoleUser
+	msg.CreatedAt = time.Now().UTC()
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	msg.Metadata["trigger"] = "replay"
+	msg.Metadata["replay_from_session"] = req.SessionID
+	msg.Metadata["replay_from_channel"] = orig.Channel
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), resolveRunTimeout(def))
+	defer cancel()
+
+	reply, err := s.engine.Handle(ctx, msg)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	replyText := ""
+	for _, p := range reply.Parts {
+		if p.Type == message.ContentText && p.Text != "" {
+			replyText = p.Text
+			break
+		}
+	}
+	return c.JSON(fiber.Map{
+		"agent_id":            id,
+		"source_session_id":   req.SessionID,
+		"replay_session_id":   replaySession,
+		"source_channel":      orig.Channel,
+		"source_message_id":   orig.ID,
+		"replayed_as_channel": msg.Channel,
+		"result":              replyText,
+	})
+}
+
+func replaySourceMessage(events []message.Event, agentID, sessionID string) (message.Message, bool, error) {
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if ev.Type != "message.in" || ev.AgentID != agentID || ev.SessionID != sessionID {
+			continue
+		}
+		var msg message.Message
+		data, err := json.Marshal(ev.Payload)
+		if err != nil {
+			return message.Message{}, false, fmt.Errorf("marshal source payload: %w", err)
+		}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return message.Message{}, false, fmt.Errorf("parse source message: %w", err)
+		}
+		if msg.AgentID == "" {
+			msg.AgentID = agentID
+		}
+		if msg.SessionID == "" {
+			msg.SessionID = sessionID
+		}
+		return msg, true, nil
+	}
+	return message.Message{}, false, nil
+}
+
+func (s *Server) handleTestScheduledOutput(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
+	def := s.loader.Get(id)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	if def.Schedule == nil || def.Schedule.Output == nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "agent has no schedule.output configured")
+	}
+	outCfg := def.Schedule.Output
+	channelID := strings.TrimSpace(outCfg.Channel)
+	to := strings.TrimSpace(outCfg.To)
+	if channelID == "" || to == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "schedule.output requires both channel and destination")
+	}
+	if s.channels == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "channel registry is unavailable")
+	}
+	statuses := s.channels.Statuses()
+	st, ok := statuses[channelID]
+	if !ok {
+		return s.errMsg(c, fiber.StatusBadRequest, "scheduled output channel is not registered: "+channelID)
+	}
+	if !st.Connected {
+		detail := strings.TrimSpace(st.Detail)
+		if detail == "" {
+			detail = "adapter is offline"
+		}
+		return s.errMsg(c, fiber.StatusBadGateway, "scheduled output channel is not connected: "+detail)
+	}
+
+	replyText := fmt.Sprintf("Soulacy scheduled-output test for %s at %s.", def.ID, time.Now().UTC().Format(time.RFC3339))
+	text := scheduler.RenderScheduledOutput(outCfg.Template, def, replyText, "test_output")
+	msg := message.Message{
+		ID:        uuid.New().String(),
+		SessionID: fmt.Sprintf("test-output-%s-%d", def.ID, time.Now().UnixNano()),
+		AgentID:   def.ID,
+		Channel:   channelID,
+		ThreadID:  to,
+		UserID:    "schedule-test",
+		Username:  "schedule-test",
+		Role:      message.RoleAssistant,
+		Parts:     message.Text(text),
+		Metadata: map[string]string{
+			"trigger":  "test_output",
+			"bot_name": outCfg.BotName,
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.UserContext()), 20*time.Second)
+	defer cancel()
+	if err := s.channels.Send(ctx, msg); err != nil {
+		s.log.Warn("scheduled output test failed",
+			zap.String("agent", def.ID),
+			zap.String("channel", channelID),
+			zap.String("to", to),
+			zap.String("bot_name", outCfg.BotName),
+			zap.Error(err))
+		return s.errJSON(c, fiber.StatusBadGateway, err)
+	}
+	s.log.Info("scheduled output test sent",
+		zap.String("agent", def.ID),
+		zap.String("channel", channelID),
+		zap.String("to", to),
+		zap.String("bot_name", outCfg.BotName))
+	return c.JSON(fiber.Map{
+		"ok":       true,
+		"agent_id": def.ID,
+		"channel":  channelID,
+		"to":       to,
+		"message":  text,
+	})
 }
 
 // resolveRunTimeout returns the max wall-clock duration for one agent run.
@@ -2596,30 +2925,45 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"agent_id": id, "path": "", "events": []message.Event{}, "note": "action logging disabled"})
 	}
 	limit := c.QueryInt("limit", 500)
-	events, err := s.actions.Tail(id, limit)
-	if err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
-	}
 
 	// Optional event-type filter — callers like the History panel only need a
-	// subset and passing types=message.in,message.out,error avoids returning
-	// thousands of tool.log lines that inflate the response and bury run boundaries.
+	// subset (message.in,message.out,error,tool.result). Filtering must happen
+	// DURING the tail: otherwise verbose tool.log lines from a few recent runs
+	// consume the whole window and older runs' boundary events fall off, so those
+	// runs vanish from the History panel. When the backend supports it, ask it to
+	// count only the allowed types toward the limit.
+	allowed := map[string]bool{}
 	if typesParam := c.Query("types", ""); typesParam != "" {
-		allowed := map[string]bool{}
 		for _, t := range strings.Split(typesParam, ",") {
 			if t = strings.TrimSpace(t); t != "" {
 				allowed[t] = true
 			}
 		}
-		if len(allowed) > 0 {
-			filtered := events[:0]
-			for _, ev := range events {
-				if allowed[ev.Type] {
-					filtered = append(filtered, ev)
-				}
+	}
+
+	var events []message.Event
+	var err error
+	if tf, ok := s.actions.(interface {
+		TailFiltered(string, int, map[string]bool) ([]message.Event, error)
+	}); ok && len(allowed) > 0 {
+		events, err = tf.TailFiltered(id, limit, allowed)
+	} else {
+		events, err = s.actions.Tail(id, limit)
+	}
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Fallback post-filter for backends without TailFiltered (keeps behaviour
+	// correct even if the tail returned mixed types).
+	if len(allowed) > 0 {
+		filtered := events[:0]
+		for _, ev := range events {
+			if allowed[ev.Type] {
+				filtered = append(filtered, ev)
 			}
-			events = filtered
 		}
+		events = filtered
 	}
 
 	return c.JSON(fiber.Map{
@@ -2888,13 +3232,27 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	llmMap := getOrCreateMap(raw, "llm")
 	provsMap := getOrCreateMap(llmMap, "providers")
 	provMap := getOrCreateMap(provsMap, id)
+	realAPIKey := strings.TrimSpace(req.APIKey)
+	hasNewAPIKey := realAPIKey != "" && realAPIKey != "***"
+	keySavedToVault := false
+	if hasNewAPIKey && s.credVault != nil {
+		name := "llm.providers." + id + ".api_key"
+		if err := secrets.New(s.credVault).Set(c.Context(), name, realAPIKey); err != nil {
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
+		}
+		keySavedToVault = true
+	}
 	// Only update fields the caller actually sent (so a Save Model only doesn't
 	// clobber the api_key — *** is not a real value).
 	if req.BaseURL != "" {
 		provMap["base_url"] = req.BaseURL
 	}
-	if req.APIKey != "" && req.APIKey != "***" {
-		provMap["api_key"] = req.APIKey
+	if hasNewAPIKey {
+		if keySavedToVault {
+			delete(provMap, "api_key")
+		} else {
+			provMap["api_key"] = realAPIKey
+		}
 	}
 	if req.Model != "" {
 		provMap["model"] = req.Model
@@ -2940,8 +3298,8 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	if req.BaseURL != "" {
 		pc.BaseURL = req.BaseURL
 	}
-	if req.APIKey != "" && req.APIKey != "***" {
-		pc.APIKey = req.APIKey
+	if hasNewAPIKey {
+		pc.APIKey = realAPIKey
 	}
 	if req.Model != "" {
 		pc.Model = req.Model
@@ -2989,8 +3347,8 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 		}
 	}
 
-	if id == "ollama" && req.APIKey != "" && req.APIKey != "***" && s.engine != nil {
-		s.engine.SetOllamaAPIKey(req.APIKey)
+	if id == "ollama" && hasNewAPIKey && s.engine != nil {
+		s.engine.SetOllamaAPIKey(realAPIKey)
 	}
 
 	s.log.Info("provider credentials updated", zap.String("provider", id))
@@ -3318,13 +3676,51 @@ func (s *Server) handleListTemplates(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	s.applyTemplateRuntimeDefaults(entries)
 	return c.JSON(fiber.Map{"templates": entries, "count": len(entries)})
+}
+
+func (s *Server) applyTemplateRuntimeDefaults(entries []templates.Entry) {
+	for i := range entries {
+		if entries[i].Definition == nil {
+			continue
+		}
+		s.applyTemplateDefinitionDefaults(entries[i].Definition)
+		modelDetail := strings.TrimSpace(entries[i].Definition.LLM.Provider)
+		if model := strings.TrimSpace(entries[i].Definition.LLM.Model); model != "" {
+			if modelDetail != "" {
+				modelDetail += " / "
+			}
+			modelDetail += model
+		}
+		for j := range entries[i].Setup {
+			if entries[i].Setup[j].Key != "model" {
+				continue
+			}
+			entries[i].Setup[j].Status = "ready"
+			entries[i].Setup[j].Detail = modelDetail
+		}
+	}
+}
+
+func (s *Server) applyTemplateDefinitionDefaults(def *agent.Definition) {
+	if def == nil || s.cfg.LLM.DefaultProvider == "" {
+		return
+	}
+	def.LLM.Provider = s.cfg.LLM.DefaultProvider
+	if pc, ok := s.cfg.LLM.Providers[def.LLM.Provider]; ok && strings.TrimSpace(pc.Model) != "" {
+		def.LLM.Model = strings.TrimSpace(pc.Model)
+	}
 }
 
 // handleInstantiateTemplate clones a template into a fresh agent via the
 // loader. Body (all optional):
 //
-//	{ "id": "my-bot" }   // desired agent ID; auto-derived if omitted
+//	{
+//	  "id": "my-bot",                         // desired agent ID; auto-derived if omitted
+//	  "cron": "0 7 * * *",                   // optional schedule override
+//	  "output": {"channel":"telegram","to":"@my_channel","template":"{reply}"}
+//	}
 //
 // Returns the created Definition. The agent is created enabled (matches the
 // normal create-agent flow) so it shows up in the GUI immediately. The
@@ -3335,7 +3731,14 @@ func (s *Server) handleInstantiateTemplate(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusBadRequest, "template name is required")
 	}
 	var req struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Cron   string `json:"cron"`
+		Output struct {
+			Channel  string `json:"channel"`
+			To       string `json:"to"`
+			BotName  string `json:"bot_name"`
+			Template string `json:"template"`
+		} `json:"output"`
 	}
 	// Body is optional — empty body is fine; only log unexpected parse errors.
 	if err := c.BodyParser(&req); err != nil && err != fiber.ErrUnprocessableEntity {
@@ -3349,11 +3752,28 @@ func (s *Server) handleInstantiateTemplate(c *fiber.Ctx) error {
 		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 
-	// Default LLM provider to the configured one if the template left it
-	// blank (templates ship with `ollama` but a user without Ollama will
-	// want their own default to win).
-	if def.LLM.Provider == "" {
-		def.LLM.Provider = s.cfg.LLM.DefaultProvider
+	// Starter templates should run on the user's configured default model.
+	// Embedded templates intentionally carry conservative example providers
+	// (often local Ollama), but a one-click install should not create an agent
+	// that gets disabled at boot because the example model is unavailable.
+	s.applyTemplateDefinitionDefaults(def)
+	if strings.TrimSpace(req.Cron) != "" {
+		if def.Schedule == nil {
+			def.Schedule = &agent.Schedule{}
+		}
+		def.Schedule.Cron = strings.TrimSpace(req.Cron)
+		def.Trigger = agent.TriggerCron
+	}
+	if strings.TrimSpace(req.Output.Channel) != "" || strings.TrimSpace(req.Output.To) != "" {
+		if def.Schedule == nil {
+			def.Schedule = &agent.Schedule{}
+		}
+		def.Schedule.Output = &agent.ScheduleOutput{
+			Channel:  strings.TrimSpace(req.Output.Channel),
+			To:       strings.TrimSpace(req.Output.To),
+			BotName:  strings.TrimSpace(req.Output.BotName),
+			Template: strings.TrimSpace(req.Output.Template),
+		}
 	}
 	def.Enabled = true
 

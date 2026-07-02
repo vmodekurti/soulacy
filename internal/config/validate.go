@@ -88,8 +88,16 @@ func (c *Config) Validate() error {
 	}
 
 	// --- Executor ---
+	switch c.Executor.Backend {
+	case "", "process", "pool", "docker", "ssh":
+	default:
+		errs = append(errs, fmt.Errorf("executor.backend: unsupported value %q", c.Executor.Backend))
+	}
 	if c.Executor.Backend == "pool" && c.Executor.Workers < 1 {
 		errs = append(errs, fmt.Errorf("executor.workers: %d must be >= 1 when executor.backend is \"pool\"", c.Executor.Workers))
+	}
+	if c.Executor.Backend == "ssh" && strings.TrimSpace(c.Executor.SSHHost) == "" {
+		errs = append(errs, fmt.Errorf("executor.ssh_host: required when executor.backend is \"ssh\""))
 	}
 
 	// --- Knowledge / RAG chunking ---

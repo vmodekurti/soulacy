@@ -136,6 +136,7 @@ type server struct {
 	tools     []Tool
 	connected bool
 	detail    string
+	callMu    sync.Mutex
 }
 
 // Client is the top-level MCP client managing multiple servers.
@@ -286,6 +287,16 @@ func (c *Client) Call(ctx context.Context, fullName string, args map[string]any)
 
 	if args == nil {
 		args = map[string]any{}
+	}
+	srv.callMu.Lock()
+	defer srv.callMu.Unlock()
+	var janitor *processJanitor
+	if rooter, ok := srv.tx.(processRooter); ok {
+		janitor = newProcessJanitor(rooter.processRootPID(), c.log.With(
+			zap.String("mcp_server", srv.id),
+			zap.String("mcp_tool", toolName),
+		))
+		defer janitor.Cleanup(context.Background())
 	}
 	raw, err := srv.tx.request(ctx, "tools/call", map[string]any{
 		"name":      toolName,

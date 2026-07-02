@@ -86,14 +86,22 @@ func openAIStyleToolCalls(calls []message.ToolCall) []map[string]any {
 	out := make([]map[string]any, 0, len(calls))
 	for _, tc := range calls {
 		args, _ := json.Marshal(tc.Arguments)
-		out = append(out, map[string]any{
+		call := map[string]any{
 			"id":   tc.ID,
 			"type": "function",
 			"function": map[string]any{
 				"name":      tc.Name,
 				"arguments": string(args),
 			},
-		})
+		}
+		if tc.ThoughtSignature != "" {
+			// Gemini thinking models require this opaque signature to be echoed on
+			// later function-call turns. OpenAI-compatible Gemini routers may accept
+			// either extension spelling.
+			call["thought_signature"] = tc.ThoughtSignature
+			call["thoughtSignature"] = tc.ThoughtSignature
+		}
+		out = append(out, call)
 	}
 	return out
 }

@@ -25,7 +25,7 @@ Start from the annotated example at the repo root:
 | `storage` | Durable event-log/archive backend: sqlite (default), postgres, external | [Storage & Backends](storage.md) |
 | `vector` | Vector search backend: sqlite-vec (default), qdrant, external sidecar | [Storage & Backends](storage.md) |
 | `queue` | Message queue: memory (default), NATS JetStream (`nats_*` keys), external sidecar | [Storage & Backends](storage.md) |
-| `executor` | Python tool executor: `process` (default) or pre-forked `pool` with `workers` | [Security Posture](security.md) |
+| `executor` | Python tool executor: `process` (default), pre-forked `pool`, `docker`, or `ssh` | [Security Posture](security.md) |
 | `knowledge` | RAG defaults: knowledge DB path, embedding provider/model, chunking | [Storage & Backends](storage.md) |
 | `auth` | `apikey` (default) or `jwt` mode, JWT secret/TTLs, OIDC issuer | [Auth](auth.md) |
 | `credentials` | Credential vault KMS provider: local (default), hashicorp, awskms | [Credentials API](../api/credentials.md) |

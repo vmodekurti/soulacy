@@ -51,6 +51,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/pkg/agent"
 )
@@ -228,7 +229,7 @@ func TestNormalizeChannelValue_BoolFields(t *testing.T) {
 
 func TestChannelAdapterID_Index0WithAgentID(t *testing.T) {
 	// At index 0, agentID is ignored; always returns channelID.
-	got := channelAdapterID("telegram", "my-bot", "", 0)
+	got := channelAdapterID("telegram", "my-bot", "", 0, false)
 	if got != "telegram" {
 		t.Fatalf("channelAdapterID at index 0 = %q, want telegram", got)
 	}
@@ -236,14 +237,14 @@ func TestChannelAdapterID_Index0WithAgentID(t *testing.T) {
 
 func TestChannelAdapterID_Index2WithAgentID(t *testing.T) {
 	// Non-zero index with agentID → channelID-agentID
-	got := channelAdapterID("telegram", "second-bot", "", 2)
+	got := channelAdapterID("telegram", "second-bot", "", 2, false)
 	if got != "telegram-second-bot" {
 		t.Fatalf("channelAdapterID at index 2 = %q, want telegram-second-bot", got)
 	}
 }
 
 func TestChannelAdapterID_OutboundOnlyUsesBotName(t *testing.T) {
-	got := channelAdapterID("telegram", "", "Daily Stock Screener", 1)
+	got := channelAdapterID("telegram", "", "Daily Stock Screener", 1, false)
 	if got != "telegram-Daily-Stock-Screener" {
 		t.Fatalf("channelAdapterID outbound-only = %q, want telegram-Daily-Stock-Screener", got)
 	}
@@ -259,7 +260,7 @@ func TestMaskChannelBots_ConnectedStatusReflected(t *testing.T) {
 	statuses := map[string]channels.AdapterStatus{
 		"telegram": {Connected: true, Detail: "running"},
 	}
-	result := maskChannelBots(spec, raw, statuses)
+	result := maskChannelBots(spec, map[string]any{"bots": raw}, statuses)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 bot, got %d", len(result))
 	}
@@ -269,6 +270,50 @@ func TestMaskChannelBots_ConnectedStatusReflected(t *testing.T) {
 	}
 	if result[0]["_connected"] == nil {
 		t.Error("expected _connected field in masked bot")
+	}
+}
+
+func TestChannelDiagnosticsReportsMissingAndOffline(t *testing.T) {
+	spec := *channelSpecByID("telegram")
+	cfg := map[string]any{
+		"enabled":       true,
+		"outbound_only": true,
+	}
+	got := channelDiagnostics(spec, cfg, true, false, channels.AdapterStatus{}, nil)
+	if len(got) < 2 {
+		t.Fatalf("diagnostics = %#v, want missing token and restart warning", got)
+	}
+	var missingToken, unregistered bool
+	for _, d := range got {
+		if strings.Contains(d.Message, "Default outbound bot token") {
+			missingToken = true
+		}
+		if strings.Contains(d.Message, "not registered") {
+			unregistered = true
+		}
+	}
+	if !missingToken || !unregistered {
+		t.Fatalf("diagnostics = %#v, missingToken=%v unregistered=%v", got, missingToken, unregistered)
+	}
+}
+
+func TestChannelDiagnosticsAllowsDedicatedBotMappingsWithoutDefaultBot(t *testing.T) {
+	spec := *channelSpecByID("telegram")
+	cfg := map[string]any{"enabled": true}
+	bots := []fiber.Map{{
+		"_adapter_id":   "telegram-weather",
+		"agent_id":      "weather",
+		"_connected":    true,
+		"outbound_only": false,
+	}}
+	got := channelDiagnostics(spec, cfg, true, true, channels.AdapterStatus{Connected: true}, bots)
+	for _, d := range got {
+		if strings.Contains(d.Message, "Default outbound bot token") {
+			t.Fatalf("unexpected default-bot diagnostic for dedicated mapping: %#v", got)
+		}
+		if d.Severity == "fail" {
+			t.Fatalf("unexpected failure for dedicated mapping: %#v", got)
+		}
 	}
 }
 

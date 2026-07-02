@@ -233,3 +233,20 @@ func TestBuildPrompt_IncludesCatalogAndSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildPrompt_AsksForProductionSpecialistPrompts(t *testing.T) {
+	p := BuildPrompt("build a weather agent", Catalog{}, nil)
+	for _, want := range []string{
+		"HIGH-QUALITY SPECIALIST PROMPTS",
+		"decision objective",
+		"tool-selection rules",
+		"confidence/uncertainty handling",
+		"weather expert should not merely report conditions",
+		"best/risk windows",
+		"chart blocks",
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("prompt missing specialist guidance %q", want)
+		}
+	}
+}

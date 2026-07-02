@@ -3,7 +3,7 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui up install test lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install which test regression lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 \
@@ -58,12 +58,39 @@ build-cli:
 	@echo "→ Building CLI..."
 	CGO_ENABLED=1 go build $(LDFLAGS) -o bin/$(BINARY_CLI) ./cmd/sy
 
-## Install both binaries to /usr/local/bin
+## Install both binaries to the directory that ALREADY wins on your PATH, so an
+## update always replaces the copy that actually runs (this avoids the classic
+## "installed a new build but the old one keeps running" trap caused by having
+## several soulacy copies in different PATH dirs). If soulacy isn't installed
+## yet, defaults to ~/.local/bin (user-writable, no sudo). Override explicitly:
+##     make install BINDIR=/usr/local/bin
+BINDIR ?= $(shell d=$$(command -v $(BINARY_GATEWAY) 2>/dev/null); if [ -n "$$d" ]; then dirname "$$d"; else echo "$$HOME/.local/bin"; fi)
 install: all
-	@echo "→ Installing to /usr/local/bin..."
-	cp bin/$(BINARY_GATEWAY) /usr/local/bin/$(BINARY_GATEWAY)
-	cp bin/$(BINARY_CLI) /usr/local/bin/$(BINARY_CLI)
-	@echo "✓ soulacy and sy installed"
+	@echo "→ Installing to $(BINDIR)..."
+	@mkdir -p "$(BINDIR)"
+	@cp bin/$(BINARY_GATEWAY) "$(BINDIR)/$(BINARY_GATEWAY)"
+	@cp bin/$(BINARY_CLI) "$(BINDIR)/$(BINARY_CLI)"
+	@echo "✓ Installed soulacy and sy to $(BINDIR)"
+	@# Shadow check: confirm the copy we just wrote is the one PATH resolves.
+	@resolved=$$(command -v $(BINARY_GATEWAY) 2>/dev/null); \
+	if [ "$$resolved" = "$(BINDIR)/$(BINARY_GATEWAY)" ]; then \
+	  echo "✓ 'soulacy' on your PATH now points at this fresh build ($$resolved)."; \
+	else \
+	  echo ""; \
+	  echo "⚠  Heads up: 'soulacy' still resolves to $$resolved (a different copy)."; \
+	  echo "   Every soulacy found on your PATH:"; \
+	  oldIFS=$$IFS; IFS=:; for d in $$PATH; do [ -x "$$d/$(BINARY_GATEWAY)" ] && echo "     $$d/$(BINARY_GATEWAY)"; done; IFS=$$oldIFS; \
+	  echo "   Fix: delete the stale copy above, or re-run:  make install BINDIR=$$(dirname $$resolved)"; \
+	fi
+
+## Report which soulacy/sy your shell will actually run, and flag duplicates.
+## Handy after an update: `make which`.
+which:
+	@resolved=$$(command -v $(BINARY_GATEWAY) 2>/dev/null); \
+	echo "soulacy resolves to: $${resolved:-<not on PATH>}"; \
+	echo "all copies on PATH:"; \
+	oldIFS=$$IFS; IFS=:; for d in $$PATH; do [ -x "$$d/$(BINARY_GATEWAY)" ] && echo "  $$d/$(BINARY_GATEWAY)"; done; IFS=$$oldIFS; \
+	echo "fresh build in repo: ./bin/$(BINARY_GATEWAY)"
 
 ## Install Python SDK in editable mode (development)
 sdk-install:
@@ -98,6 +125,10 @@ run-dev: all
 ## Run tests
 test:
 	go test ./... -v -timeout 30s
+
+## Focused production smoke regression: core Go paths, GUI tests, GUI build.
+regression:
+	bash scripts/regression-smoke.sh
 
 ## Lint
 lint:

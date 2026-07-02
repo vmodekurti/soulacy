@@ -3,8 +3,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -92,6 +94,7 @@ func runDoctor() error {
 	add(checkPython())
 	add(checkOllama())
 	add(checkProviderReachability())
+	add(checkProviderAuth())
 	add(checkSandboxState())
 	add(checkKnowledgeDB(runtimeDir))
 	add(checkGatewayHealth())
@@ -348,6 +351,25 @@ func gatewayJSON(path string, out any, timeout time.Duration) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+func gatewayRawGET(path string, timeout time.Duration) (int, string, error) {
+	url := gatewayURL + "/api/v1" + path
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	client := &http.Client{Timeout: timeout}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, "", fmt.Errorf("cannot reach %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	data, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+	return resp.StatusCode, string(data), nil
+}
+
 func httpJSON(url string, out any, timeout time.Duration) error {
 	client := &http.Client{Timeout: timeout}
 	resp, err := client.Get(url)
@@ -504,6 +526,59 @@ func checkPort() doctorCheck {
 // TCP. A 401 from the API means the endpoint is reachable, which is
 // what we care about; the key validity is a separate concern.
 func checkProviderReachability() doctorCheck {
+	type providerView struct {
+		APIKey     string `json:"api_key"`
+		Registered bool   `json:"registered"`
+		BaseURL    string `json:"base_url"`
+	}
+	var gatewayProviders struct {
+		Providers map[string]providerView `json:"providers"`
+	}
+	if err := gatewayJSON("/providers", &gatewayProviders, 5*time.Second); err == nil {
+		configured := 0
+		var unreachable []string
+		for id, p := range gatewayProviders.Providers {
+			if !p.Registered || p.APIKey == "" || isLocalProvider(id, p.BaseURL) {
+				continue
+			}
+			configured++
+			if p.BaseURL == "" {
+				unreachable = append(unreachable, id+" (missing base_url)")
+				continue
+			}
+			client := &http.Client{Timeout: 3 * time.Second}
+			req, _ := http.NewRequest("GET", strings.TrimRight(p.BaseURL, "/"), nil)
+			resp, err := client.Do(req)
+			if err != nil {
+				unreachable = append(unreachable, fmt.Sprintf("%s (%v)", id, err))
+				continue
+			}
+			_ = resp.Body.Close()
+		}
+		if configured == 0 {
+			return doctorCheck{
+				Name:   "provider_reach",
+				Status: doctorWarn,
+				Detail: "no registered remote provider keys found in gateway state (local Ollama-only OK)",
+				Remedy: "configure a cloud provider in Providers or confirm local Ollama is intentional",
+			}
+		}
+		if len(unreachable) > 0 {
+			return doctorCheck{
+				Name:   "provider_reach",
+				Status: doctorFail,
+				Detail: fmt.Sprintf("%d of %d provider endpoint(s) unreachable: %s",
+					len(unreachable), configured, strings.Join(firstN(unreachable, 3), "; ")),
+				Remedy: "check network / DNS / firewall or the provider base_url",
+			}
+		}
+		return doctorCheck{
+			Name:   "provider_reach",
+			Status: doctorOK,
+			Detail: fmt.Sprintf("%d live remote provider endpoint(s) reachable; auth verified separately", configured),
+		}
+	}
+
 	type probe struct {
 		name string
 		key  string // viper key for API key presence
@@ -559,6 +634,99 @@ func checkProviderReachability() doctorCheck {
 	}
 }
 
+// checkProviderAuth asks the running gateway to list models for configured
+// providers. Unlike the reachability probe above, this exercises the live
+// provider object after vault/config/env secret overlay, so stale vault keys
+// surface as provider-specific failures instead of hiding until an agent run.
+func checkProviderAuth() doctorCheck {
+	type providerView struct {
+		APIKey     string `json:"api_key"`
+		Registered bool   `json:"registered"`
+		BaseURL    string `json:"base_url"`
+		Model      string `json:"model"`
+	}
+	var resp struct {
+		Providers map[string]providerView `json:"providers"`
+	}
+	if err := gatewayJSON("/providers", &resp, 5*time.Second); err != nil {
+		return doctorCheck{
+			Name:   "provider_auth",
+			Status: doctorWarn,
+			Detail: "skipped: couldn't read providers from gateway: " + err.Error(),
+			Remedy: "start the gateway and pass --api-key if auth is enabled",
+		}
+	}
+	if len(resp.Providers) == 0 {
+		return doctorCheck{Name: "provider_auth", Status: doctorWarn, Detail: "no providers configured"}
+	}
+
+	var checked, ok, failed, skipped []string
+	for id, p := range resp.Providers {
+		if !p.Registered {
+			skipped = append(skipped, id+" (not registered)")
+			continue
+		}
+		if p.APIKey == "" && !isLocalProvider(id, p.BaseURL) {
+			skipped = append(skipped, id+" (no key)")
+			continue
+		}
+		checked = append(checked, id)
+		status, body, err := gatewayRawGET("/providers/"+url.PathEscape(id)+"/models", 12*time.Second)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s (%v)", id, err))
+			continue
+		}
+		if status >= 200 && status < 300 {
+			ok = append(ok, id)
+			continue
+		}
+		msg := strings.TrimSpace(body)
+		if len(msg) > 120 {
+			msg = msg[:120] + "..."
+		}
+		if msg == "" {
+			msg = fmt.Sprintf("HTTP %d", status)
+		} else {
+			msg = fmt.Sprintf("HTTP %d: %s", status, msg)
+		}
+		failed = append(failed, id+" ("+msg+")")
+	}
+
+	if len(checked) == 0 {
+		return doctorCheck{
+			Name:   "provider_auth",
+			Status: doctorWarn,
+			Detail: "no registered keyed providers to validate",
+			Remedy: "configure at least one cloud provider or use local Ollama",
+		}
+	}
+	if len(failed) > 0 {
+		return doctorCheck{
+			Name:   "provider_auth",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%d/%d provider model probes failed: %s", len(failed), len(checked), strings.Join(firstN(failed, 3), "; ")),
+			Remedy: "re-save the provider key in the Providers page or run `sy secrets set llm.providers.<id>.api_key`",
+		}
+	}
+	detail := fmt.Sprintf("%d provider key/model probe(s) passed: %s", len(ok), strings.Join(ok, ", "))
+	if len(skipped) > 0 {
+		detail += fmt.Sprintf(" (skipped %d)", len(skipped))
+	}
+	return doctorCheck{Name: "provider_auth", Status: doctorOK, Detail: detail}
+}
+
+func isLocalProvider(id, baseURL string) bool {
+	if id == "ollama" {
+		return true
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
 // checkSandboxState verifies the sandbox is enabled when the config says
 // it should be, and the python self-exec sandbox wrapper is invokable.
 // The runtime auto-disables sandbox on platforms where rlimits aren't
@@ -599,16 +767,16 @@ func checkSandboxState() doctorCheck {
 //
 // Bug fix history:
 //
-//   2026-06-09 (first pass): the check originally hit /api/v1/actions
-//   directly without auth. That endpoint required the API key, so a
-//   401 came out as a misleading "gateway down?".
+//	2026-06-09 (first pass): the check originally hit /api/v1/actions
+//	directly without auth. That endpoint required the API key, so a
+//	401 came out as a misleading "gateway down?".
 //
-//   2026-06-09 (second pass — this code): there's NO global
-//   /api/v1/actions endpoint at all. Actions are per-agent under
-//   /api/v1/agents/:id/actions. The path I was hitting just routed to
-//   the SPA fallback and served the GUI HTML, which is why the JSON
-//   decode failed with "invalid character '<'". Fixed by listing
-//   agents via /api/v1/agents, then sampling actions from each.
+//	2026-06-09 (second pass — this code): there's NO global
+//	/api/v1/actions endpoint at all. Actions are per-agent under
+//	/api/v1/agents/:id/actions. The path I was hitting just routed to
+//	the SPA fallback and served the GUI HTML, which is why the JSON
+//	decode failed with "invalid character '<'". Fixed by listing
+//	agents via /api/v1/agents, then sampling actions from each.
 func checkRecentErrors() doctorCheck {
 	type actionRow struct {
 		Status string `json:"status"`

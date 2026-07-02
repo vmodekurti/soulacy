@@ -358,10 +358,18 @@ type VectorConfig struct {
 //
 //	backend:  "process"  — one python3 subprocess per call (default, simple)
 //	          "pool"     — N pre-forked persistent workers (low-latency)
+//	          "docker"   — one short-lived Docker container per call
+//	          "ssh"      — run Python on a remote host over the system ssh client
 //	workers:  4          — pool only: number of pre-forked Python processes
 type ExecutorConfig struct {
-	Backend string `mapstructure:"backend"` // "process" (default) or "pool"
-	Workers int    `mapstructure:"workers"` // pool only: worker count
+	Backend       string `mapstructure:"backend"`        // "process" (default), "pool", "docker", or "ssh"
+	Workers       int    `mapstructure:"workers"`        // pool only: worker count
+	DockerImage   string `mapstructure:"docker_image"`   // docker only: image to run
+	DockerNetwork string `mapstructure:"docker_network"` // docker only: defaults to none
+	SSHHost       string `mapstructure:"ssh_host"`       // ssh only: host or user@host
+	SSHUser       string `mapstructure:"ssh_user"`       // ssh only: optional user
+	SSHPythonBin  string `mapstructure:"ssh_python_bin"` // ssh only: remote python binary
+	SSHIdentity   string `mapstructure:"ssh_identity"`   // ssh only: private key path
 }
 
 // AuthConfig controls API request authentication.
@@ -596,6 +604,9 @@ func Load(cfgPath string) (*Config, string, error) {
 	v.SetDefault("vector.dims", 768)
 	v.SetDefault("executor.backend", "process")
 	v.SetDefault("executor.workers", 4)
+	v.SetDefault("executor.docker_image", "python:3.12-slim")
+	v.SetDefault("executor.docker_network", "none")
+	v.SetDefault("executor.ssh_python_bin", "python3")
 	v.SetDefault("queue.backend", "memory")
 	v.SetDefault("queue.nats_url", "nats://localhost:4222")
 	v.SetDefault("queue.nats_stream", "soulacy")

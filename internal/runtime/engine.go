@@ -31,8 +31,10 @@ import (
 
 	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/audit"
+	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/executor"
 	"github.com/soulacy/soulacy/internal/knowledge"
+	"github.com/soulacy/soulacy/internal/learning"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
@@ -98,8 +100,9 @@ type Engine struct {
 	flowTraces    *flowTraceStore
 
 	// Skills support
-	skillLoader SkillLoader
-	builtins    []BuiltinTool
+	skillLoader     SkillLoader
+	builtins        []BuiltinTool
+	channelRegistry *channels.Registry
 
 	// ollamaAPIKey is used by the built-in web_search tool (Ollama Web Search API).
 	// Falls back to the OLLAMA_API_KEY env var at call time.
@@ -151,6 +154,10 @@ type Engine struct {
 	// (episodic / semantic / procedural) for agents that declare brain_memory
 	// in their SOUL.yaml. Set via SetBrainMemory after construction.
 	brainStore *agentmemory.CompositeStore
+
+	// learningStore, when non-nil, stores reviewable post-run learning
+	// proposals for agents that declare learning.enabled in SOUL.yaml.
+	learningStore *learning.Store
 
 	// pluginProvider, when non-nil, provides plugin-contributed tools.
 	// Satisfied by *plugins.Loader via an adapter in main.go.
@@ -436,6 +443,11 @@ func (e *Engine) getSearchConfig() (string, string) {
 	return e.searchProvider, e.searchAPIKey
 }
 
+// SetChannelRegistry wires the outbound channel registry used by channel.send.
+func (e *Engine) SetChannelRegistry(reg *channels.Registry) {
+	e.channelRegistry = reg
+}
+
 // SetSSRF configures SSRF protection for the HTTP-fetching built-in tools.
 func (e *Engine) SetSSRF(enabled bool, allowedHosts []string) {
 	e.ssrfProtection = enabled
@@ -458,6 +470,12 @@ func (e *Engine) SetBrainMemory(store *agentmemory.CompositeStore) {
 
 // BrainStore returns the CompositeStore, or nil if not configured.
 func (e *Engine) BrainStore() *agentmemory.CompositeStore { return e.brainStore }
+
+// SetLearningStore wires the reviewable post-run learning proposal store.
+func (e *Engine) SetLearningStore(store *learning.Store) { e.learningStore = store }
+
+// LearningStore returns the proposal store, or nil when learning is disabled.
+func (e *Engine) LearningStore() *learning.Store { return e.learningStore }
 
 // SetExecutor installs an executor.Backend for Python tool dispatch.
 // When set to a pool backend, Python tool cold-start latency is eliminated by
@@ -870,6 +888,11 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// engine appends it to the final reply, where the GUI renders it as a live
 	// chart. Agents can opt out via `builtins: []` in SOUL.yaml.
 	tools = append(tools, e.buildChartBuiltin())
+
+	// channel.send — generic outbound delivery through a registered channel
+	// adapter. Studio already emits this for Deliver steps; backing it with the
+	// registry makes generated workflows executable instead of merely plausible.
+	tools = append(tools, e.buildChannelSendBuiltin())
 
 	// Skill built-ins are only added when a skill loader is configured;
 	// other built-ins (kb_search, …) are appended below regardless.
@@ -2271,6 +2294,7 @@ func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess 
 	// RL-09: persist task + reply as an episodic brain memory record. The
 	// reasoning loop's "feature active" signal is a configured strategy.
 	e.writeEpisodic(def, msg.AgentID, flattenParts(msg.Parts), finalContent, def.Reasoning.Strategy != "")
+	e.proposeLearning(ctx, def, msg, finalContent)
 
 	reply := message.Message{
 		ID:        msg.ID, // correlate reply to request
@@ -2960,6 +2984,9 @@ func (e *Engine) buildContext(def *agent.Definition, sess *Session, incoming mes
 		}
 		msgs = append(msgs, llm.ChatMessage{Role: "system", Content: sb.String()})
 	}
+	if recall := e.pastConversationRecall(def, sess.ID, incoming); recall != "" {
+		msgs = append(msgs, llm.ChatMessage{Role: "system", Content: recall})
+	}
 
 	// Session history
 	sess.mu.Lock()
@@ -2967,6 +2994,52 @@ func (e *Engine) buildContext(def *agent.Definition, sess *Session, incoming mes
 	sess.mu.Unlock()
 
 	return msgs
+}
+
+type historySearcher interface {
+	Search(context.Context, string, string, int) ([]session.SearchHit, error)
+}
+
+func (e *Engine) pastConversationRecall(def *agent.Definition, sessionID string, incoming message.Message) string {
+	if def == nil || !def.Learning.Enabled || e.historyStore == nil {
+		return ""
+	}
+	query := strings.TrimSpace(flattenParts(incoming.Parts))
+	if len(query) < 12 {
+		return ""
+	}
+	searcher, ok := e.historyStore.(historySearcher)
+	if !ok {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+	hits, err := searcher.Search(ctx, def.ID, query, 5)
+	if err != nil || len(hits) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Relevant Past Conversations\n")
+	sb.WriteString("These are prior turns that may help this task. Treat them as context with provenance, not as current facts.\n")
+	written := 0
+	for _, hit := range hits {
+		if hit.SessionID == sessionID {
+			continue
+		}
+		snippet := strings.TrimSpace(hit.Snippet)
+		if snippet == "" {
+			snippet = truncate(hit.Content, 220)
+		}
+		sb.WriteString(fmt.Sprintf("- Session %s, %s: %s\n", hit.SessionID, hit.Role, snippet))
+		written++
+		if written >= 3 {
+			break
+		}
+	}
+	if written == 0 {
+		return ""
+	}
+	return sb.String()
 }
 
 // executeToolCalls runs each tool in a sandboxed Python subprocess.

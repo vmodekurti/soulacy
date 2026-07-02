@@ -257,6 +257,17 @@ func (a *App) wireGateway(d gatewayDeps, stack *closerStack) *gateway.Server {
 		log.Info("conversation history ready", zap.String("path", historyPath))
 	}
 
+	// ── Chat/Session Resource Store ───────────────────────────────────────────
+	resourcePath := ws.DB("session_resources")
+	if resStore, resErr := session.NewSQLiteStore(resourcePath, session.DefaultConfig()); resErr != nil {
+		log.Warn("session resource store unavailable", zap.Error(resErr))
+	} else {
+		stack.pushClose("session-resource-store", resStore)
+		srv.SetResourceStore(resStore)
+		d.engine.SetResourceStore(resStore)
+		log.Info("session resource store ready", zap.String("path", resourcePath))
+	}
+
 	// ── Builder Registry (E4 gap detection) ───────────────────────────────────
 	builderReg := builder.NewRegistry()
 	// Seed from MCP client's known tools, if available.

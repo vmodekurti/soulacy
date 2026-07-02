@@ -53,6 +53,10 @@
     {#if data.isEntry}<span class="entry-chip">entry</span>{/if}
     {#if runState !== 'idle'}
       <span class="state-dot {runState}" title={runState === 'ok' ? 'verified by the last build' : runState === 'repaired' ? 'repaired during the last build' : 'unresolved problem'} aria-hidden="true"></span>
+    {:else if data.readiness && data.readiness !== 'ready'}
+      <span class="ready-dot {data.readiness}"
+            title={data.readiness === 'risky' ? 'Risky — external send or generated code' : 'Needs attention — missing a required field or not connected'}
+            aria-hidden="true"></span>
     {/if}
   </div>
   <div class="node-title" title={data.label}>{data.label}</div>
@@ -146,6 +150,12 @@
   .state-dot.ok { background: var(--ok, #38c172); box-shadow: 0 0 6px var(--ok, #38c172); }
   .state-dot.repaired { background: var(--warn, #f5a742); box-shadow: 0 0 6px var(--warn, #f5a742); }
   .state-dot.problem { background: var(--error, #ff6b81); box-shadow: 0 0 6px var(--error, #ff6b81); }
+  /* Author-time readiness dot (Story 8): amber = needs attention, red = risky. */
+  .ready-dot {
+    width: 7px; height: 7px; border-radius: 50%; margin-left: auto; flex: none;
+  }
+  .ready-dot.needs-attention { background: var(--warn, #f5a524); box-shadow: 0 0 6px var(--warn, #f5a524); }
+  .ready-dot.risky { background: var(--error, #ff6b81); box-shadow: 0 0 6px var(--error, #ff6b81); }
 
   .node-head {
     display: flex;

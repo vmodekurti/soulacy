@@ -8,7 +8,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
+	"time"
 
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
@@ -30,6 +33,16 @@ type Loader struct {
 	agents map[string]*agent.Definition
 	mu     sync.RWMutex
 	log    *zap.Logger
+}
+
+// AgentVersion is one immutable SOUL.yaml snapshot captured before an agent is
+// overwritten or deleted.
+type AgentVersion struct {
+	ID        string    `json:"id"`
+	AgentID   string    `json:"agent_id"`
+	Path      string    `json:"path"`
+	CreatedAt time.Time `json:"created_at"`
+	Bytes     int       `json:"bytes"`
 }
 
 // NewLoader creates a Loader that watches the given directories.
@@ -199,6 +212,9 @@ func (l *Loader) LoadAll() []error {
 				return nil // skip inaccessible paths
 			}
 			if info.IsDir() {
+				if info.Name() == ".agent-history" {
+					return filepath.SkipDir
+				}
 				return nil
 			}
 			ext := filepath.Ext(path)
@@ -366,6 +382,11 @@ func (l *Loader) Upsert(dir string, def *agent.Definition) error {
 	}
 
 	oldPath := def.SourcePath // where this agent currently lives (empty for new agents)
+	if oldPath != "" && oldPath != builtinSourcePath {
+		if err := l.snapshotPath(dir, def.ID, oldPath); err != nil {
+			l.log.Warn("agent history snapshot failed", zap.String("agent", def.ID), zap.Error(err))
+		}
+	}
 
 	agentDir := filepath.Join(dir, def.ID)
 	if err := os.MkdirAll(agentDir, 0755); err != nil {
@@ -436,6 +457,9 @@ func (l *Loader) Delete(id string) error {
 	if def.SourcePath == builtinSourcePath {
 		return fmt.Errorf("agent %q is a built-in and cannot be deleted", id)
 	}
+	if err := l.snapshotPath("", id, def.SourcePath); err != nil {
+		l.log.Warn("agent history snapshot failed", zap.String("agent", id), zap.Error(err))
+	}
 	if err := os.Remove(def.SourcePath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -448,4 +472,136 @@ func (l *Loader) Delete(id string) error {
 	}
 	delete(l.agents, id)
 	return nil
+}
+
+// AgentVersions returns snapshots for an agent, newest first.
+func (l *Loader) AgentVersions(id string) ([]AgentVersion, error) {
+	var out []AgentVersion
+	for _, root := range l.historyRoots("") {
+		dir := filepath.Join(root, id)
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+				continue
+			}
+			path := filepath.Join(dir, entry.Name())
+			info, err := entry.Info()
+			if err != nil {
+				continue
+			}
+			out = append(out, AgentVersion{
+				ID:        strings.TrimSuffix(entry.Name(), ".yaml"),
+				AgentID:   id,
+				Path:      path,
+				CreatedAt: info.ModTime().UTC(),
+				Bytes:     int(info.Size()),
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.After(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+// ReadAgentVersion returns the raw SOUL.yaml captured in a version snapshot.
+func (l *Loader) ReadAgentVersion(id, version string) ([]byte, AgentVersion, error) {
+	version = filepath.Base(strings.TrimSpace(version))
+	if version == "." || version == "" || strings.Contains(version, string(filepath.Separator)) {
+		return nil, AgentVersion{}, fmt.Errorf("invalid version id")
+	}
+	if !strings.HasSuffix(version, ".yaml") {
+		version += ".yaml"
+	}
+	for _, root := range l.historyRoots("") {
+		path := filepath.Join(root, id, version)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			info, _ := os.Stat(path)
+			v := AgentVersion{ID: strings.TrimSuffix(filepath.Base(path), ".yaml"), AgentID: id, Path: path, Bytes: len(data)}
+			if info != nil {
+				v.CreatedAt = info.ModTime().UTC()
+				v.Bytes = int(info.Size())
+			}
+			return data, v, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, AgentVersion{}, err
+		}
+	}
+	return nil, AgentVersion{}, fmt.Errorf("agent version not found")
+}
+
+// RestoreAgentVersion rolls an agent back to a previous SOUL.yaml snapshot.
+func (l *Loader) RestoreAgentVersion(dir, id, version string) (*agent.Definition, AgentVersion, error) {
+	data, v, err := l.ReadAgentVersion(id, version)
+	if err != nil {
+		return nil, AgentVersion{}, err
+	}
+	var def agent.Definition
+	if err := yaml.Unmarshal(data, &def); err != nil {
+		return nil, AgentVersion{}, fmt.Errorf("parse version YAML: %w", err)
+	}
+	def.ID = id
+	if existing := l.Get(id); existing != nil {
+		def.SourcePath = existing.SourcePath
+		def.LoadedAt = existing.LoadedAt
+	}
+	if dir == "" && len(l.dirs) > 0 {
+		dir = l.dirs[0]
+	}
+	if err := l.Upsert(dir, &def); err != nil {
+		return nil, AgentVersion{}, err
+	}
+	return &def, v, nil
+}
+
+func (l *Loader) snapshotPath(dir, id, sourcePath string) error {
+	if sourcePath == "" || sourcePath == builtinSourcePath {
+		return nil
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	roots := l.historyRoots(dir)
+	if len(roots) == 0 {
+		return nil
+	}
+	hdir := filepath.Join(roots[0], id)
+	if err := os.MkdirAll(hdir, 0755); err != nil {
+		return err
+	}
+	name := time.Now().UTC().Format("20060102T150405.000000000Z") + ".yaml"
+	return os.WriteFile(filepath.Join(hdir, name), data, 0644)
+}
+
+func (l *Loader) historyRoots(preferredDir string) []string {
+	var roots []string
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		root := filepath.Join(dir, ".agent-history")
+		for _, existing := range roots {
+			if existing == root {
+				return
+			}
+		}
+		roots = append(roots, root)
+	}
+	add(preferredDir)
+	for _, dir := range l.dirs {
+		add(dir)
+	}
+	return roots
 }

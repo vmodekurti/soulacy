@@ -180,6 +180,52 @@ func TestTailDefaultsLimitOnZeroOrNegative(t *testing.T) {
 	}
 }
 
+// TailFiltered must count only allowed types toward the limit, so noisy
+// tool.log lines can't crowd out older runs' boundary events. Regression for the
+// "cron history doesn't show all runs" bug.
+func TestTailFilteredRecoversOldRuns(t *testing.T) {
+	l := newLogger(t)
+	// 3 runs, each 1 boundary event (message.out) followed by 100 tool.log lines.
+	for r := 0; r < 3; r++ {
+		l.Append(makeEvent("noisy-agent", "message.out"))
+		for i := 0; i < 100; i++ {
+			l.Append(makeEvent("noisy-agent", "tool.log"))
+		}
+	}
+	_ = l.Close()
+
+	allowed := map[string]bool{"message.out": true}
+
+	// Plain Tail with a small limit sees only the newest tool.log noise — 0 runs.
+	plain, err := l.Tail("noisy-agent", 50)
+	if err != nil {
+		t.Fatalf("Tail: %v", err)
+	}
+	boundaries := 0
+	for _, ev := range plain {
+		if ev.Type == "message.out" {
+			boundaries++
+		}
+	}
+	if boundaries != 0 {
+		t.Fatalf("precondition: expected plain Tail(50) to bury boundaries, saw %d", boundaries)
+	}
+
+	// TailFiltered with the same limit recovers ALL 3 runs' boundary events.
+	got, err := l.TailFiltered("noisy-agent", 50, allowed)
+	if err != nil {
+		t.Fatalf("TailFiltered: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("TailFiltered: expected 3 boundary events (all runs), got %d", len(got))
+	}
+	for _, ev := range got {
+		if ev.Type != "message.out" {
+			t.Errorf("TailFiltered returned a non-allowed type: %q", ev.Type)
+		}
+	}
+}
+
 func TestTailRespectsLimit(t *testing.T) {
 	l := newLogger(t)
 	for i := 0; i < 10; i++ {

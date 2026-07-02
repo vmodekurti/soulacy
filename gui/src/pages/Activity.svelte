@@ -2,7 +2,7 @@
   import { onMount, onDestroy } from 'svelte'
   import { get } from 'svelte/store'
   import { api } from '../lib/api.js'
-  import { activityAgent } from '../lib/stores.js'
+  import { activityAgent, studioDebugRun } from '../lib/stores.js'
   import RunMetrics from '../lib/RunMetrics.svelte'
 
   let agents     = []
@@ -16,6 +16,9 @@
   let typeFilter = 'all'
   let logEl
   let autoScroll = true
+  let replayingSession = ''
+  let replayMsg = ''
+  let learningSession = ''
 
   async function loadAgents() {
     try {
@@ -64,7 +67,50 @@
     selectedId = id
     events = []
     path = ''
+    replayMsg = ''
     await poll()
+  }
+
+  async function replayRun(ev) {
+    if (!selectedId || !ev?.session_id || replayingSession) return
+    replayingSession = ev.session_id
+    replayMsg = ''
+    try {
+      const res = await api.agents.replay(selectedId, ev.session_id)
+      replayMsg = `Replayed ${ev.session_id} as ${res.replay_session_id || 'new session'}`
+      await poll()
+    } catch (e) {
+      error = e.message || 'Replay failed'
+    } finally {
+      replayingSession = ''
+    }
+  }
+
+  async function learnFromRun(ev) {
+    if (!selectedId || !ev?.session_id || learningSession) return
+    learningSession = ev.session_id
+    replayMsg = ''
+    try {
+      const res = await api.brainMemory.proposeFromRun(selectedId, ev.session_id, 3)
+      const n = res.created || (res.proposals || []).length || 0
+      replayMsg = n
+        ? `Created ${n} learning proposal${n === 1 ? '' : 's'} from ${ev.session_id}. Review them in Brain Memory → Learning.`
+        : `No learning proposals created from ${ev.session_id}. The run may be too short to generalize.`
+    } catch (e) {
+      error = e.message || 'Learning proposal failed'
+    } finally {
+      learningSession = ''
+    }
+  }
+
+  function debugInStudio(ev) {
+    if (!selectedId || !ev?.session_id) return
+    studioDebugRun.set({
+      agentId: selectedId,
+      sessionId: ev.session_id,
+      error: eventErrorText(ev),
+    })
+    window.location.hash = '#studio'
   }
 
   onMount(loadAgents)
@@ -116,6 +162,20 @@
 
   function fmtTime(iso) { try { return new Date(iso).toLocaleTimeString() } catch { return '' } }
 
+  function eventErrorText(ev) {
+    const p = ev?.payload || {}
+    return p.error || p.message || p.content || ev?.type || ''
+  }
+
+  function canDebug(ev) {
+    const p = ev?.payload || {}
+    return !!ev?.session_id && (ev.type === 'error' || !!p.error || !!p.is_error)
+  }
+
+  function canLearn(ev) {
+    return !!ev?.session_id && ev.type === 'message.out'
+  }
+
   const FILTERS = {
     all:    () => true,
     run:    (t) => t === 'message.in' || t === 'message.out',
@@ -138,6 +198,7 @@
   </div>
 
   {#if error}<div class="banner err">{error}</div>{/if}
+  {#if replayMsg}<div class="banner ok">{replayMsg}</div>{/if}
 
   <div class="toolbar">
     <select bind:value={selectedId} on:change={() => selectAgent(selectedId)} class="agent-select">
@@ -185,6 +246,21 @@
           <span class="t">{fmtTime(ev.timestamp)}</span>
           <span class="badge" style="color:{m.color}">{m.icon} {m.label}</span>
           <span class="sum">{summary(ev)}</span>
+          {#if ev.type === 'message.in' && ev.session_id}
+            <button class="row-action" on:click={() => replayRun(ev)} disabled={!!replayingSession}>
+              {replayingSession === ev.session_id ? 'Replaying…' : 'Replay'}
+            </button>
+          {/if}
+          {#if canDebug(ev)}
+            <button class="row-action debug" on:click={() => debugInStudio(ev)}>
+              Debug in Studio
+            </button>
+          {/if}
+          {#if canLearn(ev)}
+            <button class="row-action learn" on:click={() => learnFromRun(ev)} disabled={!!learningSession}>
+              {learningSession === ev.session_id ? 'Learning…' : 'Learn'}
+            </button>
+          {/if}
         </div>
         {#if (ev.type === 'message.out' || ev.type === 'error') && ev.session_id}
           <div class="row metrics-row">
@@ -206,6 +282,7 @@
   .active { background: rgba(108,99,255,.15) !important; color: #8b85ff !important; border-color: rgba(108,99,255,.4) !important; }
   .banner { padding: .65rem 1rem; border-radius: 8px; font-size: .82rem; flex-shrink: 0; }
   .err  { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
+  .ok   { background: rgba(76,175,130,.12); border: 1px solid rgba(76,175,130,.35); color: #4caf82; }
 
   .toolbar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; flex-shrink: 0; }
   .agent-select { width: 240px; flex-shrink: 0; }
@@ -235,7 +312,7 @@
   .empty { padding: 3rem 2rem; text-align: center; color: #555a7a; line-height: 1.7; }
 
   .row {
-    display: grid; grid-template-columns: 76px 86px 1fr; gap: .6rem; align-items: start;
+    display: grid; grid-template-columns: 76px 86px 1fr auto auto; gap: .6rem; align-items: start;
     padding: .3rem .85rem; border-bottom: 1px solid rgba(255,255,255,.03);
   }
   .row:hover { background: rgba(255,255,255,.03); }
@@ -243,6 +320,15 @@
   .t     { color: #555a7a; }
   .badge { font-weight: 700; font-size: .68rem; white-space: nowrap; }
   .sum   { color: #c8cadf; white-space: pre-wrap; word-break: break-word; }
+  .row-action {
+    justify-self: end; align-self: center;
+    background: rgba(108,99,255,.12); border: 1px solid rgba(108,99,255,.35);
+    color: #ada8ff; border-radius: 6px; padding: .18rem .48rem;
+    font-family: inherit; font-size: .68rem;
+  }
+  .row-action.debug { background: rgba(76,175,130,.10); border-color: rgba(76,175,130,.35); color: #76d6a0; }
+  .row-action.learn { background: rgba(245,167,66,.10); border-color: rgba(245,167,66,.35); color: #f5bd67; }
+  .row-action:disabled { opacity: .55; cursor: wait; }
 
   .metrics-row { opacity: .85; }
   .run-sum { color: #6b7294; }

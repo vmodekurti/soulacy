@@ -184,6 +184,33 @@ func TestLoadForAgentZeroLimitCapAt1000(t *testing.T) {
 	}
 }
 
+func TestSQLiteHistoryStoreSearch(t *testing.T) {
+	s := newHistoryStore(t)
+	ctx := context.Background()
+	appendEntry(t, s, "sess-a", "agent-a", "user", "Find stock momentum breakouts for tomorrow")
+	appendEntry(t, s, "sess-a", "agent-a", "assistant", "I found a momentum screen with AAPL and MSFT.")
+	appendEntry(t, s, "sess-b", "agent-b", "user", "Summarize weather in Chicago")
+
+	hits, err := s.Search(ctx, "agent-a", "momentum screen", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(hits) != 1 {
+		t.Fatalf("hits = %#v, want 1", hits)
+	}
+	if hits[0].SessionID != "sess-a" || hits[0].Snippet == "" {
+		t.Fatalf("hit = %#v, want sess-a with snippet", hits[0])
+	}
+
+	hits, err = s.Search(ctx, "", "Chicago", 10)
+	if err != nil {
+		t.Fatalf("Search all: %v", err)
+	}
+	if len(hits) != 1 || hits[0].AgentID != "agent-b" {
+		t.Fatalf("all-agent hits = %#v, want agent-b", hits)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Prune
 // ---------------------------------------------------------------------------
@@ -501,6 +528,51 @@ func TestResourceStore_Put_Replace(t *testing.T) {
 	}
 	if mimeType != "image/png" {
 		t.Errorf("expected image/png after replace, got %q", mimeType)
+	}
+}
+
+func TestResourceStore_AttachmentMetadataRoundTrip(t *testing.T) {
+	s := newResourceStore(t)
+	ctx := context.Background()
+	att := Attachment{
+		ID:        "att-1",
+		SessionID: "sess-1",
+		AgentID:   "agent-1",
+		Filename:  "notes.md",
+		MIMEType:  "text/markdown",
+		Text:      "# Notes",
+	}
+	if err := s.PutAttachment(ctx, att, []byte("# Notes"), time.Hour); err != nil {
+		t.Fatalf("PutAttachment: %v", err)
+	}
+	list, err := s.ListAttachments(ctx, "agent-1", "sess-1")
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(list) != 1 || list[0].Filename != "notes.md" || list[0].Text != "# Notes" {
+		t.Fatalf("ListAttachments = %+v", list)
+	}
+	got, data, err := s.GetAttachment(ctx, "att-1")
+	if err != nil {
+		t.Fatalf("GetAttachment: %v", err)
+	}
+	if got.SizeBytes != int64(len(data)) || string(data) != "# Notes" {
+		t.Fatalf("GetAttachment got=%+v data=%q", got, data)
+	}
+}
+
+func TestResourceStore_ListAttachmentsFiltersSession(t *testing.T) {
+	s := newResourceStore(t)
+	ctx := context.Background()
+	_ = s.PutAttachment(ctx, Attachment{ID: "a1", AgentID: "agent-1", SessionID: "s1", Filename: "a.txt"}, []byte("a"), time.Hour)
+	_ = s.PutAttachment(ctx, Attachment{ID: "a2", AgentID: "agent-1", SessionID: "s2", Filename: "b.txt"}, []byte("b"), time.Hour)
+	_ = s.PutAttachment(ctx, Attachment{ID: "a3", AgentID: "agent-2", SessionID: "s1", Filename: "c.txt"}, []byte("c"), time.Hour)
+	list, err := s.ListAttachments(ctx, "agent-1", "s1")
+	if err != nil {
+		t.Fatalf("ListAttachments: %v", err)
+	}
+	if len(list) != 1 || list[0].ID != "a1" {
+		t.Fatalf("filtered list = %+v", list)
 	}
 }
 

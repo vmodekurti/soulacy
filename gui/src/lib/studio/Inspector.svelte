@@ -257,6 +257,7 @@
     '*/15 * * * *  =  every 15 minutes',
     '0 0 * * 0  =  Sundays at midnight',
   ]
+  const scheduleTemplatePlaceholder = 'Optional. Use {reply} for the agent result.'
 
   function entries(params) {
     if (!params || typeof params !== 'object') return []
@@ -299,7 +300,25 @@
     const next = new Set(selectedChannels)
     if (on) next.add(id)
     else next.delete(id)
-    onChange({ channels: Array.from(next) })
+    const patch = { channels: Array.from(next) }
+    if (triggerType === 'schedule') {
+      const current = (workflow && workflow.output) || {}
+      if (on && !current.channel) {
+        patch.output = { ...current, channel: id }
+      } else if (!on && current.channel === id) {
+        patch.output = { ...current, channel: '', bot_name: '' }
+      }
+    }
+    onChange(patch)
+  }
+
+  $: scheduleOutput = (workflow && workflow.output) || {}
+  $: scheduleOutputChannel = scheduleOutput.channel || ''
+  $: scheduleOutputTo = scheduleOutput.to || ''
+  $: scheduleOutputBotName = scheduleOutput.bot_name || ''
+  $: scheduleOutputTemplate = scheduleOutput.template || ''
+  function setScheduleOutput(patch) {
+    onChange({ output: { ...scheduleOutput, ...patch } })
   }
 
   // ── Edge wiring helpers (rewire / add connections) ──────────────────────────
@@ -793,6 +812,48 @@
           {/each}
         </ul>
       {/if}
+      {#if triggerType === 'schedule' && selectedChannels.size > 0}
+        <div class="delivery-box">
+          <label class="field-label" for="schedule-out-channel">scheduled delivery bot</label>
+          <select
+            id="schedule-out-channel"
+            value={scheduleOutputChannel}
+            on:change={(e) => setScheduleOutput({ channel: e.target.value })}
+          >
+            <option value="" disabled selected={!scheduleOutputChannel}>Choose delivery channel…</option>
+            {#each channels.filter((ch) => selectedChannels.has(ch.id)) as ch}
+              <option value={ch.id} selected={ch.id === scheduleOutputChannel}>{ch.name || ch.id}</option>
+            {/each}
+          </select>
+          <label class="field-label" for="schedule-out-to">destination ID</label>
+          <input
+            id="schedule-out-to"
+            type="text"
+            placeholder="Telegram chat id, -100… channel id, or @channelusername"
+            value={scheduleOutputTo}
+            on:input={(e) => setScheduleOutput({ to: e.target.value })}
+          />
+          <label class="field-label" for="schedule-out-bot">bot label</label>
+          <input
+            id="schedule-out-bot"
+            type="text"
+            placeholder="Optional display name"
+            value={scheduleOutputBotName}
+            on:input={(e) => setScheduleOutput({ bot_name: e.target.value })}
+          />
+          <label class="field-label" for="schedule-out-template">message template</label>
+          <textarea
+            id="schedule-out-template"
+            rows="3"
+            placeholder={scheduleTemplatePlaceholder}
+            value={scheduleOutputTemplate}
+            on:input={(e) => setScheduleOutput({ template: e.target.value })}
+          ></textarea>
+          <p class="insp-hint">Telegram needs a real destination. For a channel, add the bot to the channel first and use the channel id or public @username.</p>
+        </div>
+      {:else if triggerType === 'schedule' && selectedChannels.size === 0}
+        <p class="insp-hint">Scheduled runs only post somewhere when you choose an output channel and destination.</p>
+      {/if}
     </section>
 
     <!-- Edges list: edit each branch/flow edge's `if` predicate without having
@@ -884,7 +945,7 @@
     color: var(--text-muted);
     margin: 10px 0 4px;
   }
-  select, input[type='text'] {
+  select, input[type='text'], textarea {
     width: 100%;
     padding: 7px 10px;
     background: var(--bg-elev-2);
@@ -894,7 +955,19 @@
     font-size: 13px;
     outline: none;
   }
-  select:focus, input[type='text']:focus { border-color: var(--accent); }
+  textarea {
+    resize: vertical;
+    min-height: 72px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  select:focus, input[type='text']:focus, textarea:focus { border-color: var(--accent); }
+  .delivery-box {
+    margin-top: 10px;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: rgba(124, 92, 255, 0.06);
+  }
   .hints {
     list-style: none;
     margin: 6px 0 0;

@@ -18,6 +18,42 @@
 
 import { api } from '../api.js'
 
+const CATALOG_TIMEOUT_MS = 5000
+
+function emptyCatalogPart(key) {
+  if (key === 'agents') return { agents: [] }
+  if (key === 'tools') return { python_tools: [], mcp_tools: [], builtins: [] }
+  if (key === 'providers') return { providers: {}, default_provider: '' }
+  if (key === 'channels') return { channels: [] }
+  if (key === 'skills') return { skills: [] }
+  if (key === 'mcp') return { servers: [] }
+  return {}
+}
+
+function timeoutAfter(ms, label) {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+  })
+}
+
+export async function catalogPart(label, promise, fallback, timeoutMs = CATALOG_TIMEOUT_MS) {
+  try {
+    return await Promise.race([promise, timeoutAfter(timeoutMs, label)])
+  } catch (err) {
+    const out = { ...fallback }
+    out.error = err && err.message ? err.message : String(err || 'error')
+    return out
+  }
+}
+
+export async function loadCatalogParts(loaders, timeoutMs = CATALOG_TIMEOUT_MS) {
+  const entries = await Promise.all(Object.entries(loaders).map(async ([key, load]) => {
+    const fallback = emptyCatalogPart(key)
+    return [key, await catalogPart(key, load(), fallback, timeoutMs)]
+  }))
+  return Object.fromEntries(entries)
+}
+
 // Hoist the structured consent fields apiFetch parked on err.body up to the
 // top level, matching the old bridge's rejection shape.
 function hoistConsent(err) {
@@ -32,17 +68,17 @@ function hoistConsent(err) {
 export const bridge = {
   // Read-only catalog: agents + tools + providers + channels + skills + mcp,
   // fetched in parallel with the user's own session (no more host relay).
-  // Skills and MCP are best-effort: a failure there must not blank the palette.
+  // Each source is independently time-boxed so a restarting MCP server or slow
+  // optional integration cannot blank the whole Studio palette.
   catalog: async () => {
-    const [agents, tools, providers, channels, skills, mcp] = await Promise.all([
-      api.agents.list(),
-      api.tools.catalog(),
-      api.providers.list(),
-      api.channels.list(),
-      api.skills.list().catch(() => ({ skills: [] })),
-      api.mcp.list().catch(() => ({ servers: [] })),
-    ])
-    return { agents, tools, providers, channels, skills, mcp }
+    return loadCatalogParts({
+      agents: () => api.agents.list(),
+      tools: () => api.tools.catalog(),
+      providers: () => api.providers.list(),
+      channels: () => api.channels.list(),
+      skills: () => api.skills.list(),
+      mcp: () => api.mcp.list(),
+    })
   },
 
   // Mandatory pre-generation refine pass: clarify a rough intent before it is
@@ -103,7 +139,7 @@ export const bridge = {
   autowire: (workflow) => api.studio.autowire({ workflow }),
 
   // AI troubleshoot of a runtime error.
-  troubleshoot: (workflow, error) => api.studio.troubleshoot({ workflow, error }),
+  troubleshoot: (workflow, error, opts = {}) => api.studio.troubleshoot({ workflow, error, ...opts }),
 
   // Architect: autonomous build-verify-repair loop ("Build until it works").
   build: (workflow, intent, verify) => api.studio.build({ workflow, intent, verify }),
@@ -114,6 +150,7 @@ export const bridge = {
   // Runtime self-heal: list failed runs + diagnose/heal one.
   failedRuns: () => api.studio.failedRuns(),
   diagnoseRun: (id) => api.studio.diagnoseRun({ id }),
+  diagnoseSession: (agentId, sessionId) => api.studio.diagnoseSession({ agentId, sessionId }),
 
   // Per-block run trace of a live flow run (input/output/duration/error),
   // by runId or the agent's most recent run.

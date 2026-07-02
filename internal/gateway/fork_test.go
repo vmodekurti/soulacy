@@ -129,3 +129,19 @@ func TestForkSession_NoStore503(t *testing.T) {
 		t.Fatalf("status = %d, want 503", status)
 	}
 }
+
+func TestHistorySearchRoute(t *testing.T) {
+	s, _ := newTestGatewayWithHistory(t)
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/history/search?q=q2&agent_id=bot", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	hits, _ := body["hits"].([]any)
+	if len(hits) != 1 {
+		t.Fatalf("hits = %v, want 1", body["hits"])
+	}
+	first, _ := hits[0].(map[string]any)
+	if first["session_id"] != "gui-main" || first["snippet"] == "" {
+		t.Fatalf("first hit = %v", first)
+	}
+}

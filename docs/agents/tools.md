@@ -139,6 +139,10 @@ mcp_tools: [mcp__github__search_repositories]   # …or individual tools
 A tool is allowed when **either** list admits it. Use `mcp_servers: []` to
 expose none, or `["*"]` / `["all"]` to allow everything explicitly.
 
+For browser automation, use the **Browser** quick-start in the MCP page. It runs
+a Playwright MCP sidecar and exposes navigation/click/type/snapshot tools to
+agents. See [Browser Automation](browser-automation.md).
+
 ## Peer-Agent Tools
 
 `agents: [researcher]` registers `agent__researcher` as a callable tool. See

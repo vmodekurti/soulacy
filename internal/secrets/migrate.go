@@ -27,8 +27,8 @@ func (m *Manager) Migrate(ctx context.Context, cfg *config.Config, cfgPath strin
 	migrated := 0
 	movedValues := map[string]bool{}
 	for name, val := range vals {
-		// Don't clobber a vault value the operator already set explicitly.
-		if _, exists := m.Get(ctx, name); exists {
+		if existing, exists := m.Get(ctx, name); exists && existing == val {
+			movedValues[val] = true
 			continue
 		}
 		if err := m.Set(ctx, name, val); err != nil {

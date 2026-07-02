@@ -475,6 +475,141 @@ func TestGatewayHandleInstantiateTemplate_BuiltinTemplate(t *testing.T) {
 	if body["enabled"] != true {
 		t.Fatalf("instantiated agent should be enabled, body=%v", body)
 	}
+	llm, ok := body["llm"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected llm config in instantiated agent, body=%v", body)
+	}
+	if llm["provider"] != "openai" || llm["model"] != "gpt-4o-mini" {
+		t.Fatalf("template should inherit configured default provider/model, llm=%v", llm)
+	}
+}
+
+func TestGatewayHandleListTemplates_AdvertisesRuntimeDefaultModel(t *testing.T) {
+	s, _ := newTestGatewayWithLLM(t, "secret")
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/templates", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("list templates status = %d body=%v", status, body)
+	}
+	templates, ok := body["templates"].([]any)
+	if !ok || len(templates) == 0 {
+		t.Skip("no built-in templates available in this build")
+	}
+	firstTemplate, ok := templates[0].(map[string]any)
+	if !ok {
+		t.Fatalf("template is not a map: %v", templates[0])
+	}
+	def, ok := firstTemplate["definition"].(map[string]any)
+	if !ok {
+		t.Fatalf("template missing definition: %v", firstTemplate)
+	}
+	llm, ok := def["llm"].(map[string]any)
+	if !ok {
+		t.Fatalf("template missing definition.llm: %v", def)
+	}
+	if llm["provider"] != "openai" || llm["model"] != "gpt-4o-mini" {
+		t.Fatalf("template preview should inherit configured default provider/model, llm=%v", llm)
+	}
+	setup, ok := firstTemplate["setup"].([]any)
+	if !ok {
+		t.Fatalf("template missing setup: %v", firstTemplate)
+	}
+	foundModel := false
+	for _, item := range setup {
+		m, ok := item.(map[string]any)
+		if !ok || m["key"] != "model" {
+			continue
+		}
+		foundModel = true
+		if m["status"] != "ready" || !strings.Contains(fmt.Sprint(m["detail"]), "openai / gpt-4o-mini") {
+			t.Fatalf("model setup should reflect runtime default, item=%v", m)
+		}
+	}
+	if !foundModel {
+		t.Fatalf("template setup missing model item: %v", setup)
+	}
+}
+
+func TestGatewayHandleInstantiateTemplate_WithScheduleOutputOverrides(t *testing.T) {
+	s, _ := newTestGatewayWithLLM(t, "secret")
+
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/templates", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("list templates status = %d body=%v", status, body)
+	}
+	templates, ok := body["templates"].([]any)
+	if !ok || len(templates) == 0 {
+		t.Skip("no built-in templates available in this build")
+	}
+	firstTemplate, ok := templates[0].(map[string]any)
+	if !ok {
+		t.Skip("template is not a map")
+	}
+	templateName, _ := firstTemplate["name"].(string)
+	if templateName == "" {
+		t.Skip("template has no name")
+	}
+
+	uniqueID := fmt.Sprintf("test-tpl-output-%d", time.Now().UnixNano())
+	instantiateBody := fmt.Sprintf(`{
+		"id": %q,
+		"cron": "0 7 * * *",
+		"output": {"channel":"telegram","to":"@alerts","template":"Report: {reply}"}
+	}`, uniqueID)
+	status, body = gatewayJSON(t, s, http.MethodPost,
+		"/api/v1/templates/"+templateName+"/instantiate", "secret", instantiateBody)
+	if status != http.StatusCreated {
+		t.Fatalf("instantiate template %q status = %d body=%v", templateName, status, body)
+	}
+	schedule, ok := body["schedule"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected schedule in instantiated agent, body=%v", body)
+	}
+	if schedule["cron"] != "0 7 * * *" {
+		t.Fatalf("cron override not applied: %+v", schedule)
+	}
+	output, ok := schedule["output"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected schedule.output, schedule=%v", schedule)
+	}
+	if output["channel"] != "telegram" || output["to"] != "@alerts" || output["template"] != "Report: {reply}" {
+		t.Fatalf("output override not applied: %+v", output)
+	}
+}
+
+func TestGatewayHandleOnboardingStatus(t *testing.T) {
+	s, _ := newTestGatewayWithLLM(t, "secret")
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/onboarding/status", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("onboarding status = %d body=%v", status, body)
+	}
+	if _, ok := body["complete"].(bool); !ok {
+		t.Fatalf("missing complete bool: %v", body)
+	}
+	steps, ok := body["steps"].([]any)
+	if !ok || len(steps) == 0 {
+		t.Fatalf("missing onboarding steps: %v", body)
+	}
+	if _, ok := body["suggested_templates"].([]any); !ok {
+		t.Fatalf("missing suggested_templates: %v", body)
+	}
+	suggested := body["suggested_templates"].([]any)
+	if len(suggested) > 0 {
+		first, ok := suggested[0].(map[string]any)
+		if !ok {
+			t.Fatalf("suggested template is not a map: %v", suggested[0])
+		}
+		def, ok := first["definition"].(map[string]any)
+		if !ok {
+			t.Fatalf("suggested template missing definition: %v", first)
+		}
+		llm, ok := def["llm"].(map[string]any)
+		if !ok {
+			t.Fatalf("suggested template missing llm: %v", def)
+		}
+		if llm["provider"] != "openai" || llm["model"] != "gpt-4o-mini" {
+			t.Fatalf("onboarding templates should inherit configured default provider/model, llm=%v", llm)
+		}
+	}
 }
 
 // ── resolveRunTimeout helper ──────────────────────────────────────────────────

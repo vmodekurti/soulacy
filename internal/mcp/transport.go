@@ -2,11 +2,11 @@
 //
 // Two transports are implemented:
 //
-//   * stdio: spawn the configured command and exchange newline-delimited
+//   - stdio: spawn the configured command and exchange newline-delimited
 //     JSON-RPC messages over stdin/stdout. This is the most common MCP setup
 //     (filesystem, GitHub, Slack, Postgres servers, etc. all ship stdio).
 //
-//   * http:  POST JSON-RPC requests to a single URL. The response may be
+//   - http:  POST JSON-RPC requests to a single URL. The response may be
 //     either application/json (single response) or text/event-stream
 //     (Streamable HTTP — SSE-framed messages); both are handled. Session
 //     continuity uses the Mcp-Session-Id header echoed by the server.
@@ -35,6 +35,10 @@ type transport interface {
 	request(ctx context.Context, method string, params any) (json.RawMessage, error)
 	notify(method string, params any) error
 	close() error
+}
+
+type processRooter interface {
+	processRootPID() int
 }
 
 // rpcMsg is a JSON-RPC 2.0 envelope (request, response, or notification).
@@ -226,6 +230,13 @@ func (t *stdioTx) close() error {
 		_ = t.cmd.Process.Kill()
 	}
 	return nil
+}
+
+func (t *stdioTx) processRootPID() int {
+	if t == nil || t.cmd == nil || t.cmd.Process == nil {
+		return 0
+	}
+	return t.cmd.Process.Pid
 }
 
 // ── HTTP / SSE transport ─────────────────────────────────────────────────────

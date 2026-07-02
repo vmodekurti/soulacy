@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -21,10 +22,17 @@ type ConversationEntry struct {
 	ID        int64     `json:"id"`
 	SessionID string    `json:"session_id"`
 	AgentID   string    `json:"agent_id"`
-	Role      string    `json:"role"`    // "user" | "assistant" | "system"
+	Role      string    `json:"role"` // "user" | "assistant" | "system"
 	Content   string    `json:"content"`
-	Tokens    int       `json:"tokens"`  // 0 if unknown
+	Tokens    int       `json:"tokens"` // 0 if unknown
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// SearchHit is one matched conversation-history entry with a compact snippet
+// for UI search results.
+type SearchHit struct {
+	ConversationEntry
+	Snippet string `json:"snippet"`
 }
 
 // HistoryStore is the interface for persisting and retrieving conversation
@@ -90,6 +98,7 @@ CREATE TABLE IF NOT EXISTS conversation_history (
 );
 CREATE INDEX IF NOT EXISTS idx_ch_session ON conversation_history(session_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ch_agent   ON conversation_history(agent_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ch_content ON conversation_history(content);
 `
 
 // SQLiteHistoryStore is the SQLite-backed implementation of HistoryStore.
@@ -217,6 +226,50 @@ func (s *SQLiteHistoryStore) LoadForAgent(ctx context.Context, agentID string, l
 	return scanEntries(rows)
 }
 
+// Search returns recent entries whose content contains all query terms. It is a
+// bounded plain-SQL search intended for chat recall; semantic search can layer
+// on top later without changing the API shape.
+func (s *SQLiteHistoryStore) Search(ctx context.Context, agentID, query string, limit int) ([]SearchHit, error) {
+	terms := searchTerms(query, 5)
+	if len(terms) == 0 {
+		return []SearchHit{}, nil
+	}
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	where := []string{}
+	args := []any{}
+	if strings.TrimSpace(agentID) != "" {
+		where = append(where, "agent_id = ?")
+		args = append(args, strings.TrimSpace(agentID))
+	}
+	for _, term := range terms {
+		where = append(where, "LOWER(content) LIKE ?")
+		args = append(args, "%"+strings.ToLower(term)+"%")
+	}
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT id, session_id, agent_id, role, content, tokens, created_at
+		 FROM conversation_history
+		 WHERE `+strings.Join(where, " AND ")+`
+		 ORDER BY id DESC
+		 LIMIT ?`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("session/history: search: %w", err)
+	}
+	defer rows.Close()
+
+	entries, err := scanEntries(rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SearchHit, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, SearchHit{ConversationEntry: e, Snippet: makeSnippet(e.Content, terms, 220)})
+	}
+	return out, nil
+}
+
 // Prune deletes entries older than olderThan. Returns the number of rows deleted.
 func (s *SQLiteHistoryStore) Prune(ctx context.Context, olderThan time.Duration) (int64, error) {
 	cutoff := time.Now().UTC().Add(-olderThan).Format("2006-01-02 15:04:05")
@@ -261,4 +314,60 @@ func scanEntries(rows *sql.Rows) ([]ConversationEntry, error) {
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+func searchTerms(query string, max int) []string {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, term := range strings.Fields(query) {
+		term = strings.Trim(term, `"'.,;:!?()[]{}<>`)
+		if len(term) < 2 || seen[term] {
+			continue
+		}
+		seen[term] = true
+		out = append(out, term)
+		if len(out) >= max {
+			break
+		}
+	}
+	return out
+}
+
+func makeSnippet(content string, terms []string, max int) string {
+	content = strings.Join(strings.Fields(content), " ")
+	if len(content) <= max {
+		return content
+	}
+	lower := strings.ToLower(content)
+	pos := -1
+	for _, term := range terms {
+		if idx := strings.Index(lower, strings.ToLower(term)); idx >= 0 && (pos == -1 || idx < pos) {
+			pos = idx
+		}
+	}
+	if pos < 0 {
+		pos = 0
+	}
+	start := pos - max/3
+	if start < 0 {
+		start = 0
+	}
+	if start+max > len(content) {
+		start = len(content) - max
+	}
+	if start < 0 {
+		start = 0
+	}
+	snippet := strings.TrimSpace(content[start : start+max])
+	if start > 0 {
+		snippet = "..." + snippet
+	}
+	if start+max < len(content) {
+		snippet += "..."
+	}
+	return snippet
 }

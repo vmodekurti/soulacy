@@ -28,6 +28,17 @@ func TestRefinePrompt_PlainWorkflowStaysWorkflow(t *testing.T) {
 	}
 }
 
+func TestRefinePrompt_PreservesAutoRecommendation(t *testing.T) {
+	out := `{"refined_intent":"Create an interactive weather assistant that answers user weather questions by choosing the right weather tool at runtime.","summary":"interactive weather assistant","recommended_mode":"auto","mode_reason":"ordinary tool-calling agent"}`
+	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "weather assistant for user questions", Catalog{})
+	if err != nil {
+		t.Fatalf("RefinePrompt: %v", err)
+	}
+	if r.RecommendedMode != "auto" {
+		t.Errorf("auto recommendation should survive refine, got %q", r.RecommendedMode)
+	}
+}
+
 func TestHasStrongReactCues(t *testing.T) {
 	if !hasStrongReactCues("add each source then poll until ready") {
 		t.Error("expected strong cues")

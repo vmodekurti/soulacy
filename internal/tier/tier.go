@@ -7,21 +7,21 @@
 //
 // Tier rules:
 //
-//   • Privileged — the agent (directly OR transitively through any peer)
+//   - Privileged — the agent (directly OR transitively through any peer)
 //     can spawn processes, write/create files, install software, or has
 //     SystemTools=true, OR has wildcard ('*'/'all') over builtins, peer
 //     agents, mcp_servers, or mcp_tools (because the wildcard sets
 //     include the privileged tools above, plus arbitrary MCP servers
 //     whose tool surface we can't enumerate at config time).
 //
-//   • Active — has at least one read-class builtin (web_search,
+//   - Active — has at least one read-class builtin (web_search,
 //     kb_search, read_file, list_dir, semantic_memory_search, etc.) OR
 //     declares any specific mcp_servers / mcp_tools (we don't know what
 //     each MCP server can do; treat conservatively as active). Memory
 //     write access alone counts as active because it can leak data
 //     through replies.
 //
-//   • ReadOnly — no builtins, no MCP, no privileged peers, no
+//   - ReadOnly — no builtins, no MCP, no privileged peers, no
 //     system_tools. Pure prompt+LLM with at most read-only memory and
 //     non-privileged peer calls.
 //
@@ -86,11 +86,12 @@ var privilegedBuiltins = map[string]bool{
 //
 //nolint:unused // referenced via fallthrough in Compute; kept for clarity
 var activeBuiltins = map[string]bool{
-	"web_search":              true,
-	"kb_search":               true,
-	"read_file":               true,
-	"list_dir":                true,
-	"semantic_memory_search":  true,
+	"web_search":             true,
+	"kb_search":              true,
+	"read_file":              true,
+	"list_dir":               true,
+	"semantic_memory_search": true,
+	"channel.send":           true,
 }
 
 // Compute returns the capability tier of `def`, walking peer agents

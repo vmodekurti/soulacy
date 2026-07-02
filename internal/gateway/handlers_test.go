@@ -20,6 +20,7 @@ import (
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/scheduler"
+	"github.com/soulacy/soulacy/pkg/message"
 )
 
 func TestGatewayPingReportsOpenAndAuthenticatedModes(t *testing.T) {
@@ -122,6 +123,121 @@ func TestGatewayAgentCRUDHandlers(t *testing.T) {
 	status, _ = gatewayJSON(t, s, http.MethodGet, "/api/v1/agents/assistant", "secret", "")
 	if status != http.StatusNotFound {
 		t.Fatalf("get deleted status = %d", status)
+	}
+}
+
+func TestGatewayAgentVersionsAndRollback(t *testing.T) {
+	s := newTestGateway(t, "secret")
+
+	createBody := `{
+		"id": "version-api",
+		"name": "Original",
+		"trigger": "channel",
+		"channels": ["http"],
+		"llm": {"provider": "openai", "model": "gpt-4o-mini"},
+		"system_prompt": "Original prompt.",
+		"enabled": true
+	}`
+	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/agents", "secret", createBody)
+	if status != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", status, body)
+	}
+
+	updateBody := `{
+		"name": "Edited",
+		"trigger": "channel",
+		"channels": ["http"],
+		"llm": {"provider": "openai", "model": "gpt-4o-mini"},
+		"system_prompt": "Edited prompt.",
+		"enabled": true
+	}`
+	status, body = gatewayJSON(t, s, http.MethodPut, "/api/v1/agents/version-api", "secret", updateBody)
+	if status != http.StatusOK {
+		t.Fatalf("update status = %d body=%s", status, body)
+	}
+
+	status, body = gatewayJSON(t, s, http.MethodGet, "/api/v1/agents/version-api/versions", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("versions status = %d body=%s", status, body)
+	}
+	versions, ok := body["versions"].([]any)
+	if !ok || len(versions) != 1 {
+		t.Fatalf("versions body = %#v", body)
+	}
+	versionID, _ := versions[0].(map[string]any)["id"].(string)
+	if versionID == "" {
+		t.Fatalf("missing version id: %#v", versions[0])
+	}
+
+	status, body = gatewayJSON(t, s, http.MethodGet, "/api/v1/agents/version-api/versions/"+versionID, "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("get version status = %d body=%s", status, body)
+	}
+	if yamlText, _ := body["yaml"].(string); !strings.Contains(yamlText, "name: Original") {
+		t.Fatalf("version YAML = %q", yamlText)
+	}
+
+	status, body = gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/version-api/rollback", "secret", `{"version":"`+versionID+`"}`)
+	if status != http.StatusOK {
+		t.Fatalf("rollback status = %d body=%s", status, body)
+	}
+	agentBody, ok := body["agent"].(map[string]any)
+	if !ok || agentBody["name"] != "Original" {
+		t.Fatalf("rollback body = %#v", body)
+	}
+}
+
+func TestGatewayReplayAgentRunFromActionLog(t *testing.T) {
+	s, provider := newTestGatewayWithLLM(t, "secret")
+	provider.content = "replayed reply"
+
+	createBody := `{
+		"id": "replay-agent",
+		"name": "Replay Agent",
+		"trigger": "channel",
+		"channels": ["http"],
+		"llm": {"provider": "test", "model": "fake-model"},
+		"system_prompt": "Be helpful.",
+		"enabled": true
+	}`
+	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/agents", "secret", createBody)
+	if status != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", status, body)
+	}
+
+	orig := message.Message{
+		ID:        "msg-original",
+		SessionID: "sess-original",
+		AgentID:   "replay-agent",
+		Channel:   "telegram",
+		ThreadID:  "chat-1",
+		UserID:    "user-1",
+		Username:  "User",
+		Role:      message.RoleUser,
+		Parts:     message.Text("run this again"),
+		CreatedAt: time.Now().UTC(),
+	}
+	s.actions = &fakeTailBackend{events: []message.Event{{
+		Type:      "message.in",
+		AgentID:   "replay-agent",
+		SessionID: "sess-original",
+		Payload:   orig,
+		Timestamp: time.Now().UTC(),
+	}}}
+
+	status, body = gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/replay-agent/replay", "secret", `{"session_id":"sess-original"}`)
+	if status != http.StatusOK {
+		t.Fatalf("replay status = %d body=%s", status, body)
+	}
+	if body["result"] != "replayed reply" || body["source_channel"] != "telegram" || body["replayed_as_channel"] != "http" {
+		t.Fatalf("replay body = %#v", body)
+	}
+	if got, _ := body["replay_session_id"].(string); !strings.HasPrefix(got, "replay-sess-original-") {
+		t.Fatalf("replay_session_id = %q", got)
+	}
+	req := provider.lastRequest()
+	if len(req.Messages) == 0 || !strings.Contains(req.Messages[len(req.Messages)-1].Content, "run this again") {
+		t.Fatalf("provider request did not include replayed prompt: %#v", req.Messages)
 	}
 }
 

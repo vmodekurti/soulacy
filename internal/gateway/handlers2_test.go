@@ -1,10 +1,14 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/soulacy/soulacy/internal/secrets"
 )
 
 // ── Health handler ────────────────────────────────────────────────────────────
@@ -136,6 +140,35 @@ func TestGatewayHandleSetProviderCredentials_Happy(t *testing.T) {
 	}
 	if body["ok"] != true {
 		t.Fatalf("expected ok=true, body=%v", body)
+	}
+}
+
+func TestGatewayHandleSetProviderCredentials_UpdatesVaultValue(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	v := newMemVault()
+	s.SetCredentialVault(v)
+
+	const name = "llm.providers.ollama_cloud.api_key"
+	if err := secrets.New(v).Set(context.Background(), name, "old-key"); err != nil {
+		t.Fatalf("seed vault: %v", err)
+	}
+
+	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/providers/ollama_cloud", "secret",
+		`{"api_key":"new-key","model":"glm-5.2","base_url":"https://ollama.com/v1"}`)
+	if status != http.StatusOK {
+		t.Fatalf("set provider credentials status = %d body=%v", status, body)
+	}
+	got, ok := secrets.New(v).Get(context.Background(), name)
+	if !ok || got != "new-key" {
+		t.Fatalf("vault value = %q set=%v, want new-key", got, ok)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if strings.Contains(string(raw), "new-key") {
+		t.Fatal("provider save leaked the new API key into config.yaml despite vault availability")
 	}
 }
 
@@ -1165,14 +1198,17 @@ func TestSanitizeChannelID(t *testing.T) {
 }
 
 func TestChannelAdapterID(t *testing.T) {
-	if channelAdapterID("telegram", "my-bot", "", 0) != "telegram" {
+	if channelAdapterID("telegram", "my-bot", "", 0, false) != "telegram" {
 		t.Fatalf("index 0 should return channelID")
 	}
-	got := channelAdapterID("telegram", "", "", 1)
+	if got := channelAdapterID("telegram", "my-bot", "", 0, true); got != "telegram-my-bot" {
+		t.Fatalf("reserved default index 0 = %q, want telegram-my-bot", got)
+	}
+	got := channelAdapterID("telegram", "", "", 1, false)
 	if got != "telegram-2" {
 		t.Fatalf("got %q, want telegram-2", got)
 	}
-	got = channelAdapterID("telegram", "my-bot", "", 1)
+	got = channelAdapterID("telegram", "my-bot", "", 1, false)
 	if got != "telegram-my-bot" {
 		t.Fatalf("got %q, want telegram-my-bot", got)
 	}

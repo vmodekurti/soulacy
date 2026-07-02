@@ -359,6 +359,23 @@ const tailBlockSize = 64 * 1024
 // into compressed backups would defeat the O(limit) goal. Callers needing full
 // history should query SQLite (agent_events) instead.
 func (l *Logger) Tail(agentID string, limit int) ([]message.Event, error) {
+	return l.tailFilter(agentID, limit, nil)
+}
+
+// TailFiltered is Tail, but only events whose Type is in `allowed` count toward
+// the limit. High-volume tool.log lines from a chatty run can otherwise crowd
+// out the boundary events (message.in/out, error) that mark distinct runs, so
+// older runs fall outside the tail window and vanish from the History panel.
+// Filtering DURING the backward scan makes `limit` count run-boundary events,
+// so all of a job's runs show. `allowed` empty/nil ⇒ unfiltered (same as Tail).
+func (l *Logger) TailFiltered(agentID string, limit int, allowed map[string]bool) ([]message.Event, error) {
+	if len(allowed) == 0 {
+		return l.tailFilter(agentID, limit, nil)
+	}
+	return l.tailFilter(agentID, limit, allowed)
+}
+
+func (l *Logger) tailFilter(agentID string, limit int, allowed map[string]bool) ([]message.Event, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 500
 	}
@@ -421,7 +438,7 @@ func (l *Logger) Tail(agentID string, limit int) ([]message.Event, error) {
 		}
 
 		// Emit complete lines from `start` to end, newest-first.
-		emitLinesReverse(chunk[start:], &lines, limit)
+		emitLinesReverse(chunk[start:], &lines, limit, allowed)
 	}
 
 	// Reverse to oldest-first and clamp (we may have collected exactly limit).
@@ -443,20 +460,35 @@ func (l *Logger) Tail(agentID string, limit int) ([]message.Event, error) {
 // emitLinesReverse splits data on '\n' and appends non-blank lines to *lines in
 // reverse (last line first), stopping once *lines reaches limit. Used by Tail
 // while walking the file backwards so the newest lines accumulate first.
-func emitLinesReverse(data []byte, lines *[]string, limit int) {
+func emitLinesReverse(data []byte, lines *[]string, limit int, allowed map[string]bool) {
 	// Walk from the end so the newest line in this block is appended first.
 	end := len(data)
 	for end > 0 && len(*lines) < limit {
 		nl := lastIndexByte(data[:end], '\n')
 		seg := data[nl+1 : end]
 		if t := strings.TrimSpace(string(seg)); t != "" {
-			*lines = append(*lines, t)
+			if allowed == nil || lineTypeAllowed(t, allowed) {
+				*lines = append(*lines, t)
+			}
 		}
 		if nl < 0 {
 			break
 		}
 		end = nl
 	}
+}
+
+// lineTypeAllowed reports whether a raw JSONL event line's "type" is in the
+// allowed set. Used to filter during the tail scan so only matching events count
+// toward the limit. Unparseable lines are excluded.
+func lineTypeAllowed(line string, allowed map[string]bool) bool {
+	var probe struct {
+		Type string `json:"type"`
+	}
+	if json.Unmarshal([]byte(line), &probe) != nil {
+		return false
+	}
+	return allowed[probe.Type]
 }
 
 func indexByte(b []byte, c byte) int {

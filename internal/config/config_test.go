@@ -151,6 +151,15 @@ func TestLoadNoConfigFileUsesDefaults(t *testing.T) {
 	if cfg.Executor.Workers != 4 {
 		t.Errorf("executor.workers = %d, want 4", cfg.Executor.Workers)
 	}
+	if cfg.Executor.DockerImage != "python:3.12-slim" {
+		t.Errorf("executor.docker_image = %q, want python:3.12-slim", cfg.Executor.DockerImage)
+	}
+	if cfg.Executor.DockerNetwork != "none" {
+		t.Errorf("executor.docker_network = %q, want none", cfg.Executor.DockerNetwork)
+	}
+	if cfg.Executor.SSHPythonBin != "python3" {
+		t.Errorf("executor.ssh_python_bin = %q, want python3", cfg.Executor.SSHPythonBin)
+	}
 
 	// Queue defaults.
 	if cfg.Queue.Backend != "memory" {

@@ -17,6 +17,12 @@ func TestAgentDefinitionRoundTrip(t *testing.T) {
 		Name:     "My Flow",
 		Trigger:  Trigger{Type: "schedule", Config: map[string]any{"cron": "0 7 * * *"}},
 		Channels: []string{"slack", "email"},
+		Output: &ScheduleOutput{
+			Channel:  "slack",
+			To:       "C123",
+			BotName:  "Ops Bot",
+			Template: "[{agent_id}] {reply}",
+		},
 		Flow: Flow{
 			Entry: "a",
 			Nodes: []sdkr.FlowNode{
@@ -43,6 +49,9 @@ func TestAgentDefinitionRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(back.Channels, orig.Channels) {
 		t.Fatalf("channels: %v != %v", back.Channels, orig.Channels)
+	}
+	if back.Output == nil || back.Output.Channel != "slack" || back.Output.To != "C123" || back.Output.BotName != "Ops Bot" {
+		t.Fatalf("output not preserved: %+v", back.Output)
 	}
 	if back.Flow.Entry != "a" || len(back.Flow.Nodes) != 2 || len(back.Flow.Edges) != 2 {
 		t.Fatalf("flow not preserved: %+v", back.Flow)

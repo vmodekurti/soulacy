@@ -26,6 +26,16 @@
   let yamlError   = ''      // parse/validation error from the server
   let yamlMsg     = ''      // success note
 
+  // ── Agent version history / rollback modal ───────────────────────────────
+  let showHistory = false
+  let historyLoading = false
+  let historySaving = false
+  let historyError = ''
+  let historyMsg = ''
+  let historyVersions = []
+  let historySelected = null
+  let historyYaml = ''
+
   async function openYaml() {
     if (!selected) return
     showYaml = true
@@ -73,6 +83,75 @@
       }
     }
     yamlSaving = false
+  }
+
+  async function openHistory() {
+    if (!selected) return
+    showHistory = true
+    historyLoading = true
+    historyError = ''
+    historyMsg = ''
+    historyVersions = []
+    historySelected = null
+    historyYaml = ''
+    try {
+      const res = await api.agents.versions(selected.id)
+      historyVersions = res?.versions || []
+      if (historyVersions.length) {
+        await selectVersion(historyVersions[0])
+      }
+    } catch (e) {
+      historyError = e.message || 'Could not load history'
+    }
+    historyLoading = false
+  }
+
+  function closeHistory() {
+    if (historySaving) return
+    showHistory = false
+  }
+
+  async function selectVersion(version) {
+    if (!selected || !version) return
+    historySelected = version
+    historyError = ''
+    historyMsg = ''
+    try {
+      const res = await api.agents.version(selected.id, version.id)
+      historyYaml = res?.yaml || ''
+    } catch (e) {
+      historyYaml = ''
+      historyError = e.message || 'Could not load version'
+    }
+  }
+
+  async function rollbackVersion() {
+    if (!selected || !historySelected || historySaving) return
+    const ok = window.confirm(`Restore "${selected.id}" to version ${formatVersionTime(historySelected.created_at)}? The current definition will be snapshotted first.`)
+    if (!ok) return
+    historySaving = true
+    historyError = ''
+    historyMsg = ''
+    try {
+      await api.agents.rollback(selected.id, historySelected.id)
+      historyMsg = '✓ Restored'
+      await load()
+      const found = agents.find(a => a.id === selected.id)
+      if (found) select(found)
+      await openHistory()
+    } catch (e) {
+      historyError = e.message || 'Rollback failed'
+    }
+    historySaving = false
+  }
+
+  function formatVersionTime(value) {
+    if (!value) return 'unknown time'
+    try {
+      return new Date(value).toLocaleString()
+    } catch {
+      return value
+    }
   }
 
   // Tool catalog — fetched once, used by the python_file dropdown
@@ -163,9 +242,11 @@
   const BLANK = () => ({
     id: '', name: '', description: '', version: '1.0',
     trigger: 'channel', channels: ['http'], schedule: { cron: '' },
+    webhook: { text_path: '', user_id_path: '', username_path: '', session_id_path: '', thread_id_path: '', include_raw: false },
     system_prompt: '',
     llm: { provider: 'ollama', model: '', temperature: 0.7, max_tokens: 512 },
     memory: { read_scopes: ['session'], write_scopes: ['session'], max_tokens: 20 },
+    learning: { enabled: false, min_chars: 160, max_proposals: 3 },
     tools: [], skills: [], knowledge: [], agents: [], max_turns: 5, stream_reply: false, enabled: true,
   })
 
@@ -321,6 +402,13 @@
   function syncKnowledge(v) { if (editing) editing.knowledge = csvToArr(v) }
   function syncAgents(v)    { if (editing) editing.agents    = csvToArr(v) }
 
+  function setWebhookField(key, value) {
+    if (!editing) return
+    editing.webhook = editing.webhook || {}
+    editing.webhook[key] = value
+    editing = editing
+  }
+
   // ensurePersona writes a single field into one of the three persona
   // blocks (identity / personality / non_negotiables) while keeping any
   // other fields the operator already typed. We lazily allocate the
@@ -396,6 +484,7 @@
     editing.llm      = editing.llm      || { provider: 'ollama', model: '', temperature: 0.7, max_tokens: 512 }
     editing.memory   = editing.memory   || { read_scopes: ['session'], write_scopes: ['session'], max_tokens: 20 }
     editing.schedule = editing.schedule || { cron: '' }
+    editing.webhook  = editing.webhook  || { text_path: '', user_id_path: '', username_path: '', session_id_path: '', thread_id_path: '', include_raw: false }
     editing.tools    = editing.tools    || []
     editing.skills    = editing.skills    || []
     editing.knowledge = editing.knowledge || []
@@ -403,6 +492,7 @@
     editing.channels  = editing.channels  || []
     saveMsg = ''
     validationReport = null
+    showHistory = false
   }
 
   function newAgent() {
@@ -410,6 +500,7 @@
     editing  = BLANK()
     saveMsg  = ''
     validationReport = null
+    showHistory = false
   }
 
   async function validateEditing() {
@@ -745,6 +836,9 @@ console.log(reply);` : ''
                 <button class="btn-secondary" on:click={openYaml} title="View and edit the raw SOUL.yaml">
                   View YAML
                 </button>
+                <button class="btn-secondary" on:click={openHistory} title="View saved versions and restore a prior SOUL.yaml">
+                  History
+                </button>
               {/if}
               <button class="btn-secondary" on:click={validateEditing} disabled={validating}>
                 {validating ? 'Checking…' : 'Validate'}
@@ -836,6 +930,60 @@ console.log(reply);` : ''
                 <span class="field-label">Cron expression</span>
                 <input bind:value={editing.schedule.cron}
                        placeholder="0 9 * * *  (9 AM every day)" />
+              </div>
+            {/if}
+
+            {#if editing.trigger === 'webhook'}
+              <div class="sep">Webhook request mapping</div>
+              <div class="webhook-card">
+                <div class="webhook-endpoint">
+                  <span class="webhook-method">POST</span>
+                  <code>/api/v1/webhooks/{editing.id || '<agent-id>'}</code>
+                </div>
+                <div class="webhook-grid">
+                  <div class="field">
+                    <span class="field-label">Text path</span>
+                    <input
+                      value={editing.webhook?.text_path || ''}
+                      on:input={(e) => setWebhookField('text_path', e.target.value)}
+                      placeholder="message.text" />
+                  </div>
+                  <div class="field">
+                    <span class="field-label">User ID path</span>
+                    <input
+                      value={editing.webhook?.user_id_path || ''}
+                      on:input={(e) => setWebhookField('user_id_path', e.target.value)}
+                      placeholder="sender.id" />
+                  </div>
+                  <div class="field">
+                    <span class="field-label">Username path</span>
+                    <input
+                      value={editing.webhook?.username_path || ''}
+                      on:input={(e) => setWebhookField('username_path', e.target.value)}
+                      placeholder="sender.name" />
+                  </div>
+                  <div class="field">
+                    <span class="field-label">Thread ID path</span>
+                    <input
+                      value={editing.webhook?.thread_id_path || ''}
+                      on:input={(e) => setWebhookField('thread_id_path', e.target.value)}
+                      placeholder="conversation.id" />
+                  </div>
+                  <div class="field">
+                    <span class="field-label">Session ID path</span>
+                    <input
+                      value={editing.webhook?.session_id_path || ''}
+                      on:input={(e) => setWebhookField('session_id_path', e.target.value)}
+                      placeholder="session.id" />
+                  </div>
+                  <label class="webhook-check">
+                    <input
+                      type="checkbox"
+                      checked={!!editing.webhook?.include_raw}
+                      on:change={(e) => setWebhookField('include_raw', e.target.checked)} />
+                    <span>Attach raw payload metadata</span>
+                  </label>
+                </div>
               </div>
             {/if}
 
@@ -1224,6 +1372,50 @@ console.log(reply);` : ''
                   {/if}
                 </div>
               {/each}
+            </div>
+
+            <div class="sep">Learning loop <span class="optional">(reviewable post-run proposals)</span></div>
+            <div class="learning-card {editing.learning?.enabled ? 'enabled' : ''}">
+              <div class="bm-header">
+                <span class="bm-icon">✨</span>
+                <span class="bm-label">Create learning proposals after successful runs</span>
+                <label class="toggle-sm">
+                  <input type="checkbox" checked={!!editing.learning?.enabled}
+                    on:change={e => {
+                      editing.learning = editing.learning || {}
+                      editing.learning.enabled = e.target.checked
+                      if (!editing.learning.min_chars) editing.learning.min_chars = 160
+                      if (!editing.learning.max_proposals) editing.learning.max_proposals = 3
+                      editing = editing
+                    }} />
+                  <span class="toggle-track-sm"></span>
+                </label>
+              </div>
+              <div class="bm-desc">Soulacy stores proposed memories and procedures for human review in Brain Memory → Learning before applying them.</div>
+              {#if editing.learning?.enabled}
+                <div class="learning-fields">
+                  <div class="field">
+                    <span class="field-label">Minimum run text</span>
+                    <input type="number" min="80" max="5000"
+                      value={editing.learning?.min_chars || 160}
+                      on:input={e => {
+                        editing.learning = editing.learning || {}
+                        editing.learning.min_chars = Number(e.target.value)||160
+                        editing = editing
+                      }} />
+                  </div>
+                  <div class="field">
+                    <span class="field-label">Max proposals per run</span>
+                    <input type="number" min="1" max="4"
+                      value={editing.learning?.max_proposals || 3}
+                      on:input={e => {
+                        editing.learning = editing.learning || {}
+                        editing.learning.max_proposals = Number(e.target.value)||3
+                        editing = editing
+                      }} />
+                  </div>
+                </div>
+              {/if}
             </div>
 
             {#if editing.trigger === 'channel'}
@@ -1630,6 +1822,65 @@ console.log(reply);` : ''
   </div>
 {/if}
 
+{#if showHistory}
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close agent history"
+    on:click|self={closeHistory}
+    on:keydown={(e) => e.key === 'Escape' && closeHistory()}
+  >
+    <div class="modal wide">
+      <h2>Version History — {selected ? selected.id : ''}</h2>
+      <div class="modal-sub">
+        Snapshots are captured automatically before updates, YAML saves, enable/disable changes, deletes, and rollbacks.
+      </div>
+
+      {#if historyError}
+        <div class="banner err">⚠ {historyError}</div>
+      {/if}
+      {#if historyMsg}
+        <div class="banner ok-banner">{historyMsg}</div>
+      {/if}
+
+      {#if historyLoading}
+        <div class="tpl-empty">Loading…</div>
+      {:else if historyVersions.length === 0}
+        <div class="tpl-empty">No saved versions yet. Make and save a change to create the first snapshot.</div>
+      {:else}
+        <div class="history-grid">
+          <div class="history-list">
+            {#each historyVersions as version}
+              <button
+                class="history-item"
+                class:on={historySelected?.id === version.id}
+                on:click={() => selectVersion(version)}
+              >
+                <span>{formatVersionTime(version.created_at)}</span>
+                <small>{version.bytes || 0} bytes</small>
+              </button>
+            {/each}
+          </div>
+          <textarea
+            class="yaml-area history-yaml"
+            spellcheck="false"
+            readonly
+            value={historyYaml}
+          ></textarea>
+        </div>
+      {/if}
+
+      <div class="modal-row" style="display:flex;justify-content:flex-end;gap:.5rem;">
+        <button class="btn-secondary" on:click={closeHistory} disabled={historySaving}>Close</button>
+        <button class="btn-primary" on:click={rollbackVersion} disabled={historySaving || !historySelected}>
+          {historySaving ? 'Restoring…' : 'Restore Selected'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 <style>
   .page        { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; height: 100%; }
   .page-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
@@ -1647,6 +1898,22 @@ console.log(reply);` : ''
     border: 1px solid #1a1e36; border-radius: 8px; padding: .75rem .85rem;
     white-space: pre; overflow: auto;
   }
+  .history-grid {
+    display: grid; grid-template-columns: minmax(220px, 280px) 1fr;
+    gap: .75rem; min-height: 420px;
+  }
+  .history-list {
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px;
+    padding: .45rem; display: flex; flex-direction: column; gap: .35rem; overflow-y: auto;
+  }
+  .history-item {
+    width: 100%; text-align: left; border: 1px solid transparent; border-radius: 6px;
+    background: transparent; color: #c8cadf; padding: .55rem .6rem;
+    display: flex; flex-direction: column; gap: .2rem;
+  }
+  .history-item:hover, .history-item.on { border-color: #6c63ff; background: rgba(108,99,255,.12); }
+  .history-item small { color: #6b7294; font-size: .7rem; }
+  .history-yaml { min-height: 420px; resize: none; }
 
   .split    { display: flex; gap: 1rem; flex: 1; min-height: 0; }
 
@@ -1659,6 +1926,7 @@ console.log(reply);` : ''
   @media (max-width: 640px) {
     .row-2, .row-3 { grid-template-columns: 1fr; }
     .param-grid    { grid-template-columns: 1fr; }
+    .history-grid  { grid-template-columns: 1fr; }
   }
 
   /* List */
@@ -1965,6 +2233,59 @@ console.log(reply);` : ''
   .bm-num { width: 64px; padding: .25rem .4rem; font-size: .8rem; }
   .bm-check { display: flex; align-items: center; gap: .4rem; font-size: .73rem; color: #9da3c0; cursor: pointer; }
   .bm-check input { cursor: pointer; }
+  .learning-card {
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 9px;
+    padding: .75rem .9rem; display: flex; flex-direction: column; gap: .45rem;
+  }
+  .learning-card.enabled { border-color: #4caf8244; background: rgba(76,175,130,.04); }
+  .learning-fields { display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr)); gap: .6rem; margin-top: .2rem; }
+  .webhook-card {
+    background: #0e1020;
+    border: 1px solid #1a1e36;
+    border-radius: 8px;
+    padding: .8rem .9rem;
+    display: flex;
+    flex-direction: column;
+    gap: .7rem;
+  }
+  .webhook-endpoint {
+    display: flex;
+    align-items: center;
+    gap: .5rem;
+    min-width: 0;
+    color: #aeb4d5;
+    font-size: .78rem;
+  }
+  .webhook-endpoint code {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #d7dbff;
+  }
+  .webhook-method {
+    flex: 0 0 auto;
+    border: 1px solid #4caf8244;
+    background: rgba(76,175,130,.08);
+    color: #8ee0b6;
+    border-radius: 5px;
+    padding: .14rem .34rem;
+    font-size: .68rem;
+    font-weight: 700;
+  }
+  .webhook-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(160px, 1fr));
+    gap: .65rem;
+  }
+  .webhook-check {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    color: #aeb4d5;
+    font-size: .78rem;
+    min-height: 36px;
+  }
+  .webhook-check input { cursor: pointer; }
 
   /* ── Small toggle ── */
   .toggle-sm { position: relative; display: inline-flex; align-items: center; cursor: pointer; }

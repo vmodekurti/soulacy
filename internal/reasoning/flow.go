@@ -84,6 +84,9 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 			if n.Code == "" && n.Tool == "" {
 				return nil, fmt.Errorf("flow: node %q is kind=python but has neither inline code nor a tool", n.ID)
 			}
+		case sdkr.FlowNodeLLM:
+			// LLM transform nodes use Input plus params.system/params.response_format
+			// at runtime; no extra required field beyond the node itself.
 		case sdkr.FlowNodeBranch, sdkr.FlowNodeTrigger, sdkr.FlowNodeExit:
 			// Structural endpoint/routing nodes: no action, nothing to validate.
 		default:

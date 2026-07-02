@@ -11,7 +11,7 @@
   // thin client that calls the gateway directly through the GUI's
   // authenticated `api` session (studioApi.js keeps the same `bridge` shape).
   import { bridge } from '../lib/studio/studioApi.js'
-  import { editAgent, studioSession } from '../lib/stores.js'
+  import { editAgent, studioDebugRun, studioSession } from '../lib/stores.js'
   import { toFlow, kindMeta } from '../lib/studio/graph.js'
   import { validateConnection } from '../lib/studio/portcompat.js'
   import { computeRunState } from '../lib/studio/runstate.js'
@@ -24,6 +24,12 @@
   import TriggerNode from '../lib/studio/nodes/TriggerNode.svelte'
   import OutputNode from '../lib/studio/nodes/OutputNode.svelte'
   import LiveEdge from '../lib/studio/LiveEdge.svelte'
+  import { pythonCodeFor, pythonLabelFor } from '../lib/studio/pythonTemplates.js'
+  import { autoConnectEdge, wouldCreateCycle } from '../lib/studio/autoconnect.js'
+  import { explainPythonError } from '../lib/studio/pyerror.js'
+  import { stepResultsByNode } from '../lib/studio/testresults.js'
+  import { migrateEndpoints } from '../lib/studio/planlanes.js'
+  import PlanView from '../lib/studio/PlanView.svelte'
   import '../lib/studio/studio.css'
 
   // (Removed) The old iframe build scrubbed the plugin token from the URL
@@ -44,6 +50,7 @@
   let paletteStatus = 'Loading capabilities…'
   let paletteStatusKind = ''
   let paletteError = ''
+  let lastGoodCatalog = null
 
   // Map each connected MCP tool's full name → its published param hint
   // ("title*:string, …"), so the Inspector can show a tool node's allowed
@@ -58,14 +65,52 @@
 
   async function loadCatalog() {
     paletteStatus = 'Loading capabilities…'
+    paletteStatusKind = ''
     try {
-      catalog = await bridge.catalog()
-      paletteStatus = 'Capabilities loaded.'
-      paletteStatusKind = 'ok'
+      const next = await bridge.catalog()
+      const failedParts = Object.entries(next || {})
+        .filter(([, v]) => v && v.error)
+        .map(([k]) => k)
+
+      const hasAnyCatalogData =
+        (next?.agents?.agents || []).length > 0 ||
+        (next?.tools?.builtins || []).length > 0 ||
+        (next?.tools?.python_tools || []).length > 0 ||
+        (next?.tools?.mcp_tools || []).length > 0 ||
+        Object.keys(next?.providers?.providers || {}).length > 0 ||
+        (next?.channels?.channels || []).length > 0 ||
+        (next?.skills?.skills || []).length > 0 ||
+        ((next?.mcp?.servers || next?.mcp || [])).length > 0
+
+      if (!hasAnyCatalogData && lastGoodCatalog) {
+        catalog = lastGoodCatalog
+        paletteStatus = 'Using cached capabilities while Studio refreshes.'
+        paletteStatusKind = 'warn'
+        paletteError = ''
+        return
+      }
+
+      catalog = next
+      if (hasAnyCatalogData) lastGoodCatalog = next
+      paletteError = ''
+      if (failedParts.length > 0) {
+        paletteStatus = 'Capabilities loaded with limited data: ' + failedParts.join(', ')
+        paletteStatusKind = 'warn'
+      } else {
+        paletteStatus = 'Capabilities loaded.'
+        paletteStatusKind = 'ok'
+      }
     } catch (e) {
-      paletteError = 'Unavailable'
-      paletteStatus = 'Could not load capabilities: ' + (e.message || 'error')
-      paletteStatusKind = 'error'
+      if (lastGoodCatalog) {
+        catalog = lastGoodCatalog
+        paletteError = ''
+        paletteStatus = 'Using cached capabilities while Studio reconnects.'
+        paletteStatusKind = 'warn'
+      } else {
+        paletteError = 'Unavailable'
+        paletteStatus = 'Could not load capabilities: ' + (e.message || 'error')
+        paletteStatusKind = 'error'
+      }
     }
   }
 
@@ -378,6 +423,9 @@ def run(inputs):
     # TODO: your logic here
     return inputs
 `
+  const LLM_EXTRACT_SYSTEM = `Extract the user's intent into a compact JSON object.
+Return only JSON. Do not include markdown.
+Use null for fields that are not present.`
 
   function emptyWorkflow() {
     return {
@@ -517,7 +565,7 @@ def run(inputs):
       return
     }
 
-    // Agent / tool / python / skill -> a new flow node at the drop point.
+    // Agent / tool / python / llm / skill -> a new flow node at the drop point.
     // A skill becomes a `read_skill` tool node pre-pointed at the skill name
     // (read_skill takes a skill_name argument), so it's runnable immediately.
     const isSkill = drag.kind === 'skill'
@@ -528,12 +576,24 @@ def run(inputs):
       ...(drag.kind === 'tool' ? { tool: drag.name } : {}),
       ...(isSkill ? { tool: 'read_skill', description: 'Read skill: ' + drag.name } : {}),
       ...(drag.kind === 'agent' ? { agent: drag.name } : {}),
-      ...(drag.kind === 'python' ? { code: PYTHON_STARTER } : {}),
-      input: isSkill ? JSON.stringify({ skill_name: drag.name }) : '',
-      output: '',
+      // Python: seed from a named template when the palette supplied one
+      // (Guided Studio Builder), else the blank starter. The template's plain-
+      // English label becomes the node description so it reads as domain work.
+      ...(drag.kind === 'python'
+        ? (drag.template
+            ? { code: pythonCodeFor(drag.template), description: pythonLabelFor(drag.template) }
+            : { code: PYTHON_STARTER })
+        : {}),
+      ...(drag.kind === 'llm'
+        ? {
+            description: 'Extract structured intent',
+          }
+        : {}),
+      input: drag.kind === 'llm' ? '{{ .trigger.text }}' : (isSkill ? JSON.stringify({ skill_name: drag.name }) : ''),
+      output: drag.kind === 'llm' ? 'extracted' : '',
       inputs: [],
       outputs: [],
-      params: {},
+      params: drag.kind === 'llm' ? { system: LLM_EXTRACT_SYSTEM, response_format: 'json' } : {},
       x: Math.round(at.x),
       y: Math.round(at.y),
     }
@@ -543,7 +603,15 @@ def run(inputs):
     } else {
       const flow = workflow.flow || { nodes: [], edges: [], entry: '' }
       const baked = bakePositions(flow.nodes)
-      workflow = { ...workflow, flow: { ...flow, nodes: [...baked, node], entry: flow.entry || id } }
+      // Smart connection (Story 7): auto-wire the new step to the most recent
+      // upstream step, unless that would create a cycle. Keeps a freshly-dropped
+      // step from stranding under "Needs attention".
+      const priorEdges = flow.edges || []
+      const auto = autoConnectEdge(baked, node, priorEdges)
+      const edges = (auto && !wouldCreateCycle(priorEdges, auto.from, auto.to))
+        ? [...priorEdges, auto]
+        : priorEdges
+      workflow = { ...workflow, flow: { ...flow, nodes: [...baked, node], edges, entry: flow.entry || id } }
     }
     selectedNode = node     // select the new node for immediate editing
     selectedEdge = null
@@ -986,6 +1054,7 @@ def run(inputs):
 
   // Friendly label for the compiler's recommended execution mode.
   function recoLabel(mode) {
+    if (mode === 'auto') return 'Auto tool agent'
     if (mode === 'react') return 'ReAct (reasoning loop)'
     if (mode === 'plan_execute') return 'Plan-Execute'
     if (mode === 'workflow') return 'Workflow (fixed flow)'
@@ -1049,6 +1118,10 @@ def run(inputs):
     rebuildGraph()
     scheduleValidate()        // validate the fresh draft (debounced)
     autosaveDraft()           // persist the just-generated work so it's recoverable from Drafts
+    // Guided default (Guided Studio Builder): land a freshly generated
+    // deterministic workflow in the simple Plan view so the user reviews the
+    // lanes + plain-English plan first. Agents keep their spec view.
+    if (workflow && !workflow.strategy) viewMode = 'plan'
   }
 
   // ── M6: set the current draft directly (templates / draft-load / import) ───
@@ -1059,7 +1132,9 @@ def run(inputs):
     // Clear prior-draft state first; callers that re-establish identity (e.g.
     // openAgentOnCanvas setting loadedAgentId) do so AFTER this returns.
     resetTransientDraftState()
-    workflow = wf || null
+    // Migrate legacy draggable entry/exit NODES into trigger/delivery settings
+    // so old flows adopt the lane model (Guided Studio Builder, Story 2).
+    workflow = wf ? migrateEndpoints(wf) : null
     if (workflow && name && !workflow.name) workflow = { ...workflow, name }
     // Restore the generating prompt into the intent box so the user can see and
     // edit the original instruction, then Generate to re-create the workflow.
@@ -1386,6 +1461,56 @@ def run(inputs):
     viewMode = 'canvas'
   }
 
+  // Simple "Plan" view (Guided Studio Builder): lanes + readiness cards. Reads
+  // the same `workflow` model, so switching preserves edits. Clicking a card
+  // jumps to the canvas + Inspector for that block.
+  function showPlanView() {
+    if (!workflow) return
+    viewMode = 'plan'
+  }
+  function planSelectNode(node) {
+    selectedNode = node
+    selectedEdge = null
+    viewMode = 'canvas'
+  }
+
+  // Patch a single node's config from the Plan view's Configuration Card
+  // (Story 9). Replaces the node in flow.nodes and re-validates.
+  function updateNodeConfig(updated) {
+    if (!workflow || !updated || !updated.id) return
+    const flow = workflow.flow || { nodes: [], edges: [], entry: '' }
+    const nodes = (flow.nodes || []).map((n) => (n.id === updated.id ? updated : n))
+    workflow = { ...workflow, flow: { ...flow, nodes } }
+    if (selectedNode && selectedNode.id === updated.id) selectedNode = updated
+    rebuildGraph()
+    scheduleValidate()
+  }
+
+  // Insert a suggested Python step (Stories 3 & 4) right after the node it was
+  // suggested for, pre-seeded from the matching template and auto-connected.
+  function addSuggestedPython(s) {
+    if (!workflow || !s) return
+    const flow = workflow.flow || { nodes: [], edges: [], entry: '' }
+    const baked = bakePositions(flow.nodes)
+    const anchor = baked.find((n) => n.id === s.nodeId)
+    const id = uniqueNodeId('python')
+    const node = {
+      id, kind: 'python',
+      code: pythonCodeFor(s.template), description: s.label,
+      input: '', output: '', inputs: [], outputs: [], params: {},
+      x: Math.round((anchor?.x || 0) + 220), y: Math.round(anchor?.y || 0),
+    }
+    // rewire anchor → python → (whatever anchor pointed at)
+    let edges = flow.edges || []
+    const downstream = edges.filter((e) => e && e.from === s.nodeId)
+    edges = edges.filter((e) => !(e && e.from === s.nodeId))
+    edges = [...edges, { from: s.nodeId, to: id }, ...downstream.map((e) => ({ ...e, from: id }))]
+    workflow = { ...workflow, flow: { ...flow, nodes: [...baked, node], edges } }
+    selectedNode = node
+    rebuildGraph()
+    scheduleValidate()
+  }
+
   // Full validation of the edited YAML: syntax + definition + graph + runtime
   // (missing capabilities, unfilled args, template-reference bugs, …).
   async function validateCode() {
@@ -1672,12 +1797,25 @@ def run(inputs):
   // draft so it won't recur, then applies + re-validates. Works for both the
   // test-bench error and a pasted runtime error.
   let troubleshooting = false
-  async function troubleshoot(errText) {
+  function liveRunEvidence(result = tryResult) {
+    const rows = []
+    for (const t of (result && result.trace) || []) {
+      const bits = [`step/tool: ${t.name || t.nodeId || '(unknown)'}`]
+      if (t.detail) bits.push(`detail: ${t.detail}`)
+      if (t.args) bits.push(`args: ${t.args}`)
+      if (t.result) bits.push(`result: ${t.result}`)
+      if (t.error) bits.push('status: error')
+      rows.push('- ' + bits.join(' | '))
+    }
+    return rows.join('\n')
+  }
+
+  async function troubleshoot(errText, opts = {}) {
     const err = (errText || testError || '').trim()
     if (!workflow || !err || troubleshooting) return
     troubleshooting = true
     try {
-      const res = await bridge.troubleshoot(workflow, err)
+      const res = await bridge.troubleshoot(workflow, err, opts)
       if (res && res.workflow) {
         setWorkflow(res.workflow, { name: workflow.name })
         toast(res.changed ? 'Applied an AI fix for that error — re-test to confirm.' : 'AI could not find an automatic fix for that error.')
@@ -1690,6 +1828,14 @@ def run(inputs):
     } finally {
       troubleshooting = false
     }
+  }
+
+  function troubleshootLiveRun() {
+    if (!tryResult || !tryResult.error) return
+    troubleshoot(tryResult.error, {
+      input: sampleInput,
+      evidence: liveRunEvidence(tryResult),
+    })
   }
 
   // Re-send a history entry's EXACT request (workflow snapshot + input + mocks
@@ -1908,6 +2054,26 @@ def run(inputs):
       }
     } catch (e) {
       saveError = e.message || 'diagnose failed'
+    } finally {
+      healing = ''
+    }
+  }
+
+  async function healActivityRun(agentId, sessionId) {
+    if (healing || !agentId || !sessionId) return
+    healing = `session:${agentId}:${sessionId}`
+    healResult = null
+    saveError = ''
+    try {
+      const res = await bridge.diagnoseSession(agentId, sessionId)
+      healResult = res
+      loadedAgentId = agentId
+      if (res && res.workflow) {
+        setWorkflow(res.workflow, { name: (res.workflow && res.workflow.name) || (workflow && workflow.name) })
+        toast(res.changed ? 'Debugged real run — review the fix and Save to apply it.' : 'No fix was suggested for this run.')
+      }
+    } catch (e) {
+      saveError = e.message || 'debug failed'
     } finally {
       healing = ''
     }
@@ -2593,6 +2759,24 @@ def run(inputs):
   }
   onMount(hydrateSession)
 
+  onMount(() => {
+    const pending = get(studioDebugRun)
+    if (!pending || !pending.agentId || !pending.sessionId) return
+    studioDebugRun.set(null)
+    loadedAgentId = pending.agentId
+    showTests = true
+    showFailedRuns = true
+    healResult = {
+      agentId: pending.agentId,
+      sessionId: pending.sessionId,
+      error: pending.error || '',
+      changed: false,
+      pending: true,
+    }
+    toast(`Debugging ${pending.agentId} from Activity…`)
+    healActivityRun(pending.agentId, pending.sessionId)
+  })
+
   onDestroy(() => {
     studioSession.set({
       intent,
@@ -2691,8 +2875,14 @@ def run(inputs):
       {#if workflow}
         <div class="toolbar-row">
           <div class="view-switch" role="tablist" aria-label="Editor view">
+            {#if currentMode === 'workflow'}
+              <button class="vs-btn" class:active={viewMode === 'plan'} type="button"
+                      role="tab" aria-selected={viewMode === 'plan'} on:click={showPlanView}
+                      title="Simple plan view — Trigger, Work Plan, Delivery lanes">📋 Plan</button>
+            {/if}
             <button class="vs-btn" class:active={viewMode === 'canvas'} type="button"
-                    role="tab" aria-selected={viewMode === 'canvas'} on:click={showCanvasView}>{currentMode === 'workflow' ? '⬚ Canvas' : '🧠 Agent'}</button>
+                    role="tab" aria-selected={viewMode === 'canvas'} on:click={showCanvasView}
+                    title="Advanced view — the full graph you can edit node by node">{currentMode === 'workflow' ? '⬚ Canvas' : '🧠 Agent'}</button>
             <button class="vs-btn" class:active={viewMode === 'code'} type="button"
                     role="tab" aria-selected={viewMode === 'code'} on:click={showCodeView}>{'</> SOUL.yaml'}</button>
             {#if viewMode === 'code' && codeYaml !== codeOrig}<span class="vs-dirty" title="Unsaved YAML edits">●</span>{/if}
@@ -2976,6 +3166,13 @@ def run(inputs):
             {/if}
           {/if}
         </div>
+      {:else if viewMode === 'plan'}
+        <div class="intent-guide">
+          <span class="intent-pill">Intent first</span>
+          <strong>Review the plan before editing nodes.</strong>
+          <span>Confirm when it runs, what work it performs, and where output goes; use Canvas only for advanced rewiring.</span>
+        </div>
+        <PlanView {workflow} onSelectNode={planSelectNode} onSave={() => save()} onAddPython={addSuggestedPython} onUpdateNode={updateNodeConfig} testByNode={stepResultsByNode(testResult)} {saving} />
       {:else}
       <div
         class="canvas"
@@ -3223,7 +3420,27 @@ def run(inputs):
             {/if}
             {#if tryResult}
               <div class="agent-try-result" class:err={!!tryResult.error}>
-                {#if tryResult.error}<div class="agent-try-err">⚠ {tryResult.error}</div>{/if}
+                {#if tryResult.error}
+                  <div class="agent-try-err">⚠ {tryResult.error}</div>
+                  <!-- Plain-English explanation + suggested fix (Story 6). -->
+                  {@const ex = explainPythonError(tryResult.error)}
+                  <div class="py-explain">
+                    <div class="py-explain-what">{ex.summary}</div>
+                    <div class="py-explain-fix">💡 {ex.fix}</div>
+                  </div>
+                  <div class="try-fix-row">
+                    <button
+                      class="btn btn-sm cv-fixbtn cv-aibtn"
+                      type="button"
+                      on:click={troubleshootLiveRun}
+                      disabled={troubleshooting || !workflow}
+                      title="Ask Studio to repair the workflow using this live error and the steps it observed"
+                    >
+                      {troubleshooting ? 'Fixing…' : '✨ Self-correct workflow'}
+                    </button>
+                    <span class="try-fix-hint">Uses this run error and trace, then reloads a repaired draft.</span>
+                  </div>
+                {/if}
                 {#if tryResult.reply}<div class="agent-try-reply">{tryResult.reply}</div>{/if}
                 {#if !tryResult.reply && !tryResult.error}<div class="agent-try-reply muted">(no text result)</div>{/if}
               </div>
@@ -3363,12 +3580,29 @@ def run(inputs):
               {#if healResult}
                 <div class="strip {healResult.changed ? 'strip-ok' : 'strip-warn'}">
                   {#if healResult.changed}
-                    ✓ Healed “{healResult.agentName}”. The repaired draft is loaded above — review it and Save to apply.
-                    {#if healResult.report && healResult.report.verified} The fix was verified by re-running it.{/if}
+                    <span>
+                      ✓ Healed “{healResult.agentName || healResult.agentId}”. The repaired draft is loaded above — review it and Save to apply.
+                      {#if healResult.report && healResult.report.verified} The fix was verified by re-running it.{/if}
+                    </span>
                   {:else}
-                    No automatic fix found for: {healResult.error}
+                    <span>No automatic fix found for: {healResult.error}</span>
                   {/if}
                 </div>
+                {#if healResult.sessionId || healResult.evidence}
+                  <div class="debug-evidence">
+                    <div class="debug-evidence-head">
+                      <span class="failed-agent">{healResult.agentName || healResult.agentId}</span>
+                      {#if healResult.sessionId}<code>{healResult.sessionId}</code>{/if}
+                    </div>
+                    {#if healResult.error}<div class="debug-evidence-error">{healResult.error}</div>{/if}
+                    {#if healResult.evidence}
+                      <details>
+                        <summary>Action-log evidence used by Studio</summary>
+                        <pre>{healResult.evidence}</pre>
+                      </details>
+                    {/if}
+                  </div>
+                {/if}
               {/if}
             {/if}
           </div>
@@ -4117,7 +4351,7 @@ def run(inputs):
         <div class="modal-actions">
           <button class="btn" on:click={cancelRefinement} disabled={compiling}>Cancel</button>
           <button class="btn primary" on:click={confirmRefinement} disabled={compiling || !((refinement.refined_intent || '').trim())}>
-            {compiling ? 'Generating…' : (refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoLabel(refinement.recommended_mode)} agent` : 'Generate workflow'}
+            {compiling ? 'Generating…' : (refinement.recommended_mode === 'auto' || refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoLabel(refinement.recommended_mode)} agent` : 'Generate workflow'}
           </button>
         </div>
       </div>
@@ -4620,6 +4854,48 @@ def run(inputs):
   }
   .agent-route-hint { font-size: 12.5px; color: var(--text-muted); }
   .failed-list { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .debug-evidence {
+    margin-top: 8px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: rgba(255,255,255,0.03);
+    color: var(--text);
+    font-size: 12px;
+  }
+  .debug-evidence-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .debug-evidence-head code {
+    color: var(--text-muted);
+    font-size: 11px;
+    word-break: break-all;
+  }
+  .debug-evidence-error {
+    color: var(--error);
+    margin-bottom: 8px;
+    line-height: 1.45;
+  }
+  .debug-evidence summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+  .debug-evidence pre {
+    margin: 8px 0 0;
+    padding: 10px;
+    max-height: 220px;
+    overflow: auto;
+    border-radius: 6px;
+    background: #080a15;
+    color: #cbd0ea;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
   .failed-item {
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
     display: flex; flex-direction: column; gap: 4px; background: var(--bg);
@@ -5415,6 +5691,15 @@ def run(inputs):
   }
   .agent-try-result.err { border-color: var(--error); }
   .agent-try-err { color: var(--error); margin-bottom: 6px; }
+  .py-explain { margin: 4px 0 8px; padding: 8px 10px; border-radius: 8px; background: var(--bg-elev-2); border-left: 3px solid var(--warn, #f5a524); }
+  .py-explain-what { font-size: 12px; color: var(--text); }
+  .py-explain-fix { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+  .try-fix-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-top: 8px;
+  }
+  .try-fix-row .cv-fixbtn:first-of-type { margin-left: 0; }
+  .try-fix-hint { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
   .agent-try-reply.muted { color: var(--text-muted); }
   .agent-try-trace { margin-top: 10px; }
   .att-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
@@ -5496,6 +5781,29 @@ def run(inputs):
   .unattended-toggle input { margin: 0; }
   .explain-actions { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .explain-hint { font-size: 12px; color: var(--text-muted); }
+  .intent-guide {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border, #262e44);
+    background: rgba(108, 99, 255, .08);
+    color: var(--text, #e6e9f2);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  .intent-guide span:last-child { color: var(--text-muted, #8b93ab); }
+  .intent-pill {
+    background: rgba(108, 99, 255, .18);
+    border: 1px solid rgba(108, 99, 255, .34);
+    border-radius: 999px;
+    color: var(--accent, #8b85ff);
+    padding: 2px 8px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    font-size: 10px;
+    font-weight: 700;
+  }
 
   /* ── Edge styling (M3) ──────────────────────────────────────────────────
      xyflow renders edges in its own DOM, so we reach them with :global().

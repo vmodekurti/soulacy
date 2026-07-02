@@ -254,6 +254,20 @@
   }
   function promptWait() { runPrompt = null }
 
+  async function testOutput(a) {
+    if (!a?.id || busy[a.id]) return
+    setBusy(a.id, true)
+    error = ''; notice = ''
+    try {
+      const res = await api.agents.testScheduleOutput(a.id)
+      notice = `Sent scheduled-output test for "${a.id}" via ${res.channel}.`
+    } catch (e) {
+      error = e.message
+    } finally {
+      setBusy(a.id, false)
+    }
+  }
+
   // --- clone / delete / edit ---
   async function clone(agentId) {
     setBusy(agentId, true); error = ''; notice = ''
@@ -428,7 +442,7 @@
       <span class="pill">{cronAgents.length}</span>
     </div>
     {#if cronAgents.length === 0}
-      <div class="empty">No agents with <code>trigger: cron</code>. Create one in the Build tab or add a SOUL.yaml.</div>
+      <div class="empty">No agents with <code>trigger: cron</code>. Create one in Studio or add a SOUL.yaml.</div>
     {:else}
       <table class="tbl">
         <thead>
@@ -475,6 +489,9 @@
                   {/if}
                   <button class="btn-secondary xs" on:click={() => openHistory(a)} title="Run history">📋 History</button>
                   <button class="btn-secondary xs" on:click={() => watchAgent(a.id)} title="Watch action log">👁 Watch</button>
+                  {#if out}
+                    <button class="btn-secondary xs" on:click={() => testOutput(a)} disabled={busy[a.id]} title="Send a test message to the configured output destination">Test output</button>
+                  {/if}
                   <button class="btn-secondary xs" on:click={() => openEdit(a)} disabled={busy[a.id]}>Edit</button>
                   <button class="btn-secondary xs" on:click={() => clone(a.id)} disabled={busy[a.id]}>Clone</button>
                   <button class="btn-danger xs" on:click={() => remove(a.id)} disabled={busy[a.id] || st.running}>Delete</button>

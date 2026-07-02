@@ -8,6 +8,7 @@ package gateway
 
 import (
 	"context"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -24,7 +25,8 @@ import (
 // artifactTools maps tool names that produce files to the argument carrying
 // the output path. Grow this map as new file-producing builtins land.
 var artifactTools = map[string]string{
-	"write_file": "path",
+	"write_file":    "path",
+	"download_file": "dest_path",
 }
 
 // artifactCandidate is one detected (path, tool) pair before stat/persist.
@@ -204,4 +206,97 @@ func (s *Server) handleWorkboardArtifactDownload(c *fiber.Ctx) error {
 	}
 	c.Set(fiber.HeaderContentDisposition, `attachment; filename="`+filepath.Base(a.Path)+`"`)
 	return c.SendFile(a.Path)
+}
+
+type chatArtifact struct {
+	Path        string    `json:"path"`
+	Name        string    `json:"name"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Tool        string    `json:"tool"`
+	CreatedAt   time.Time `json:"created_at"`
+	DownloadURL string    `json:"download_url"`
+}
+
+func (s *Server) listChatArtifacts(agentID, sessionID string) ([]chatArtifact, error) {
+	if s.actions == nil {
+		return nil, errChatArtifactsUnavailable
+	}
+	events, err := s.actions.Tail(agentID, 2000)
+	if err != nil {
+		return nil, err
+	}
+	out := []chatArtifact{}
+	for _, cand := range detectArtifactPaths(events, sessionID) {
+		st, err := os.Stat(cand.Path)
+		if err != nil || st.IsDir() {
+			continue
+		}
+		out = append(out, chatArtifact{
+			Path:      cand.Path,
+			Name:      filepath.Base(cand.Path),
+			SizeBytes: st.Size(),
+			Tool:      cand.Tool,
+			CreatedAt: st.ModTime().UTC(),
+			DownloadURL: "/api/v1/chat/artifacts/download?agent_id=" + url.QueryEscape(agentID) +
+				"&session_id=" + url.QueryEscape(sessionID) +
+				"&path=" + url.QueryEscape(cand.Path),
+		})
+	}
+	return out, nil
+}
+
+var errChatArtifactsUnavailable = fiber.NewError(fiber.StatusServiceUnavailable, "action log is not configured")
+
+// handleChatArtifacts lists files produced during a chat session.
+//
+//	GET /api/v1/chat/artifacts?agent_id=<agent>&session_id=<session>
+func (s *Server) handleChatArtifacts(c *fiber.Ctx) error {
+	agentID := strings.TrimSpace(c.Query("agent_id"))
+	sessionID := strings.TrimSpace(c.Query("session_id"))
+	if agentID == "" || sessionID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "agent_id and session_id are required")
+	}
+	arts, err := s.listChatArtifacts(agentID, sessionID)
+	if err != nil {
+		if fe, ok := err.(*fiber.Error); ok {
+			return s.errMsg(c, fe.Code, fe.Message)
+		}
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	return c.JSON(fiber.Map{"artifacts": arts, "count": len(arts)})
+}
+
+// handleChatArtifactDownload streams a chat artifact after proving that the
+// requested path belongs to the given agent/session trail. This avoids turning
+// the chat API into a general-purpose filesystem reader.
+//
+//	GET /api/v1/chat/artifacts/download?agent_id=<agent>&session_id=<session>&path=<path>
+func (s *Server) handleChatArtifactDownload(c *fiber.Ctx) error {
+	agentID := strings.TrimSpace(c.Query("agent_id"))
+	sessionID := strings.TrimSpace(c.Query("session_id"))
+	requested := strings.TrimSpace(c.Query("path"))
+	if agentID == "" || sessionID == "" || requested == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "agent_id, session_id, and path are required")
+	}
+	arts, err := s.listChatArtifacts(agentID, sessionID)
+	if err != nil {
+		if fe, ok := err.(*fiber.Error); ok {
+			return s.errMsg(c, fe.Code, fe.Message)
+		}
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	for _, a := range arts {
+		if filepath.Clean(a.Path) != filepath.Clean(requested) {
+			continue
+		}
+		if st, err := os.Stat(a.Path); err != nil || st.IsDir() {
+			return c.Status(fiber.StatusGone).JSON(fiber.Map{
+				"error": "artifact file no longer exists on disk",
+				"path":  a.Path,
+			})
+		}
+		c.Set(fiber.HeaderContentDisposition, `attachment; filename="`+filepath.Base(a.Path)+`"`)
+		return c.SendFile(a.Path)
+	}
+	return s.errMsg(c, fiber.StatusNotFound, "artifact was not produced by this chat session")
 }

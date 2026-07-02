@@ -25,11 +25,14 @@ import (
 	"github.com/soulacy/soulacy/internal/costs"
 	"github.com/soulacy/soulacy/internal/credentials"
 	"github.com/soulacy/soulacy/internal/executor"
+	executordocker "github.com/soulacy/soulacy/internal/executor/docker"
 	"github.com/soulacy/soulacy/internal/executor/pool"
 	"github.com/soulacy/soulacy/internal/executor/process"
+	executorssh "github.com/soulacy/soulacy/internal/executor/ssh"
 	"github.com/soulacy/soulacy/internal/extstorage"
 	"github.com/soulacy/soulacy/internal/gateway"
 	"github.com/soulacy/soulacy/internal/knowledge"
+	"github.com/soulacy/soulacy/internal/learning"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
@@ -71,6 +74,16 @@ func (a *App) wireBrainMemory(ws config.Paths, stack *closerStack) *agentmemory.
 	stack.push("brain-memory", func() error { brainStore.Close(); return nil }) // releases the E23 rulebook db
 	log.Info("agent brain memory enabled", zap.String("dir", brainMemDir))
 	return brainStore
+}
+
+func (a *App) wireLearning(ws config.Paths) *learning.Store {
+	store, err := learning.NewStore(ws.DB("learning"))
+	if err != nil {
+		a.log.Warn("learning proposal store unavailable", zap.Error(err))
+		return nil
+	}
+	a.log.Info("learning proposal store ready", zap.String("path", ws.DB("learning")))
+	return store
 }
 
 // wireMemory builds the file store and the SQLite archive. Both failures are
@@ -527,6 +540,30 @@ func (a *App) wirePythonExecutor(stack *closerStack) executor.Backend {
 			zap.String("python_bin", cfg.Runtime.PythonBin),
 		)
 		return pb
+	case "docker":
+		image := cfg.Executor.DockerImage
+		if image == "" {
+			image = "python:3.12-slim"
+		}
+		network := cfg.Executor.DockerNetwork
+		if network == "" {
+			network = "none"
+		}
+		log.Info("python executor: docker",
+			zap.String("image", image),
+			zap.String("network", network),
+			zap.String("python_bin", cfg.Runtime.PythonBin))
+		return executordocker.New(image, cfg.Runtime.PythonBin, network)
+	case "ssh":
+		pythonBin := cfg.Executor.SSHPythonBin
+		if pythonBin == "" {
+			pythonBin = "python3"
+		}
+		log.Info("python executor: ssh",
+			zap.String("host", cfg.Executor.SSHHost),
+			zap.String("user", cfg.Executor.SSHUser),
+			zap.String("python_bin", pythonBin))
+		return executorssh.New(cfg.Executor.SSHHost, cfg.Executor.SSHUser, pythonBin, cfg.Executor.SSHIdentity)
 	default: // "process" or empty
 		log.Info("python executor: process-per-call",
 			zap.String("python_bin", cfg.Runtime.PythonBin))
@@ -772,6 +809,7 @@ type engineDeps struct {
 	pluginProvider runtime.PluginToolProvider
 	pyExecutor     executor.Backend
 	brainStore     *agentmemory.CompositeStore
+	learningStore  *learning.Store
 	ollamaAPIKey   string
 	searchProvider string
 	searchAPIKey   string
@@ -849,6 +887,9 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 	// MEM-03: pass the brain memory store into the engine.
 	if d.brainStore != nil {
 		engine.SetBrainMemory(d.brainStore)
+	}
+	if d.learningStore != nil {
+		engine.SetLearningStore(d.learningStore)
 	}
 
 	engine.SetAuditLog(audit.New(cfg.Runtime.AuditDir))

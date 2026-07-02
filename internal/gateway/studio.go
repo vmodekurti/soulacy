@@ -488,6 +488,8 @@ func studioProblemLine(i studio.PreflightIssue) string {
 type studioTroubleshootRequest struct {
 	Workflow studio.Draft `json:"workflow"`
 	Error    string       `json:"error"`
+	Input    string       `json:"input,omitempty"`
+	Evidence string       `json:"evidence,omitempty"`
 }
 
 // handleStudioTroubleshoot implements POST /api/v1/studio/troubleshoot. Given a
@@ -509,7 +511,14 @@ func (s *Server) handleStudioTroubleshoot(c *fiber.Ctx) error {
 	}
 	cat := s.studioCatalogSnapshot()
 	s.groundCatalog(&cat)
-	problems := []string{"At RUN TIME the agent failed with this error — change the workflow so it cannot happen again: " + strings.TrimSpace(req.Error)}
+	problem := "At RUN TIME the agent failed with this error — change the workflow so it cannot happen again: " + strings.TrimSpace(req.Error)
+	if strings.TrimSpace(req.Input) != "" {
+		problem += "\nSample input that triggered it: " + strings.TrimSpace(req.Input)
+	}
+	if strings.TrimSpace(req.Evidence) != "" {
+		problem += "\nObserved run evidence:\n" + strings.TrimSpace(req.Evidence)
+	}
+	problems := []string{problem}
 	repaired, changed := studio.RepairWithProblems(c.Context(), model, req.Workflow, problems, cat)
 	studio.RepairWiring(&repaired, cat)
 	pf := studio.Preflight(repaired, s.preflightInput(c, cat))
@@ -991,6 +1000,11 @@ type studioDiagnoseRunRequest struct {
 	ID string `json:"id"`
 }
 
+type studioDiagnoseSessionRequest struct {
+	AgentID   string `json:"agentId"`
+	SessionID string `json:"sessionId"`
+}
+
 // handleStudioDiagnoseRun implements POST /api/v1/studio/diagnose-run. Given a
 // failed run, it loads the SAVED agent, reconstructs its draft, repairs it
 // against the REAL runtime error, then runs the full build-verify loop so the
@@ -1049,6 +1063,157 @@ func (s *Server) handleStudioDiagnoseRun(c *fiber.Ctx) error {
 	})
 }
 
+// handleStudioDiagnoseSession repairs a saved agent from a concrete Activity
+// session. Unlike handleStudioDiagnoseRun, this does not require a dead-letter
+// queue entry; it reconstructs evidence from the action log, so any visible
+// Activity error can become a Studio debugging session.
+func (s *Server) handleStudioDiagnoseSession(c *fiber.Ctx) error {
+	var req studioDiagnoseSessionRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	req.AgentID = strings.TrimSpace(req.AgentID)
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.AgentID == "" || req.SessionID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "agentId and sessionId are required")
+	}
+	if s.actions == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "action logging disabled")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	def := s.loader.Get(req.AgentID)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "the agent for this run no longer exists")
+	}
+	events, err := s.actions.Tail(req.AgentID, 5000)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	evidence, errText, found := studioSessionEvidence(events, req.AgentID, req.SessionID)
+	if !found {
+		return s.errMsg(c, fiber.StatusNotFound, "no action-log events found for that agent/session")
+	}
+	if strings.TrimSpace(errText) == "" {
+		errText = "The run did not emit an explicit error, but the operator requested debugging from Activity."
+	}
+
+	draft := studio.FromAgentDefinition(*def)
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+
+	problem := "A REAL execution of this agent failed or needs debugging.\n" +
+		"Agent: " + req.AgentID + "\nSession: " + req.SessionID + "\n" +
+		"Error: " + strings.TrimSpace(errText) + "\n" +
+		"Recent action-log evidence:\n" + evidence + "\n" +
+		"Change the agent workflow/tools/prompts so this failure is prevented. Preserve the user's intent and only make targeted fixes."
+	healed, changed := studio.RepairWithProblems(c.Context(), model, draft, []string{problem}, cat)
+	studio.RepairWiring(&healed, cat)
+
+	rep := studio.BuildUntilWorks(c.Context(), model, healed, cat, studio.BuildOptions{
+		In:       in,
+		Verifier: studio.RealRunVerifier{Runner: s.studioRealRunner()},
+	})
+
+	return c.JSON(fiber.Map{
+		"agentId":   req.AgentID,
+		"agentName": def.Name,
+		"sessionId": req.SessionID,
+		"error":     errText,
+		"evidence":  evidence,
+		"changed":   changed,
+		"workflow":  rep.Workflow,
+		"report":    rep,
+		"preflight": studio.Preflight(rep.Workflow, in),
+	})
+}
+
+func studioSessionEvidence(events []message.Event, agentID, sessionID string) (evidence, errText string, found bool) {
+	var lines []string
+	for _, ev := range events {
+		if ev.AgentID != agentID || ev.SessionID != sessionID {
+			continue
+		}
+		found = true
+		line := studioEventEvidenceLine(ev)
+		if line != "" {
+			lines = append(lines, line)
+		}
+		if candidate := studioEventErrorText(ev); candidate != "" {
+			errText = candidate
+		}
+	}
+	if len(lines) > 40 {
+		lines = lines[len(lines)-40:]
+	}
+	return strings.Join(lines, "\n"), errText, found
+}
+
+func studioEventEvidenceLine(ev message.Event) string {
+	payload := studioCompactPayload(ev.Payload, 420)
+	ts := ""
+	if !ev.Timestamp.IsZero() {
+		ts = ev.Timestamp.UTC().Format("15:04:05") + " "
+	}
+	return fmt.Sprintf("- %s%s: %s", ts, ev.Type, payload)
+}
+
+func studioEventErrorText(ev message.Event) string {
+	p, ok := ev.Payload.(map[string]any)
+	if !ok {
+		b, err := json.Marshal(ev.Payload)
+		if err != nil {
+			if ev.Type == "error" {
+				return fmt.Sprint(ev.Payload)
+			}
+			return ""
+		}
+		_ = json.Unmarshal(b, &p)
+	}
+	if ev.Type == "error" {
+		for _, k := range []string{"error", "message", "content"} {
+			if v, ok := p[k].(string); ok && strings.TrimSpace(v) != "" {
+				if stage, _ := p["stage"].(string); strings.TrimSpace(stage) != "" {
+					return stage + ": " + v
+				}
+				return v
+			}
+		}
+	}
+	for _, k := range []string{"error", "message"} {
+		if v, ok := p[k].(string); ok && strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func studioCompactPayload(v any, max int) string {
+	if max <= 0 {
+		max = 400
+	}
+	var s string
+	switch t := v.(type) {
+	case string:
+		s = t
+	default:
+		b, err := json.Marshal(v)
+		if err != nil {
+			s = fmt.Sprint(v)
+		} else {
+			s = string(b)
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
+}
+
 // studioCompileAgentRequest is the POST /api/v1/studio/compile-agent body.
 type studioCompileAgentRequest struct {
 	Intent   string            `json:"intent"`
@@ -1078,7 +1243,7 @@ func (s *Server) handleStudioCompileAgent(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
-	s.stampDefaultLLM(&res.Workflow) // make the runtime provider/model explicit in the YAML
+	s.stampDefaultLLM(&res.Workflow)         // make the runtime provider/model explicit in the YAML
 	studio.ApplyTemplateFixes(&res.Workflow) // deterministic self-heal (no-op when there's no flow graph)
 	if res.Explanation != nil {
 		pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog))

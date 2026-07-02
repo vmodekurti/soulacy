@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { apiKey, connected, authRequired } from './lib/stores.js'
   import Dashboard  from './pages/Dashboard.svelte'
-  import Builder    from './pages/Builder.svelte'
+  import Onboarding from './pages/Onboarding.svelte'
   import Studio     from './pages/Studio.svelte'
   import Agents     from './pages/Agents.svelte'
   import Chat       from './pages/Chat.svelte'
@@ -19,6 +19,7 @@
   import Activity   from './pages/Activity.svelte'
   import Config     from './pages/Config.svelte'
   import Logs       from './pages/Logs.svelte'
+  import Mobile     from './pages/Mobile.svelte'
   import PluginFrame from './pages/PluginFrame.svelte'
   import PluginManager from './pages/PluginManager.svelte'
   import { pageTitle } from './lib/pagetitle.js'
@@ -30,6 +31,12 @@
   let showKeyModal = false
   let keyInput = ''
   let sidebarOpen = false   // mobile drawer state (≤768px)
+  let navCollapsed = false   // desktop: collapse the left nav to an icon rail
+
+  function toggleNav() {
+    navCollapsed = !navCollapsed
+    try { localStorage.setItem('soulacy-nav-collapsed', navCollapsed ? '1' : '0') } catch (_) {}
+  }
 
   // Gateway restart (main-menu action): confirm modal + a blocking overlay
   // that polls /health until the replacement process answers, then reloads.
@@ -38,31 +45,46 @@
   let restartError = ''
 
   const pages = [
-    { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'    },
-    { id: 'builder',   icon: '✦', label: 'Build',       group: 'main'    },
-    { id: 'studio',    icon: '🎬', label: 'Studio',      group: 'main'    },
-    { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'    },
-    { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'    },
-    { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'    },
-    { id: 'memory',    icon: '🧠', label: 'Brain Mem',   group: 'main'    },
-    { id: 'knowledge', icon: '📚', label: 'Knowledge',   group: 'main'    },
-    { id: 'workboard', icon: '▦', label: 'Workboard',  group: 'main'    },
-    { id: 'channels',  icon: '📡', label: 'Channels',   group: 'ops'     },
-    { id: 'schedule',  icon: '⏱', label: 'Schedule',   group: 'ops'     },
-    { id: 'skills',    icon: '🧩', label: 'Skills',     group: 'ops'     },
-    { id: 'mcp',       icon: '🔌', label: 'MCP',        group: 'ops'     },
-    { id: 'pluginmgr', icon: '🧱', label: 'Plugins',    group: 'ops'     },
-    { id: 'providers', icon: '⚙', label: 'Providers',  group: 'ops'     },
-    { id: 'secrets',   icon: '🔑', label: 'Secrets',    group: 'ops'     },
-    { id: 'activity',  icon: '📈', label: 'Activity',   group: 'system'  },
-    { id: 'config',    icon: '≡', label: 'Config',      group: 'system'  },
-    { id: 'logs',      icon: '📋', label: 'Logs',       group: 'system'  },
+    { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'         },
+    { id: 'onboarding', icon: '✓', label: 'First Run',  group: 'main'         },
+    { id: 'studio',    icon: '🎬', label: 'Studio',      group: 'main'         },
+    { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'         },
+    { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'         },
+    { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'         },
+    { id: 'memory',    icon: '🧠', label: 'Brain Mem',   group: 'capabilities' },
+    { id: 'knowledge', icon: '📚', label: 'Knowledge',   group: 'capabilities' },
+    { id: 'workboard', icon: '▦', label: 'Workboard',  group: 'capabilities' },
+    { id: 'channels',  icon: '📡', label: 'Channels',   group: 'integrations' },
+    { id: 'schedule',  icon: '⏱', label: 'Schedule',   group: 'integrations' },
+    { id: 'skills',    icon: '🧩', label: 'Skills',     group: 'integrations' },
+    { id: 'mcp',       icon: '🔌', label: 'MCP',        group: 'integrations' },
+    { id: 'pluginmgr', icon: '🧱', label: 'Plugins',    group: 'integrations' },
+    { id: 'providers', icon: '⚙', label: 'Providers',  group: 'integrations' },
+    { id: 'secrets',   icon: '🔑', label: 'Secrets',    group: 'integrations' },
+    { id: 'activity',  icon: '📈', label: 'Activity',   group: 'system'       },
+    { id: 'config',    icon: '≡', label: 'Config',      group: 'system'       },
+    { id: 'mobile',    icon: '▣', label: 'Mobile',      group: 'system'       },
+    { id: 'logs',      icon: '📋', label: 'Logs',       group: 'system'       },
+  ]
+
+  const retiredPages = {
+    builder: 'studio',
+    build: 'studio',
+  }
+
+  // Ordered nav sections with their (optional) uppercase headers, per wireframe.
+  const navGroups = [
+    { key: 'main',         label: ''             },
+    { key: 'capabilities', label: 'Capabilities' },
+    { key: 'integrations', label: 'Integrations' },
+    { key: 'system',       label: 'System'       },
   ]
 
   // Keep the browser tab title in sync with the active page (Story 15).
   $: if (typeof document !== 'undefined') document.title = pageTitle(page, pages, pluginPages)
 
   function navigate(p) {
+    p = retiredPages[p] || p
     page = p
     sidebarOpen = false
     history.pushState({}, '', '#' + p)
@@ -113,6 +135,10 @@
   onMount(() => {
     const applyHash = () => {
       const h = location.hash.slice(1)
+      if (retiredPages[h]) {
+        navigate(retiredPages[h])
+        return
+      }
       if (h && (pages.find(p => p.id === h) || isPluginPage(h))) { page = h; return }
       // Path-based entry (ARCH-6): the SPA fallback serves index.html for any
       // unmatched path, so a deep link / refresh on e.g. /studio lands here
@@ -120,10 +146,15 @@
       // matches a known route so /studio opens the Studio editor directly.
       if (!h) {
         const seg = location.pathname.replace(/\/+$/, '').split('/').pop()
+        if (retiredPages[seg]) {
+          navigate(retiredPages[seg])
+          return
+        }
         if (seg && pages.find(p => p.id === seg)) page = seg
       }
     }
     applyHash()
+    try { navCollapsed = localStorage.getItem('soulacy-nav-collapsed') === '1' } catch (_) {}
     window.addEventListener('popstate', applyHash)
     window.addEventListener('hashchange', applyHash)
 
@@ -298,42 +329,46 @@
   {/if}
 
   <!-- Sidebar -->
-  <aside class="sidebar" class:open={sidebarOpen}>
+  <aside class="sidebar" class:open={sidebarOpen} class:collapsed={navCollapsed}>
     <div class="brand">
-      <span class="brand-icon">⬡</span>
+      <span class="brand-logo" aria-hidden="true"></span>
       <span class="brand-name">Soulacy</span>
+      <button class="nav-toggle" on:click={toggleNav}
+              title={navCollapsed ? 'Expand menu' : 'Collapse menu'}
+              aria-label={navCollapsed ? 'Expand menu' : 'Collapse menu'}>
+        {navCollapsed ? '»' : '«'}
+      </button>
     </div>
 
     <nav>
-      {#each ['main', 'ops', 'system'] as group}
-        {@const groupPages = pages.filter(p => p.group === group)}
-        {#if group !== 'main'}
-          <div class="nav-divider"></div>
-        {/if}
-        {#each groupPages as p}
-          <button class="nav-item" class:active={page === p.id} on:click={() => navigate(p.id)}>
-            <span class="nav-icon">{p.icon}</span>
-            <span class="nav-label">{p.label}</span>
-          </button>
-        {/each}
-        {#if group === 'system'}
-          <button class="nav-item nav-action" on:click={openRestartModal}
-                  title="Restart the gateway server">
-            <span class="nav-icon">⟳</span>
-            <span class="nav-label">Restart Gateway</span>
-          </button>
+      {#each navGroups as grp}
+        {@const groupPages = pages.filter(p => p.group === grp.key)}
+        {#if groupPages.length}
+          {#if grp.label}<div class="nav-section" aria-hidden="true">{grp.label}</div>{/if}
+          {#each groupPages as p}
+            <button class="nav-item" class:active={page === p.id} on:click={() => navigate(p.id)} title={p.label}>
+              <span class="nav-icon">{p.icon}</span>
+              <span class="nav-label">{p.label}</span>
+            </button>
+          {/each}
         {/if}
       {/each}
       {#if pluginPages.length > 0}
-        <div class="nav-divider"></div>
+        <div class="nav-section" aria-hidden="true">Plugins</div>
         {#each pluginPages as p}
-          <button class="nav-item" class:active={page === p.id} on:click={() => navigate(p.id)}>
+          <button class="nav-item" class:active={page === p.id} on:click={() => navigate(p.id)} title={p.label}>
             <span class="nav-icon">{p.icon}</span>
             <span class="nav-label">{p.label}</span>
           </button>
         {/each}
       {/if}
     </nav>
+
+    <button class="nav-item nav-action" on:click={openRestartModal}
+            title="Restart the gateway server">
+      <span class="nav-icon restart-dot">●</span>
+      <span class="nav-label">Restart Gateway</span>
+    </button>
 
     <div class="sidebar-footer">
       {#if $authRequired}
@@ -354,8 +389,8 @@
   <main class="content">
     {#if page === 'dashboard'}
       <Dashboard />
-    {:else if page === 'builder'}
-      <Builder />
+    {:else if page === 'onboarding'}
+      <Onboarding />
     {:else if page === 'studio'}
       <Studio />
     {:else if page === 'agents'}
@@ -388,6 +423,8 @@
       <Activity />
     {:else if page === 'config'}
       <Config />
+    {:else if page === 'mobile'}
+      <Mobile />
     {:else if page === 'logs'}
       <Logs />
     {:else if isPluginPage(page)}
@@ -471,7 +508,28 @@
     background: #0e1020;
     border-right: 1px solid #1a1e36;
     display: flex; flex-direction: column;
+    transition: width 0.16s ease;
   }
+
+  /* Collapsed icon rail (desktop): labels hidden, icons centered. */
+  .sidebar.collapsed { width: 56px; }
+  .sidebar.collapsed .brand-name,
+  .sidebar.collapsed .nav-label,
+  .sidebar.collapsed .conn-dot,
+  .sidebar.collapsed .nav-section { display: none; }
+  .sidebar.collapsed .brand { justify-content: center; padding: 1.1rem 0; gap: 0; position: relative; }
+  .sidebar.collapsed .nav-item { justify-content: center; padding: 0.6rem 0; gap: 0; }
+  .sidebar.collapsed .nav-icon { width: auto; }
+  .sidebar.collapsed .sidebar-footer { justify-content: center; padding: 0.65rem 0; }
+  /* When collapsed, the toggle sits under the logo as a small centered pill. */
+  .sidebar.collapsed .nav-toggle { position: absolute; bottom: -6px; right: 6px; }
+
+  .nav-toggle {
+    margin-left: auto; background: none; border: none;
+    color: #6b7294; font-size: 0.9rem; line-height: 1;
+    padding: 0.2rem 0.35rem; border-radius: 6px; cursor: pointer;
+  }
+  .nav-toggle:hover { background: #181b30; color: #c8cadf; }
 
   @media (max-width: 768px) {
     .layout { flex-direction: column; }
@@ -521,30 +579,41 @@
   }
 
   .brand {
-    display: flex; align-items: center; gap: 0.6rem;
-    padding: 1.1rem 1rem;
-    border-bottom: 1px solid #1a1e36;
-  }
-  .brand-icon { font-size: 1.35rem; color: #6c63ff; }
-  .brand-name { font-weight: 700; font-size: 0.95rem; letter-spacing: 0.04em; }
-
-  nav { flex: 1; padding: 0.6rem 0; overflow-y: auto; }
-  .nav-divider { height: 1px; background: #1a1e36; margin: .4rem .75rem; }
-  .nav-item {
     display: flex; align-items: center; gap: 0.7rem;
-    width: 100%; padding: 0.6rem 1rem;
-    background: none; color: #6b7294;
-    font-size: 0.875rem; font-weight: 500;
-    text-align: left; border-radius: 0;
+    padding: 1.15rem 1.1rem;
+  }
+  /* Rounded circular logo mark (wireframe): dark disc with an inner accent dot. */
+  .brand-logo {
+    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
+    background: radial-gradient(circle at 50% 50%, #8b85ff 0 5px, transparent 6px),
+                linear-gradient(145deg, #2a2f52, #14162a);
+    box-shadow: inset 0 0 0 1px #3a3f68;
+  }
+  .brand-name { font-weight: 700; font-size: 1.02rem; letter-spacing: 0.01em; color: #f2f3fb; }
+
+  nav { flex: 1; padding: 0.5rem 0.5rem; overflow-y: auto; }
+  /* Uppercase section header (CAPABILITIES / INTEGRATIONS / …). */
+  .nav-section {
+    padding: 0.9rem 0.65rem 0.4rem;
+    font-size: 0.66rem; font-weight: 600; letter-spacing: 0.09em;
+    text-transform: uppercase; color: #565c82;
+  }
+  .nav-item {
+    display: flex; align-items: center; gap: 0.75rem;
+    width: 100%; padding: 0.55rem 0.65rem; margin: 0.05rem 0;
+    background: none; color: #8188ad;
+    font-size: 0.9rem; font-weight: 500;
+    text-align: left; border-radius: 9px;
     transition: background 0.1s, color 0.1s;
   }
-  .nav-item:hover  { background: #181b30; color: #c8cadf; }
-  .nav-item.active { background: rgba(108, 99, 255, 0.12); color: #8b85ff; }
-  .nav-icon { font-size: 0.95rem; width: 1.1rem; text-align: center; }
+  .nav-item:hover  { background: #181b30; color: #d4d7ea; }
+  .nav-item.active { background: rgba(108, 99, 255, 0.16); color: #b3adff; }
+  .nav-icon { font-size: 1rem; width: 1.2rem; text-align: center; }
 
-  /* Action item (not a page): restart the gateway. */
-  .nav-action { color: #d98a8a; }
+  /* Action item (not a page): restart the gateway — pinned at the bottom. */
+  .nav-action { margin: 0.35rem 0.5rem 0.6rem; width: auto; color: #d98a8a; border-radius: 9px; }
   .nav-action:hover { background: rgba(127, 32, 32, 0.18); color: #ff9d9d; }
+  .restart-dot { color: #e06666; font-size: 0.7rem; }
 
   /* Blocking overlay shown while the gateway re-execs. */
   .restart-overlay {

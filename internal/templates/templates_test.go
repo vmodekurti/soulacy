@@ -34,6 +34,12 @@ func TestEmbeddedDefaultsLoad(t *testing.T) {
 			t.Errorf("template %s did not parse to a Definition", e.Name)
 			continue
 		}
+		if strings.TrimSpace(e.MockPrompt) == "" {
+			t.Errorf("template %s missing mock prompt", e.Name)
+		}
+		if len(e.Setup) == 0 {
+			t.Errorf("template %s missing setup metadata", e.Name)
+		}
 		// Every template must declare a system_prompt; an empty one means
 		// the agent will silently misbehave when instantiated.
 		if strings.TrimSpace(e.Definition.SystemPrompt) == "" {
@@ -43,6 +49,98 @@ func TestEmbeddedDefaultsLoad(t *testing.T) {
 		if e.Source != "embedded" {
 			t.Errorf("template %s: source=%q, want embedded", e.Name, e.Source)
 		}
+	}
+}
+
+func TestCronTemplatesExposeScheduleAndDeliverySetup(t *testing.T) {
+	cat := New("")
+	entries, err := cat.List()
+	if err != nil {
+		t.Fatalf("List(): %v", err)
+	}
+	for _, e := range entries {
+		if e.Definition == nil || e.Definition.Trigger != "cron" {
+			continue
+		}
+		var sawSchedule, sawDelivery bool
+		for _, item := range e.Setup {
+			switch item.Key {
+			case "schedule":
+				sawSchedule = true
+				if item.Status != "ready" {
+					t.Errorf("%s schedule status = %q, want ready", e.Name, item.Status)
+				}
+			case "delivery":
+				sawDelivery = true
+				if item.Status != "needs_setup" {
+					t.Errorf("%s delivery status = %q, want needs_setup until output channel is configured", e.Name, item.Status)
+				}
+			}
+		}
+		if !sawSchedule {
+			t.Errorf("%s missing schedule setup item", e.Name)
+		}
+		if !sawDelivery {
+			t.Errorf("%s missing delivery setup item", e.Name)
+		}
+		if e.ScheduleHint == "" || e.OutputHint == "" {
+			t.Errorf("%s missing schedule/output hints", e.Name)
+		}
+	}
+}
+
+func TestRAGTemplatesExposeKnowledgeSetup(t *testing.T) {
+	cat := New("")
+	for _, name := range []string{"rag-over-docs", "compliance-auditor"} {
+		e, err := cat.Get(name)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", name, err)
+		}
+		var sawKnowledge bool
+		for _, item := range e.Setup {
+			if item.Key == "knowledge" {
+				sawKnowledge = true
+				if item.Status != "needs_setup" {
+					t.Errorf("%s knowledge status = %q, want needs_setup", name, item.Status)
+				}
+			}
+		}
+		if !sawKnowledge {
+			t.Errorf("%s missing knowledge setup item", name)
+		}
+	}
+}
+
+func TestTemplateMetadataDetectsNonLocalProviderSecrets(t *testing.T) {
+	e, err := parseEntry("paid.yaml", []byte(`
+id: paid
+name: Paid Provider
+description: uses a paid provider
+system_prompt: hi
+llm:
+  provider: anthropic
+  model: claude-sonnet-4-6
+`), "user")
+	if err != nil {
+		t.Fatalf("parseEntry: %v", err)
+	}
+	if len(e.RequiredSecrets) != 1 {
+		t.Fatalf("RequiredSecrets len = %d, want 1", len(e.RequiredSecrets))
+	}
+	if e.RequiredSecrets[0].Key != "anthropic.api_key" {
+		t.Fatalf("secret key = %q, want anthropic.api_key", e.RequiredSecrets[0].Key)
+	}
+	var sawModel bool
+	for _, item := range e.Setup {
+		if item.Key == "model" {
+			sawModel = true
+			if item.Status != "needs_setup" {
+				t.Fatalf("model setup status = %q, want needs_setup", item.Status)
+			}
+		}
+	}
+	if !sawModel {
+		t.Fatal("missing model setup item")
 	}
 }
 

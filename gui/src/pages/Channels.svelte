@@ -193,16 +193,30 @@
   }
 
   function mappingRows(ch) {
+    const rows = []
+    const hasDefaultSender = ch.settings?.token || ch.settings?.default_output_to || ch.settings?.bot_name
+    if (ch.id === 'telegram' && hasDefaultSender) {
+      rows.push({
+        adapter_id: ch.id,
+        bot_name: ch.settings?.bot_name || 'Default outbound bot',
+        agent_id: ch.settings?.agent_id && !isTruthy(ch.settings?.outbound_only) ? ch.settings.agent_id : 'Default sender',
+        outbound_only: isTruthy(ch.settings?.outbound_only) || !ch.settings?.agent_id,
+        connected: ch.status?.connected,
+        detail: ch.status?.detail,
+      })
+    }
     if (ch.bots?.length) {
-      return ch.bots.map((bot, i) => ({
+      rows.push(...ch.bots.map((bot, i) => ({
         adapter_id: bot._adapter_id || botAdapterID(ch.id, bot, i),
         bot_name: bot.bot_name || bot.name || '',
         agent_id: bot.outbound_only ? 'Send only' : (bot.agent_id || '—'),
         outbound_only: isTruthy(bot.outbound_only),
         connected: bot._connected,
         detail: bot._detail,
-      }))
+      })))
+      return rows
     }
+    if (rows.length) return rows
     const agent = ch.settings?.agent_id
     const outboundOnly = isTruthy(ch.settings?.outbound_only)
     return (agent || outboundOnly) ? [{
@@ -249,7 +263,8 @@
   }
 
   function botAdapterID(channelID, bot, index) {
-    if (index === 0) return channelID
+    const defaultReserved = editing?.id === channelID && !!(form.token || form.bot_token)
+    if (index === 0 && !defaultReserved) return channelID
     const suffix = sanitizeAdapterSuffix(bot.agent_id) || sanitizeAdapterSuffix(bot.bot_name) || String(index + 1)
     return `${channelID}-${suffix}`
   }
@@ -376,6 +391,19 @@
                       <span>{row.connected ? 'connected' : (row.detail || 'pending restart')}</span>
                     </div>
                     <strong class:send-only={row.outbound_only}>{row.agent_id}</strong>
+                  </div>
+                {/each}
+              </div>
+            {/if}
+
+            {#if ch.diagnostics?.length}
+              <div class="diagnostics">
+                <span class="settings-title">Delivery checks</span>
+                {#each ch.diagnostics as d}
+                  <div class="diag-row {d.severity || 'info'}">
+                    <strong>{d.severity || 'info'}</strong>
+                    <span>{d.message}</span>
+                    {#if d.remedy}<em>{d.remedy}</em>{/if}
                   </div>
                 {/each}
               </div>
@@ -544,16 +572,13 @@
       {#if editing.multi_bot}
         <div class="bot-editor">
           <div class="bot-editor-head">
-            <div>
-              <h3>Bot mappings</h3>
-              <p>{editing.id === 'telegram' ? 'Interactive rows route messages to an agent. Send-only rows are available as scheduled output bots.' : 'Each row creates one channel adapter and routes that bot to its agent.'}</p>
-            </div>
-            <div class="bot-editor-actions">
-              {#if editing.id === 'telegram'}
-                <button class="btn-secondary small-btn" type="button" on:click={addOutboundBotMapping}>+ Add output bot</button>
-              {/if}
-              <button class="btn-secondary small-btn" type="button" on:click={addBotMapping}>+ Add bot</button>
-            </div>
+              <div>
+                <h3>Bot mappings</h3>
+              <p>{editing.id === 'telegram' ? 'The default fields above define the outbound sender for cron jobs and manual scheduled output. Add bot mappings below for agent-specific interactive bots.' : 'Each row creates one channel adapter and routes that bot to its agent.'}</p>
+              </div>
+              <div class="bot-editor-actions">
+                <button class="btn-secondary small-btn" type="button" on:click={addBotMapping}>+ Add bot</button>
+              </div>
           </div>
 
           {#if botsForm.length === 0}
@@ -676,6 +701,19 @@
   .mapping-row span { color: #555a7a; font-size: .68rem; }
   .mapping-row strong { color: #c8cadf; font-size: .78rem; text-align: right; word-break: break-word; }
   .mapping-row strong.send-only { color: #4caf82; }
+  .diagnostics { margin-top: .35rem; padding-top: .5rem; border-top: 1px solid #1a1e36; display: flex; flex-direction: column; gap: .4rem; }
+  .diag-row {
+    display: grid; grid-template-columns: 3.8rem minmax(0,1fr); gap: .25rem .45rem;
+    padding: .45rem .55rem; background: #101323; border: 1px solid #1a1e36; border-radius: 7px;
+  }
+  .diag-row strong { font-size: .62rem; text-transform: uppercase; letter-spacing: .05em; }
+  .diag-row span { color: #c8cadf; font-size: .76rem; line-height: 1.35; }
+  .diag-row em { grid-column: 2; color: #7b82a8; font-size: .7rem; font-style: normal; line-height: 1.35; }
+  .diag-row.fail { border-color: rgba(240,96,96,.4); background: rgba(240,96,96,.08); }
+  .diag-row.fail strong { color: #f06060; }
+  .diag-row.warn { border-color: rgba(240,196,96,.36); background: rgba(240,196,96,.07); }
+  .diag-row.warn strong { color: #f0c460; }
+  .diag-row.info strong { color: #8b85ff; }
   .ch-footer { padding: .75rem 1rem; border-top: 1px solid #1a1e36; display: flex; gap: .5rem; justify-content: flex-end; }
   .small-btn { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }
   .ch-footer button { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }
