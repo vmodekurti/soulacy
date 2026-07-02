@@ -116,11 +116,12 @@ func ApplyTemplateFixes(draft *Draft) int {
 	if draft == nil {
 		return 0
 	}
+	changed := applyEntryCaptureFixes(draft)
+	changed += applyPythonInputMappingFixes(draft)
 	fixes := SuggestTemplateFixes(*draft)
 	if len(fixes) == 0 {
-		return 0
+		return changed
 	}
-	changed := 0
 	for i := range draft.Flow.Nodes {
 		in := draft.Flow.Nodes[i].Input
 		if !strings.Contains(in, "{{") {
@@ -138,6 +139,126 @@ func ApplyTemplateFixes(draft *Draft) int {
 		}
 	}
 	return changed
+}
+
+var pyInputsGetRe = regexp.MustCompile(`inputs\.get\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]`)
+
+func applyPythonInputMappingFixes(draft *Draft) int {
+	if draft == nil || len(draft.Flow.Nodes) == 0 {
+		return 0
+	}
+	produced := map[string]string{}
+	for _, n := range draft.Flow.Nodes {
+		if out := strings.TrimSpace(n.Output); out != "" {
+			produced[out] = strings.TrimSpace(n.ID)
+		}
+	}
+	changed := 0
+	for i := range draft.Flow.Nodes {
+		n := &draft.Flow.Nodes[i]
+		if strings.TrimSpace(n.Kind) != sdkr.FlowNodePython || !strings.Contains(n.Code, "inputs.get") {
+			continue
+		}
+		vars := pythonInputGets(n.Code, produced, strings.TrimSpace(n.ID))
+		if len(vars) == 0 || inputAlreadyMapsVars(n.Input, vars) {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("{")
+		for j, v := range vars {
+			if j > 0 {
+				b.WriteString(",")
+			}
+			b.WriteString(`"`)
+			b.WriteString(v)
+			b.WriteString(`": {{ toJson .`)
+			b.WriteString(v)
+			b.WriteString(` }}`)
+		}
+		b.WriteString("}")
+		n.Input = b.String()
+		changed++
+	}
+	return changed
+}
+
+func pythonInputGets(code string, produced map[string]string, nodeID string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range pyInputsGetRe.FindAllStringSubmatch(code, -1) {
+		name := m[1]
+		if seen[name] {
+			continue
+		}
+		if producerID, ok := produced[name]; !ok || producerID == nodeID {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
+}
+
+func inputAlreadyMapsVars(input string, vars []string) bool {
+	trimmed := strings.TrimSpace(input)
+	if !strings.HasPrefix(trimmed, "{") {
+		return false
+	}
+	for _, v := range vars {
+		if !strings.Contains(trimmed, `"`+v+`"`) {
+			return false
+		}
+	}
+	return true
+}
+
+func applyEntryCaptureFixes(draft *Draft) int {
+	if draft == nil || len(draft.Flow.Nodes) == 0 {
+		return 0
+	}
+	entry := strings.TrimSpace(draft.Flow.Entry)
+	if entry == "" {
+		entry = strings.TrimSpace(draft.Flow.Nodes[0].ID)
+	}
+	if entry == "" {
+		return 0
+	}
+	for i := range draft.Flow.Nodes {
+		n := &draft.Flow.Nodes[i]
+		if strings.TrimSpace(n.ID) != entry || strings.TrimSpace(n.Kind) != sdkr.FlowNodePython {
+			continue
+		}
+		code := strings.TrimSpace(n.Code)
+		if code == "" || strings.Contains(code, "trigger") || !strings.Contains(code, "inputs.get") {
+			return 0
+		}
+		lower := strings.ToLower(n.ID + " " + n.Description + " " + n.Intent + " " + n.Output)
+		if !strings.Contains(lower, "message") && !strings.Contains(lower, "input") && !strings.Contains(lower, "request") {
+			return 0
+		}
+		n.Code = `def run(inputs):
+    trigger = inputs.get('trigger') or {}
+    trigger_text = ''
+    if isinstance(trigger, dict):
+        trigger_text = trigger.get('text') or trigger.get('message') or trigger.get('input') or ''
+    elif trigger:
+        trigger_text = str(trigger)
+    return (inputs.get('message') or inputs.get('text') or inputs.get('input') or trigger_text or '').strip()`
+		n.Input = `{"message":"{{ .trigger.text }}","text":"{{ .trigger.text }}","input":"{{ .trigger.text }}"}`
+		ensurePort := func(ports *[]sdkr.FlowPort, name string) {
+			for _, p := range *ports {
+				if p.Name == name {
+					return
+				}
+			}
+			*ports = append(*ports, sdkr.FlowPort{Name: name, Type: "string"})
+		}
+		ensurePort(&n.Inputs, "message")
+		ensurePort(&n.Inputs, "text")
+		ensurePort(&n.Inputs, "input")
+		return 1
+	}
+	return 0
 }
 
 // templateActions returns the inner text of each {{ … }} action in s.

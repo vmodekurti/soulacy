@@ -59,6 +59,60 @@ func TestApplyTemplateFixes_HealsAndIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestApplyTemplateFixes_HealsBrokenEntryCapture(t *testing.T) {
+	draft := Draft{Flow: Flow{
+		Entry: "get_message",
+		Nodes: []sdkr.FlowNode{{
+			ID:          "get_message",
+			Kind:        sdkr.FlowNodePython,
+			Description: "Capture the initial user message",
+			Code:        "def run(inputs):\n    return inputs.get('final_msg', '')",
+			Input:       "{}",
+			Output:      "initial_user_message",
+		}},
+	}}
+	if n := ApplyTemplateFixes(&draft); n != 1 {
+		t.Fatalf("want 1 node changed, got %d", n)
+	}
+	node := draft.Flow.Nodes[0]
+	if !strings.Contains(node.Code, "trigger_text") || !strings.Contains(node.Input, ".trigger.text") {
+		t.Fatalf("entry capture not healed: code=%q input=%q", node.Code, node.Input)
+	}
+	if n := ApplyTemplateFixes(&draft); n != 0 {
+		t.Errorf("expected idempotent (0 changes), got %d", n)
+	}
+}
+
+func TestApplyTemplateFixes_MapsPythonUpstreamInputsAsJSON(t *testing.T) {
+	draft := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+		{
+			ID:     "store_in_kb",
+			Kind:   sdkr.FlowNodePython,
+			Output: "storage_results",
+			Code:   "def run(inputs):\n    return [{'status': 'stored'}]",
+		},
+		{
+			ID:   "send_confirmation",
+			Kind: sdkr.FlowNodePython,
+			Code: "def run(inputs):\n    results = inputs.get('storage_results') or []\n    return str(results)",
+			Input: `Create a confirmation.
+
+Storage Results:
+{{ toJson .storage_results }}`,
+		},
+	}}}
+	if n := ApplyTemplateFixes(&draft); n != 1 {
+		t.Fatalf("want 1 node changed, got %d", n)
+	}
+	want := `{"storage_results": {{ toJson .storage_results }}}`
+	if got := draft.Flow.Nodes[1].Input; got != want {
+		t.Fatalf("python input not mapped as JSON:\nwant %s\ngot  %s", want, got)
+	}
+	if n := ApplyTemplateFixes(&draft); n != 0 {
+		t.Errorf("expected idempotent (0 changes), got %d", n)
+	}
+}
+
 // A path that already reaches a field (.notebook.notebook.id) must NOT be
 // flagged or fixed again — this is what prevents the .id.id.id compounding.
 func TestSuggestTemplateFixes_DoesNotCompound(t *testing.T) {
