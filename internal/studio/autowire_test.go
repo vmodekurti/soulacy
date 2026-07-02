@@ -133,3 +133,29 @@ func TestBuildRepairPrompt_FocusedOnBrokenNodes(t *testing.T) {
 		t.Errorf("repair prompt should NOT include the healthy node: %s", p)
 	}
 }
+
+func TestRepairWiring_NormalizesRawKBWriteHandoff(t *testing.T) {
+	d := Draft{
+		Knowledge: []string{"AI Docs"},
+		Flow: Flow{
+			Nodes: []sdkr.FlowNode{
+				{ID: "tag", Kind: "agent", Agent: "tagger", Output: "tagged_data"},
+				{ID: "store", Kind: "tool", Tool: "kb_write", Input: `{{ .tagged_data }}`},
+			},
+			Edges: []sdkr.FlowEdge{{From: "tag", To: "store"}},
+		},
+	}
+	if n := RepairWiring(&d, Catalog{}); n == 0 {
+		t.Fatal("expected repair to normalize kb_write input")
+	}
+	got := d.Flow.Nodes[1].Input
+	for _, want := range []string{`"kb":"AI Docs"`, `"content":`, `{{ toJson .tagged_data }}`, `"title":"Stored artifact"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("normalized input missing %s:\n%s", want, got)
+		}
+	}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"kb_write"}}})
+	if !r.OK {
+		t.Fatalf("normalized kb_write should pass preflight, blockers: %+v", r.Blockers)
+	}
+}

@@ -19,13 +19,11 @@ func RepairWiring(draft *Draft, cat Catalog) int {
 	if draft == nil {
 		return 0
 	}
-	if draft == nil {
-		return 0
-	}
 	// Output vars first: every executable node must have one, or its result is
 	// dropped (applyFlowResult skips Output=="") and downstream wires/templates
 	// read null. The other passes rely on these names, so assign before them.
 	n := ensureOutputVars(&draft.Flow)
+	n += normalizeKBWriteInputs(draft, cat)
 	n += AutoWire(draft, cat) + ReconcileVars(draft) + reconcileFieldRefs(draft) +
 		fixDoubledSegmentPaths(draft) + fixWholeValueInterpolations(draft) + fixTemplateTypos(draft)
 	// Auto-set a block's timeout from the wait it already declares (e.g. a poll
@@ -41,6 +39,149 @@ func RepairWiring(draft *Draft, cat Catalog) int {
 	// authoring path. Idempotent, so safe on every RepairWiring call.
 	n += PortizeHandoffs(draft, cat)
 	return n
+}
+
+// normalizeKBWriteInputs turns common LLM-generated "store this in KB" handoffs
+// into the real kb_write contract. kb_write is intentionally strict at runtime:
+// it accepts JSON args with at least {"kb": "...", "content": "..."}. Models
+// often wire a tagger/agent reply directly as `{{ .tagged_data }}` or a fenced
+// JSON blob, which can never parse as tool args. This deterministic repair makes
+// that class of generated workflow runnable without weakening the tool.
+func normalizeKBWriteInputs(draft *Draft, cat Catalog) int {
+	if draft == nil || len(draft.Flow.Nodes) == 0 {
+		return 0
+	}
+	kb := defaultKnowledgeBase(*draft, cat)
+	fixed := 0
+	for i := range draft.Flow.Nodes {
+		n := &draft.Flow.Nodes[i]
+		if strings.TrimSpace(n.Kind) != sdkr.FlowNodeTool || strings.TrimSpace(n.Tool) != "kb_write" {
+			continue
+		}
+		raw := strings.TrimSpace(n.Input)
+		obj, ok := decodeInputObject(raw)
+		if !ok {
+			if raw == "" {
+				raw = "{{ .trigger.text }}"
+			}
+			obj = map[string]any{"content": raw}
+		}
+		changed := !ok
+		if strings.TrimSpace(stringish(obj["kb"])) == "" && kb != "" {
+			obj["kb"] = kb
+			changed = true
+		}
+		if strings.TrimSpace(stringish(obj["content"])) == "" {
+			if raw != "" && !ok {
+				obj["content"] = json.RawMessage(jsonSafeTemplate(raw))
+			} else if s := bestUpstreamContentRef(*draft, i); s != "" {
+				obj["content"] = json.RawMessage(jsonSafeTemplate(s))
+			}
+			changed = true
+		}
+		if strings.TrimSpace(stringish(obj["title"])) == "" {
+			obj["title"] = "Stored artifact"
+			changed = true
+		}
+		if strings.TrimSpace(stringish(obj["source"])) == "" {
+			obj["source"] = "{{ .trigger.text }}"
+			changed = true
+		}
+		if changed {
+			b, err := json.Marshal(obj)
+			if err == nil {
+				n.Input = string(b)
+				fixed++
+			}
+		}
+	}
+	return fixed
+}
+
+func defaultKnowledgeBase(draft Draft, cat Catalog) string {
+	for _, kb := range draft.Knowledge {
+		if strings.TrimSpace(kb) != "" {
+			return strings.TrimSpace(kb)
+		}
+	}
+	for _, kb := range cat.KnowledgeBases {
+		if strings.TrimSpace(kb.Name) != "" {
+			return strings.TrimSpace(kb.Name)
+		}
+	}
+	return ""
+}
+
+func bestUpstreamContentRef(draft Draft, consumerIdx int) string {
+	nodes := draft.Flow.Nodes
+	if consumerIdx < 0 || consumerIdx >= len(nodes) {
+		return ""
+	}
+	consumer := nodes[consumerIdx]
+	anc := ancestors(draft.Flow.Edges, nodes)
+	preferred := []string{"tagged", "tagged_data", "tagged_artifacts", "content", "contents", "fetched_content", "text", "message"}
+	outputByName := map[string]string{}
+	for _, n := range nodes {
+		out := strings.TrimSpace(n.Output)
+		if out == "" || n.ID == consumer.ID {
+			continue
+		}
+		if len(draft.Flow.Edges) > 0 {
+			if a := anc[consumer.ID]; a == nil || !a[n.ID] {
+				continue
+			}
+		}
+		outputByName[strings.ToLower(out)] = out
+	}
+	for _, p := range preferred {
+		if out := outputByName[p]; out != "" {
+			return "{{ ." + out + " }}"
+		}
+	}
+	for _, n := range nodes {
+		if strings.TrimSpace(n.Output) == "" || n.ID == consumer.ID {
+			continue
+		}
+		if len(draft.Flow.Edges) > 0 {
+			if a := anc[consumer.ID]; a == nil || !a[n.ID] {
+				continue
+			}
+		} else if consumerIdx > 0 {
+			for j := 0; j < consumerIdx; j++ {
+				if nodes[j].ID == n.ID {
+					return "{{ ." + strings.TrimSpace(n.Output) + " }}"
+				}
+			}
+			continue
+		}
+		return "{{ ." + strings.TrimSpace(n.Output) + " }}"
+	}
+	return ""
+}
+
+func stringish(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	case nil:
+		return ""
+	default:
+		b, err := json.Marshal(x)
+		if err != nil {
+			return ""
+		}
+		return string(b)
+	}
+}
+
+func jsonSafeTemplate(s string) string {
+	s = strings.TrimSpace(s)
+	if m := wholeValueTemplateRe.FindStringSubmatch(s); m != nil {
+		ref := "." + m[1] + m[2]
+		return "{{ toJson " + ref + " }}"
+	}
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // dottedPathRe matches a run of dotted field accesses inside a template, e.g.
@@ -483,6 +624,9 @@ func AutoWire(draft *Draft, cat Catalog) int {
 
 	// Required args per MCP tool, from the catalog param hints.
 	required := map[string][]string{}
+	for tool, reqs := range builtinRequiredToolArgs() {
+		required[tool] = reqs
+	}
 	for _, srv := range cat.MCP {
 		for _, t := range srv.Tools {
 			if name := strings.TrimSpace(t.Name); name != "" {
