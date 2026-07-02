@@ -4230,14 +4230,22 @@ Use null for fields that are not present.`
             <div class="refine-heading">Blockers ({preflight.blockers.length})</div>
             <ul class="pf-list">
               {#each preflight.blockers as b}
-                <li class="pf-item pf-block" class:pf-clickable={!!b.nodeId}
-                    role={b.nodeId ? 'button' : undefined} tabindex={b.nodeId ? 0 : undefined}
-                    on:click={() => b.nodeId && revealNode(b.nodeId)}
-                    on:keydown={(e) => b.nodeId && (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), revealNode(b.nodeId))}
-                    title={b.nodeId ? 'Click to open this block on the canvas' : ''}>
-                  <div class="pf-msg">{b.message}</div>
-                  {#if b.fix}<div class="pf-fix">→ {b.fix}</div>{/if}
-                  {#if b.nodeId}<div class="pf-node">block: {b.nodeId} — click to open ↗</div>{/if}
+                <li>
+                  {#if b.nodeId}
+                    <button class="pf-item pf-block pf-clickable"
+                        type="button"
+                        on:click={() => revealNode(b.nodeId)}
+                        title="Click to open this block on the canvas">
+                      <div class="pf-msg">{b.message}</div>
+                      {#if b.fix}<div class="pf-fix">→ {b.fix}</div>{/if}
+                      <div class="pf-node">block: {b.nodeId} — click to open ↗</div>
+                    </button>
+                  {:else}
+                    <div class="pf-item pf-block">
+                      <div class="pf-msg">{b.message}</div>
+                      {#if b.fix}<div class="pf-fix">→ {b.fix}</div>{/if}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -4249,14 +4257,22 @@ Use null for fields that are not present.`
             <div class="refine-heading">Warnings ({preflight.warnings.length})</div>
             <ul class="pf-list">
               {#each preflight.warnings as w}
-                <li class="pf-item pf-warn" class:pf-clickable={!!w.nodeId}
-                    role={w.nodeId ? 'button' : undefined} tabindex={w.nodeId ? 0 : undefined}
-                    on:click={() => w.nodeId && revealNode(w.nodeId)}
-                    on:keydown={(e) => w.nodeId && (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), revealNode(w.nodeId))}
-                    title={w.nodeId ? 'Click to open this block on the canvas' : ''}>
-                  <div class="pf-msg">{w.message}</div>
-                  {#if w.fix}<div class="pf-fix">→ {w.fix}</div>{/if}
-                  {#if w.nodeId}<div class="pf-node">block: {w.nodeId} — click to open ↗</div>{/if}
+                <li>
+                  {#if w.nodeId}
+                    <button class="pf-item pf-warn pf-clickable"
+                        type="button"
+                        on:click={() => revealNode(w.nodeId)}
+                        title="Click to open this block on the canvas">
+                      <div class="pf-msg">{w.message}</div>
+                      {#if w.fix}<div class="pf-fix">→ {w.fix}</div>{/if}
+                      <div class="pf-node">block: {w.nodeId} — click to open ↗</div>
+                    </button>
+                  {:else}
+                    <div class="pf-item pf-warn">
+                      <div class="pf-msg">{w.message}</div>
+                      {#if w.fix}<div class="pf-fix">→ {w.fix}</div>{/if}
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -4787,14 +4803,6 @@ Use null for fields that are not present.`
   .strip-error { background: rgba(255, 107, 129, 0.12); color: var(--error); }
   .strip-ok { background: rgba(54, 211, 153, 0.12); color: var(--ok); }
   .strip-reco { background: rgba(124, 122, 255, 0.12); color: var(--text); }
-  .strip-reco .reco-how { flex-basis: 100%; color: var(--text-muted); line-height: 1.5; }
-  .strip-reco code {
-    background: var(--bg-elev-2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0 4px;
-    font-size: 11px;
-  }
   .strip-warn { background: rgba(245, 167, 66, 0.12); color: var(--warn, #f5a742); }
 
   /* ── Architect: build button + report + self-heal ─────────────────────── */
@@ -5395,7 +5403,6 @@ Use null for fields that are not present.`
 
   /* ── Run history ──────────────────────────────────────────────────────── */
   .hist-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
-  .hist-head .panel-title { margin: 0; }
   .hist-note { font-size: 11px; color: var(--text-muted); flex: 1 1 auto; }
   .hist-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
   .hist-item {
@@ -5498,14 +5505,6 @@ Use null for fields that are not present.`
   }
   .modal-title { margin: 0 0 10px; font-size: 15px; color: var(--text); }
   .modal-body { margin: 0 0 12px; font-size: 13px; line-height: 1.5; color: var(--text-muted); }
-  .modal-body code {
-    font-family: ui-monospace, monospace;
-    font-size: 12px;
-    background: var(--bg-elev-2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 0 4px;
-  }
   .consent-items { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 8px; }
   .consent-items li {
     background: var(--bg-elev-2);
@@ -5618,7 +5617,17 @@ Use null for fields that are not present.`
 
   /* ── Pre-save validation (preflight) list ───────────────────────────────── */
   .pf-list { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-  .pf-item { border-radius: 8px; padding: 9px 11px; border-left: 3px solid transparent; font-size: 13px; }
+  .pf-item {
+    display: block;
+    width: 100%;
+    border-radius: 8px;
+    padding: 9px 11px;
+    border: 0;
+    border-left: 3px solid transparent;
+    font: inherit;
+    font-size: 13px;
+    text-align: left;
+  }
   .pf-clickable { cursor: pointer; }
   .pf-clickable:hover { filter: brightness(1.15); outline: 1px solid var(--accent, #6c8cff); }
   .pf-block { background: rgba(220,60,60,0.10); border-left-color: #d83c3c; }

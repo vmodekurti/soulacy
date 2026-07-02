@@ -138,6 +138,9 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	if len(builtins) > 0 {
 		def.Builtins = &builtins
 	}
+	if flowNeedsSystemCapability(draft.Flow) && acceptPrivilegedExposure {
+		def.Capabilities = appendCapability(def.Capabilities, "system")
+	}
 	if len(mcpTools) > 0 {
 		def.MCPTools = &mcpTools
 	}
@@ -521,6 +524,33 @@ func slug(name string) string {
 var systemBuiltins = map[string]bool{
 	"shell_exec": true, "run_script": true, "write_file": true,
 	"download_file": true, "install_library": true,
+}
+
+func flowNeedsSystemCapability(f Flow) bool {
+	for _, n := range f.Nodes {
+		if systemBuiltins[strings.TrimSpace(n.Tool)] {
+			return true
+		}
+		for _, cap := range n.Requires {
+			if strings.TrimSpace(cap) == "system" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func appendCapability(caps []string, cap string) []string {
+	cap = strings.TrimSpace(cap)
+	if cap == "" {
+		return caps
+	}
+	for _, existing := range caps {
+		if strings.TrimSpace(existing) == cap {
+			return caps
+		}
+	}
+	return append(caps, cap)
 }
 
 // buildSystemPrompt derives a well-defined system prompt from the saved

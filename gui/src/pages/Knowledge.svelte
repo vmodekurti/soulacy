@@ -12,6 +12,7 @@
   let enabled        = true
   let defaultProvider = 'ollama'
   let defaultModel    = 'nomic-embed-text'
+  let embeddingProviders = []
 
   let showCreate = false
   let newKB = { name: '', description: '', embedding_provider: 'ollama', embedding_model: 'nomic-embed-text' }
@@ -38,6 +39,7 @@
       const res = await api.knowledge.list()
       kbs      = res.knowledge_bases || []
       enabled  = res.enabled !== false
+      embeddingProviders = res.embedding_providers || []
       if (res.default_embedding_provider) {
         defaultProvider = res.default_embedding_provider
         newKB.embedding_provider = res.default_embedding_provider
@@ -56,6 +58,30 @@
     } finally {
       loading = false
     }
+  }
+
+  $: selectedEmbeddingProvider = embeddingProviders.find(p => p.id === newKB.embedding_provider)
+  $: embeddingModelOptions = selectedEmbeddingProvider?.models || []
+
+  function providerDefaultModel(providerId) {
+    const p = embeddingProviders.find(x => x.id === providerId)
+    return p?.default_model || p?.models?.[0] || defaultModel
+  }
+
+  function openCreateModal() {
+    error = ''
+    info = ''
+    if (!newKB.embedding_provider && embeddingProviders.length > 0) {
+      newKB.embedding_provider = defaultProvider || embeddingProviders[0].id
+    }
+    if (!newKB.embedding_model) {
+      newKB.embedding_model = providerDefaultModel(newKB.embedding_provider)
+    }
+    showCreate = true
+  }
+
+  function onEmbeddingProviderChange() {
+    newKB.embedding_model = providerDefaultModel(newKB.embedding_provider)
   }
 
   async function selectKB(kb) {
@@ -246,7 +272,7 @@
     <h1>Knowledge</h1>
     <div class="header-actions">
       <button class="btn-secondary" on:click={loadKBs} disabled={loading}>↺ Refresh</button>
-      <button class="btn-primary" on:click={() => { showCreate = true; error = ''; info = '' }} disabled={!enabled}>+ New KB</button>
+      <button class="btn-primary" on:click={openCreateModal} disabled={!enabled}>+ New KB</button>
     </div>
   </div>
 
@@ -414,17 +440,33 @@
       <div class="row">
         <label class="flex">
           Provider
-          <input type="text" bind:value={newKB.embedding_provider} />
+          <select bind:value={newKB.embedding_provider} on:change={onEmbeddingProviderChange}>
+            {#if embeddingProviders.length === 0}
+              <option value="">No embedding providers</option>
+            {:else}
+              {#each embeddingProviders as provider}
+                <option value={provider.id}>{provider.id}</option>
+              {/each}
+            {/if}
+          </select>
         </label>
         <label class="flex">
           Model
-          <input type="text" bind:value={newKB.embedding_model} />
+          <select bind:value={newKB.embedding_model} disabled={!newKB.embedding_provider}>
+            {#if embeddingModelOptions.length === 0}
+              <option value={newKB.embedding_model || ''}>{newKB.embedding_model || 'No models available'}</option>
+            {:else}
+              {#each embeddingModelOptions as model}
+                <option value={model}>{model}</option>
+              {/each}
+            {/if}
+          </select>
         </label>
       </div>
       <p class="hint">Dim is probed automatically from the embedder when you create the KB.</p>
       <div class="modal-row">
         <button class="btn-secondary" on:click={() => showCreate = false}>Cancel</button>
-        <button class="btn-primary" on:click={createKB} disabled={!newKB.name.trim()}>Create</button>
+        <button class="btn-primary" on:click={createKB} disabled={!newKB.name.trim() || !newKB.embedding_provider || !newKB.embedding_model}>Create</button>
       </div>
     </div>
   </div>

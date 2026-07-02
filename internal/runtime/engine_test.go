@@ -304,6 +304,7 @@ func TestAllToolSchemasBuiltinsGate(t *testing.T) {
 			want: []string{"web_search"},
 			avoid: []string{
 				"kb_search",
+				"kb_write",
 				"read_skill",
 				"read_skill_file",
 			},
@@ -311,7 +312,7 @@ func TestAllToolSchemasBuiltinsGate(t *testing.T) {
 		{
 			name:  "empty builtins disables every builtin",
 			def:   &agent.Definition{ID: "none", Builtins: &none, Knowledge: []string{"kb"}, Skills: []string{"csv"}},
-			avoid: []string{"web_search", "kb_search", "read_skill", "read_skill_file"},
+			avoid: []string{"web_search", "kb_search", "kb_write", "read_skill", "read_skill_file"},
 		},
 		{
 			name: "explicit builtin permits only that builtin",
@@ -319,6 +320,7 @@ func TestAllToolSchemasBuiltinsGate(t *testing.T) {
 			want: []string{"web_search"},
 			avoid: []string{
 				"kb_search",
+				"kb_write",
 				"read_skill",
 				"read_skill_file",
 			},
@@ -326,12 +328,12 @@ func TestAllToolSchemasBuiltinsGate(t *testing.T) {
 		{
 			name: "wildcard builtins still respect gates",
 			def:  &agent.Definition{ID: "all", Builtins: &all, Knowledge: []string{"kb"}, Skills: []string{"csv"}},
-			want: []string{"web_search", "kb_search", "read_skill", "read_skill_file"},
+			want: []string{"web_search", "kb_search", "kb_write", "read_skill", "read_skill_file"},
 		},
 		{
 			name:  "listing gated builtin without prerequisite does not expose it",
 			def:   &agent.Definition{ID: "nogate", Builtins: &knowledgeOnly},
-			avoid: []string{"kb_search", "web_search"},
+			avoid: []string{"kb_search", "kb_write", "web_search"},
 		},
 	}
 
@@ -652,7 +654,7 @@ func TestHandleSynthesisRetryRecoversReply(t *testing.T) {
 	provider.responses = []llm.CompletionResponse{
 		{ToolCalls: []message.ToolCall{duplicateCall}},
 		{ToolCalls: []message.ToolCall{duplicateCall}},
-		{Content: "", OutputTokens: 758},                  // synthesis: empty
+		{Content: "", OutputTokens: 758},                   // synthesis: empty
 		{Content: "Here is the synthesized final report."}, // retry: real text
 	}
 
@@ -1197,12 +1199,12 @@ func TestHandleExecutesSystemTool(t *testing.T) {
 // pickRouterRoute, which IS pure and table-test-friendly.
 //
 // Cases cover:
-//   • prefix match (case-insensitive)
-//   • contains any-of (case-insensitive)
-//   • regex with explicit (?i) flag
-//   • declaration order — earlier match wins even if later route also matches
-//   • fallback route (no match clauses) catches everything else
-//   • no-match-no-fallback returns (-1, false) so the dispatcher errors
+//   - prefix match (case-insensitive)
+//   - contains any-of (case-insensitive)
+//   - regex with explicit (?i) flag
+//   - declaration order — earlier match wins even if later route also matches
+//   - fallback route (no match clauses) catches everything else
+//   - no-match-no-fallback returns (-1, false) so the dispatcher errors
 //     cleanly instead of silently misrouting
 func TestPickRouterRoute(t *testing.T) {
 	routes := []agent.RouterRoute{

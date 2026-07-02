@@ -815,10 +815,6 @@
   .guide-intro { color: #c8cadf; font-size: .82rem; line-height: 1.5; margin: .3rem 0 .5rem; }
   .guide-steps { margin: 0 0 .5rem 1.1rem; padding: 0; }
   .guide-steps li { color: #b0b5d8; font-size: .8rem; line-height: 1.55; margin-bottom: .3rem; }
-  .guide-steps code, .guide-intro code, .guide-test code, .guide-hint code {
-    background: rgba(108,99,255,.12); border-radius: 4px;
-    padding: .05rem .3rem; font-size: .92em; color: #ada8ff;
-  }
   .guide-test { color: #4caf82; font-size: .78rem; line-height: 1.5; margin: .4rem 0 0; }
   .guide-warning {
     color: #f0a060; font-size: .78rem; line-height: 1.5; margin: .45rem 0 0;

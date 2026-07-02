@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/google/uuid"
 	"github.com/soulacy/soulacy/internal/llm"
 )
 
@@ -114,6 +115,9 @@ func (s *Service) Search(ctx context.Context, kbName, query string, topK int) (s
 		return "", fmt.Errorf("kb_search: knowledge base %q not found", kbName)
 	}
 
+	if s.Embedders == nil {
+		return "", errors.New("kb_search: no embedder registry configured")
+	}
 	embedder := s.Embedders.Get(kb.EmbeddingProvider)
 	if embedder == nil {
 		return "", fmt.Errorf("kb_search: no embedder registered for provider %q (KB %q)", kb.EmbeddingProvider, kbName)
@@ -152,6 +156,115 @@ func (s *Service) Search(ctx context.Context, kbName, query string, topK int) (s
 	}
 
 	return FormatHits(kbName, query, hits), nil
+}
+
+// IngestText stores text content in a named knowledge base using the same
+// chunking and embedding pipeline as the REST ingestion endpoint.
+func (s *Service) IngestText(ctx context.Context, kbName, title, source, mimeType, content string) (*Document, error) {
+	if s == nil || s.Store == nil {
+		return nil, errors.New("knowledge: service not configured")
+	}
+	kbName = strings.TrimSpace(kbName)
+	if kbName == "" {
+		return nil, errors.New("kb_write: kb is required")
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil, errors.New("kb_write: content is required")
+	}
+	kb, err := s.Store.GetKB(kbName)
+	if err != nil {
+		return nil, err
+	}
+	if kb == nil {
+		return nil, fmt.Errorf("kb_write: knowledge base %q not found", kbName)
+	}
+	if strings.TrimSpace(title) == "" {
+		title = "Untitled document"
+	}
+	text, err := ExtractText(mimeType, []byte(content))
+	if err != nil {
+		return nil, fmt.Errorf("kb_write: extract text: %w", err)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil, errors.New("kb_write: document produced no extractable text")
+	}
+	if s.Embedders == nil {
+		return nil, errors.New("kb_write: no embedder registry configured")
+	}
+	embedder := s.Embedders.Get(kb.EmbeddingProvider)
+	if embedder == nil {
+		return nil, fmt.Errorf("kb_write: no embedder registered for provider %q (KB %q)", kb.EmbeddingProvider, kbName)
+	}
+
+	parentSize := kb.ChunkSize * 4
+	if parentSize < 1 {
+		parentSize = 4000
+	}
+	parentTexts := ChunkText(text, parentSize, kb.ChunkOverlap*2)
+	childTexts := ChunkText(text, kb.ChunkSize, kb.ChunkOverlap)
+	if len(childTexts) == 0 {
+		return nil, errors.New("kb_write: no chunks produced")
+	}
+
+	const batchSize = 64
+	vecs := make([][]float32, 0, len(childTexts))
+	for i := 0; i < len(childTexts); i += batchSize {
+		end := i + batchSize
+		if end > len(childTexts) {
+			end = len(childTexts)
+		}
+		batch, eerr := embedder.Embed(ctx, kb.EmbeddingModel, childTexts[i:end])
+		if eerr != nil {
+			return nil, fmt.Errorf("kb_write: embed batch %d-%d: %w", i, end, eerr)
+		}
+		vecs = append(vecs, batch...)
+	}
+	if len(vecs) != len(childTexts) {
+		return nil, fmt.Errorf("kb_write: embedder returned %d vectors for %d chunks", len(vecs), len(childTexts))
+	}
+
+	parentIDs := make([]string, len(parentTexts))
+	for i := range parentTexts {
+		parentIDs[i] = uuid.New().String()
+	}
+	parentEndRunes := make([]int, len(parentTexts))
+	pos := 0
+	for i, p := range parentTexts {
+		pos += len([]rune(p))
+		parentEndRunes[i] = pos
+	}
+
+	allChunks := make([]Chunk, 0, len(parentTexts)+len(childTexts))
+	for i, pt := range parentTexts {
+		allChunks = append(allChunks, Chunk{ID: parentIDs[i], Content: pt})
+	}
+	childRunePos := 0
+	parentIdx := 0
+	for i, ct := range childTexts {
+		cr := len([]rune(ct))
+		mid := childRunePos + cr/2
+		for parentIdx < len(parentEndRunes)-1 && mid > parentEndRunes[parentIdx] {
+			parentIdx++
+		}
+		parentID := ""
+		if len(parentIDs) > 0 {
+			parentID = parentIDs[parentIdx]
+		}
+		allChunks = append(allChunks, Chunk{
+			Content:       ct,
+			ParentChunkID: parentID,
+			Vector:        vecs[i],
+		})
+		childRunePos += cr
+	}
+
+	return s.Store.AddDocument(kb, Document{
+		Title:    title,
+		Source:   source,
+		MIMEType: mimeType,
+		ByteSize: int64(len(content)),
+	}, allChunks)
 }
 
 // FormatHits renders search results as a compact XML-ish block. Designed to

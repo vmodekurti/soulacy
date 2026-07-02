@@ -445,6 +445,9 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 		sb.WriteString("Available tools: ")
 		sb.WriteString(strings.Join(catalog.Tools, ", "))
 		sb.WriteString("\n")
+		if stringIn(catalog.Tools, "kb_write") {
+			sb.WriteString("- For intents like \"store in Soulacy's Knowledge store\", \"save to KB\", \"ingest documents/URLs into knowledge\", use the `kb_write` tool with an attached `knowledge` base. Do NOT use `write_file` for knowledge ingestion; `write_file` is only for arbitrary host files and requires system authorization.\n")
+		}
 	}
 	if len(catalog.Providers) > 0 {
 		sb.WriteString("Available providers: ")
@@ -499,6 +502,15 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+func stringIn(xs []string, want string) bool {
+	for _, x := range xs {
+		if strings.TrimSpace(x) == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseDraft tolerantly extracts a Draft from raw model output: it strips

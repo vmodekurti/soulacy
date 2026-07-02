@@ -143,6 +143,9 @@ func TestToAgentDefinition_ConsentStampsLabel(t *testing.T) {
 	if def.Labels[StudioPrivilegeAckLabel] != "true" {
 		t.Errorf("label %q = %q, want \"true\"", StudioPrivilegeAckLabel, def.Labels[StudioPrivilegeAckLabel])
 	}
+	if !containsString(def.Capabilities, "system") {
+		t.Errorf("Capabilities = %v, want system for approved privileged workflow", def.Capabilities)
+	}
 	if def.Builtins == nil {
 		t.Fatalf("Builtins nil, want write_file projected from the flow")
 	}
@@ -174,6 +177,9 @@ func TestToAgentDefinition_NoConsent_NoLabel(t *testing.T) {
 	if _, ok := def.Labels[StudioPrivilegeAckLabel]; ok {
 		t.Errorf("label %q present without consent, want absent", StudioPrivilegeAckLabel)
 	}
+	if containsString(def.Capabilities, "system") {
+		t.Errorf("Capabilities = %v, want no system capability without consent", def.Capabilities)
+	}
 }
 
 func TestToAgentDefinition_ConsentNoChannel_NoLabel(t *testing.T) {
@@ -188,4 +194,13 @@ func TestToAgentDefinition_ConsentNoChannel_NoLabel(t *testing.T) {
 	if _, ok := def.Labels[StudioPrivilegeAckLabel]; ok {
 		t.Errorf("label present with no channel bound, want absent")
 	}
+}
+
+func containsString(xs []string, want string) bool {
+	for _, x := range xs {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }

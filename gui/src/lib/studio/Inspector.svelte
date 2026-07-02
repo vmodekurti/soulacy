@@ -994,16 +994,6 @@
     color: var(--text);
     word-break: break-word;
   }
-  .fields pre {
-    margin: 0;
-    white-space: pre-wrap;
-    font-family: ui-monospace, monospace;
-    font-size: 12px;
-    background: var(--bg-elev-2);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    padding: 6px 8px;
-  }
   .port {
     font-family: ui-monospace, monospace;
     font-size: 11px;

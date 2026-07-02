@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -41,7 +42,92 @@ func (s *Server) handleListKnowledge(c *fiber.Ctx) error {
 		"enabled":                    true,
 		"default_embedding_provider": s.cfg.Knowledge.EmbeddingProvider,
 		"default_embedding_model":    s.cfg.Knowledge.EmbeddingModel,
+		"embedding_providers":        s.embeddingProviderCatalog(),
 	})
+}
+
+func (s *Server) embeddingProviderCatalog() []fiber.Map {
+	svc := s.engine.Knowledge()
+	if svc == nil || svc.Embedders == nil {
+		return []fiber.Map{}
+	}
+	ids := svc.Embedders.IDs()
+	sort.Strings(ids)
+	out := make([]fiber.Map, 0, len(ids))
+	for _, id := range ids {
+		models := embeddingModelOptions(id)
+		if id == s.cfg.Knowledge.EmbeddingProvider && s.cfg.Knowledge.EmbeddingModel != "" {
+			models = prependUnique(models, s.cfg.Knowledge.EmbeddingModel)
+		}
+		out = append(out, fiber.Map{
+			"id":            id,
+			"default_model": firstNonEmpty(providerDefaultEmbeddingModel(id), s.cfg.Knowledge.EmbeddingModel),
+			"models":        models,
+		})
+	}
+	return out
+}
+
+func embeddingModelOptions(provider string) []string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "ollama":
+		return []string{"nomic-embed-text", "mxbai-embed-large", "all-minilm"}
+	case "openai":
+		return []string{"text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"}
+	case "google", "gemini":
+		return []string{"gemini-embedding-001", "text-embedding-004"}
+	case "ollama_cloud":
+		return []string{"nomic-embed-text", "mxbai-embed-large", "all-minilm"}
+	case "nvidia":
+		return []string{"nvidia/nv-embedqa-e5-v5", "nvidia/llama-3.2-nv-embedqa-1b-v2"}
+	case "openroute", "openrouter", "together", "groq", "mistral", "deepseek":
+		return []string{"text-embedding-3-small", "text-embedding-3-large"}
+	default:
+		return nil
+	}
+}
+
+func providerDefaultEmbeddingModel(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "ollama":
+		return "nomic-embed-text"
+	case "openai":
+		return "text-embedding-3-small"
+	case "google", "gemini":
+		return "gemini-embedding-001"
+	case "ollama_cloud":
+		return "nomic-embed-text"
+	case "nvidia":
+		return "nvidia/nv-embedqa-e5-v5"
+	case "openroute", "openrouter", "together", "groq", "mistral", "deepseek":
+		return "text-embedding-3-small"
+	default:
+		return ""
+	}
+}
+
+func prependUnique(xs []string, first string) []string {
+	first = strings.TrimSpace(first)
+	if first == "" {
+		return xs
+	}
+	out := []string{first}
+	for _, x := range xs {
+		x = strings.TrimSpace(x)
+		if x != "" && x != first {
+			out = append(out, x)
+		}
+	}
+	return out
+}
+
+func firstNonEmpty(xs ...string) string {
+	for _, x := range xs {
+		if strings.TrimSpace(x) != "" {
+			return x
+		}
+	}
+	return ""
 }
 
 // handleCreateKnowledge creates a new KB. The embedding dim is probed against
