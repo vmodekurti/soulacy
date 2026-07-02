@@ -442,7 +442,7 @@
       <span class="pill">{cronAgents.length}</span>
     </div>
     {#if cronAgents.length === 0}
-      <div class="empty">No agents with <code>trigger: cron</code>. Create one in the Build tab or add a SOUL.yaml.</div>
+      <div class="empty">No agents with <code>trigger: cron</code>. Create one in Studio or add a SOUL.yaml.</div>
     {:else}
       <table class="tbl">
         <thead>

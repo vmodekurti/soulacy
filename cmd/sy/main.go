@@ -223,7 +223,7 @@ func buildChatCmd() *cobra.Command {
 				"user_id":  userID,
 				"text":     args[0],
 			})
-			resp, err := apiCall("POST", "/chat", body)
+			resp, err := apiCallWithTimeout("POST", "/chat", body, 10*time.Minute)
 			if err != nil {
 				return err
 			}
@@ -878,6 +878,10 @@ func buildVersionCmd() *cobra.Command {
 // ── HTTP helpers ──────────────────────────────────────────────────────────────
 
 func apiCall(method, path string, body []byte) ([]byte, error) {
+	return apiCallWithTimeout(method, path, body, 30*time.Second)
+}
+
+func apiCallWithTimeout(method, path string, body []byte, timeout time.Duration) ([]byte, error) {
 	url := gatewayURL + "/api/v1" + path
 	var bodyReader io.Reader
 	if body != nil {
@@ -893,9 +897,12 @@ func apiCall(method, path string, body []byte) ([]byte, error) {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: timeout}
 	resp, err := client.Do(req)
 	if err != nil {
+		if os.IsTimeout(err) {
+			return nil, fmt.Errorf("gateway request timed out after %s: %s %s", timeout, method, path)
+		}
 		return nil, fmt.Errorf("cannot reach gateway at %s — is it running?\n  hint: run 'sy server start'", gatewayURL)
 	}
 	defer resp.Body.Close()

@@ -133,3 +133,65 @@ func TestStoreUpdateDraftPersistsAndLocksReviewed(t *testing.T) {
 		t.Fatal("expected reviewed proposal edit to fail")
 	}
 }
+
+func TestStoreSummaryCountsReviewHealth(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "learning.db")
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	mem, err := store.Add(Proposal{
+		AgentID:    "agent-a",
+		Kind:       "memory",
+		Content:    "remember this",
+		Confidence: 0.8,
+		Source:     "post_run",
+		Meta:       map[string]string{"tools_used": "search, fetch"},
+	})
+	if err != nil {
+		t.Fatalf("Add memory: %v", err)
+	}
+	skill, err := store.Add(Proposal{
+		AgentID:    "agent-a",
+		Kind:       "skill",
+		Content:    "skill draft",
+		Confidence: 0.6,
+		Source:     "manual_run_review",
+		Meta:       map[string]string{"tools_used": "search"},
+	})
+	if err != nil {
+		t.Fatalf("Add skill: %v", err)
+	}
+	if _, err := store.UpdateStatus(mem.ID, StatusRejected); err != nil {
+		t.Fatalf("reject memory: %v", err)
+	}
+	if _, err := store.UpdateStatusMeta(skill.ID, StatusAccepted, map[string]string{"installed_path": "/skills/demo/SKILL.md"}); err != nil {
+		t.Fatalf("accept skill: %v", err)
+	}
+	if _, err := store.Add(Proposal{AgentID: "agent-b", Kind: "procedure", Content: "other agent"}); err != nil {
+		t.Fatalf("Add other: %v", err)
+	}
+
+	got, err := store.Summary("agent-a")
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	if got.Total != 2 || got.Accepted != 1 || got.Rejected != 1 || got.Pending != 0 {
+		t.Fatalf("status counts = %+v", got)
+	}
+	if got.Memories != 1 || got.Skills != 1 || got.InstalledSkills != 1 || got.Procedures != 0 {
+		t.Fatalf("kind counts = %+v", got)
+	}
+	if got.AverageConfidence < 0.69 || got.AverageConfidence > 0.71 {
+		t.Fatalf("AverageConfidence = %v, want ~0.7", got.AverageConfidence)
+	}
+	if got.BySource["post_run"] != 1 || got.BySource["manual_run_review"] != 1 {
+		t.Fatalf("BySource = %#v", got.BySource)
+	}
+	if got.ByTool["search"] != 2 || got.ByTool["fetch"] != 1 {
+		t.Fatalf("ByTool = %#v", got.ByTool)
+	}
+	if got.LatestAt == nil {
+		t.Fatal("LatestAt was not set")
+	}
+}

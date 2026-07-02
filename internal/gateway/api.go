@@ -1020,6 +1020,12 @@ type channelSpec struct {
 	Fields []channelField
 }
 
+type channelDiagnostic struct {
+	Severity string `json:"severity"`
+	Message  string `json:"message"`
+	Remedy   string `json:"remedy,omitempty"`
+}
+
 // channelSpecs is the catalog of every channel Soulacy supports. The GUI uses
 // this to render configuration forms even for channels not yet configured.
 var channelSpecs = []channelSpec{
@@ -1228,6 +1234,61 @@ func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]c
 	return out
 }
 
+func channelDiagnostics(spec channelSpec, cfg map[string]any, enabled, registered bool, st channels.AdapterStatus, bots []fiber.Map) []channelDiagnostic {
+	var out []channelDiagnostic
+	add := func(severity, message, remedy string) {
+		out = append(out, channelDiagnostic{Severity: severity, Message: message, Remedy: remedy})
+	}
+	if spec.Always {
+		return out
+	}
+	if cfg == nil || !enabled {
+		add("info", "Channel is disabled.", "Enable it after saving required settings.")
+		return out
+	}
+	for _, f := range spec.Fields {
+		if !f.Required {
+			continue
+		}
+		if channelSupportsBots(spec.ID) && len(bots) > 0 && !valuePresent(cfg[f.Key]) {
+			continue
+		}
+		if f.Key == "agent_id" && spec.ID == "telegram" && channels.ParseBoolValue(cfg["outbound_only"], false) {
+			continue
+		}
+		if !valuePresent(cfg[f.Key]) {
+			add("fail", f.Label+" is missing.", "Open channel settings and fill this field.")
+		}
+	}
+	if !registered {
+		add("warn", "Adapter is not registered in the live gateway.", "Restart the gateway after saving channel settings.")
+	} else if !st.Connected {
+		detail := strings.TrimSpace(st.Detail)
+		if detail == "" {
+			detail = "adapter is offline"
+		}
+		add("warn", "Adapter is not connected: "+detail+".", "Check credentials, allowlists, network access, then restart or reconnect.")
+	}
+	if valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"]) || valuePresent(cfg["access_token"]) {
+		if !valuePresent(cfg["default_output_to"]) {
+			add("info", "No default output destination is configured.", "Set a default output destination if cron agents should send here without per-agent schedule.output.to.")
+		}
+	}
+	for _, bot := range bots {
+		agentID, _ := bot["agent_id"].(string)
+		adapterID, _ := bot["_adapter_id"].(string)
+		connected, _ := bot["_connected"].(bool)
+		outboundOnly := channels.ParseBoolValue(bot["outbound_only"], false)
+		if !outboundOnly && strings.TrimSpace(agentID) == "" {
+			add("fail", "Bot mapping "+adapterID+" has no agent.", "Select an agent for interactive bot mappings or mark the row send-only.")
+		}
+		if !connected {
+			add("warn", "Bot mapping "+adapterID+" is not connected.", "Restart the gateway or check that the bot token is valid.")
+		}
+	}
+	return out
+}
+
 func rawBotList(raw any) []map[string]any {
 	switch list := raw.(type) {
 	case []map[string]any:
@@ -1310,17 +1371,18 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 		st, registered := statuses[spec.ID]
 
 		out = append(out, fiber.Map{
-			"id":         spec.ID,
-			"name":       spec.Name,
-			"always":     spec.Always,
-			"enabled":    enabled,
-			"configured": configured,
-			"registered": registered,
-			"schema":     spec.Fields,
-			"bot_schema": spec.Fields,
-			"multi_bot":  channelSupportsBots(spec.ID),
-			"bots":       bots,
-			"settings":   settings,
+			"id":          spec.ID,
+			"name":        spec.Name,
+			"always":      spec.Always,
+			"enabled":     enabled,
+			"configured":  configured,
+			"registered":  registered,
+			"schema":      spec.Fields,
+			"bot_schema":  spec.Fields,
+			"multi_bot":   channelSupportsBots(spec.ID),
+			"bots":        bots,
+			"settings":    settings,
+			"diagnostics": channelDiagnostics(spec, cfg, enabled, registered, st, bots),
 			"status": fiber.Map{
 				"connected": st.Connected,
 				"detail":    st.Detail,
@@ -3614,13 +3676,51 @@ func (s *Server) handleListTemplates(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	s.applyTemplateRuntimeDefaults(entries)
 	return c.JSON(fiber.Map{"templates": entries, "count": len(entries)})
+}
+
+func (s *Server) applyTemplateRuntimeDefaults(entries []templates.Entry) {
+	for i := range entries {
+		if entries[i].Definition == nil {
+			continue
+		}
+		s.applyTemplateDefinitionDefaults(entries[i].Definition)
+		modelDetail := strings.TrimSpace(entries[i].Definition.LLM.Provider)
+		if model := strings.TrimSpace(entries[i].Definition.LLM.Model); model != "" {
+			if modelDetail != "" {
+				modelDetail += " / "
+			}
+			modelDetail += model
+		}
+		for j := range entries[i].Setup {
+			if entries[i].Setup[j].Key != "model" {
+				continue
+			}
+			entries[i].Setup[j].Status = "ready"
+			entries[i].Setup[j].Detail = modelDetail
+		}
+	}
+}
+
+func (s *Server) applyTemplateDefinitionDefaults(def *agent.Definition) {
+	if def == nil || s.cfg.LLM.DefaultProvider == "" {
+		return
+	}
+	def.LLM.Provider = s.cfg.LLM.DefaultProvider
+	if pc, ok := s.cfg.LLM.Providers[def.LLM.Provider]; ok && strings.TrimSpace(pc.Model) != "" {
+		def.LLM.Model = strings.TrimSpace(pc.Model)
+	}
 }
 
 // handleInstantiateTemplate clones a template into a fresh agent via the
 // loader. Body (all optional):
 //
-//	{ "id": "my-bot" }   // desired agent ID; auto-derived if omitted
+//	{
+//	  "id": "my-bot",                         // desired agent ID; auto-derived if omitted
+//	  "cron": "0 7 * * *",                   // optional schedule override
+//	  "output": {"channel":"telegram","to":"@my_channel","template":"{reply}"}
+//	}
 //
 // Returns the created Definition. The agent is created enabled (matches the
 // normal create-agent flow) so it shows up in the GUI immediately. The
@@ -3631,7 +3731,14 @@ func (s *Server) handleInstantiateTemplate(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusBadRequest, "template name is required")
 	}
 	var req struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		Cron   string `json:"cron"`
+		Output struct {
+			Channel  string `json:"channel"`
+			To       string `json:"to"`
+			BotName  string `json:"bot_name"`
+			Template string `json:"template"`
+		} `json:"output"`
 	}
 	// Body is optional — empty body is fine; only log unexpected parse errors.
 	if err := c.BodyParser(&req); err != nil && err != fiber.ErrUnprocessableEntity {
@@ -3645,11 +3752,28 @@ func (s *Server) handleInstantiateTemplate(c *fiber.Ctx) error {
 		return s.errJSON(c, fiber.StatusNotFound, err)
 	}
 
-	// Default LLM provider to the configured one if the template left it
-	// blank (templates ship with `ollama` but a user without Ollama will
-	// want their own default to win).
-	if def.LLM.Provider == "" {
-		def.LLM.Provider = s.cfg.LLM.DefaultProvider
+	// Starter templates should run on the user's configured default model.
+	// Embedded templates intentionally carry conservative example providers
+	// (often local Ollama), but a one-click install should not create an agent
+	// that gets disabled at boot because the example model is unavailable.
+	s.applyTemplateDefinitionDefaults(def)
+	if strings.TrimSpace(req.Cron) != "" {
+		if def.Schedule == nil {
+			def.Schedule = &agent.Schedule{}
+		}
+		def.Schedule.Cron = strings.TrimSpace(req.Cron)
+		def.Trigger = agent.TriggerCron
+	}
+	if strings.TrimSpace(req.Output.Channel) != "" || strings.TrimSpace(req.Output.To) != "" {
+		if def.Schedule == nil {
+			def.Schedule = &agent.Schedule{}
+		}
+		def.Schedule.Output = &agent.ScheduleOutput{
+			Channel:  strings.TrimSpace(req.Output.Channel),
+			To:       strings.TrimSpace(req.Output.To),
+			BotName:  strings.TrimSpace(req.Output.BotName),
+			Template: strings.TrimSpace(req.Output.Template),
+		}
 	}
 	def.Enabled = true
 

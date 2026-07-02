@@ -1,6 +1,6 @@
 # Soulacy Functionality And Competitive Roadmap
 
-Date: 2026-07-01
+Date: 2026-07-02
 
 ## Executive Summary
 
@@ -164,6 +164,8 @@ Implemented:
 - Scheduled output routing through `schedule.output`.
 - Failure notifications through `notify_on_failure`.
 - Channel binding safety for privileged agents.
+- Channel delivery diagnostics in Channels and Doctor for missing credentials,
+  offline adapters, invalid bot mappings, and default-output gaps.
 
 Representative files:
 
@@ -288,6 +290,7 @@ Implemented:
 - Config GUI.
 - Doctor/onboard/daemon CLI work appears at least partially present.
 - Provider/secrets doctor surface in the GUI/API.
+- Channel delivery doctor checks for production readiness.
 
 Representative files:
 
@@ -392,10 +395,10 @@ MVP stories:
 - Add activity-triggered learning proposals from real runs. *(implemented)*
 - Add memory proposals UI: accept/reject/edit. *(implemented)*
 - Add skill proposal UI: generated `SKILL.md`, tests/checklist, install button. *(implemented)*
-- Add "why I remembered this" provenance on memory entries.
+- Add "why I remembered this" provenance on memory entries. *(partially implemented through learning summary source/tool metrics)*
 - Inject accepted procedures/skills into future planning with clear attribution.
 - Add recurring reflection jobs with approval gates.
-- Add learning quality metrics: accepted/rejected proposal rate, repeated-error reduction, and skill reuse count.
+- Add learning quality metrics: accepted/rejected proposal rate, confidence, installed skills, source/tool provenance. *(implemented; repeated-error reduction and skill reuse counts still future)*
 
 ### 2. Intent-First Studio
 
@@ -572,7 +575,7 @@ MVP stories:
 - Run replay from action log. *(implemented)*
 - Activity-to-Studio run debugging with action-log evidence and verified repair. *(implemented)*
 - Studio whole-workflow integrity checks before save/run. *(implemented)*
-- Channel delivery diagnostics and guided fixes.
+- Channel delivery diagnostics and guided fixes. *(implemented in Channels and Doctor)*
 - Policy prompts for shell/file/network actions.
 
 ### 10. Template Gallery And Vertical Packs
@@ -616,7 +619,7 @@ MVP stories:
 2. Chat artifact panel.
 3. File upload/session attachments.
 4. Template gallery polish.
-5. Failure notifications and schedule output QA.
+5. Failure notifications and schedule output QA. *(channel diagnostics implemented; delivery regression pack still future)*
 
 ### Phase 2: Learning Loop
 

@@ -100,6 +100,25 @@ schedule:
 For a Telegram channel, add the bot as an administrator and use the channel id
 or public handle, for example `@your_channel_name`, as `schedule.output.to`.
 
+### Troubleshooting Telegram Delivery
+
+Open **Channels -> Telegram** and read **Delivery checks**:
+
+- `Default outbound bot token is missing` means the top-level scheduled-output
+  sender has no token saved.
+- `Adapter is not registered` usually means settings were saved but the gateway
+  has not been restarted yet.
+- `Adapter is not connected` means the token, network, or Telegram Bot API
+  connection failed.
+- `No default output destination is configured` is fine for agents that set
+  `schedule.output.to`, but cron agents without their own destination need a
+  channel-level `default_output_to`.
+- A dedicated bot mapping must either select an `agent_id` for interactive use
+  or be marked `outbound_only` for send-only use.
+
+You can also call `GET /api/v1/doctor`; its `channels` section returns the
+same diagnostics for automated production checks.
+
 ---
 
 ## Features

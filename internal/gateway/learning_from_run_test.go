@@ -84,3 +84,44 @@ func TestProposeLearningFromRunCreatesReviewableProposals(t *testing.T) {
 		t.Fatalf("skill proposal missing tool provenance: %#v", skillProp)
 	}
 }
+
+func TestLearningSummaryEndpoint(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("SOULACY_WORKSPACE", workspace)
+
+	srv := newTestGateway(t, "secret")
+	store, err := learning.NewStore(filepath.Join(workspace, "data", "learning.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	srv.engine.SetLearningStore(store)
+	pending, err := store.Add(learning.Proposal{AgentID: "agent-a", Kind: "memory", Content: "draft"})
+	if err != nil {
+		t.Fatalf("Add pending: %v", err)
+	}
+	accepted, err := store.Add(learning.Proposal{AgentID: "agent-a", Kind: "skill", Content: "skill draft"})
+	if err != nil {
+		t.Fatalf("Add accepted: %v", err)
+	}
+	if _, err := store.UpdateStatusMeta(accepted.ID, learning.StatusAccepted, map[string]string{"installed_path": "/tmp/SKILL.md"}); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+
+	status, body := gatewayJSON(t, srv, http.MethodGet, "/api/v1/learning/summary?agent_id=agent-a", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	summary, ok := body["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary missing: %v", body)
+	}
+	if summary["total"].(float64) != 2 || summary["pending"].(float64) != 1 || summary["accepted"].(float64) != 1 {
+		t.Fatalf("summary counts = %v", summary)
+	}
+	if summary["installed_skills"].(float64) != 1 {
+		t.Fatalf("installed_skills = %v", summary["installed_skills"])
+	}
+	if pending.ID == "" {
+		t.Fatal("pending proposal was not created")
+	}
+}

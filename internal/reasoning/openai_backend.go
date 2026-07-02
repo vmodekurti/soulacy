@@ -150,6 +150,7 @@ type openaiChatRequest struct {
 	Messages       []openaiChatMessage  `json:"messages"`
 	MaxTokens      int                  `json:"max_tokens,omitempty"`
 	Temperature    float64              `json:"temperature"`
+	Stream         bool                 `json:"stream"`
 	ResponseFormat map[string]string    `json:"response_format"`
 }
 
@@ -179,6 +180,7 @@ func (b *OpenAIBackend) chat(ctx context.Context, model, system, user string, ma
 		},
 		MaxTokens:   maxTokens,
 		Temperature: 0.1,
+		Stream:      false,
 		ResponseFormat: map[string]string{"type": "json_object"},
 	}
 

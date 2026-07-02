@@ -7,6 +7,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
+	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/internal/studio"
 )
@@ -22,9 +23,21 @@ type doctorProviderCheck struct {
 	Model      string `json:"model,omitempty"`
 }
 
+type doctorChannelCheck struct {
+	ID          string              `json:"id"`
+	Status      string              `json:"status"`
+	Detail      string              `json:"detail"`
+	Enabled     bool                `json:"enabled"`
+	Configured  bool                `json:"configured"`
+	Registered  bool                `json:"registered"`
+	Connected   bool                `json:"connected"`
+	Diagnostics []channelDiagnostic `json:"diagnostics,omitempty"`
+}
+
 func (s *Server) handleDoctor(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"providers": s.providerDoctorChecks(c),
+		"channels":  s.channelDoctorChecks(),
 	})
 }
 
@@ -97,6 +110,59 @@ func (s *Server) providerDoctorChecks(c *fiber.Ctx) []doctorProviderCheck {
 			check.Remedy = "store the key in Secrets for restart-safe operation"
 		}
 		out = append(out, check)
+	}
+	return out
+}
+
+func (s *Server) channelDoctorChecks() []doctorChannelCheck {
+	statuses := map[string]channels.AdapterStatus{}
+	if s.channels != nil {
+		statuses = s.channels.Statuses()
+	}
+	out := make([]doctorChannelCheck, 0, len(channelSpecs))
+	for _, spec := range channelSpecs {
+		cfg := s.cfg.Channels[spec.ID]
+		enabled := spec.Always
+		if v, ok := cfg["enabled"].(bool); ok {
+			enabled = v
+		}
+		configured := false
+		for _, f := range spec.Fields {
+			if valuePresent(cfg[f.Key]) {
+				configured = true
+				break
+			}
+		}
+		bots := maskChannelBots(spec, cfg, statuses)
+		if len(bots) > 0 {
+			configured = true
+		}
+		st, registered := statuses[spec.ID]
+		diagnostics := channelDiagnostics(spec, cfg, enabled, registered, st, bots)
+		status := "ok"
+		detail := "channel is usable"
+		for _, d := range diagnostics {
+			if d.Severity == "fail" {
+				status = "fail"
+				detail = d.Message
+				break
+			}
+			if d.Severity == "warn" && status != "fail" {
+				status = "warn"
+				detail = d.Message
+			}
+			if d.Severity == "info" && status == "ok" {
+				detail = d.Message
+			}
+		}
+		if spec.Always {
+			detail = "always-on channel"
+		}
+		out = append(out, doctorChannelCheck{
+			ID: spec.ID, Status: status, Detail: detail,
+			Enabled: enabled, Configured: configured, Registered: registered, Connected: st.Connected,
+			Diagnostics: diagnostics,
+		})
 	}
 	return out
 }

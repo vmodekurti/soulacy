@@ -222,7 +222,7 @@
 
           <div class="field-row">
             <div class="field">
-              <label for="studio-provider">Studio / agent builder — provider</label>
+              <label for="studio-provider">Studio builder — provider</label>
               <select id="studio-provider" bind:value={studioProvider} disabled={!writable}>
                 <option value="">— use default —</option>
                 {#each providerOptions as p}<option value={p}>{p}</option>{/each}

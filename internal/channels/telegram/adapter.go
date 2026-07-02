@@ -129,7 +129,7 @@ func (a *Adapter) poll(ctx context.Context) {
 
 		updates, err := a.getUpdates(ctx)
 		if err != nil {
-			log.Printf("telegram: getUpdates error: %v — retrying in 5s", err)
+			log.Printf("telegram: getUpdates error: %s — retrying in 5s", a.redact(err))
 			select {
 			case <-ctx.Done():
 				return
@@ -244,7 +244,7 @@ func (a *Adapter) sendText(ctx context.Context, chatID int64, text string) error
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("telegram: send: %w", err)
+		return fmt.Errorf("telegram: send: %s", a.redact(err))
 	}
 	defer resp.Body.Close()
 	// S2.8 — surface API rejections (e.g. 400 message too long, 429 rate limit)
@@ -325,7 +325,7 @@ func (a *Adapter) getUpdates(ctx context.Context) ([]update, error) {
 	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s", a.redact(err))
 	}
 	defer resp.Body.Close()
 
@@ -340,4 +340,15 @@ func (a *Adapter) getUpdates(ctx context.Context) ([]update, error) {
 		return nil, fmt.Errorf("telegram: API returned ok=false")
 	}
 	return result.Result, nil
+}
+
+func (a *Adapter) redact(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if a.token != "" {
+		s = strings.ReplaceAll(s, a.token, "<telegram-bot-token>")
+	}
+	return s
 }

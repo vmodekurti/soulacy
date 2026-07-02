@@ -3167,6 +3167,11 @@ Use null for fields that are not present.`
           {/if}
         </div>
       {:else if viewMode === 'plan'}
+        <div class="intent-guide">
+          <span class="intent-pill">Intent first</span>
+          <strong>Review the plan before editing nodes.</strong>
+          <span>Confirm when it runs, what work it performs, and where output goes; use Canvas only for advanced rewiring.</span>
+        </div>
         <PlanView {workflow} onSelectNode={planSelectNode} onSave={() => save()} onAddPython={addSuggestedPython} onUpdateNode={updateNodeConfig} testByNode={stepResultsByNode(testResult)} {saving} />
       {:else}
       <div
@@ -5776,6 +5781,29 @@ Use null for fields that are not present.`
   .unattended-toggle input { margin: 0; }
   .explain-actions { margin-top: 10px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   .explain-hint { font-size: 12px; color: var(--text-muted); }
+  .intent-guide {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border, #262e44);
+    background: rgba(108, 99, 255, .08);
+    color: var(--text, #e6e9f2);
+    font-size: 12px;
+    flex-wrap: wrap;
+  }
+  .intent-guide span:last-child { color: var(--text-muted, #8b93ab); }
+  .intent-pill {
+    background: rgba(108, 99, 255, .18);
+    border: 1px solid rgba(108, 99, 255, .34);
+    border-radius: 999px;
+    color: var(--accent, #8b85ff);
+    padding: 2px 8px;
+    text-transform: uppercase;
+    letter-spacing: .06em;
+    font-size: 10px;
+    font-weight: 700;
+  }
 
   /* ── Edge styling (M3) ──────────────────────────────────────────────────
      xyflow renders edges in its own DOM, so we reach them with :global().

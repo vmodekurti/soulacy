@@ -34,6 +34,21 @@ func (s *Server) handleListLearningProposals(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"enabled": true, "proposals": proposals})
 }
 
+func (s *Server) handleLearningSummary(c *fiber.Ctx) error {
+	store := s.engine.LearningStore()
+	if store == nil {
+		return c.JSON(fiber.Map{
+			"enabled": false,
+			"summary": learning.Summary{AgentID: c.Query("agent_id")},
+		})
+	}
+	summary, err := store.Summary(c.Query("agent_id"))
+	if err != nil {
+		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{"enabled": true, "summary": summary})
+}
+
 func (s *Server) handleProposeLearningFromRun(c *fiber.Ctx) error {
 	store := s.engine.LearningStore()
 	if store == nil {

@@ -69,6 +69,7 @@
 
   // Learning proposals
   let proposals      = []
+  let learningSummary = null
   let learningBusy   = false
   let proposalStatus = 'pending'
   let editingProposalID = ''
@@ -193,8 +194,12 @@
   async function loadLearning() {
     learningBusy = true
     try {
-      const res = await api.brainMemory.learningProposals(selectedID, proposalStatus)
+      const [res, summaryRes] = await Promise.all([
+        api.brainMemory.learningProposals(selectedID, proposalStatus),
+        api.brainMemory.learningSummary(selectedID),
+      ])
       proposals = res.proposals || []
+      learningSummary = summaryRes.summary || null
     } catch (e) { error = e.message }
     learningBusy = false
   }
@@ -294,6 +299,16 @@
       .replace(/`([^`]+)`/g, '<code>$1</code>')
       .replace(/^- (.+)$/gm, '<li>$1</li>')
       .replace(/\n\n/g, '</p><p>')
+  }
+
+  function pct(v) {
+    return Math.round((Number(v) || 0) * 100) + '%'
+  }
+
+  function topEntries(obj, limit = 3) {
+    return Object.entries(obj || {})
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, limit)
   }
 
   $: if (selectedID || activeTab) loadTab()
@@ -548,6 +563,44 @@
       </select>
       <button class="btn-secondary" on:click={loadLearning} disabled={learningBusy}>{learningBusy?'Refreshing…':'Refresh'}</button>
     </div>
+    {#if learningSummary}
+      <div class="learning-health">
+        <div class="lh-card" class:urgent={learningSummary.pending > 0}>
+          <div class="lh-val">{learningSummary.pending || 0}</div>
+          <div class="lh-label">Pending review</div>
+        </div>
+        <div class="lh-card">
+          <div class="lh-val green">{learningSummary.accepted || 0}</div>
+          <div class="lh-label">Accepted</div>
+        </div>
+        <div class="lh-card">
+          <div class="lh-val">{learningSummary.installed_skills || 0}</div>
+          <div class="lh-label">Installed skills</div>
+        </div>
+        <div class="lh-card">
+          <div class="lh-val">{pct(learningSummary.average_confidence)}</div>
+          <div class="lh-label">Avg confidence</div>
+        </div>
+        <div class="lh-card wide">
+          <div class="lh-provenance">
+            <span>Sources</span>
+            {#each topEntries(learningSummary.by_source) as [k, v]}
+              <code>{k}: {v}</code>
+            {:else}
+              <code>none yet</code>
+            {/each}
+          </div>
+          <div class="lh-provenance">
+            <span>Tools</span>
+            {#each topEntries(learningSummary.by_tool) as [k, v]}
+              <code>{k}: {v}</code>
+            {:else}
+              <code>none captured</code>
+            {/each}
+          </div>
+        </div>
+      </div>
+    {/if}
     {#if learningBusy}
       <div class="empty-state"><div class="spinner"></div></div>
     {:else if proposals.length === 0}
@@ -768,6 +821,15 @@
   .dl.del { color: #f08080; }
   .dl.same { color: #9aa0c3; }
   .proposal-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:.7rem;padding:.2rem 0}
+  .learning-health{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr)) minmax(260px,2fr);gap:.65rem;flex-shrink:0}
+  .lh-card{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.65rem .8rem;min-height:70px;display:flex;flex-direction:column;justify-content:center}
+  .lh-card.urgent{border-color:rgba(240,160,96,.45);background:rgba(240,160,96,.05)}
+  .lh-card.wide{gap:.42rem;align-items:stretch}
+  .lh-val{font-size:1.25rem;font-weight:750;color:#c5c9e8;line-height:1}
+  .lh-val.green{color:#5fce9a}
+  .lh-label{font-size:.66rem;color:#6b7294;text-transform:uppercase;letter-spacing:.05em;margin-top:.35rem}
+  .lh-provenance{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap;font-size:.7rem;color:#6b7294}
+  .lh-provenance span{font-weight:700;text-transform:uppercase;letter-spacing:.05em}
   .proposal-card{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.8rem .95rem;display:flex;flex-direction:column;gap:.55rem}
   .proposal-head{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
   .proposal-head strong{font-size:.86rem;color:#c5c9e8}

@@ -13,6 +13,14 @@
   let notice    = ''
   let instantiating = ''
   let copiedPrompt = ''
+  let wizard = null
+  let wizardId = ''
+  let wizardCron = ''
+  let wizardChannel = ''
+  let wizardTo = ''
+  let wizardTemplate = '{reply}'
+  let createdAgent = null
+  let testingOutput = false
 
   const WORKFLOW_TAG = 'workflow'
 
@@ -29,17 +37,62 @@
     }
   }
 
-  async function useTemplate(t) {
+  function slugify(s) {
+    return String(s || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48)
+  }
+
+  function openWizard(t) {
+    wizard = t
+    wizardId = slugify(t.display_name || t.name) || ''
+    wizardCron = t.definition?.schedule?.cron || ''
+    wizardChannel = t.definition?.schedule?.output?.channel || ''
+    wizardTo = t.definition?.schedule?.output?.to || ''
+    wizardTemplate = t.definition?.schedule?.output?.template || '{reply}'
+    createdAgent = null
+    error = ''
+    notice = ''
+  }
+
+  async function useTemplate(t = wizard) {
+    if (!t) return
     instantiating = t.name
     error  = ''
     notice = ''
     try {
-      const def = await api.templates.instantiate(t.name)
-      notice = `Agent "${def.id}" created from "${t.display_name || t.name}" — find it on the Agents page.`
+      const payload = { id: wizardId.trim() }
+      if (wizardCron.trim()) payload.cron = wizardCron.trim()
+      if (wizardChannel.trim() || wizardTo.trim()) {
+        payload.output = {
+          channel: wizardChannel.trim(),
+          to: wizardTo.trim(),
+          template: wizardTemplate.trim() || '{reply}',
+        }
+      }
+      const def = await api.templates.instantiate(t.name, payload)
+      createdAgent = def
+      notice = `Agent "${def.id}" created from "${t.display_name || t.name}".`
     } catch (e) {
       error = e.message
     } finally {
       instantiating = ''
+    }
+  }
+
+  async function testOutput() {
+    if (!createdAgent?.id) return
+    testingOutput = true
+    error = ''
+    try {
+      await api.agents.testScheduleOutput(createdAgent.id)
+      notice = `Sent a test output for "${createdAgent.id}".`
+    } catch (e) {
+      error = e.message || 'Test output failed'
+    } finally {
+      testingOutput = false
     }
   }
 
@@ -66,6 +119,10 @@
 
   function blockers(t) {
     return (t.setup || []).filter(item => item.status === 'needs_setup')
+  }
+
+  function hasSchedule(t) {
+    return !!(t.definition?.schedule || t.schedule_hint || (t.setup || []).find(x => x.key === 'schedule'))
   }
 
   $: workflows = templates.filter(t => (t.tags || []).includes(WORKFLOW_TAG))
@@ -137,8 +194,8 @@
               <button class="btn-secondary" on:click={() => copyPrompt(t)}>
                 {copiedPrompt === t.name ? 'Copied' : 'Copy test prompt'}
               </button>
-              <button class="btn-primary" on:click={() => useTemplate(t)} disabled={instantiating === t.name}>
-                {instantiating === t.name ? 'Creating…' : 'Create agent'}
+              <button class="btn-primary" on:click={() => openWizard(t)} disabled={instantiating === t.name}>
+                Install
               </button>
             </div>
           </div>
@@ -190,8 +247,8 @@
               <button class="btn-secondary" on:click={() => copyPrompt(t)}>
                 {copiedPrompt === t.name ? 'Copied' : 'Copy test prompt'}
               </button>
-              <button class="btn-primary" on:click={() => useTemplate(t)} disabled={instantiating === t.name}>
-                {instantiating === t.name ? 'Creating…' : 'Create agent'}
+              <button class="btn-primary" on:click={() => openWizard(t)} disabled={instantiating === t.name}>
+                Install
               </button>
             </div>
           </div>
@@ -200,6 +257,95 @@
     {/if}
   {/if}
 </div>
+
+{#if wizard}
+  <div class="modal-bg" role="button" tabindex="0" aria-label="Close install wizard"
+       on:click|self={() => wizard = null}
+       on:keydown={(e) => e.key === 'Escape' && (wizard = null)}>
+    <div class="wizard">
+      <div class="wizard-head">
+        <div>
+          <span class="wizard-eyebrow">Template install</span>
+          <h2>{wizard.display_name || wizard.name}</h2>
+        </div>
+        <button class="ghost" on:click={() => wizard = null}>×</button>
+      </div>
+
+      <p class="wizard-desc">{wizard.description}</p>
+
+      <label>
+        Agent ID
+        <input bind:value={wizardId} placeholder="daily-briefing" disabled={!!createdAgent} />
+      </label>
+
+      <div class="wizard-grid">
+        <div>
+          <h3>Readiness</h3>
+          <div class="wizard-list">
+            {#each wizard.setup || [] as item}
+              <div class="wizard-row {item.status}">
+                <strong>{item.label}</strong>
+                <span>{item.detail}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+        <div>
+          <h3>Production options</h3>
+          <label>
+            Cron
+            <input bind:value={wizardCron} placeholder="0 7 * * *" disabled={!!createdAgent} />
+          </label>
+          <label>
+            Output channel
+            <input bind:value={wizardChannel} placeholder="telegram" disabled={!!createdAgent} />
+          </label>
+          <label>
+            Destination
+            <input bind:value={wizardTo} placeholder="@channel or chat id" disabled={!!createdAgent} />
+          </label>
+          <label>
+            Output template
+            <textarea bind:value={wizardTemplate} rows="3" disabled={!!createdAgent}></textarea>
+          </label>
+        </div>
+      </div>
+
+      {#if wizard.required_secrets?.length}
+        <div class="secrets-note">
+          <strong>Secrets needed</strong>
+          {#each wizard.required_secrets as secret}
+            <span>{secret.label}: {secret.key}</span>
+          {/each}
+        </div>
+      {/if}
+
+      {#if wizard.mock_prompt}
+        <div class="mock">
+          <div class="mock-label">Smoke test prompt</div>
+          <p>{wizard.mock_prompt}</p>
+        </div>
+      {/if}
+
+      <div class="wizard-actions">
+        {#if createdAgent}
+          <button class="btn-secondary" on:click={() => window.location.hash = '#agents'}>Open Agents</button>
+          <button class="btn-secondary" on:click={() => window.location.hash = '#chat'}>Try in Chat</button>
+          {#if hasSchedule(wizard)}
+            <button class="btn-primary" on:click={testOutput} disabled={testingOutput}>
+              {testingOutput ? 'Sending…' : 'Test output'}
+            </button>
+          {/if}
+        {:else}
+          <button class="btn-secondary" on:click={() => wizard = null}>Cancel</button>
+          <button class="btn-primary" on:click={() => useTemplate(wizard)} disabled={instantiating === wizard.name || !wizardId.trim()}>
+            {instantiating === wizard.name ? 'Installing…' : 'Install agent'}
+          </button>
+        {/if}
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   .page { display: flex; flex-direction: column; gap: 14px; }
@@ -235,4 +381,27 @@
   .mock p { margin: 0; font-size: .75rem; color: #b9bedc; line-height: 1.45; }
   .actions { display: flex; flex-wrap: wrap; gap: .45rem; margin-top: auto; }
   .actions button { align-self: flex-start; }
+  .modal-bg { position: fixed; inset: 0; background: rgba(3, 5, 12, .72); display: grid; place-items: center; padding: 18px; z-index: 50; }
+  .wizard { width: min(760px, 100%); max-height: min(90vh, 860px); overflow: auto; background: #111426; border: 1px solid #2a2f4a; border-radius: 10px; padding: 18px; box-shadow: 0 24px 80px rgba(0, 0, 0, .45); display: flex; flex-direction: column; gap: 14px; }
+  .wizard-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+  .wizard-head h2 { margin: .12rem 0 0; font-size: 1.05rem; }
+  .wizard-eyebrow { color: #8b85ff; text-transform: uppercase; letter-spacing: .08em; font-size: .68rem; }
+  .wizard-desc { color: #aeb4d7; font-size: .82rem; line-height: 1.5; white-space: pre-line; }
+  .ghost { background: transparent; color: #aeb4d7; font-size: 1.2rem; padding: .2rem .45rem; }
+  label { display: flex; flex-direction: column; gap: .35rem; color: #c8cbe8; font-size: .75rem; }
+  .wizard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .wizard-grid h3 { margin: 0 0 .5rem; font-size: .82rem; color: #c8cbe8; }
+  .wizard-list { display: flex; flex-direction: column; gap: .45rem; }
+  .wizard-row { border: 1px solid #252a46; background: #15182a; border-radius: 8px; padding: .55rem .65rem; }
+  .wizard-row.ready { border-color: rgba(95, 206, 154, .25); }
+  .wizard-row.needs_setup { border-color: rgba(240, 160, 96, .3); }
+  .wizard-row strong, .wizard-row span { display: block; }
+  .wizard-row strong { font-size: .75rem; }
+  .wizard-row span { color: #8f96bb; font-size: .72rem; margin-top: .12rem; }
+  .secrets-note { border: 1px solid rgba(240, 160, 96, .28); background: rgba(240, 160, 96, .07); border-radius: 8px; padding: .65rem; display: flex; flex-direction: column; gap: .25rem; font-size: .75rem; }
+  .secrets-note span { color: #f0b070; }
+  .wizard-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: .5rem; }
+  @media (max-width: 760px) {
+    .wizard-grid { grid-template-columns: 1fr; }
+  }
 </style>

@@ -624,6 +624,7 @@ func (s *Server) buildApp() *fiber.App {
 	//   curl -H 'Authorization: Bearer <key>' http://gw/api/v1/metrics
 	api.Get("/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), adaptor.HTTPHandler(metrics.Handler()))
 	api.Post("/admin/restart", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleRestart)
+	api.Get("/onboarding/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleOnboardingStatus)
 
 	// Agents
 	api.Get("/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleListAgents)
@@ -695,6 +696,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/brain-memory/:agentID/rulebook/:version", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleRulebookVersion)
 	api.Post("/brain-memory/:agentID/rulebook/rollback", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookRollback)
 	api.Post("/brain-memory/:agentID/rulebook/lock", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookLock)
+	api.Get("/learning/summary", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleLearningSummary)
 	api.Get("/learning/proposals", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleListLearningProposals)
 	api.Post("/learning/propose-from-run", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleProposeLearningFromRun)
 	api.Patch("/learning/proposals/:id", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleUpdateLearningProposal)

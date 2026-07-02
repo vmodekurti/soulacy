@@ -90,6 +90,43 @@ func TestGatewayDoctorLocalProviderDoesNotRequireKey(t *testing.T) {
 	}
 }
 
+func TestGatewayDoctorIncludesChannelDiagnostics(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	s.cfg.Channels = map[string]map[string]any{
+		"telegram": {
+			"enabled":       true,
+			"outbound_only": true,
+		},
+	}
+
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/doctor", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("doctor status = %d body=%v", status, body)
+	}
+	channels, ok := body["channels"].([]any)
+	if !ok || len(channels) == 0 {
+		t.Fatalf("channels missing: %v", body)
+	}
+	var telegram map[string]any
+	for _, raw := range channels {
+		row, ok := raw.(map[string]any)
+		if ok && row["id"] == "telegram" {
+			telegram = row
+			break
+		}
+	}
+	if telegram == nil {
+		t.Fatalf("telegram channel check missing: %v", channels)
+	}
+	if telegram["status"] != "fail" {
+		t.Fatalf("telegram status = %v, want fail; row=%v", telegram["status"], telegram)
+	}
+	diagnostics, ok := telegram["diagnostics"].([]any)
+	if !ok || len(diagnostics) == 0 {
+		t.Fatalf("telegram diagnostics missing: %v", telegram)
+	}
+}
+
 func firstProviderCheck(t *testing.T, body map[string]any) map[string]any {
 	t.Helper()
 	providers, ok := body["providers"].([]any)

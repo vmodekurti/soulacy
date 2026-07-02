@@ -766,6 +766,7 @@
         const threadId = threadIdForRunEvent(ev)
         if (ev.type === 'run.artifact' && threadId) {
           const t = $chatThreads[threadId]
+          artifactPanelOpen = true
           if (t?.agentId && t?.sessionId) loadArtifacts(threadId, t.agentId, t.sessionId)
           return
         }

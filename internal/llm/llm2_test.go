@@ -557,6 +557,9 @@ func TestOpenAICompleteJSONObjectFormatSent(t *testing.T) {
 	if rf["type"] != "json_object" {
 		t.Errorf("response_format.type = %v, want json_object", rf["type"])
 	}
+	if got["stream"] != false {
+		t.Errorf("stream = %#v, want false", got["stream"])
+	}
 }
 
 // TestOpenAICompleteJSONSchemaNilFallsBackToJSONObject verifies that

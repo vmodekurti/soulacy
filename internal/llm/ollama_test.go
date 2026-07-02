@@ -164,6 +164,7 @@ func TestOpenAICompleteSerializesToolStateAndParsesToolCalls(t *testing.T) {
 					"content": "",
 					"tool_calls": [{
 						"id": "call_openai_1",
+						"thought_signature": "sig-from-router",
 						"function": {
 							"name": "lookup",
 							"arguments": "{\"city\":\"Chicago\"}"
@@ -187,9 +188,10 @@ func TestOpenAICompleteSerializesToolStateAndParsesToolCalls(t *testing.T) {
 			{
 				Role: "assistant",
 				ToolCalls: []message.ToolCall{{
-					ID:        "call_1",
-					Name:      "lookup",
-					Arguments: map[string]any{"city": "Chicago"},
+					ID:               "call_1",
+					Name:             "lookup",
+					Arguments:        map[string]any{"city": "Chicago"},
+					ThoughtSignature: "sig-prev",
 				}},
 			},
 			{Role: "tool", ToolCallID: "call_1", Name: "lookup", Content: "rain"},
@@ -210,6 +212,9 @@ func TestOpenAICompleteSerializesToolStateAndParsesToolCalls(t *testing.T) {
 	if got["model"] != "gpt-test" || got["parallel_tool_calls"] != false {
 		t.Fatalf("model/parallel = %#v", got)
 	}
+	if got["stream"] != false {
+		t.Fatalf("stream = %#v, want false", got["stream"])
+	}
 	if got["tool_choice"] != "required" {
 		t.Fatalf("tool_choice = %#v", got["tool_choice"])
 	}
@@ -217,8 +222,13 @@ func TestOpenAICompleteSerializesToolStateAndParsesToolCalls(t *testing.T) {
 		t.Fatalf("response_format = %#v", got["response_format"])
 	}
 	messages := got["messages"].([]any)
-	if messages[1].(map[string]any)["tool_calls"] == nil {
+	toolCalls := messages[1].(map[string]any)["tool_calls"].([]any)
+	if toolCalls == nil {
 		t.Fatalf("assistant tool_calls not serialized: %#v", messages[1])
+	}
+	serializedCall := toolCalls[0].(map[string]any)
+	if serializedCall["thought_signature"] != "sig-prev" || serializedCall["thoughtSignature"] != "sig-prev" {
+		t.Fatalf("assistant tool_call missing thought signature: %#v", serializedCall)
 	}
 	if messages[2].(map[string]any)["tool_call_id"] != "call_1" {
 		t.Fatalf("tool message missing tool_call_id: %#v", messages[2])
@@ -232,6 +242,9 @@ func TestOpenAICompleteSerializesToolStateAndParsesToolCalls(t *testing.T) {
 	}
 	if resp.ToolCalls[0].Arguments["city"] != "Chicago" {
 		t.Fatalf("tool args = %+v", resp.ToolCalls[0].Arguments)
+	}
+	if resp.ToolCalls[0].ThoughtSignature != "sig-from-router" {
+		t.Fatalf("thought signature = %q", resp.ToolCalls[0].ThoughtSignature)
 	}
 }
 
@@ -263,6 +276,68 @@ func TestOpenAICompleteStreamsSSEWhenNoTools(t *testing.T) {
 	}
 	if out != "one two" {
 		t.Fatalf("stream output = %q, want one two", out)
+	}
+}
+
+func TestOpenAICompleteSerializesGeminiToolCalls(t *testing.T) {
+	var got map[string]any
+	provider := NewOpenAIProvider("openroute", "http://openroute.test/v1", "sk-test", "gemini/gemini-3.1-pro-preview")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		return jsonResponse(200, `{
+			"choices": [{"message": {"content": "ok"}}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1}
+		}`), nil
+	})
+
+	_, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "weather"}},
+		Tools: []ToolSchema{{
+			Name:        "lookup",
+			Description: "Lookup weather",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if got["parallel_tool_calls"] != false {
+		t.Fatalf("parallel_tool_calls = %#v, want false for Gemini tool use", got["parallel_tool_calls"])
+	}
+}
+
+func TestOpenAICompleteKeepsOneGeminiToolCall(t *testing.T) {
+	provider := NewOpenAIProvider("openroute", "http://openroute.test/v1", "sk-test", "gemini/gemini-3.1-pro-preview")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(200, `{
+			"choices": [{
+				"message": {
+					"content": "",
+					"tool_calls": [
+						{"id": "call_1", "function": {"name": "forecast", "arguments": "{\"city\":\"Chicago\"}"}},
+						{"id": "call_2", "function": {"name": "alerts", "arguments": "{\"city\":\"Chicago\"}"}}
+					]
+				}
+			}],
+			"usage": {"prompt_tokens": 1, "completion_tokens": 1}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "weather"}},
+		Tools: []ToolSchema{{
+			Name:        "forecast",
+			Description: "Lookup forecast",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].ID != "call_1" {
+		t.Fatalf("tool calls = %+v, want only the first Gemini tool call", resp.ToolCalls)
 	}
 }
 

@@ -40,6 +40,25 @@ type Proposal struct {
 	UpdatedAt  time.Time         `json:"updated_at"`
 }
 
+// Summary is the product-facing health snapshot for the learning loop. It lets
+// the UI show whether proposals are piling up, being accepted, and turning into
+// reusable procedures or skills.
+type Summary struct {
+	AgentID           string         `json:"agent_id,omitempty"`
+	Total             int            `json:"total"`
+	Pending           int            `json:"pending"`
+	Accepted          int            `json:"accepted"`
+	Rejected          int            `json:"rejected"`
+	Memories          int            `json:"memories"`
+	Procedures        int            `json:"procedures"`
+	Skills            int            `json:"skills"`
+	InstalledSkills   int            `json:"installed_skills"`
+	AverageConfidence float64        `json:"average_confidence"`
+	LatestAt          *time.Time     `json:"latest_at,omitempty"`
+	BySource          map[string]int `json:"by_source,omitempty"`
+	ByTool            map[string]int `json:"by_tool,omitempty"`
+}
+
 // Store persists proposals as JSONL. The write path is guarded by a mutex and
 // status updates rewrite the compacted file; proposal volume is expected to be
 // modest and human-reviewed.
@@ -137,6 +156,69 @@ func (s *Store) List(agentID, status string, limit int) ([]Proposal, error) {
 	})
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
+	}
+	return out, nil
+}
+
+func (s *Store) Summary(agentID string) (Summary, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, err := s.loadLocked()
+	if err != nil {
+		return Summary{}, err
+	}
+	out := Summary{
+		AgentID:  agentID,
+		BySource: map[string]int{},
+		ByTool:   map[string]int{},
+	}
+	var confSum float64
+	for _, p := range all {
+		if agentID != "" && p.AgentID != agentID {
+			continue
+		}
+		out.Total++
+		confSum += p.Confidence
+		switch p.Status {
+		case StatusPending:
+			out.Pending++
+		case StatusAccepted:
+			out.Accepted++
+		case StatusRejected:
+			out.Rejected++
+		}
+		switch strings.ToLower(p.Kind) {
+		case "skill":
+			out.Skills++
+			if strings.TrimSpace(p.Meta["installed_path"]) != "" {
+				out.InstalledSkills++
+			}
+		case "procedure":
+			out.Procedures++
+		default:
+			out.Memories++
+		}
+		if src := strings.TrimSpace(p.Source); src != "" {
+			out.BySource[src]++
+		}
+		for _, tool := range strings.Split(p.Meta["tools_used"], ",") {
+			if tool = strings.TrimSpace(tool); tool != "" {
+				out.ByTool[tool]++
+			}
+		}
+		if out.LatestAt == nil || p.CreatedAt.After(*out.LatestAt) {
+			t := p.CreatedAt
+			out.LatestAt = &t
+		}
+	}
+	if out.Total > 0 {
+		out.AverageConfidence = confSum / float64(out.Total)
+	}
+	if len(out.BySource) == 0 {
+		out.BySource = nil
+	}
+	if len(out.ByTool) == 0 {
+		out.ByTool = nil
 	}
 	return out, nil
 }

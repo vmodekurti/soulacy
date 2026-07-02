@@ -3,7 +3,7 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui up install which test lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install which test regression lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 \
@@ -125,6 +125,10 @@ run-dev: all
 ## Run tests
 test:
 	go test ./... -v -timeout 30s
+
+## Focused production smoke regression: core Go paths, GUI tests, GUI build.
+regression:
+	bash scripts/regression-smoke.sh
 
 ## Lint
 lint:

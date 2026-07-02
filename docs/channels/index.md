@@ -102,9 +102,12 @@ The same pattern applies to Slack and Discord:
 Open **Channels** in the web UI:
 
 - Channel cards show **Agent mappings**, including adapter ID, agent ID, and connection state.
+- Channel cards show **Delivery checks** with failures, warnings, and remedies for missing tokens, missing default destinations, offline adapters, and broken bot mappings.
 - Click **Edit** on Telegram, Slack, or Discord to manage **Bot mappings**.
 - Bot mapping rows record a friendly bot name and provide an agent ID dropdown populated from your installed agents.
 - After saving channel settings, click **Restart Gateway** from the banner to reconnect adapters.
+
+The same readiness checks are exposed through **Providers -> Doctor** / `GET /api/v1/doctor` so production setups can verify channel delivery before relying on scheduled agents.
 
 ## Scheduled output through a bot
 
@@ -121,6 +124,15 @@ schedule:
 ```
 
 `channel` is the adapter ID shown in **Channels -> Agent mappings**. `to` is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, or WhatsApp recipient number.
+
+If a scheduled run succeeds but no message appears in the destination, check the
+channel card's **Delivery checks** first. The most common causes are:
+
+- The adapter ID in `schedule.output.channel` does not match a registered mapping.
+- The adapter is offline because the gateway was not restarted after saving credentials.
+- The bot token is missing or invalid.
+- `schedule.output.to` or the channel-level default output destination is missing.
+- The bot is not allowed to post to the target group/channel.
 
 ## Generic outbound send
 

@@ -84,6 +84,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		"model":       model,
 		"messages":    msgs,
 		"temperature": req.Temperature,
+		"stream":      false,
 	}
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
@@ -95,6 +96,13 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		// tool calls which reduces agent loops on weaker models.
 		if p.parallelToolCalls != nil {
 			body["parallel_tool_calls"] = *p.parallelToolCalls
+		} else if strings.Contains(strings.ToLower(model), "gemini") {
+			// Gemini thinking models require opaque thought signatures to be echoed
+			// for every functionCall part. Some OpenAI-compatible routers expose or
+			// replay that metadata inconsistently on multi-tool turns, so default
+			// Gemini tool use to one call at a time unless the provider config opts
+			// into a specific parallel_tool_calls value.
+			body["parallel_tool_calls"] = false
 		}
 
 		// Tool-choice constraint (OpenAI / OpenRouter / Together / Groq /
@@ -218,10 +226,14 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 			Message struct {
 				Content   string `json:"content"`
 				ToolCalls []struct {
-					ID       string `json:"id"`
-					Function struct {
-						Name      string `json:"name"`
-						Arguments string `json:"arguments"`
+					ID                    string `json:"id"`
+					ThoughtSignature      string `json:"thought_signature"`
+					ThoughtSignatureCamel string `json:"thoughtSignature"`
+					Function              struct {
+						Name                  string `json:"name"`
+						Arguments             string `json:"arguments"`
+						ThoughtSignature      string `json:"thought_signature"`
+						ThoughtSignatureCamel string `json:"thoughtSignature"`
 					} `json:"function"`
 				} `json:"tool_calls"`
 			} `json:"message"`
@@ -247,7 +259,24 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	for _, tc := range result.Choices[0].Message.ToolCalls {
 		var args map[string]any
 		_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
-		r.ToolCalls = append(r.ToolCalls, toolCallWithID(tc.ID, tc.Function.Name, args))
+		sig := tc.ThoughtSignature
+		if sig == "" {
+			sig = tc.ThoughtSignatureCamel
+		}
+		if sig == "" {
+			sig = tc.Function.ThoughtSignature
+		}
+		if sig == "" {
+			sig = tc.Function.ThoughtSignatureCamel
+		}
+		r.ToolCalls = append(r.ToolCalls, toolCallWithIDAndThoughtSignature(tc.ID, tc.Function.Name, args, sig))
+	}
+	if strings.Contains(strings.ToLower(model), "gemini") && len(r.ToolCalls) > 1 {
+		// Gemini/OpenAI-compatible routers can return one thought signature for a
+		// multi-function-call turn, then fail when later calls are replayed. Run
+		// Gemini tools serially; the model can request the next tool after seeing
+		// the first result.
+		r.ToolCalls = r.ToolCalls[:1]
 	}
 	return r, nil
 }
@@ -297,5 +326,9 @@ func (p *OpenAIProvider) Models(ctx context.Context) ([]string, error) {
 // verbatim on the following turn, so unlike toolCallFromFunc we do not mint a
 // new one here.
 func toolCallWithID(id, name string, args map[string]any) message.ToolCall {
-	return message.ToolCall{ID: id, Name: name, Arguments: args}
+	return toolCallWithIDAndThoughtSignature(id, name, args, "")
+}
+
+func toolCallWithIDAndThoughtSignature(id, name string, args map[string]any, thoughtSignature string) message.ToolCall {
+	return message.ToolCall{ID: id, Name: name, Arguments: args, ThoughtSignature: thoughtSignature}
 }

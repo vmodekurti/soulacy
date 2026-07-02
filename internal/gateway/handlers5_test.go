@@ -51,6 +51,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gofiber/fiber/v2"
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/pkg/agent"
 )
@@ -269,6 +270,50 @@ func TestMaskChannelBots_ConnectedStatusReflected(t *testing.T) {
 	}
 	if result[0]["_connected"] == nil {
 		t.Error("expected _connected field in masked bot")
+	}
+}
+
+func TestChannelDiagnosticsReportsMissingAndOffline(t *testing.T) {
+	spec := *channelSpecByID("telegram")
+	cfg := map[string]any{
+		"enabled":       true,
+		"outbound_only": true,
+	}
+	got := channelDiagnostics(spec, cfg, true, false, channels.AdapterStatus{}, nil)
+	if len(got) < 2 {
+		t.Fatalf("diagnostics = %#v, want missing token and restart warning", got)
+	}
+	var missingToken, unregistered bool
+	for _, d := range got {
+		if strings.Contains(d.Message, "Default outbound bot token") {
+			missingToken = true
+		}
+		if strings.Contains(d.Message, "not registered") {
+			unregistered = true
+		}
+	}
+	if !missingToken || !unregistered {
+		t.Fatalf("diagnostics = %#v, missingToken=%v unregistered=%v", got, missingToken, unregistered)
+	}
+}
+
+func TestChannelDiagnosticsAllowsDedicatedBotMappingsWithoutDefaultBot(t *testing.T) {
+	spec := *channelSpecByID("telegram")
+	cfg := map[string]any{"enabled": true}
+	bots := []fiber.Map{{
+		"_adapter_id":   "telegram-weather",
+		"agent_id":      "weather",
+		"_connected":    true,
+		"outbound_only": false,
+	}}
+	got := channelDiagnostics(spec, cfg, true, true, channels.AdapterStatus{Connected: true}, bots)
+	for _, d := range got {
+		if strings.Contains(d.Message, "Default outbound bot token") {
+			t.Fatalf("unexpected default-bot diagnostic for dedicated mapping: %#v", got)
+		}
+		if d.Severity == "fail" {
+			t.Fatalf("unexpected failure for dedicated mapping: %#v", got)
+		}
 	}
 }
 

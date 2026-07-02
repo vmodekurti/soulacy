@@ -1,0 +1,11 @@
+{
+  "name": "Soulacy",
+  "short_name": "Soulacy",
+  "description": "Operate local and scheduled Soulacy agents from desktop or mobile.",
+  "start_url": "/#mobile",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0c0e1a",
+  "theme_color": "#111426",
+  "categories": ["productivity", "developer", "utilities"]
+}

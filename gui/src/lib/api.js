@@ -96,10 +96,14 @@ export const api = {
 
   templates: {
     list:        ()         => apiFetch('/templates'),
-    instantiate: (name, id = '') => apiFetch(
+    instantiate: (name, opts = {}) => apiFetch(
       `/templates/${encodeURIComponent(name)}/instantiate`,
-      { method: 'POST', body: JSON.stringify({ id }) },
+      { method: 'POST', body: JSON.stringify(typeof opts === 'string' ? { id: opts } : opts) },
     ),
+  },
+
+  onboarding: {
+    status: () => apiFetch('/onboarding/status'),
   },
 
   chat: (agentId, text, userId = 'gui-user', overrides = null, sessionId = '', attachmentIds = []) =>
@@ -226,6 +230,11 @@ export const api = {
       if (status) params.set('status', status)
       if (limit) params.set('limit', String(limit))
       return apiFetch('/learning/proposals?' + params.toString())
+    },
+    learningSummary: (agentId = '') => {
+      const params = new URLSearchParams()
+      if (agentId) params.set('agent_id', agentId)
+      return apiFetch('/learning/summary?' + params.toString())
     },
     proposeFromRun: (agentId, sessionId, maxProposals = 3) =>
       apiFetch('/learning/propose-from-run', {

@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { apiKey, connected, authRequired } from './lib/stores.js'
   import Dashboard  from './pages/Dashboard.svelte'
-  import Builder    from './pages/Builder.svelte'
+  import Onboarding from './pages/Onboarding.svelte'
   import Studio     from './pages/Studio.svelte'
   import Agents     from './pages/Agents.svelte'
   import Chat       from './pages/Chat.svelte'
@@ -19,6 +19,7 @@
   import Activity   from './pages/Activity.svelte'
   import Config     from './pages/Config.svelte'
   import Logs       from './pages/Logs.svelte'
+  import Mobile     from './pages/Mobile.svelte'
   import PluginFrame from './pages/PluginFrame.svelte'
   import PluginManager from './pages/PluginManager.svelte'
   import { pageTitle } from './lib/pagetitle.js'
@@ -45,7 +46,7 @@
 
   const pages = [
     { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'         },
-    { id: 'builder',   icon: '✦', label: 'Build',       group: 'main'         },
+    { id: 'onboarding', icon: '✓', label: 'First Run',  group: 'main'         },
     { id: 'studio',    icon: '🎬', label: 'Studio',      group: 'main'         },
     { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'         },
     { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'         },
@@ -62,8 +63,14 @@
     { id: 'secrets',   icon: '🔑', label: 'Secrets',    group: 'integrations' },
     { id: 'activity',  icon: '📈', label: 'Activity',   group: 'system'       },
     { id: 'config',    icon: '≡', label: 'Config',      group: 'system'       },
+    { id: 'mobile',    icon: '▣', label: 'Mobile',      group: 'system'       },
     { id: 'logs',      icon: '📋', label: 'Logs',       group: 'system'       },
   ]
+
+  const retiredPages = {
+    builder: 'studio',
+    build: 'studio',
+  }
 
   // Ordered nav sections with their (optional) uppercase headers, per wireframe.
   const navGroups = [
@@ -77,6 +84,7 @@
   $: if (typeof document !== 'undefined') document.title = pageTitle(page, pages, pluginPages)
 
   function navigate(p) {
+    p = retiredPages[p] || p
     page = p
     sidebarOpen = false
     history.pushState({}, '', '#' + p)
@@ -127,6 +135,10 @@
   onMount(() => {
     const applyHash = () => {
       const h = location.hash.slice(1)
+      if (retiredPages[h]) {
+        navigate(retiredPages[h])
+        return
+      }
       if (h && (pages.find(p => p.id === h) || isPluginPage(h))) { page = h; return }
       // Path-based entry (ARCH-6): the SPA fallback serves index.html for any
       // unmatched path, so a deep link / refresh on e.g. /studio lands here
@@ -134,6 +146,10 @@
       // matches a known route so /studio opens the Studio editor directly.
       if (!h) {
         const seg = location.pathname.replace(/\/+$/, '').split('/').pop()
+        if (retiredPages[seg]) {
+          navigate(retiredPages[seg])
+          return
+        }
         if (seg && pages.find(p => p.id === seg)) page = seg
       }
     }
@@ -373,8 +389,8 @@
   <main class="content">
     {#if page === 'dashboard'}
       <Dashboard />
-    {:else if page === 'builder'}
-      <Builder />
+    {:else if page === 'onboarding'}
+      <Onboarding />
     {:else if page === 'studio'}
       <Studio />
     {:else if page === 'agents'}
@@ -407,6 +423,8 @@
       <Activity />
     {:else if page === 'config'}
       <Config />
+    {:else if page === 'mobile'}
+      <Mobile />
     {:else if page === 'logs'}
       <Logs />
     {:else if isPluginPage(page)}
