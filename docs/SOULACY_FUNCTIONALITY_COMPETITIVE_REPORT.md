@@ -10,6 +10,18 @@ The most important competitive lesson from OpenClaw and Hermes is that users do 
 
 OpenClaw competes on breadth, assistant feel, native companions, channels, voice, and "it just does things." Hermes competes on the learning loop: persistent memory, self-created skills, cross-session recall, and sub-agent execution. Soulacy can challenge both by becoming the most reliable local-first agent operating system: auditable, hackable, safe, extensible, and genuinely useful for scheduled and interactive work.
 
+## Rerun Verdict After Implementation Sprint
+
+Soulacy has moved from "powerful runtime with promising pieces" to a credible local-first agent operating system. The major gaps called out in the earlier analysis are no longer blank spaces: the product now has a visible learning loop, Studio self-heal, build-until-it-works repair, provider/secrets doctor checks, Docker/SSH executor backends, browser automation via MCP, process cleanup for MCP tools, and clearer Telegram default-output routing.
+
+The competitive center of gravity has changed:
+
+- Against OpenClaw, Soulacy is now much stronger in inspectable workflows, scheduled agents, Studio repair, observability, provider control, and safety-oriented local operation. OpenClaw still wins on native companion polish, very broad channel coverage, onboarding, voice, and the simple "assistant that follows me everywhere" story.
+- Against Hermes, Soulacy now has enough learning infrastructure to contest the self-improvement story, especially because proposals are visible and reviewable. Hermes still wins on the crispness of its learning narrative, automatic memory/skill compounding, session search as a core tool, and remote-agent positioning.
+- Soulacy's strongest wedge is not "another chatbot" or "another automation canvas." It is a local-first command center where scheduled, interactive, multi-channel, tool-using agents can be built, tested, repaired, audited, and delivered to real channels.
+
+Go-to-market readiness is now less about inventing core architecture and more about productization: first-run setup, excellent templates, safer defaults, regression suites around real workflows, a mobile/PWA companion, public docs, and a tighter story.
+
 ## What Is Implemented Today
 
 ### Runtime And Agent Model
@@ -98,6 +110,11 @@ Implemented:
 - Runtime troubleshooting loop: failed Activity sessions can be handed to Studio,
   diagnosed from real action-log evidence, repaired with the build/verify loop,
   and reviewed before saving the fixed agent.
+- Whole-workflow integrity checks for missing inputs, invalid template references,
+  broken ports, missing channel outputs, and generated Python variable mistakes.
+- LLM extraction nodes for normalizing user intent before brittle downstream
+  tool calls.
+- "Build until it works" repair path and failed-run self-heal panel.
 
 Current product issue:
 
@@ -198,7 +215,7 @@ Representative files:
 
 Gap:
 
-Soulacy has memory infrastructure, but it does not yet feel like Hermes-style compounding intelligence. The missing product layer is a deliberate learning loop: detect solved tasks, extract reusable procedures/preferences, ask for confirmation when appropriate, create/update skills, and use those skills automatically next time.
+Soulacy now has the first visible layer of a Hermes-style learning loop: agents can enable learning, successful or manually selected runs can generate proposals, and the Brain Memory UI supports review/edit/accept/reject. The remaining gap is deeper compounding: automatic skill usage after approval, richer session search during planning, recurring reflection jobs, and user-facing evidence that the product is getting better over time.
 
 ### MCP, Skills, Plugins, Sidecars
 
@@ -214,6 +231,8 @@ Implemented:
 - Plugin credential delegation.
 - Plugin GUI iframe mounting.
 - Custom distribution build system.
+- MCP process janitor that cleans up tool descendants after runs.
+- Browser automation quick-start through the Playwright MCP sidecar.
 
 Representative files/docs:
 
@@ -268,6 +287,7 @@ Implemented:
 - Rate limiting.
 - Config GUI.
 - Doctor/onboard/daemon CLI work appears at least partially present.
+- Provider/secrets doctor surface in the GUI/API.
 
 Representative files:
 
@@ -322,13 +342,15 @@ Competitive implication:
 1. Product narrative is fragmented: runtime, Studio, Workboard, chat, schedules, plugins, memory all exist, but do not yet feel like one assistant.
 2. Studio is too graph-centric for non-expert users.
 3. Chat is improving but still behind ChatGPT/Claude polish: artifacts, files, search, project context, rich editing, citations, share/export, inline tool previews, and keyboard ergonomics need work.
-4. Memory exists but does not yet compound into visible self-improvement.
+4. Learning proposals exist, but the system does not yet consistently auto-apply approved learnings as reusable skills/procedures during future planning.
 5. Channel breadth is narrower than OpenClaw.
 6. Native/mobile companion story is absent or not productized.
 7. Voice exists as spike/MVP infrastructure but is not a differentiating user experience.
-8. Browser/computer control is not yet a polished first-class capability.
-9. Provider/key flows have had reliability issues; this hurts trust.
+8. Browser/computer control exists through MCP, but needs a polished session viewer, domain policy, and trace UX.
+9. Provider/key flows are better with the doctor, but onboarding still needs to prevent broken state before users hit failures.
 10. Documentation has many deep docs, but needs a crisp public product guide.
+11. Channel delivery semantics are still too technical; default outbound bots, agent-specific bots, and channel-safe formatting need clearer guided setup.
+12. Release packaging, daemon management, upgrade flow, and health checks need to feel boring and dependable before a commercial launch.
 
 ## Major Feature Additions To Challenge OpenClaw And Hermes
 
@@ -336,7 +358,7 @@ Competitive implication:
 
 Goal: challenge Hermes directly.
 
-Build a closed loop around every completed task:
+Build a closed loop around every completed task. The first proposal/review layer is implemented; the next step is turning approved learnings into future behavior:
 
 - Detect task success/failure.
 - Extract reusable facts, preferences, procedures, and tool recipes.
@@ -354,6 +376,9 @@ MVP stories:
 - Add memory proposals UI: accept/reject/edit. *(implemented)*
 - Add skill proposal UI: generated `SKILL.md`, tests/checklist, install button. *(implemented)*
 - Add "why I remembered this" provenance on memory entries.
+- Inject accepted procedures/skills into future planning with clear attribution.
+- Add recurring reflection jobs with approval gates.
+- Add learning quality metrics: accepted/rejected proposal rate, repeated-error reduction, and skill reuse count.
 
 ### 2. Intent-First Studio
 
@@ -415,6 +440,9 @@ Build:
 - MCP server mode exposing Soulacy agents as tools.
 - Official channel sidecar templates for Signal, Matrix, iMessage, Google Chat.
 - Channel marketplace via plugin/sidecar registry.
+- Guided default outbound bot setup for Telegram/Slack/Discord/WhatsApp.
+- Agent-specific channel mappings that are visibly distinct from default scheduled-output delivery.
+- Text-safe formatters for channel surfaces that cannot render rich GUI artifacts.
 
 MVP stories:
 
@@ -422,6 +450,9 @@ MVP stories:
 - `channel.send` generic HTTP adapter.
 - `soulacy mcp serve` exposing agents, Workboard, schedules, and KB.
 - Sidecar starter kit for a new channel.
+- Default Telegram outbound bot. *(implemented)*
+- Agent-specific Telegram bot mappings. *(implemented)*
+- Channel-safe chart/plaintext formatting for Telegram. *(implemented)*
 
 ### 5. Native Companion And Mobile Pairing
 
@@ -458,6 +489,7 @@ Add a first-class browser automation sidecar:
 MVP stories:
 
 - `browser` sidecar plugin through MCP/Playwright quick-start. *(implemented)*
+- MCP process janitor to clean up stray browser/tool child processes. *(implemented)*
 - GUI live screenshot + current URL.
 - Per-domain approval policy.
 - Trace replay and artifact capture.
@@ -522,6 +554,8 @@ MVP stories:
 - Agent version history and rollback. *(implemented)*
 - Run replay from action log. *(implemented)*
 - Activity-to-Studio run debugging with action-log evidence and verified repair. *(implemented)*
+- Studio whole-workflow integrity checks before save/run. *(implemented)*
+- Channel delivery diagnostics and guided fixes.
 - Policy prompts for shell/file/network actions.
 
 ### 10. Template Gallery And Vertical Packs
