@@ -336,6 +336,23 @@ Competitive implication:
 8. Workboard + observability gives Soulacy operational depth.
 9. Studio has serious compiler/runtime machinery underneath it.
 10. Provider abstraction is flexible enough for most OpenAI-compatible ecosystems.
+11. Studio can now learn from real runtime failures and propose repairs instead of leaving the user alone with stack traces.
+12. Default outbound channel routing makes non-interactive cron agents practical.
+
+## Updated Competitive Scorecard
+
+| Capability | Soulacy Now | OpenClaw | Hermes | Read |
+| --- | --- | --- | --- | --- |
+| Local-first assistant runtime | Strong | Strong | Strong | All three can claim local/self-hosted control; Soulacy's Go binary and declarative agents are a clean operator story. |
+| Channel breadth | Medium | Very strong | Medium | OpenClaw still wins reach with many messaging/native surfaces. Soulacy should compete through generic adapters, sidecars, and excellent Telegram/Slack/Discord/WhatsApp reliability first. |
+| Scheduled agents | Strong | Strong | Strong | Soulacy is competitive because schedules, Activity, watch/history, and channel output are first-class. |
+| Workflow builder | Strong but complex | Medium | Low/medium | Studio is a differentiator if it becomes intent-first. The compiler/repair machinery is already deeper than a simple canvas. |
+| Self-improvement | Medium/strong | Medium | Very strong | Soulacy has visible proposals and review. Hermes still owns the narrative around automatic memory/skill compounding. |
+| Remote execution | Medium | Strong | Strong | Soulacy has Docker/SSH/local executor foundations; needs productized selection, vault helpers, and cloud presets. |
+| Browser/computer automation | Medium | Strong | Strong | Soulacy has MCP/Playwright quick-start and process cleanup; needs viewer, trace, and domain policy UX. |
+| Observability/debugging | Strong | Medium | Medium | Soulacy's Activity logs, Studio repair, run replay, and Workboard are a real advantage. |
+| Onboarding/go-to-market polish | Weak/medium | Strong | Medium/strong | This is the largest commercial gap. Users need a guided path from install to first useful assistant in 10 minutes. |
+| Safety/governance | Strong foundation | Medium/strong | Medium | Soulacy's capability tiers, RBAC, vault, doctor, and local-first design can become a trust moat if surfaced cleanly. |
 
 ## Current Weaknesses
 
@@ -583,6 +600,16 @@ MVP stories:
 
 ## Priority Roadmap
 
+### Phase 0: Production Launch Hardening
+
+1. First-run guided onboarding that configures provider, default assistant, default outbound channel, and one template.
+2. Template install wizard with required secrets, channel destination, mock test, real test, and schedule.
+3. End-to-end regression pack for top workflows: weather, stock screener, deal finder, flight finder, Telegram output, Studio repair.
+4. Release packaging: daemon/service install, upgrade, rollback, doctor, and log bundle.
+5. Public docs: install, first agent, channels, Studio, scheduled output, troubleshooting.
+6. Security posture: default policies, channel allowlists, secret redaction, and production checklist.
+7. Mobile/PWA companion for approvals, Activity, and simple chat.
+
 ### Phase 1: Trust And Product Cohesion
 
 1. Provider/secrets doctor checks. *(implemented)*
@@ -625,7 +652,27 @@ Do not try to beat OpenClaw by adding 25 channels manually. Beat it with a clean
 
 Do not try to beat Hermes by only adding more memory tables. Beat it with a visible learning loop that turns completed tasks into memories, procedures, and skills the user can inspect and approve.
 
+## What Would Make Soulacy Distinct
+
+The defensible product is:
+
+> A local-first, inspectable agent OS for people who need agents to run reliably, on schedules and channels, with visible repair, learning, and governance.
+
+That is different from:
+
+- ChatGPT/Claude: great conversational intelligence, weaker local scheduled operations and channel ownership.
+- OpenClaw: excellent personal assistant reach, but less focused on visual workflow repair and auditable agent operations.
+- Hermes: excellent self-improvement story, but less focused on nontechnical workflow authoring, channel output, and operator-grade observability.
+
+Soulacy should make three promises repeatedly:
+
+1. **Build it:** describe the automation, let Studio create the agent/workflow, then inspect or edit it.
+2. **Run it:** trigger from chat, channel, cron, webhook, or another agent.
+3. **Fix and learn:** when it fails, Studio can diagnose the real run, repair the workflow, and turn successful patterns into reviewed learnings.
+
 ## External References Checked
 
-- OpenClaw website and GitHub README: positioning around personal assistant, channels, native apps, onboarding, and broad channel support.
-- Hermes website and GitHub README: positioning around persistent memory, automated skill creation, built-in learning loop, multi-platform reach, subagents, scheduled automations, and remote execution backends.
+- OpenClaw website and GitHub README: positioning around personal assistant, channels, native apps, onboarding, and broad channel support. See <https://openclaw.ai/> and <https://github.com/openclaw/openclaw>.
+- OpenClaw docs: setup/onboarding and channel-first assistant story. See <https://docs.openclaw.ai/start/openclaw>.
+- Hermes GitHub README: positioning around an agent that grows with the user. See <https://github.com/NousResearch/hermes-agent>.
+- Hermes memory docs: persistent memory, session search, background self-improvement review, staged memory/skill writes, and external memory providers. See <https://github.com/NousResearch/hermes-agent/blob/main/website/docs/user-guide/features/memory.md>.
