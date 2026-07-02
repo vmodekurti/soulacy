@@ -112,6 +112,7 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 	// Index MCP tools by full name → required arg names, for arg checks.
 	mcpToolReq := map[string][]string{}
 	mcpToolKnown := map[string]bool{}
+	builtinToolReq := builtinRequiredToolArgs()
 	for _, srv := range in.Catalog.MCP {
 		for _, t := range srv.Tools {
 			full := strings.TrimSpace(t.Name)
@@ -159,10 +160,22 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 					}
 					add("block", "dependency", n.ID, "Required argument \""+want+"\" for \""+tool+"\" is empty or a placeholder.", "Provide a real value, or feed it from an upstream step's output.")
 				}
-			} else if len(toolSet) > 0 && !toolSet[strings.ToLower(tool)] {
+			} else if len(toolSet) > 0 && !toolSet[strings.ToLower(tool)] && !isBuiltinContractTool(tool) {
 				// Builtin/unknown tool not in the grounded catalog: warn (the
 				// catalog may be partial), don't block.
 				add("warn", "tool", n.ID, "Tool \""+tool+"\" is not in the available tools list.", "Confirm the tool name is correct, or install the capability it needs.")
+			}
+			if reqs := builtinToolReq[tool]; len(reqs) > 0 {
+				if strings.TrimSpace(n.Input) != "" && !strings.HasPrefix(strings.TrimSpace(n.Input), "{") {
+					add("block", "dependency", n.ID, "Tool \""+tool+"\" expects JSON object arguments, but this step passes raw/free-form text.", "Wrap the value in the tool's required JSON fields, or insert an extraction/transform step.")
+					continue
+				}
+				for _, want := range reqs {
+					if argFilled(n.Input, want) || nodeSuppliesViaPort(draft.Flow, n, want) {
+						continue
+					}
+					add("block", "dependency", n.ID, "Required argument \""+want+"\" for \""+tool+"\" is empty or a placeholder.", "Provide a real value, or feed it from an upstream step's output.")
+				}
 			}
 		case "python":
 			// A Custom Python node MUST define a top-level `def run(inputs)` —

@@ -59,7 +59,7 @@ func parseToolParams(hint string) []ToolParam {
 // parsed parameter list. Tools with no param hint map to a nil slice (signature
 // known but argument-less / unspecified).
 func toolSignatures(cat Catalog) map[string][]ToolParam {
-	sigs := map[string][]ToolParam{}
+	sigs := builtinToolParams()
 	for _, srv := range cat.MCP {
 		for _, t := range srv.Tools {
 			full := strings.TrimSpace(t.Name)
@@ -75,6 +75,7 @@ func toolSignatures(cat Catalog) map[string][]ToolParam {
 // tmplExprRe matches a Go template expression so we can blank it out before
 // JSON-parsing a node input that mixes literal JSON with {{ .var }} holes.
 var tmplExprRe = regexp.MustCompile(`\{\{[^}]*\}\}`)
+var quotedTmplExprRe = regexp.MustCompile(`"\s*\{\{[^}]*\}\}\s*"`)
 
 // parseInputObject best-effort parses a tool node's Input (a JSON-object
 // template) into its top-level keys and their literal value types. Template
@@ -88,9 +89,12 @@ func parseInputObject(input string) (vals map[string]any, templated map[string]b
 		return nil, nil, false
 	}
 	// Record which raw key/value pairs contain a template, then blank the
-	// expressions to a sentinel so json.Unmarshal succeeds.
+	// expressions to a sentinel so json.Unmarshal succeeds. Handle both
+	// quoted templates ("{{ .x }}") and JSON-safe unquoted templates
+	// ({{ toJson .x }}).
 	templated = map[string]bool{}
-	blanked := tmplExprRe.ReplaceAllString(s, "__TMPL__")
+	blanked := quotedTmplExprRe.ReplaceAllString(s, `"__TMPL__"`)
+	blanked = tmplExprRe.ReplaceAllString(blanked, `"__TMPL__"`)
 	var m map[string]any
 	if err := json.Unmarshal([]byte(blanked), &m); err != nil {
 		return nil, nil, false

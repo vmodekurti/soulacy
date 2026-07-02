@@ -445,10 +445,16 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 		sb.WriteString("Available tools: ")
 		sb.WriteString(strings.Join(catalog.Tools, ", "))
 		sb.WriteString("\n")
-		if stringIn(catalog.Tools, "kb_write") {
-			sb.WriteString("- For intents like \"store in Soulacy's Knowledge store\", \"save to KB\", \"ingest documents/URLs into knowledge\", use the `kb_write` tool with an attached `knowledge` base. Do NOT use `write_file` for knowledge ingestion; `write_file` is only for arbitrary host files and requires system authorization.\n")
-		}
 	}
+	sb.WriteString("Built-in tool contracts you MUST obey:\n")
+	for _, name := range sortedBuiltinToolNames() {
+		sb.WriteString("- ")
+		sb.WriteString(name)
+		sb.WriteString("(")
+		sb.WriteString(toolParamPrompt(builtinToolParams()[name]))
+		sb.WriteString(")\n")
+	}
+	sb.WriteString("- For intents like \"store in Soulacy's Knowledge store\", \"save to KB\", \"ingest documents/URLs into knowledge\", use the `kb_write` tool with an attached `knowledge` base. Do NOT use `write_file` for knowledge ingestion; `write_file` is only for arbitrary host files and requires system authorization. Its input must be a JSON object with `kb` and `content`; if content comes from an agent/LLM reply, use `\"content\": {{ toJson .agent_output }}` unquoted so markdown, quotes, and newlines stay valid JSON.\n")
 	if len(catalog.Providers) > 0 {
 		sb.WriteString("Available providers: ")
 		sb.WriteString(strings.Join(catalog.Providers, ", "))
