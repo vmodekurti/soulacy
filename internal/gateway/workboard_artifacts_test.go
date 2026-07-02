@@ -2,8 +2,10 @@ package gateway
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -45,6 +47,16 @@ func TestDetectArtifactPaths_WriteFile(t *testing.T) {
 	}
 	if got[0].Path != "/tmp/out.txt" || got[0].Tool != "write_file" {
 		t.Fatalf("artifact = %+v", got[0])
+	}
+}
+
+func TestDetectArtifactPaths_DownloadFile(t *testing.T) {
+	events := []message.Event{
+		toolCallEvent("chat-1", "download_file", map[string]any{"url": "https://example.com/report.csv", "dest_path": "/tmp/report.csv"}),
+	}
+	got := detectArtifactPaths(events, "chat-1")
+	if len(got) != 1 || got[0].Path != "/tmp/report.csv" || got[0].Tool != "download_file" {
+		t.Fatalf("artifacts = %+v", got)
 	}
 }
 
@@ -158,6 +170,57 @@ func TestRecordRunArtifacts_PersistsWithMetadata(t *testing.T) {
 	a := got[0]
 	if a.Path != f1 || a.SizeBytes != int64(len("hello world")) || a.Tool != "write_file" {
 		t.Fatalf("artifact = %+v", a)
+	}
+}
+
+func TestChatArtifacts_ListAndDownload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chat-report.md")
+	if err := os.WriteFile(path, []byte("hello from chat"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestGateway(t, "")
+	s.actions = &fakeTailBackend{events: []message.Event{
+		toolCallEvent("chat-art-1", "write_file", map[string]any{"path": path}),
+	}}
+
+	status, body := gatewayJSON(t, s, "GET", "/api/v1/chat/artifacts?agent_id=agent-1&session_id=chat-art-1", "", "")
+	if status != 200 {
+		t.Fatalf("status=%d body=%v", status, body)
+	}
+	if body["count"].(float64) != 1 {
+		t.Fatalf("body=%v, want one artifact", body)
+	}
+	arts := body["artifacts"].([]any)
+	first := arts[0].(map[string]any)
+	if first["name"] != "chat-report.md" || first["tool"] != "write_file" {
+		t.Fatalf("artifact=%v", first)
+	}
+
+	status, raw := gatewayRaw(t, s, "GET", "/api/v1/chat/artifacts/download?agent_id=agent-1&session_id=chat-art-1&path="+url.QueryEscape(path), "", "")
+	if status != 200 || !strings.Contains(raw, "hello from chat") {
+		t.Fatalf("download status=%d raw=%q", status, raw)
+	}
+}
+
+func TestChatArtifactDownload_RejectsPathOutsideSession(t *testing.T) {
+	dir := t.TempDir()
+	allowed := filepath.Join(dir, "allowed.txt")
+	other := filepath.Join(dir, "other.txt")
+	if err := os.WriteFile(allowed, []byte("allowed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, []byte("other"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestGateway(t, "")
+	s.actions = &fakeTailBackend{events: []message.Event{
+		toolCallEvent("chat-art-2", "write_file", map[string]any{"path": allowed}),
+	}}
+
+	status, body := gatewayJSON(t, s, "GET", "/api/v1/chat/artifacts/download?agent_id=agent-1&session_id=chat-art-2&path="+url.QueryEscape(other), "", "")
+	if status != 404 {
+		t.Fatalf("status=%d body=%v, want 404", status, body)
 	}
 }
 

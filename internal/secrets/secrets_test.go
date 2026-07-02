@@ -223,6 +223,44 @@ channels:
 	}
 }
 
+func TestMigrateConfigPlaintextUpdatesStaleVaultSecret(t *testing.T) {
+	ctx := context.Background()
+	m := New(newFakeVault())
+	if err := m.Set(ctx, "llm.providers.anthropic.api_key", "old-vault-key"); err != nil {
+		t.Fatal(err)
+	}
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	body := `
+llm:
+  providers:
+    anthropic:
+      api_key: "new-config-key"
+`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{}
+	cfg.LLM.Providers = map[string]config.ProviderConfig{
+		"anthropic": {APIKey: "new-config-key"},
+	}
+	n, err := m.Migrate(ctx, cfg, cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Fatalf("migrations = %d, want 1", n)
+	}
+	if v, ok := m.Get(ctx, "llm.providers.anthropic.api_key"); !ok || v != "new-config-key" {
+		t.Fatalf("vault value = %q set=%v, want new-config-key", v, ok)
+	}
+	out, _ := os.ReadFile(cfgPath)
+	if strings.Contains(string(out), "new-config-key") {
+		t.Fatalf("migrated config secret remained in file:\n%s", out)
+	}
+}
+
 func TestRedactSecretValues(t *testing.T) {
 	in := `  api_key: "secret123"
   api_key: "gateway-keep"

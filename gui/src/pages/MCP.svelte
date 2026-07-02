@@ -227,6 +227,7 @@
     { id: 'slack',      label: 'Slack',       command: 'npx', args: ['-y', '@modelcontextprotocol/server-slack'],      env: { SLACK_BOT_TOKEN: '', SLACK_TEAM_ID: '' } },
     { id: 'postgres',   label: 'Postgres',    command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://localhost/dbname'] },
     { id: 'puppeteer',  label: 'Puppeteer',   command: 'npx', args: ['-y', '@modelcontextprotocol/server-puppeteer'] },
+    { id: 'browser',    label: 'Browser',     command: 'npx', args: ['-y', '@playwright/mcp@latest', '--browser', 'chromium'] },
     { id: 'fetch',      label: 'Web Fetch',   command: 'uvx', args: ['mcp-server-fetch'] },
   ]
   function applyTemplate(tpl) {

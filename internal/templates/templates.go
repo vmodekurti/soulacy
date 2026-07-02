@@ -54,12 +54,37 @@ func New(userDir string) *Catalog {
 // returned alongside the parsed Definition so callers can either write the
 // file verbatim (after ID rewriting) or use the parsed form for inspection.
 type Entry struct {
-	Name        string            `json:"name"`         // basename without extension, the public handle
-	DisplayName string            `json:"display_name"` // from Definition.Name
-	Description string            `json:"description"`  // from Definition.Description
-	Tags        []string          `json:"tags"`
-	Source      string            `json:"source"`     // "embedded" | "user"
-	Definition  *agent.Definition `json:"definition"` // parsed (for previews — engine isn't going to run this)
+	Name            string            `json:"name"`         // basename without extension, the public handle
+	DisplayName     string            `json:"display_name"` // from Definition.Name
+	Description     string            `json:"description"`  // from Definition.Description
+	Tags            []string          `json:"tags"`
+	Source          string            `json:"source"` // "embedded" | "user"
+	Setup           []SetupItem       `json:"setup"`
+	RequiredSecrets []RequiredSecret  `json:"required_secrets"`
+	MockPrompt      string            `json:"mock_prompt"`
+	ScheduleHint    string            `json:"schedule_hint,omitempty"`
+	OutputHint      string            `json:"output_hint,omitempty"`
+	Definition      *agent.Definition `json:"definition"` // parsed (for previews — engine isn't going to run this)
+}
+
+// SetupItem is derived readiness metadata for a template. It is intentionally
+// conservative: "ready" means the SOUL.yaml has enough configuration to run
+// locally, "needs_setup" means the user must connect data or delivery first,
+// and "optional" means useful polish that is not a hard blocker.
+type SetupItem struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Status string `json:"status"` // ready | needs_setup | optional
+	Detail string `json:"detail,omitempty"`
+}
+
+// RequiredSecret describes credentials a template may need after creation.
+// The catalog does not inspect the user's vault, so this is a checklist, not
+// a live secret status.
+type RequiredSecret struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // List returns all templates sorted by Name, with user-dir entries shadowing
@@ -177,14 +202,153 @@ func parseEntry(filename string, data []byte, source string) (Entry, error) {
 		return Entry{}, fmt.Errorf("parse %s: %w", filename, err)
 	}
 	base := strings.TrimSuffix(strings.TrimSuffix(filename, ".yml"), ".yaml")
+	setup, secrets, scheduleHint, outputHint := deriveSetup(&def)
 	return Entry{
-		Name:        base,
-		DisplayName: def.Name,
-		Description: def.Description,
-		Tags:        def.Tags,
-		Source:      source,
-		Definition:  &def,
+		Name:            base,
+		DisplayName:     def.Name,
+		Description:     def.Description,
+		Tags:            def.Tags,
+		Source:          source,
+		Setup:           setup,
+		RequiredSecrets: secrets,
+		MockPrompt:      mockPrompt(base, &def),
+		ScheduleHint:    scheduleHint,
+		OutputHint:      outputHint,
+		Definition:      &def,
 	}, nil
+}
+
+func deriveSetup(def *agent.Definition) ([]SetupItem, []RequiredSecret, string, string) {
+	if def == nil {
+		return nil, nil, "", ""
+	}
+	var setup []SetupItem
+	var secrets []RequiredSecret
+
+	provider := strings.TrimSpace(def.LLM.Provider)
+	model := strings.TrimSpace(def.LLM.Model)
+	if provider != "" {
+		detail := provider
+		if model != "" {
+			detail += " / " + model
+		}
+		status := "ready"
+		if provider != "ollama" {
+			status = "needs_setup"
+			secrets = append(secrets, RequiredSecret{
+				Key:    provider + ".api_key",
+				Label:  providerDisplayName(provider) + " API key",
+				Reason: "Required before this template can call the selected model provider.",
+			})
+		}
+		setup = append(setup, SetupItem{Key: "model", Label: "Model", Status: status, Detail: detail})
+	}
+
+	if def.Trigger == agent.TriggerCron {
+		cron := ""
+		if def.Schedule != nil {
+			cron = strings.TrimSpace(def.Schedule.Cron)
+		}
+		if cron == "" {
+			setup = append(setup, SetupItem{Key: "schedule", Label: "Schedule", Status: "needs_setup", Detail: "Choose when this agent should run."})
+		} else {
+			setup = append(setup, SetupItem{Key: "schedule", Label: "Schedule", Status: "ready", Detail: cron})
+		}
+
+		channel, to := "", ""
+		if def.Schedule != nil && def.Schedule.Output != nil {
+			channel = strings.TrimSpace(def.Schedule.Output.Channel)
+			to = strings.TrimSpace(def.Schedule.Output.To)
+		}
+		if channel == "" || to == "" {
+			setup = append(setup, SetupItem{Key: "delivery", Label: "Scheduled output", Status: "needs_setup", Detail: "Select a channel and destination on the Schedule page."})
+		} else {
+			setup = append(setup, SetupItem{Key: "delivery", Label: "Scheduled output", Status: "ready", Detail: channel + " -> " + to})
+		}
+	}
+
+	if strings.Contains(strings.ToLower(def.SystemPrompt), "knowledge base") || strings.Contains(strings.ToLower(def.SystemPrompt), "kb_search") || len(def.Knowledge) > 0 {
+		status := "needs_setup"
+		detail := "Create or attach a knowledge base before relying on grounded answers."
+		if len(def.Knowledge) > 0 {
+			status = "ready"
+			detail = "Uses: " + strings.Join(def.Knowledge, ", ")
+		}
+		setup = append(setup, SetupItem{Key: "knowledge", Label: "Knowledge", Status: status, Detail: detail})
+	}
+
+	if def.Builtins != nil && len(*def.Builtins) > 0 {
+		setup = append(setup, SetupItem{Key: "tools", Label: "Built-in tools", Status: "ready", Detail: strings.Join(*def.Builtins, ", ")})
+	} else if len(def.Tools) > 0 {
+		names := make([]string, 0, len(def.Tools))
+		for _, tool := range def.Tools {
+			if strings.TrimSpace(tool.Name) != "" {
+				names = append(names, tool.Name)
+			}
+		}
+		if len(names) > 0 {
+			setup = append(setup, SetupItem{Key: "tools", Label: "Custom tools", Status: "ready", Detail: strings.Join(names, ", ")})
+		}
+	}
+
+	if def.SystemTools || def.AllowShell || def.HasCapability("system") {
+		setup = append(setup, SetupItem{Key: "system", Label: "System access", Status: "needs_setup", Detail: "Requires runtime.allow_system_tools and explicit operator review."})
+	}
+
+	scheduleHint := ""
+	outputHint := ""
+	if def.Trigger == agent.TriggerCron {
+		scheduleHint = "Edit the cron and missed-run behavior on the Schedule page after creating the agent."
+		outputHint = "Pick a Telegram, Slack, WhatsApp, or sidecar channel destination before enabling production delivery."
+	}
+	return setup, secrets, scheduleHint, outputHint
+}
+
+func providerDisplayName(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return "OpenAI"
+	case "anthropic":
+		return "Anthropic"
+	case "gemini", "google":
+		return "Google Gemini"
+	case "ollama_cloud":
+		return "Ollama Cloud"
+	case "openrouter":
+		return "OpenRouter"
+	case "groq":
+		return "Groq"
+	default:
+		if provider == "" {
+			return "Provider"
+		}
+		return strings.ToUpper(provider[:1]) + provider[1:]
+	}
+}
+
+func mockPrompt(name string, def *agent.Definition) string {
+	if def == nil {
+		return "Say hello and explain what you can do."
+	}
+	tags := map[string]bool{}
+	for _, tag := range def.Tags {
+		tags[strings.ToLower(tag)] = true
+	}
+	lowerName := strings.ToLower(name + " " + def.Name)
+	switch {
+	case def.Trigger == agent.TriggerCron:
+		return "Run one preview briefing now and clearly mark it as a test run."
+	case tags["rag"] || strings.Contains(lowerName, "rag") || strings.Contains(lowerName, "compliance"):
+		return "Use the attached knowledge base to answer: what are the three most important rules I should follow?"
+	case strings.Contains(lowerName, "meeting"):
+		return "Summarize this meeting transcript: Alice said the launch moves to Friday. Bob owns the pricing page. Priya will confirm analytics by Thursday."
+	case strings.Contains(lowerName, "inbox"):
+		return "Classify this email and draft a reply: Can you send the Q3 plan by tomorrow morning? We need it for the steering meeting."
+	case tags["web"] || strings.Contains(lowerName, "research"):
+		return "Research the latest public updates on this topic and return a concise sourced summary."
+	default:
+		return "Say hello, explain what you can do, and ask one useful follow-up question."
+	}
 }
 
 // Instantiate clones the named template into a fresh Definition. The caller

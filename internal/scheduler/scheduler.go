@@ -584,7 +584,7 @@ func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definiti
 		return
 	}
 
-	text := renderScheduledOutput(outCfg.Template, def, replyText, triggerType)
+	text := RenderScheduledOutput(outCfg.Template, def, replyText, triggerType)
 	out := message.Message{
 		ID:        uuid.New().String(),
 		SessionID: source.SessionID,
@@ -617,7 +617,7 @@ func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definiti
 		zap.String("bot_name", outCfg.BotName))
 }
 
-func renderScheduledOutput(tpl string, def *agent.Definition, replyText, triggerType string) string {
+func RenderScheduledOutput(tpl string, def *agent.Definition, replyText, triggerType string) string {
 	if strings.TrimSpace(tpl) == "" {
 		return replyText
 	}

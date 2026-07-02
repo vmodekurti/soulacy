@@ -7,6 +7,7 @@ package runtime
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,6 +60,75 @@ func TestLoader_DeleteRemovesFileAndEntry(t *testing.T) {
 	// Folder should also be gone (empty folder cleanup happens in Delete).
 	if _, err := os.Stat(filepath.Join(dir, "deletable")); !os.IsNotExist(err) {
 		t.Errorf("Delete should remove the agent folder, stat err: %v", err)
+	}
+}
+
+func TestLoader_UpsertCapturesVersionAndRestore(t *testing.T) {
+	dir := t.TempDir()
+	l := NewLoader([]string{dir})
+
+	def := &agent.Definition{
+		ID:           "versioned",
+		Name:         "First",
+		Trigger:      agent.TriggerChannel,
+		SystemPrompt: "one",
+		Enabled:      true,
+	}
+	if err := l.Upsert(dir, def); err != nil {
+		t.Fatalf("first Upsert: %v", err)
+	}
+	def.Name = "Second"
+	def.SystemPrompt = "two"
+	if err := l.Upsert(dir, def); err != nil {
+		t.Fatalf("second Upsert: %v", err)
+	}
+
+	versions, err := l.AgentVersions("versioned")
+	if err != nil {
+		t.Fatalf("AgentVersions: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("versions len = %d, want 1", len(versions))
+	}
+	data, _, err := l.ReadAgentVersion("versioned", versions[0].ID)
+	if err != nil {
+		t.Fatalf("ReadAgentVersion: %v", err)
+	}
+	if got := string(data); !strings.Contains(got, "name: First") || strings.Contains(got, "name: Second") {
+		t.Fatalf("snapshot did not contain previous YAML:\n%s", got)
+	}
+
+	restored, _, err := l.RestoreAgentVersion(dir, "versioned", versions[0].ID)
+	if err != nil {
+		t.Fatalf("RestoreAgentVersion: %v", err)
+	}
+	if restored.Name != "First" || restored.SystemPrompt != "one" {
+		t.Fatalf("restored = name %q prompt %q, want First/one", restored.Name, restored.SystemPrompt)
+	}
+	if got := l.Get("versioned"); got == nil || got.Name != "First" {
+		t.Fatalf("loader registry not restored: %#v", got)
+	}
+}
+
+func TestLoader_LoadAllSkipsAgentHistory(t *testing.T) {
+	dir := t.TempDir()
+	l := NewLoader([]string{dir})
+
+	if err := l.Upsert(dir, &agent.Definition{ID: "real", Name: "Real", Trigger: agent.TriggerChannel}); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	hdir := filepath.Join(dir, ".agent-history", "real")
+	if err := os.MkdirAll(hdir, 0755); err != nil {
+		t.Fatalf("mkdir history: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(hdir, "20260101T000000.000000000Z.yaml"), []byte("id: stale\nname: Stale\n"), 0644); err != nil {
+		t.Fatalf("write history: %v", err)
+	}
+	if errs := l.LoadAll(); len(errs) > 0 {
+		t.Fatalf("LoadAll errs: %v", errs)
+	}
+	if got := l.Get("stale"); got != nil {
+		t.Fatalf("history snapshot should not load as agent: %#v", got)
 	}
 }
 

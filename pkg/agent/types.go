@@ -58,6 +58,15 @@ type BrainMemoryConfig struct {
 	Procedural ProceduralMemoryConfig `yaml:"procedural,omitempty" json:"procedural,omitempty"`
 }
 
+// LearningConfig controls the post-run learning loop. When enabled, successful
+// runs create reviewable proposals instead of silently changing memory/rules.
+type LearningConfig struct {
+	Enabled      bool `yaml:"enabled,omitempty"       json:"enabled,omitempty"`
+	AutoPropose  bool `yaml:"auto_propose,omitempty"  json:"auto_propose,omitempty"`
+	MinChars     int  `yaml:"min_chars,omitempty"     json:"min_chars,omitempty"`
+	MaxProposals int  `yaml:"max_proposals,omitempty" json:"max_proposals,omitempty"`
+}
+
 // EpisodicMemoryConfig controls episodic task history injection.
 type EpisodicMemoryConfig struct {
 	Enabled   bool `yaml:"enabled,omitempty"    json:"enabled,omitempty"`
@@ -186,6 +195,18 @@ type ScheduleOutput struct {
 	Template string `yaml:"template,omitempty" json:"template,omitempty"` // optional text template; {reply} inserts the agent reply
 }
 
+// WebhookConfig maps arbitrary inbound JSON payloads into a canonical message.
+// Paths are dot-separated, e.g. "issue.title" or "sender.login"; "$." prefixes
+// are accepted for users coming from JSONPath-style tooling.
+type WebhookConfig struct {
+	TextPath      string `yaml:"text_path,omitempty"       json:"text_path,omitempty"`
+	UserIDPath    string `yaml:"user_id_path,omitempty"    json:"user_id_path,omitempty"`
+	UsernamePath  string `yaml:"username_path,omitempty"   json:"username_path,omitempty"`
+	SessionIDPath string `yaml:"session_id_path,omitempty" json:"session_id_path,omitempty"`
+	ThreadIDPath  string `yaml:"thread_id_path,omitempty"  json:"thread_id_path,omitempty"`
+	IncludeRaw    bool   `yaml:"include_raw,omitempty"     json:"include_raw,omitempty"`
+}
+
 // Definition is the parsed representation of a SOUL.yaml file.
 // This is the single source of truth for an agent's behaviour.
 // BudgetConfig bounds resource consumption for a single agent run
@@ -242,9 +263,10 @@ type Definition struct {
 	Surfaces []string `yaml:"surfaces,omitempty" json:"surfaces,omitempty"`
 
 	// --- Trigger ---
-	Trigger  TriggerKind `yaml:"trigger"             json:"trigger"`
-	Channels []string    `yaml:"channels,omitempty"  json:"channels,omitempty"`
-	Schedule *Schedule   `yaml:"schedule,omitempty"  json:"schedule,omitempty"`
+	Trigger  TriggerKind    `yaml:"trigger"             json:"trigger"`
+	Channels []string       `yaml:"channels,omitempty"  json:"channels,omitempty"`
+	Schedule *Schedule      `yaml:"schedule,omitempty"  json:"schedule,omitempty"`
+	Webhook  *WebhookConfig `yaml:"webhook,omitempty"   json:"webhook,omitempty"`
 
 	// --- Intelligence ---
 	SystemPrompt string    `yaml:"system_prompt" json:"system_prompt"`
@@ -408,6 +430,11 @@ type Definition struct {
 	// persistence for this agent. Requires a CompositeStore to be wired into
 	// the engine at startup (MEM-02).
 	BrainMemory BrainMemoryConfig `yaml:"brain_memory,omitempty" json:"brain_memory,omitempty"`
+
+	// --- Learning loop ---
+	// Controls post-run learning proposals. Proposals are reviewable in the GUI
+	// and API; accepting one writes it into the relevant memory/rule layer.
+	Learning LearningConfig `yaml:"learning,omitempty" json:"learning,omitempty"`
 
 	// --- Hooks ---
 	Hooks []ContextHook `yaml:"hooks,omitempty" json:"hooks,omitempty"`

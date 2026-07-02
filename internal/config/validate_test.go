@@ -52,6 +52,8 @@ func TestValidate_RangeViolations(t *testing.T) {
 		"default above ceiling":  func(c *Config) { c.Runtime.DefaultMaxTurns = 200 },
 		"negative max_sessions":  func(c *Config) { c.Runtime.MaxSessions = -5 },
 		"pool workers below one": func(c *Config) { c.Executor.Backend = "pool"; c.Executor.Workers = 0 },
+		"bad executor backend":   func(c *Config) { c.Executor.Backend = "telepathy" },
+		"ssh missing host":       func(c *Config) { c.Executor.Backend = "ssh"; c.Executor.SSHHost = "" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {

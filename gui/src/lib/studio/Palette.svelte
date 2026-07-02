@@ -1,4 +1,6 @@
 <script>
+  import { PYTHON_TEMPLATES } from './pythonTemplates.js'
+
   // Left capability palette. Preserves Wave 1 behavior: agents/tools/providers
   // groups with counts, loaded via the host catalog bridge. M2 adds a Channels
   // group (counts + names) from the same catalog payload.
@@ -193,15 +195,9 @@
     </button>
     {#if !collapsed['blocks']}
       <ul class="group-list">
-        <li
-          class="item draggable"
-          draggable="true"
-          on:dragstart={(e) => startDrag(e, { kind: 'trigger' })}
-          title="Drag onto the canvas — the block that STARTS the flow (cron / HTTP / channel). Configure it in the Inspector."
-        >
-          <span class="item-label">⚡ Trigger</span>
-          <span class="item-sub">starts the flow</span>
-        </li>
+        <!-- Trigger and Exit are no longer draggable blocks (Guided Studio
+             Builder, Story 2): the start is implied by the Trigger lane and the
+             finish by the Delivery lane. Configure them in those lanes instead. -->
         <li
           class="item draggable"
           draggable="true"
@@ -211,6 +207,27 @@
           <span class="item-label">🐍 Custom Python</span>
           <span class="item-sub">inline script</span>
         </li>
+        <!-- Named Python templates (Guided Studio Builder): each drags a python
+             node pre-seeded with a domain-specific starting point. -->
+        <li class="tmpl-head">
+          <button type="button" class="tmpl-toggle" on:click={() => toggleGroup('pytmpl')} aria-expanded={!collapsed['pytmpl']}>
+            <span>🐍 Python templates</span>
+            <span class="group-toggle" aria-hidden="true">{collapsed['pytmpl'] ? '▸' : '▾'}</span>
+          </button>
+        </li>
+        {#if !collapsed['pytmpl']}
+          {#each PYTHON_TEMPLATES as t (t.key)}
+            <li
+              class="item draggable tmpl-item"
+              draggable="true"
+              on:dragstart={(e) => startDrag(e, { kind: 'python', template: t.key })}
+              title={t.why}
+            >
+              <span class="item-label">🐍 {t.label}</span>
+              <span class="item-sub" title={t.description}>{t.description}</span>
+            </li>
+          {/each}
+        {/if}
         <li
           class="item draggable"
           draggable="true"
@@ -452,6 +469,17 @@
     cursor: default;
     transition: border-color 0.12s ease, transform 0.12s ease;
   }
+  /* Python templates subsection under Blocks */
+  .tmpl-head { list-style: none; padding: 0; background: none; border: none; }
+  .tmpl-head:hover { border: none; transform: none; }
+  .tmpl-toggle {
+    display: flex; align-items: center; justify-content: space-between;
+    width: 100%; padding: 4px 2px; margin-top: 2px;
+    background: none; border: none; cursor: pointer; text-align: left;
+    font-size: 12px; font-weight: 500; color: var(--text-muted);
+  }
+  .tmpl-toggle:hover { color: var(--accent); }
+  .tmpl-item { margin-left: 10px; border-left: 1px solid var(--border); }
   .item.draggable { cursor: grab; }
   .item.draggable:active { cursor: grabbing; }
   .item.openable { cursor: pointer; position: relative; }

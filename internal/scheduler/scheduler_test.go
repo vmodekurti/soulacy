@@ -16,7 +16,7 @@ import (
 
 func TestRenderScheduledOutput(t *testing.T) {
 	def := &agent.Definition{ID: "daily", Name: "Daily Brief"}
-	got := renderScheduledOutput(
+	got := RenderScheduledOutput(
 		"agent={agent_id} name={agent_name} trigger={trigger} reply={reply}",
 		def,
 		"hello",
@@ -34,7 +34,7 @@ func TestRenderScheduledOutput(t *testing.T) {
 		}
 	}
 
-	if got := renderScheduledOutput("", def, "raw reply", "cron"); got != "raw reply" {
+	if got := RenderScheduledOutput("", def, "raw reply", "cron"); got != "raw reply" {
 		t.Fatalf("empty template = %q, want raw reply", got)
 	}
 }

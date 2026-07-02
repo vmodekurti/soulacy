@@ -15,6 +15,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -25,11 +26,18 @@ import (
 const resourceSchema = `
 CREATE TABLE IF NOT EXISTS session_resources (
     id          TEXT PRIMARY KEY,
+    session_id  TEXT NOT NULL DEFAULT '',
+    agent_id    TEXT NOT NULL DEFAULT '',
+    filename    TEXT NOT NULL DEFAULT '',
     mime_type   TEXT NOT NULL,
+    size_bytes  INTEGER NOT NULL DEFAULT 0,
+    text        TEXT NOT NULL DEFAULT '',
     data        BLOB NOT NULL,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     expires_at  DATETIME NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_resources_expires ON session_resources(expires_at);
+CREATE INDEX IF NOT EXISTS idx_resources_session ON session_resources(agent_id, session_id, created_at);
 `
 
 // ResourceStore is the interface for storing and retrieving binary session
@@ -54,6 +62,19 @@ type ResourceStore interface {
 
 	// Close releases the underlying database connection.
 	Close() error
+}
+
+// Attachment is a user-supplied file bound to one chat session.
+type Attachment struct {
+	ID        string    `json:"id"`
+	SessionID string    `json:"session_id"`
+	AgentID   string    `json:"agent_id"`
+	Filename  string    `json:"filename"`
+	MIMEType  string    `json:"mime_type"`
+	SizeBytes int64     `json:"size_bytes"`
+	Text      string    `json:"text,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // SQLiteStore is the SQLite-backed implementation of ResourceStore.
@@ -88,6 +109,12 @@ func NewSQLiteStore(path string, cfg Config) (*SQLiteStore, error) {
 				truncate(stmt, 60), err)
 		}
 	}
+	for _, stmt := range resourceCompatMigrations() {
+		if _, err := db.Exec(stmt); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column") {
+			_ = db.Close()
+			return nil, fmt.Errorf("session: compat migration (%q): %w", truncate(stmt, 60), err)
+		}
+	}
 
 	s := &SQLiteStore{db: db, maxLen: cfg.MaxAttachmentSize}
 
@@ -120,14 +147,78 @@ func (s *SQLiteStore) Put(ctx context.Context, id, mimeType string, data []byte,
 	}
 	expiresAt := time.Now().UTC().Add(ttl)
 	_, err := s.db.ExecContext(ctx, `
-		INSERT OR REPLACE INTO session_resources (id, mime_type, data, expires_at)
-		VALUES (?, ?, ?, ?)`,
-		id, mimeType, data, expiresAt,
+		INSERT OR REPLACE INTO session_resources (id, mime_type, size_bytes, data, expires_at, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		id, mimeType, len(data), data, expiresAt, time.Now().UTC(),
 	)
 	if err != nil {
 		return fmt.Errorf("session: put resource %q: %w", id, err)
 	}
 	return nil
+}
+
+// PutAttachment stores a file with chat-session metadata and extracted text.
+func (s *SQLiteStore) PutAttachment(ctx context.Context, att Attachment, data []byte, ttl time.Duration) error {
+	if int64(len(data)) > s.maxLen {
+		return fmt.Errorf("session: attachment too large (%d bytes, max %d)", len(data), s.maxLen)
+	}
+	if ttl <= 0 {
+		ttl = DefaultAttachmentTTL
+	}
+	if att.CreatedAt.IsZero() {
+		att.CreatedAt = time.Now().UTC()
+	}
+	att.ExpiresAt = att.CreatedAt.Add(ttl)
+	att.SizeBytes = int64(len(data))
+	_, err := s.db.ExecContext(ctx, `
+		INSERT OR REPLACE INTO session_resources
+			(id, session_id, agent_id, filename, mime_type, size_bytes, text, data, created_at, expires_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		att.ID, att.SessionID, att.AgentID, att.Filename, att.MIMEType, att.SizeBytes, att.Text, data, att.CreatedAt, att.ExpiresAt,
+	)
+	if err != nil {
+		return fmt.Errorf("session: put attachment %q: %w", att.ID, err)
+	}
+	return nil
+}
+
+// ListAttachments returns chat attachments for an agent/session, oldest first.
+func (s *SQLiteStore) ListAttachments(ctx context.Context, agentID, sessionID string) ([]Attachment, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, session_id, agent_id, filename, mime_type, size_bytes, text, created_at, expires_at
+		FROM session_resources
+		WHERE agent_id = ? AND session_id = ?
+		ORDER BY created_at ASC`, agentID, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("session: list attachments: %w", err)
+	}
+	defer rows.Close()
+	out := []Attachment{}
+	for rows.Next() {
+		var a Attachment
+		if err := rows.Scan(&a.ID, &a.SessionID, &a.AgentID, &a.Filename, &a.MIMEType, &a.SizeBytes, &a.Text, &a.CreatedAt, &a.ExpiresAt); err != nil {
+			return nil, fmt.Errorf("session: scan attachment: %w", err)
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("session: list attachment rows: %w", err)
+	}
+	return out, nil
+}
+
+// GetAttachment returns metadata and blob for one attachment id.
+func (s *SQLiteStore) GetAttachment(ctx context.Context, id string) (Attachment, []byte, error) {
+	var a Attachment
+	var data []byte
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, session_id, agent_id, filename, mime_type, size_bytes, text, data, created_at, expires_at
+		FROM session_resources WHERE id = ?`, id).
+		Scan(&a.ID, &a.SessionID, &a.AgentID, &a.Filename, &a.MIMEType, &a.SizeBytes, &a.Text, &data, &a.CreatedAt, &a.ExpiresAt)
+	if err != nil {
+		return Attachment{}, nil, fmt.Errorf("session: get attachment %q: %w", id, err)
+	}
+	return a, data, nil
 }
 
 // Get retrieves the blob and MIME type for id.
@@ -219,4 +310,16 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n]
+}
+
+func resourceCompatMigrations() []string {
+	return []string{
+		`ALTER TABLE session_resources ADD COLUMN session_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_resources ADD COLUMN agent_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_resources ADD COLUMN filename TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_resources ADD COLUMN size_bytes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE session_resources ADD COLUMN text TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE session_resources ADD COLUMN created_at DATETIME NOT NULL DEFAULT '1970-01-01T00:00:00Z'`,
+		`CREATE INDEX IF NOT EXISTS idx_resources_session ON session_resources(agent_id, session_id, created_at)`,
+	}
 }

@@ -66,6 +66,43 @@ runtime:
 Use `allowed_tool_dirs` to prevent `python_file` entries from pointing at
 unexpected host paths.
 
+## Python Executor Backends
+
+The `executor` block chooses where Python tools and Studio Python blocks run.
+
+```yaml
+executor:
+  backend: process   # process | pool | docker | ssh
+  workers: 4         # pool only
+```
+
+Use `process` for the simplest local setup. Use `pool` when you want lower
+latency on trusted local workloads.
+
+Use Docker when you want each Python call in a short-lived container:
+
+```yaml
+executor:
+  backend: docker
+  docker_image: python:3.12-slim
+  docker_network: none
+```
+
+Use SSH when Python should run on another machine:
+
+```yaml
+executor:
+  backend: ssh
+  ssh_host: worker.example.com
+  ssh_user: soulacy
+  ssh_python_bin: python3
+  ssh_identity: /Users/me/.ssh/soulacy_worker
+```
+
+Docker and SSH execute the same Python harness as the local backend, so workflow
+behavior stays consistent. They do not automatically copy local files or host
+packages; install needed libraries in the image or remote environment.
+
 ## System Tools (SEC-3)
 
 The OS-level built-ins are split into two partitions:

@@ -30,6 +30,10 @@ export const editAgent = writable('')
 // until Studio first saves a snapshot.
 export const studioSession = writable(null)
 
+// Activity → Studio handoff: a concrete failed run to debug from the real
+// action log. Studio consumes and clears this when opened.
+export const studioDebugRun = writable(null)
+
 // Chat page — persisted across navigation so in-flight requests survive unmount.
 // chatThreads is keyed by a UI thread id. Each thread owns its agent, runtime
 // session, visible messages, branch state, and per-session metrics baseline.

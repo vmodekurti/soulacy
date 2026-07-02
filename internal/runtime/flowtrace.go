@@ -246,11 +246,13 @@ func summarize(tr FlowRunTrace) FlowRunSummary {
 // survives a gateway restart.
 func (s *flowTraceStore) list(agentID string) []FlowRunSummary {
 	byID := map[string]FlowRunSummary{}
+	orderByID := map[string]int{}
 
 	s.mu.Lock()
-	for _, id := range s.perAgent[agentID] {
+	for idx, id := range s.perAgent[agentID] {
 		if tr := s.byRun[id]; tr != nil {
 			byID[id] = summarize(*tr)
+			orderByID[id] = idx
 		}
 	}
 	s.mu.Unlock()
@@ -258,14 +260,39 @@ func (s *flowTraceStore) list(agentID string) []FlowRunSummary {
 	for _, tr := range s.readDiskTraces(agentID) {
 		if _, have := byID[tr.RunID]; !have {
 			byID[tr.RunID] = summarize(tr)
+			orderByID[tr.RunID] = -1
 		}
 	}
 
-	out := make([]FlowRunSummary, 0, len(byID))
-	for _, sum := range byID {
-		out = append(out, sum)
+	type row struct {
+		sum   FlowRunSummary
+		order int
 	}
-	sort.Slice(out, func(a, b int) bool { return out[a].StartedAt.After(out[b].StartedAt) })
+	rows := make([]row, 0, len(byID))
+	for _, sum := range byID {
+		rows = append(rows, row{sum: sum, order: orderByID[sum.RunID]})
+	}
+	sort.Slice(rows, func(a, b int) bool {
+		at := rows[a].sum.UpdatedAt
+		if at.IsZero() {
+			at = rows[a].sum.StartedAt
+		}
+		bt := rows[b].sum.UpdatedAt
+		if bt.IsZero() {
+			bt = rows[b].sum.StartedAt
+		}
+		if !at.Equal(bt) {
+			return at.After(bt)
+		}
+		if rows[a].order != rows[b].order {
+			return rows[a].order > rows[b].order
+		}
+		return rows[a].sum.RunID > rows[b].sum.RunID
+	})
+	out := make([]FlowRunSummary, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, r.sum)
+	}
 	return out
 }
 

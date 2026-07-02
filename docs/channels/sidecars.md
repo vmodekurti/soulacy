@@ -31,6 +31,9 @@ for line in sys.stdin:
 A full reference implementation ships in the repo:
 `scripts/reference-channel-sidecar.py`.
 
+For a clone-and-edit starter with a CI-ready conformance test, use
+`examples/channel-sidecar-starter/`.
+
 ## Transport rules
 
 - One JSON object per line (NDJSON), UTF-8.

@@ -31,17 +31,35 @@
   let renamingId = ''
   let renameText = ''
   let controlsOpen = false
+  let chatListHidden = false   // collapse the chat sub-menu (thread list)
+  function toggleChatList() {
+    chatListHidden = !chatListHidden
+    try { localStorage.setItem('soulacy-chatlist-hidden', chatListHidden ? '1' : '0') } catch (_) {}
+  }
   let controls = { provider: '', model: '', temperature: '', maxTokens: '', toolChoice: '' }
   let expanded = {}            // messageKey -> bool (collapse long outputs)
   let editingMsg = -1          // index of a user message being edited
   let editText = ''
   let copiedKey = ''           // transient "Copied!" feedback key
-  let searchEl, composerEl
+  let searchEl, composerEl, fileInputEl
+  let artifactPanelOpen = false
+  let artifactsByThread = {}
+  let artifactLoading = {}
+  let artifactError = {}
+  let currentArtifacts = []
+  let pendingAttachments = []
+  let uploadingAttachment = false
+  let historySearchOpen = false
+  let historyQuery = ''
+  let historyResults = []
+  let historySearching = false
+  let historySearchError = ''
 
   $: activeThread = $chatActiveThreadId ? ($chatThreads[$chatActiveThreadId] || null) : null
   $: threads = filterThreads(Object.values($chatThreads), threadSearch, showArchived, agentName)
   $: visibleMessages = activeThread?.messages || []
   $: isSending = !!activeThread?.sending
+  $: currentArtifacts = activeThread ? (artifactsByThread[activeThread.id] || []) : []
 
   function newChatSessionId() {
     return `gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -69,6 +87,62 @@
   function upsertThread(thread) {
     chatThreads.update(ts => ({ ...ts, [thread.id]: thread }))
   }
+
+  // ── persistence: keep the chat list across reloads so each chat stays in the
+  //    left column instead of being reset to a single fresh thread ──────────
+  const THREADS_KEY = 'soulacy-chat-threads'
+  let hydrated = false
+
+  function persistThreads(threads, activeId) {
+    if (!hydrated) return
+    try {
+      const slim = {}
+      for (const [id, t] of Object.entries(threads || {})) {
+        slim[id] = {
+          id: t.id, agentId: t.agentId, sessionId: t.sessionId, title: t.title,
+          pinned: !!t.pinned, archived: !!t.archived,
+          createdAt: t.createdAt, updatedAt: t.updatedAt,
+          branches: t.branches || [],
+          messages: (t.messages || []).map(m => ({
+            role: m.role, text: m.text, via: m.via || '',
+            ts: m.ts instanceof Date ? m.ts.toISOString() : m.ts,
+            metrics: m.metrics || null,
+            parts: m.parts || null,
+            attachments: m.attachments || null,
+          })),
+        }
+      }
+      localStorage.setItem(THREADS_KEY, JSON.stringify({ threads: slim, activeId }))
+    } catch (_) { /* storage full or unavailable — best-effort */ }
+  }
+
+  function restoreThreads() {
+    try {
+      const raw = localStorage.getItem(THREADS_KEY)
+      if (!raw) return false
+      const saved = JSON.parse(raw)
+      const entries = Object.entries(saved.threads || {})
+      if (!entries.length) return false
+      const revived = {}
+      for (const [id, t] of entries) {
+        revived[id] = {
+          ...newThread(t.agentId),
+          id: t.id, agentId: t.agentId, sessionId: t.sessionId, title: t.title,
+          pinned: !!t.pinned, archived: !!t.archived,
+          createdAt: t.createdAt || Date.now(), updatedAt: t.updatedAt || Date.now(),
+          branches: t.branches || [],
+          messages: (t.messages || []).map(m => ({ ...m, ts: m.ts ? new Date(m.ts) : new Date() })),
+        }
+      }
+      chatThreads.set(revived)
+      const active = (saved.activeId && revived[saved.activeId]) ? saved.activeId : entries[0][0]
+      chatActiveThreadId.set(active)
+      return true
+    } catch (_) { return false }
+  }
+
+  // Save whenever the threads or the active selection change (after hydration).
+  $: persistThreads($chatThreads, $chatActiveThreadId)
 
   function updateThread(threadId, fn) {
     chatThreads.update(ts => {
@@ -109,6 +183,8 @@
     if (!id || !$chatThreads[id]) return
     chatActiveThreadId.set(id)
     metricsRefresh++
+    const t = $chatThreads[id]
+    if (t?.agentId && t?.sessionId) loadArtifacts(id, t.agentId, t.sessionId)
     scrollBottom()
   }
 
@@ -130,11 +206,15 @@
       startThread(agentId)
       return
     }
-    updateActiveThread(t => ({
-      ...t,
-      agentId,
-      title: t.messages.length ? t.title : agentName(agentId),
-    }))
+    if (agentId === activeThread.agentId) return
+    // Selecting a different agent opens a NEW chat in the left list, so the
+    // existing conversation stays as its own item. Exception: if the current
+    // chat is still empty, just retarget it (avoids piling up blank chats).
+    if ((activeThread.messages || []).length === 0) {
+      updateActiveThread(t => ({ ...t, agentId, title: agentName(agentId) }))
+    } else {
+      startThread(agentId)
+    }
   }
 
   // ── checkpoints & branching (Story 8) ───────────────────────────────
@@ -250,13 +330,16 @@
     const sendText = route ? route.cleanText : text
     const viaName = route ? route.name : ''
     const runKey = `${runAgentId}|${runSessionId}`
+    const turnAttachments = textArg == null ? pendingAttachments : []
+    const attachmentIds = turnAttachments.map(a => a.id).filter(Boolean)
     const thinking = { open: true, events: [] }
     activeRuns = { ...activeRuns, [runKey]: threadId }
     if (textArg == null) input = ''
+    if (textArg == null) pendingAttachments = []
     updateThread(threadId, t => ({
       ...t,
       title: t.messages.length ? t.title : snippet(text, 36),
-      messages: [...t.messages, { role: 'user', text, ts: new Date() }],
+      messages: [...t.messages, { role: 'user', text, attachments: turnAttachments, ts: new Date() }],
       sending: true,
       thinking,
       streamText: '',       // reset the live-streaming buffer for this turn
@@ -272,7 +355,7 @@
     }
 
     try {
-      const res = await api.chat(runAgentId, sendText, 'gui-user', overrides, runSessionId)
+      const res = await api.chat(runAgentId, sendText, 'gui-user', overrides, runSessionId, attachmentIds)
       const curr = await api.runs.metrics(runSessionId, runAgentId).catch(() => null)
       const delta = deltaMetrics(preTurn, curr)
       updateThread(threadId, t => ({
@@ -282,6 +365,7 @@
         streamText: '',   // final reply is authoritative; drop the live preview
         messages: [...t.messages, { role: 'assistant', text: res.reply, via: viaName, parts: (res.parts || []).filter(p => p && p.type && p.type !== 'text'), ts: new Date(), thinking: t.thinking || thinking, metrics: route ? null : delta }],
       }))
+      await loadArtifacts(threadId, runAgentId, runSessionId)
     } catch (e) {
       updateThread(threadId, t => ({
         ...t,
@@ -314,6 +398,163 @@
       return `data:${mime};base64,${part.data}`
     }
     return ''
+  }
+
+  async function loadArtifacts(threadId, agentId, sessionId) {
+    if (!threadId || !agentId || !sessionId) return
+    artifactLoading = { ...artifactLoading, [threadId]: true }
+    artifactError = { ...artifactError, [threadId]: '' }
+    try {
+      const res = await api.chatArtifacts(agentId, sessionId)
+      artifactsByThread = { ...artifactsByThread, [threadId]: res.artifacts || [] }
+    } catch (e) {
+      artifactError = { ...artifactError, [threadId]: e.message || 'Could not load artifacts' }
+    } finally {
+      artifactLoading = { ...artifactLoading, [threadId]: false }
+    }
+  }
+
+  async function downloadArtifact(a) {
+    if (!activeThread || !a?.path) return
+    try {
+      const res = await api.downloadChatArtifact(activeThread.agentId, activeThread.sessionId, a.path)
+      const href = URL.createObjectURL(res.blob)
+      const link = document.createElement('a')
+      link.href = href
+      link.download = res.filename || a.name || 'artifact'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      setTimeout(() => URL.revokeObjectURL(href), 1000)
+    } catch (e) {
+      artifactError = { ...artifactError, [activeThread.id]: e.message || 'Download failed' }
+    }
+  }
+
+  async function uploadFiles(files) {
+    if (!activeThread?.agentId || !activeThread?.sessionId || !files?.length) return
+    uploadingAttachment = true
+    error = null
+    try {
+      for (const file of Array.from(files)) {
+        const res = await api.uploadChatAttachment(activeThread.agentId, activeThread.sessionId, file)
+        if (res?.attachment) pendingAttachments = [...pendingAttachments, res.attachment]
+      }
+    } catch (e) {
+      error = e.message || 'Upload failed'
+    } finally {
+      uploadingAttachment = false
+      if (fileInputEl) fileInputEl.value = ''
+    }
+  }
+
+  function removePendingAttachment(id) {
+    pendingAttachments = pendingAttachments.filter(a => a.id !== id)
+  }
+
+  async function downloadAttachment(a) {
+    if (!activeThread || !a?.id) return
+    const res = await api.downloadChatAttachment(activeThread.agentId, activeThread.sessionId, a.id, a.filename)
+    const href = URL.createObjectURL(res.blob)
+    const link = document.createElement('a')
+    link.href = href
+    link.download = res.filename || a.filename || 'attachment'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(href), 1000)
+  }
+
+  function artifactSize(n) {
+    if (!Number.isFinite(Number(n))) return ''
+    const bytes = Number(n)
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  function safeFilename(s) {
+    return String(s || 'chat')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'chat'
+  }
+
+  function exportThreadMarkdown() {
+    if (!activeThread) return
+    const title = activeThread.title || agentName(activeThread.agentId) || 'Chat'
+    const lines = [
+      `# ${title}`,
+      '',
+      `- Agent: ${agentName(activeThread.agentId)} (${activeThread.agentId || 'none'})`,
+      `- Session: ${activeThread.sessionId || 'none'}`,
+      `- Exported: ${new Date().toISOString()}`,
+      '',
+    ]
+    for (const msg of activeThread.messages || []) {
+      if (msg.role !== 'user' && msg.role !== 'assistant' && msg.role !== 'system') continue
+      const label = msg.role === 'user' ? 'User' : msg.role === 'assistant' ? 'Assistant' : 'System'
+      lines.push(`## ${label}`)
+      if (msg.ts) {
+        try { lines.push(`_${new Date(msg.ts).toLocaleString()}_`) } catch (_) {}
+      }
+      lines.push('', msg.text || '')
+      if (msg.attachments?.length) {
+        lines.push('', 'Attachments:')
+        for (const a of msg.attachments) lines.push(`- ${a.filename || a.id}`)
+      }
+      lines.push('')
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+    const href = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = href
+    link.download = `${safeFilename(title)}-${safeFilename(activeThread.sessionId)}.md`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(href), 1000)
+  }
+
+  async function searchHistory() {
+    if (!historyQuery.trim()) return
+    historySearching = true
+    historySearchError = ''
+    try {
+      const res = await api.history.search(historyQuery.trim(), activeThread?.agentId || '', 50)
+      historyResults = res.hits || []
+    } catch (e) {
+      historySearchError = e.message || 'Search failed'
+    } finally {
+      historySearching = false
+    }
+  }
+
+  async function openHistoryHit(hit) {
+    if (!hit?.session_id) return
+    try {
+      const hist = await api.history.get(hit.session_id)
+      const existing = Object.values($chatThreads).find(t => t.sessionId === hit.session_id)
+      if (existing) {
+        chatActiveThreadId.set(existing.id)
+      } else {
+        const t = newThread(hit.agent_id || activeThread?.agentId || '')
+        t.sessionId = hit.session_id
+        t.title = `Search: ${historyQuery.trim().slice(0, 40) || hit.session_id}`
+        t.messages = entriesToMessages(hist.entries || [])
+        t.createdAt = hit.created_at ? new Date(hit.created_at).getTime() : Date.now()
+        t.updatedAt = Date.now()
+        upsertThread(t)
+        chatActiveThreadId.set(t.id)
+      }
+      historySearchOpen = false
+      metricsRefresh++
+      await scrollBottom()
+    } catch (e) {
+      historySearchError = e.message || 'Could not open session'
+    }
   }
 
   async function scrollBottom() {
@@ -358,37 +599,78 @@
   function toggleArchive(id, e) { if (e) e.stopPropagation(); updateThread(id, t => ({ ...t, archived: !t.archived })) }
 
   // ── message actions: regenerate / edit-and-rerun / retry-with-model ──
-  // Re-run a turn from a point in the thread. We truncate to messages BEFORE
-  // `mi`, then send `text` as a fresh turn (the server session keeps full
-  // history; this is a UI-level replay so the thread reads cleanly).
-  function rerunFrom(mi, text, overrides) {
-    if (isSending || !activeThread) return
-    updateActiveThread(t => ({ ...t, messages: truncateForRerun(t.messages, mi) }))
-    send(text, overrides)
+  // Re-run a turn from a point in the thread. The replay must use a new backend
+  // session; otherwise the model would still see the old future turns from the
+  // original session even though the UI was truncated.
+  async function rerunFrom(mi, text, overrides) {
+    if (isSending || forking || !activeThread) return
+    const source = activeThread
+    const threadId = source.id
+    const kept = truncateForRerun(source.messages, mi)
+    forking = true
+    error = null
+    try {
+      let sessionId = newChatSessionId()
+      if (kept.length > 0) {
+        const hist = await api.history.get(source.sessionId)
+        const prevEntryId = entryIdForMessage(hist.entries || [], source.messages, mi - 1)
+        if (!prevEntryId) {
+          throw new Error('This turn has no saved checkpoint yet — finish the current reply before rerunning.')
+        }
+        const res = await api.history.fork(source.sessionId, {
+          agent_id: source.agentId,
+          upto_entry_id: prevEntryId,
+        })
+        sessionId = res.session_id || sessionId
+      }
+
+      let branches = source.branches || []
+      if (branches.length === 0) {
+        branches = [{ sessionId: source.sessionId, label: 'main' }]
+      }
+      const label = nextBranchLabel(branches)
+      updateThread(threadId, t => ({
+        ...t,
+        branches: [...branches, { sessionId, label }],
+        branchMessages: { ...(t.branchMessages || {}), [t.sessionId]: t.messages },
+        sessionId,
+        messages: kept,
+        thinking: null,
+        streamText: '',
+        activeRunKey: '',
+      }))
+      metricsRefresh++
+      await tick()
+      await send(text, overrides)
+    } catch (e) {
+      error = e.message || 'Rerun failed'
+    } finally {
+      forking = false
+    }
   }
-  function regenerate() {
+  async function regenerate() {
     if (isSending || !activeThread) return
     // Drop the trailing assistant message(s) and replay the last user turn.
     const msgs = activeThread.messages
     let i = msgs.length - 1
     while (i >= 0 && msgs[i].role !== 'user') i--
     if (i < 0) return
-    rerunFrom(i, msgs[i].text)
+    await rerunFrom(i, msgs[i].text)
   }
   function startEdit(mi) { editingMsg = mi; editText = visibleMessages[mi]?.text || '' }
-  function commitEdit() {
+  async function commitEdit() {
     if (editingMsg < 0) return
     const mi = editingMsg, text = editText
     editingMsg = -1
-    rerunFrom(mi, text)
+    await rerunFrom(mi, text)
   }
-  function retryWithModel(mi) {
+  async function retryWithModel(mi) {
     // Re-run the user turn that produced this assistant message, using the
     // current model controls (lets the user switch model then retry one reply).
     let ui = mi
     while (ui >= 0 && visibleMessages[ui]?.role !== 'user') ui--
     if (ui < 0) return
-    rerunFrom(ui, visibleMessages[ui].text, buildOverrides(controls))
+    await rerunFrom(ui, visibleMessages[ui].text, buildOverrides(controls))
   }
 
   // ── suggested prompts (per-agent empty state) ────────────────────────
@@ -482,6 +764,11 @@
           return
         }
         const threadId = threadIdForRunEvent(ev)
+        if (ev.type === 'run.artifact' && threadId) {
+          const t = $chatThreads[threadId]
+          if (t?.agentId && t?.sessionId) loadArtifacts(threadId, t.agentId, t.sessionId)
+          return
+        }
         if (!threadId || !isThinkingEvent(ev)) return
         updateThread(threadId, t => {
           if (!t.thinking) return t
@@ -738,7 +1025,13 @@
   }
 
   onMount(async () => {
+    try { chatListHidden = localStorage.getItem('soulacy-chatlist-hidden') === '1' } catch (_) {}
+    restoreThreads()      // repopulate the chat list from a previous session
+    hydrated = true       // now persist future changes
     await loadAgents()
+    if (activeThread?.agentId && activeThread?.sessionId) {
+      loadArtifacts(activeThread.id, activeThread.agentId, activeThread.sessionId)
+    }
     await loadVoiceStatus()
     connectEvents()
     window.addEventListener('keydown', onGlobalKey)
@@ -803,7 +1096,7 @@
       {#if activeThread}
         <RunMetrics sessionId={activeThread.sessionId} agentId={activeThread.agentId} refreshKey={metricsRefresh} />
       {/if}
-      <select value={activeThread?.agentId || ''} on:change={(e) => setActiveAgent(e.currentTarget.value)} style="width:min(220px, 100%)" disabled={!agents.length || isSending}>
+      <select value={activeThread?.agentId || ''} on:change={(e) => setActiveAgent(e.currentTarget.value)} style="width:min(220px, 100%)" disabled={!agents.length}>
         {#if !agents.length}
           <option value="">No enabled agents</option>
         {:else}
@@ -812,8 +1105,14 @@
           {/each}
         {/if}
       </select>
+      <button class="btn-secondary" on:click={toggleChatList} title={chatListHidden ? 'Show chat list' : 'Hide chat list'} aria-pressed={chatListHidden}>{chatListHidden ? '☰' : '⟨'} Chats</button>
       <button class="btn-secondary" on:click={() => startThread()} disabled={!agents.length} title="New chat (⌘J)">New chat</button>
       <button class="btn-secondary" class:on={controlsOpen} on:click={() => controlsOpen = !controlsOpen} title="Model & generation controls">⚙ Controls</button>
+      <button class="btn-secondary" class:on={artifactPanelOpen} on:click={() => { artifactPanelOpen = !artifactPanelOpen; if (artifactPanelOpen && activeThread) loadArtifacts(activeThread.id, activeThread.agentId, activeThread.sessionId) }} disabled={!activeThread?.agentId} title="Show files produced by this chat">
+        Artifacts {currentArtifacts.length ? `(${currentArtifacts.length})` : ''}
+      </button>
+      <button class="btn-secondary" class:on={historySearchOpen} on:click={() => historySearchOpen = !historySearchOpen} title="Search persisted chat history">Search</button>
+      <button class="btn-secondary" on:click={exportThreadMarkdown} disabled={!activeThread?.messages?.length} title="Download this chat as Markdown">Export</button>
       <button class="btn-secondary" on:click={clearChat}>Clear</button>
       <button class="voice-btn {voiceState}"
               on:click={voiceClick}
@@ -853,7 +1152,9 @@
     </div>
   {/if}
 
-  {#if Object.keys($chatThreads).length > 0}
+  <div class="chat-body">
+    {#if Object.keys($chatThreads).length > 0 && !chatListHidden}
+    <aside class="chat-sidebar">
     <div class="thread-bar">
       <input class="thread-search" type="search" bind:this={searchEl}
              bind:value={threadSearch} placeholder="Search chats… (⌘K)" aria-label="Search chats" />
@@ -889,8 +1190,10 @@
         <span class="thread-empty">No chats match “{threadSearch}”.</span>
       {/if}
     </div>
-  {/if}
+    </aside>
+    {/if}
 
+    <div class="chat-main">
   {#if activeThread?.branches?.length > 0}
     <div class="branches" role="tablist" aria-label="Conversation branches">
       {#each activeThread.branches as b (b.sessionId)}
@@ -904,6 +1207,7 @@
     </div>
   {/if}
 
+  <div class="chat-workspace">
   <div class="chat-wrap">
     <!-- Message list -->
     <div class="messages" bind:this={msgListEl}>
@@ -940,6 +1244,16 @@
               {:else}
                 {#if msg.role === 'user'}
                   <div class="btext">{msg.text}</div>
+                  {#if msg.attachments && msg.attachments.length}
+                    <div class="attachment-chips sent">
+                      {#each msg.attachments as a (a.id)}
+                        <button class="attachment-chip" on:click={() => downloadAttachment(a)} title="Download {a.filename}">
+                          <span class="attachment-name">{a.filename}</span>
+                          <span class="attachment-size">{artifactSize(a.size_bytes)}</span>
+                        </button>
+                      {/each}
+                    </div>
+                  {/if}
                 {:else}
                   <div class="btext markdown-body" class:clamped={long} use:richRenderer={msg.text}>{@html parseMarkdown(msg.text)}</div>
                   {#if msg.role === 'assistant' && isLongOutput(msg.text)}
@@ -1014,10 +1328,10 @@
                   <div class="msg-actions">
                     <button class="act" on:click={() => copyText(msg.text, 'm'+k)} title="Copy message">{copiedKey === 'm'+k ? '✓' : '⧉'}</button>
                     {#if msg.role === 'user'}
-                      <button class="act" on:click={() => startEdit(mi)} disabled={isSending} title="Edit & rerun">✎</button>
+                      <button class="act" on:click={() => startEdit(mi)} disabled={isSending || forking} title="Edit & rerun">✎</button>
                     {:else}
-                      <button class="act" on:click={regenerate} disabled={isSending} title="Regenerate">↻</button>
-                      <button class="act" on:click={() => retryWithModel(mi)} disabled={isSending} title="Retry with the model selected in Controls">⤺</button>
+                      <button class="act" on:click={regenerate} disabled={isSending || forking} title="Regenerate">↻</button>
+                      <button class="act" on:click={() => retryWithModel(mi)} disabled={isSending || forking} title="Retry with the model selected in Controls">⤺</button>
                       <button class="act" on:click={() => saveToMemory(msg.text, 'm'+k)} title="Save this reply to the agent's memory">{savedKey === 'm'+k ? '✓' : '✚'}</button>
                     {/if}
                     <button class="act" on:click={() => forkAt(mi)} disabled={forking || isSending} title="Fork from here">⑂</button>
@@ -1083,7 +1397,22 @@
     </div>
 
     <!-- Input -->
+    {#if pendingAttachments.length}
+      <div class="pending-attachments">
+        {#each pendingAttachments as a (a.id)}
+          <div class="pending-chip">
+            <span class="attachment-name">{a.filename}</span>
+            <span class="attachment-size">{artifactSize(a.size_bytes)}</span>
+            <button class="pending-remove" on:click={() => removePendingAttachment(a.id)} title="Remove attachment">×</button>
+          </div>
+        {/each}
+      </div>
+    {/if}
     <div class="input-row">
+      <input class="file-input" bind:this={fileInputEl} type="file" multiple on:change={(e) => uploadFiles(e.currentTarget.files)} />
+      <button class="attach-btn" on:click={() => fileInputEl?.click()} disabled={isSending || uploadingAttachment || !activeThread?.agentId} title="Attach files">
+        {uploadingAttachment ? '…' : '+'}
+      </button>
       <textarea
         bind:this={composerEl}
         bind:value={input}
@@ -1101,6 +1430,70 @@
           ↑
         </button>
       {/if}
+    </div>
+  </div>
+  {#if artifactPanelOpen}
+    <aside class="artifact-panel" transition:slide|local={{ duration: 160 }} aria-label="Chat artifacts">
+      <div class="artifact-head">
+        <div>
+          <h2>Artifacts</h2>
+          <p>{activeThread ? agentName(activeThread.agentId) : ''}</p>
+        </div>
+        <button class="ghost-icon" on:click={() => activeThread && loadArtifacts(activeThread.id, activeThread.agentId, activeThread.sessionId)} title="Refresh artifacts">↻</button>
+      </div>
+      {#if artifactLoading[activeThread?.id]}
+        <div class="artifact-empty">Loading outputs…</div>
+      {:else if artifactError[activeThread?.id]}
+        <div class="artifact-error">{artifactError[activeThread.id]}</div>
+      {:else if currentArtifacts.length === 0}
+        <div class="artifact-empty">No files produced in this chat yet.</div>
+      {:else}
+        <div class="artifact-list">
+          {#each currentArtifacts as a (a.path)}
+            <div class="artifact-item">
+              <div class="artifact-main">
+                <span class="artifact-name" title={a.path}>{a.name || a.path}</span>
+                <span class="artifact-meta">{a.tool || 'tool'} · {artifactSize(a.size_bytes)}</span>
+              </div>
+              <button class="mini-btn" on:click={() => downloadArtifact(a)} title="Download artifact">Download</button>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </aside>
+  {/if}
+  {#if historySearchOpen}
+    <aside class="history-panel" transition:slide|local={{ duration: 160 }} aria-label="Chat history search">
+      <div class="artifact-head">
+        <div>
+          <h2>Search</h2>
+          <p>{activeThread?.agentId ? agentName(activeThread.agentId) : 'All chats'}</p>
+        </div>
+      </div>
+      <form class="history-search-form" on:submit|preventDefault={searchHistory}>
+        <input type="search" bind:value={historyQuery} placeholder="Search old conversations" />
+        <button class="mini-btn" disabled={historySearching || !historyQuery.trim()}>{historySearching ? 'Searching...' : 'Go'}</button>
+      </form>
+      {#if historySearchError}
+        <div class="artifact-error">{historySearchError}</div>
+      {:else if historySearching}
+        <div class="artifact-empty">Searching...</div>
+      {:else if historyResults.length === 0}
+        <div class="artifact-empty">No matching history yet.</div>
+      {:else}
+        <div class="history-results">
+          {#each historyResults as hit (hit.id)}
+            <button class="history-hit" on:click={() => openHistoryHit(hit)}>
+              <span class="history-hit-head">{agentName(hit.agent_id)} · {hit.role} · {new Date(hit.created_at).toLocaleString()}</span>
+              <span class="history-hit-snippet">{hit.snippet || hit.content}</span>
+              <span class="history-hit-session">{hit.session_id}</span>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </aside>
+  {/if}
+  </div>
     </div>
   </div>
 </div>
@@ -1129,16 +1522,27 @@
   .banner      { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; flex-shrink: 0; }
   .err         { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
 
+  /* Two-column chat body: chat-list sub-menu column + conversation. */
+  .chat-body { flex: 1; min-height: 0; display: flex; gap: 0; }
+  .chat-sidebar {
+    flex: 0 0 264px; min-width: 0;
+    display: flex; flex-direction: column; gap: .6rem;
+    border-right: 1px solid #1a1e36;
+    padding-right: 1rem; margin-right: 1rem;
+    overflow: hidden;
+  }
+  .chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
   .threads {
     display: flex;
+    flex-direction: column;
     gap: .5rem;
-    overflow-x: auto;
-    padding-bottom: .1rem;
-    flex-shrink: 0;
+    overflow-y: auto;
+    flex: 1;
+    padding-right: .15rem;
   }
   .thread-chip {
-    min-width: 150px;
-    max-width: 240px;
+    width: 100%;
     min-height: 42px;
     display: grid;
     grid-template-columns: minmax(0, 1fr) 10px 24px;
@@ -1204,10 +1608,172 @@
     box-shadow: 0 0 0 3px rgba(54, 211, 153, .12);
   }
 
+  .chat-workspace {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    gap: .75rem;
+  }
+
   .chat-wrap {
     flex: 1; min-height: 0;
     background: #141626; border: 1px solid #1a1e36; border-radius: 10px;
     display: flex; flex-direction: column; overflow: hidden;
+  }
+
+  .artifact-panel,
+  .history-panel {
+    flex: 0 0 300px;
+    min-width: 0;
+    background: #141626;
+    border: 1px solid #1a1e36;
+    border-radius: 10px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .artifact-head {
+    min-height: 58px;
+    padding: .75rem .85rem;
+    border-bottom: 1px solid #1a1e36;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .75rem;
+  }
+  .artifact-head h2 {
+    margin: 0;
+    color: #eef0fb;
+    font-size: .9rem;
+    font-weight: 700;
+  }
+  .artifact-head p {
+    margin: .12rem 0 0;
+    color: #7f86ab;
+    font-size: .72rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 210px;
+  }
+  .ghost-icon {
+    width: 30px;
+    height: 30px;
+    display: grid;
+    place-items: center;
+    border-radius: 7px;
+    border: 1px solid #2a2f4a;
+    background: #171a2c;
+    color: #9aa0c3;
+    cursor: pointer;
+  }
+  .ghost-icon:hover { border-color: rgba(108,99,255,.5); color: #fff; }
+  .artifact-list {
+    padding: .65rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+  }
+  .artifact-item {
+    min-height: 58px;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: .6rem;
+    align-items: center;
+    padding: .55rem;
+    border-radius: 8px;
+    border: 1px solid #252a45;
+    background: #171a2c;
+  }
+  .artifact-main { min-width: 0; display: flex; flex-direction: column; gap: .18rem; }
+  .artifact-name {
+    min-width: 0;
+    color: #e6e8f4;
+    font-size: .8rem;
+    font-weight: 650;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .artifact-meta {
+    color: #7f86ab;
+    font-size: .68rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .artifact-empty,
+  .artifact-error {
+    margin: .75rem;
+    padding: .75rem;
+    border-radius: 8px;
+    color: #8f95ba;
+    background: rgba(255,255,255,.03);
+    font-size: .78rem;
+    line-height: 1.45;
+  }
+  .artifact-error {
+    color: #ff9aa7;
+    background: rgba(240,96,96,.08);
+    border: 1px solid rgba(240,96,96,.18);
+  }
+  .history-search-form {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: .45rem;
+    padding: .65rem;
+    border-bottom: 1px solid #1a1e36;
+  }
+  .history-search-form input {
+    min-width: 0;
+    background: #0e1020;
+    border: 1px solid #252a45;
+    border-radius: 7px;
+    color: #e6e8f4;
+    font-size: .8rem;
+    padding: .48rem .6rem;
+  }
+  .history-results {
+    padding: .65rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: .5rem;
+  }
+  .history-hit {
+    text-align: left;
+    display: flex;
+    flex-direction: column;
+    gap: .28rem;
+    padding: .6rem;
+    border-radius: 8px;
+    border: 1px solid #252a45;
+    background: #171a2c;
+    color: inherit;
+    cursor: pointer;
+  }
+  .history-hit:hover { border-color: rgba(108,99,255,.5); background: #1b1f35; }
+  .history-hit-head {
+    color: #9da3c0;
+    font-size: .68rem;
+  }
+  .history-hit-snippet {
+    color: #e6e8f4;
+    font-size: .78rem;
+    line-height: 1.45;
+    display: -webkit-box;
+    -webkit-line-clamp: 4;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .history-hit-session {
+    color: #6f769b;
+    font-family: ui-monospace, monospace;
+    font-size: .66rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .messages {
@@ -1405,6 +1971,11 @@
     .think-spinner { border-top-color: #8b85ff; }
   }
 
+  @media (max-width: 980px) {
+    .chat-workspace { flex-direction: column; }
+    .artifact-panel { flex: 0 0 auto; max-height: 260px; }
+  }
+
   /* Typing indicator */
   .typing { display: flex; gap: 4px; align-items: center; height: 1.1rem; }
   .typing span {
@@ -1424,6 +1995,76 @@
   }
   .input-row textarea { flex: 1; resize: none; }
   .send-btn { height: 40px; padding: 0 1rem; font-size: 1rem; align-self: flex-end; flex-shrink: 0; }
+  .file-input { display: none; }
+  .attach-btn {
+    width: 40px;
+    height: 40px;
+    flex: 0 0 40px;
+    align-self: flex-end;
+    border-radius: 8px;
+    border: 1px solid #2a2f4a;
+    background: #171a2c;
+    color: #d6d8ef;
+    font-size: 1.15rem;
+    line-height: 1;
+    cursor: pointer;
+  }
+  .attach-btn:hover:not(:disabled) { border-color: rgba(108,99,255,.55); color: #fff; }
+  .attach-btn:disabled { opacity: .45; cursor: default; }
+  .pending-attachments {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem;
+    padding: .55rem .7rem 0;
+    border-top: 1px solid #1a1e36;
+    flex-shrink: 0;
+  }
+  .pending-chip,
+  .attachment-chip {
+    min-width: 0;
+    max-width: 260px;
+    min-height: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: .45rem;
+    border-radius: 7px;
+    border: 1px solid #2a2f4a;
+    background: #171a2c;
+    color: #d8dbef;
+    padding: .25rem .45rem;
+    font-size: .75rem;
+  }
+  .attachment-chip { cursor: pointer; text-align: left; }
+  .attachment-chip:hover { border-color: rgba(108,99,255,.5); color: #fff; }
+  .attachment-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .4rem;
+    margin-top: .35rem;
+  }
+  .attachment-name {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .attachment-size {
+    flex: 0 0 auto;
+    color: #8f95ba;
+    font-family: ui-monospace, monospace;
+    font-size: .67rem;
+  }
+  .pending-remove {
+    flex: 0 0 20px;
+    width: 20px;
+    height: 20px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: #8f95ba;
+    cursor: pointer;
+  }
+  .pending-remove:hover { background: rgba(255,255,255,.08); color: #fff; }
 
   /* ── Branching (Story 8) ─────────────────────────────────────────── */
   .branches { display: flex; gap: .4rem; flex-wrap: wrap; padding: 0 0 .15rem; }
@@ -1521,6 +2162,46 @@
   }
   .msg-row:not(.user):not(.sys) .bubble:hover { background: transparent; }
   .btext { font-size: .92rem; line-height: 1.65; }
+
+  /* Rich markdown styling for assistant messages (injected HTML → :global). */
+  :global(.btext.markdown-body h1),
+  :global(.btext.markdown-body h2),
+  :global(.btext.markdown-body h3) {
+    margin: 1.1rem 0 .5rem; line-height: 1.3; font-weight: 700; color: #f2f3fb;
+  }
+  :global(.btext.markdown-body h1) { font-size: 1.3rem; }
+  :global(.btext.markdown-body h2) { font-size: 1.12rem; }
+  :global(.btext.markdown-body h3) { font-size: 1rem; }
+  :global(.btext.markdown-body p) { margin: .5rem 0; }
+  :global(.btext.markdown-body ul),
+  :global(.btext.markdown-body ol) { margin: .5rem 0; padding-left: 1.35rem; }
+  :global(.btext.markdown-body li) { margin: .28rem 0; }
+  :global(.btext.markdown-body a) { color: #8b85ff; text-decoration: none; }
+  :global(.btext.markdown-body a:hover) { text-decoration: underline; }
+  :global(.btext.markdown-body strong) { color: #f2f3fb; font-weight: 700; }
+  :global(.btext.markdown-body code) {
+    background: rgba(139,133,255,.12); color: #c9cef0;
+    padding: .1rem .35rem; border-radius: 5px; font-size: .86em;
+  }
+  :global(.btext.markdown-body pre) { margin: .6rem 0; }
+  :global(.btext.markdown-body pre code) { background: none; padding: 0; }
+  /* Tables — the biggest polish win (STEP / TOOL / WHAT HAPPENED). */
+  :global(.btext.markdown-body table) {
+    width: 100%; border-collapse: collapse; margin: .75rem 0; font-size: .88rem;
+  }
+  :global(.btext.markdown-body th) {
+    text-align: left; padding: .5rem .7rem; color: #8a90b0;
+    font-size: .72rem; text-transform: uppercase; letter-spacing: .04em;
+    border-bottom: 1px solid #2a2f4a; font-weight: 600;
+  }
+  :global(.btext.markdown-body td) {
+    padding: .6rem .7rem; border-bottom: 1px solid #1e2238; vertical-align: top;
+  }
+  :global(.btext.markdown-body tr:last-child td) { border-bottom: none; }
+  :global(.btext.markdown-body blockquote) {
+    margin: .6rem 0; padding: .3rem 0 .3rem .9rem;
+    border-left: 3px solid #3a3f68; color: #aeb3d4;
+  }
 
   /* Header control toggles */
   .btn-secondary.on { background: rgba(108,99,255,.18); border-color: rgba(108,99,255,.5); color: #b3adff; }

@@ -102,7 +102,8 @@ type Server struct {
 	apiKeyStore     apikeys.Store        // nil until SetAPIKeyStore() is called
 	dlqStore        dlq.Store            // nil until SetDLQStore() is called
 	historyStore    session.HistoryStore // nil until SetHistoryStore() is called
-	agentWatcher    healthReporter       // nil until SetAgentWatcher() is called (S2.13)
+	resourceStore   session.ResourceStore
+	agentWatcher    healthReporter // nil until SetAgentWatcher() is called (S2.13)
 	log             *zap.Logger
 
 	// buildTraces retains recent Studio build traces in a bounded in-memory ring
@@ -289,6 +290,11 @@ func (s *Server) SetHistoryStore(st session.HistoryStore) {
 	s.historyStore = st
 }
 
+// SetResourceStore wires binary chat/session resources into the server.
+func (s *Server) SetResourceStore(st session.ResourceStore) {
+	s.resourceStore = st
+}
+
 // healthReporter is anything that can report its own liveness — satisfied by
 // runtime.Watcher (S2.13/S2.4). Kept as a local interface to avoid widening the
 // gateway's import surface.
@@ -371,7 +377,7 @@ func (s *Server) buildApp() *fiber.App {
 		// (the agent loader map, scheduler entries, cron closures). Without it, a
 		// later request's buffer reuse mutates those stored keys, producing
 		// corrupted "phantom" agents (e.g. "daily-briefing" → "e/statusiefing").
-		Immutable: true,
+		Immutable:   true,
 		ReadTimeout: 30 * time.Second,
 		// WriteTimeout is deliberately 0 (no fixed cap on how long a response may
 		// take to finish writing). This server legitimately holds connections open
@@ -625,6 +631,9 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/agents/:id", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgent)
 	api.Get("/agents/:id/yaml", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentYAML)
 	api.Put("/agents/:id/yaml", s.rbacAgentMW(rbac.ActionWrite), s.handleUpdateAgentYAML)
+	api.Get("/agents/:id/versions", s.rbacAgentMW(rbac.ActionRead), s.handleListAgentVersions)
+	api.Get("/agents/:id/versions/:version", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentVersion)
+	api.Post("/agents/:id/rollback", s.rbacAgentMW(rbac.ActionWrite), s.handleRollbackAgent)
 	api.Get("/agents/:id/tier", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentTier)
 	api.Post("/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleCreateAgent)
 	api.Put("/agents/:id", s.rbacAgentMW(rbac.ActionWrite), s.handleUpdateAgent)
@@ -642,9 +651,15 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/chat", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChat)
 	api.Post("/chat/stream", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChatStream)
 	api.Get("/chat/stream", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChatStream)
+	api.Post("/webhooks/:agent_id", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleGenericWebhook)
 	api.Post("/chat/confirm", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleToolConfirm)
 	// Cancel an in-flight run (Story #22): stop a slow local-model run.
 	api.Post("/chat/cancel", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleChatCancel)
+	api.Get("/chat/artifacts", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleChatArtifacts)
+	api.Get("/chat/artifacts/download", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleChatArtifactDownload)
+	api.Post("/chat/attachments", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleChatAttachmentUpload)
+	api.Get("/chat/attachments", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleChatAttachments)
+	api.Get("/chat/attachments/:id/download", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleChatAttachmentDownload)
 
 	// Channels
 	api.Get("/channels", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleListChannels)
@@ -657,6 +672,8 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/schedule", s.rbacMW(rbac.ResourceSchedule, rbac.ActionRead), s.handleListSchedule)
 	api.Get("/schedule/status", s.rbacMW(rbac.ResourceSchedule, rbac.ActionRead), s.handleScheduleStatus)
 	api.Post("/agents/:id/trigger", s.rbacAgentMW(rbac.ActionWrite), s.handleManualTrigger)
+	api.Post("/agents/:id/replay", s.rbacAgentMW(rbac.ActionWrite), s.handleReplayAgentRun)
+	api.Post("/agents/:id/schedule-output/test", s.rbacAgentMW(rbac.ActionWrite), s.handleTestScheduledOutput)
 	api.Post("/agents/:id/clone", s.rbacAgentMW(rbac.ActionWrite), s.handleCloneAgent)
 	api.Get("/agents/:id/actions", s.rbacAgentMW(rbac.ActionRead), s.handleAgentActions)
 
@@ -678,8 +695,14 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/brain-memory/:agentID/rulebook/:version", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleRulebookVersion)
 	api.Post("/brain-memory/:agentID/rulebook/rollback", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookRollback)
 	api.Post("/brain-memory/:agentID/rulebook/lock", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookLock)
+	api.Get("/learning/proposals", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleListLearningProposals)
+	api.Post("/learning/propose-from-run", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleProposeLearningFromRun)
+	api.Patch("/learning/proposals/:id", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleUpdateLearningProposal)
+	api.Post("/learning/proposals/:id/accept", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleAcceptLearningProposal)
+	api.Post("/learning/proposals/:id/reject", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRejectLearningProposal)
 
 	// Providers
+	api.Get("/doctor", s.rbacMW(rbac.ResourceProviders, rbac.ActionRead), s.handleDoctor)
 	api.Get("/providers", s.rbacMW(rbac.ResourceProviders, rbac.ActionRead), s.handleListProviders)
 	api.Get("/providers/:id/models", s.rbacMW(rbac.ResourceProviders, rbac.ActionRead), s.handleListModels)
 	api.Post("/providers/:id/model", s.rbacMW(rbac.ResourceProviders, rbac.ActionWrite), s.handleSetProviderModel)
@@ -750,6 +773,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/studio/build-trace", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioBuildTrace)
 	api.Get("/studio/build-traces", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioBuildTraces)
 	api.Post("/studio/diagnose-run", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioDiagnoseRun)
+	api.Post("/studio/diagnose-session", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioDiagnoseSession)
 	// Studio plugin backend (Wave 2): dry-run test and save-as-disabled-agent.
 	api.Post("/studio/test", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTest)
 	// Try an UNSAVED reasoning agent against one sample question (ephemeral run).
@@ -991,6 +1015,30 @@ func (s *Server) buildApp() *fiber.App {
 	})
 
 	// --- Conversation History ---
+	api.Get("/history/search", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), func(c *fiber.Ctx) error {
+		if s.historyStore == nil {
+			return s.errMsg(c, fiber.StatusServiceUnavailable, "history store not configured")
+		}
+		searcher, ok := s.historyStore.(interface {
+			Search(context.Context, string, string, int) ([]session.SearchHit, error)
+		})
+		if !ok {
+			return s.errMsg(c, fiber.StatusNotImplemented, "history store does not support search")
+		}
+		query := strings.TrimSpace(c.Query("q"))
+		if query == "" {
+			return s.errMsg(c, fiber.StatusBadRequest, "q is required")
+		}
+		limit := c.QueryInt("limit", 50)
+		hits, err := searcher.Search(c.Context(), c.Query("agent_id"), query, limit)
+		if err != nil {
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
+		}
+		if hits == nil {
+			hits = []session.SearchHit{}
+		}
+		return c.JSON(fiber.Map{"hits": hits, "query": query})
+	})
 	api.Get("/history/:session_id", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), func(c *fiber.Ctx) error {
 		if s.historyStore == nil {
 			return s.errMsg(c, fiber.StatusServiceUnavailable, "history store not configured")

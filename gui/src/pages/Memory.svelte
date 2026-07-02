@@ -67,6 +67,13 @@
   let previewResult = null
   let previewing    = false
 
+  // Learning proposals
+  let proposals      = []
+  let learningBusy   = false
+  let proposalStatus = 'pending'
+  let editingProposalID = ''
+  let proposalEdit = { title: '', content: '', skill_name: '' }
+
   // Write episodic modal
   let showWrite    = false
   let writeContent = ''
@@ -110,6 +117,7 @@
     if (activeTab === 'episodic')   await loadEpisodic()
     if (activeTab === 'procedural') { await loadProcedural(); await loadRulebook() }
     if (activeTab === 'preview')    previewResult = null
+    if (activeTab === 'learning')   await loadLearning()
   }
 
   async function loadEpisodic() {
@@ -180,6 +188,73 @@
       previewResult = await api.brainMemory.contextPreview(selectedID, previewQuery)
     } catch (e) { error = e.message }
     previewing = false
+  }
+
+  async function loadLearning() {
+    learningBusy = true
+    try {
+      const res = await api.brainMemory.learningProposals(selectedID, proposalStatus)
+      proposals = res.proposals || []
+    } catch (e) { error = e.message }
+    learningBusy = false
+  }
+
+  async function acceptProposal(p) {
+    learningBusy = true; error = null
+    try {
+      await api.brainMemory.acceptLearning(p.id)
+      notice = p.kind === 'skill'
+        ? 'Skill installed and added to the live catalog.'
+        : p.kind === 'procedure'
+          ? 'Procedure added to the rulebook.'
+          : 'Learning saved to semantic memory.'
+      await loadLearning()
+      await loadOverview()
+      if (activeTab === 'learning') setTimeout(() => notice = null, 2500)
+    } catch (e) { error = e.message }
+    learningBusy = false
+  }
+
+  function startEditProposal(p) {
+    editingProposalID = p.id
+    proposalEdit = {
+      title: p.title || '',
+      content: p.content || '',
+      skill_name: p.meta?.skill_name || '',
+    }
+  }
+
+  function cancelEditProposal() {
+    editingProposalID = ''
+    proposalEdit = { title: '', content: '', skill_name: '' }
+  }
+
+  async function saveProposalEdit(p) {
+    if (!proposalEdit.content.trim()) return
+    learningBusy = true; error = null
+    try {
+      const meta = {}
+      if (p.kind === 'skill' && proposalEdit.skill_name.trim()) meta.skill_name = proposalEdit.skill_name.trim()
+      await api.brainMemory.updateLearning(p.id, {
+        title: proposalEdit.title.trim(),
+        content: proposalEdit.content,
+        meta,
+      })
+      notice = 'Learning proposal updated.'
+      cancelEditProposal()
+      await loadLearning()
+      setTimeout(() => notice = null, 2200)
+    } catch (e) { error = e.message }
+    learningBusy = false
+  }
+
+  async function rejectProposal(p) {
+    learningBusy = true; error = null
+    try {
+      await api.brainMemory.rejectLearning(p.id)
+      await loadLearning()
+    } catch (e) { error = e.message }
+    learningBusy = false
   }
 
   function toggleExpand(id) {
@@ -300,6 +375,9 @@
     </button>
     <button class="tab {activeTab==='preview'?'active':''}" on:click={() => activeTab='preview'}>
       🔍 Context Preview
+    </button>
+    <button class="tab {activeTab==='learning'?'active':''}" on:click={() => activeTab='learning'}>
+      ✨ Learning {#if proposals.length}<span class="tab-count">{proposals.length}</span>{/if}
     </button>
   </div>
 
@@ -456,6 +534,88 @@
       {/if}
     </div>
   {/if}
+
+  <!-- ══ LEARNING PROPOSALS ════════════════════════════════════════════════ -->
+  {#if activeTab === 'learning'}
+    <div class="tab-toolbar">
+      <span class="proc-info">Review post-run proposals before Soulacy writes them into memory or rules.</span>
+      <div style="flex:1"></div>
+      <select bind:value={proposalStatus} on:change={loadLearning}>
+        <option value="pending">Pending</option>
+        <option value="accepted">Accepted</option>
+        <option value="rejected">Rejected</option>
+        <option value="">All</option>
+      </select>
+      <button class="btn-secondary" on:click={loadLearning} disabled={learningBusy}>{learningBusy?'Refreshing…':'Refresh'}</button>
+    </div>
+    {#if learningBusy}
+      <div class="empty-state"><div class="spinner"></div></div>
+    {:else if proposals.length === 0}
+      <div class="empty-state">
+        <div class="empty-icon">✨</div>
+        <p>No {proposalStatus || ''} learning proposals. Add <code>learning.enabled: true</code> to an agent to create reviewable post-run learnings.</p>
+      </div>
+    {:else}
+      <div class="proposal-list">
+        {#each proposals as p (p.id)}
+          <div class="proposal-card">
+            <div class="proposal-head">
+              <span class="proposal-kind {p.kind === 'skill' ? 'skill' : ''}">{p.kind}</span>
+              {#if editingProposalID === p.id}
+                <input class="proposal-title-input" bind:value={proposalEdit.title} placeholder="Proposal title" />
+              {:else}
+                <strong>{p.title}</strong>
+              {/if}
+              <span class="tl-rel">{relTime(p.created_at)}</span>
+              <div style="flex:1"></div>
+              <span class="tag">{Math.round((p.confidence || 0) * 100)}%</span>
+            </div>
+            {#if p.kind === 'skill'}
+              <div class="skill-install-meta">
+                <span>Skill</span>
+                {#if editingProposalID === p.id}
+                  <input class="proposal-skill-input" bind:value={proposalEdit.skill_name} placeholder="skill-name" />
+                {:else}
+                  <code>{p.meta?.skill_name || 'generated-skill'}</code>
+                {/if}
+                {#if p.meta?.installed_path}
+                  <span>Installed</span>
+                  <code>{p.meta.installed_path}</code>
+                {/if}
+              </div>
+            {/if}
+            {#if editingProposalID === p.id}
+              <textarea class="proposal-editor" bind:value={proposalEdit.content} rows="9"></textarea>
+            {:else}
+              <pre class="proposal-content">{p.content}</pre>
+            {/if}
+            <div class="proposal-actions">
+              <span class="meta-item">Session: <code>{(p.session_id || '').slice(0,12) || '—'}</code></span>
+              <span class="meta-item">Source: <code>{p.source || '—'}</code></span>
+              {#if p.meta?.tools_used}
+                <span class="meta-item">Tools: <code>{p.meta.tools_used}</code></span>
+              {/if}
+              <div style="flex:1"></div>
+              {#if p.status === 'pending'}
+                {#if editingProposalID === p.id}
+                  <button class="btn-secondary" on:click={cancelEditProposal} disabled={learningBusy}>Cancel</button>
+                  <button class="btn-primary" on:click={() => saveProposalEdit(p)} disabled={learningBusy || !proposalEdit.content.trim()}>Save</button>
+                {:else}
+                  <button class="btn-secondary" on:click={() => startEditProposal(p)} disabled={learningBusy}>Edit</button>
+                  <button class="btn-secondary" on:click={() => rejectProposal(p)} disabled={learningBusy}>Reject</button>
+                  <button class="btn-primary" on:click={() => acceptProposal(p)} disabled={learningBusy}>
+                    {p.kind === 'skill' ? 'Install skill' : 'Accept'}
+                  </button>
+                {/if}
+              {:else}
+                <span class="proposal-status">{p.status}</span>
+              {/if}
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  {/if}
 </div>
 
 <!-- Write modal -->
@@ -607,4 +767,18 @@
   .dl.add { color: #5fce9a; }
   .dl.del { color: #f08080; }
   .dl.same { color: #9aa0c3; }
+  .proposal-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:.7rem;padding:.2rem 0}
+  .proposal-card{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.8rem .95rem;display:flex;flex-direction:column;gap:.55rem}
+  .proposal-head{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
+  .proposal-head strong{font-size:.86rem;color:#c5c9e8}
+  .proposal-kind{font-size:.66rem;text-transform:uppercase;letter-spacing:.05em;padding:.1rem .42rem;border-radius:999px;background:rgba(76,175,130,.14);color:#5fce9a}
+  .proposal-kind.skill{background:rgba(108,99,255,.18);color:#9b95ff}
+  .skill-install-meta{display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;font-size:.72rem;color:#6b7294;background:rgba(108,99,255,.06);border:1px solid rgba(108,99,255,.18);border-radius:7px;padding:.45rem .6rem}
+  .proposal-title-input,.proposal-skill-input{background:#0e1020;border:1px solid #252a45;border-radius:6px;color:#c5c9e8;font-size:.8rem;padding:.42rem .55rem}
+  .proposal-title-input{min-width:min(420px,100%);font-weight:650}
+  .proposal-skill-input{width:190px;font-family:monospace}
+  .proposal-content{margin:0;background:#0e1020;border:1px solid #1a1e36;border-radius:7px;padding:.65rem .75rem;color:#9da3c0;font-size:.76rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto}
+  .proposal-editor{width:100%;min-height:190px;margin:0;background:#0e1020;border:1px solid #252a45;border-radius:7px;padding:.65rem .75rem;color:#c5c9e8;font-family:'Menlo','Monaco','Fira Code',monospace;font-size:.76rem;line-height:1.5;resize:vertical}
+  .proposal-actions{display:flex;align-items:center;gap:.5rem}
+  .proposal-status{font-size:.72rem;color:#6b7294;text-transform:uppercase;letter-spacing:.05em}
 </style>

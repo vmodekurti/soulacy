@@ -33,6 +33,8 @@ import (
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
+	"github.com/soulacy/soulacy/internal/scheduler"
+	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/internal/templates"
 	"github.com/soulacy/soulacy/internal/tier"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -362,6 +364,62 @@ func (s *Server) handleUpdateAgentYAML(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"agent": &def, "validation": report})
 }
 
+func (s *Server) handleListAgentVersions(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if s.loader.Get(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	versions, err := s.loader.AgentVersions(id)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	return c.JSON(fiber.Map{"agent_id": id, "versions": versions, "count": len(versions)})
+}
+
+func (s *Server) handleGetAgentVersion(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if s.loader.Get(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	data, version, err := s.loader.ReadAgentVersion(id, c.Params("version"))
+	if err != nil {
+		return s.errJSON(c, fiber.StatusNotFound, err)
+	}
+	return c.JSON(fiber.Map{"agent_id": id, "version": version, "yaml": string(data)})
+}
+
+func (s *Server) handleRollbackAgent(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
+	if s.loader.Get(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	var req struct {
+		Version string `json:"version"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	if strings.TrimSpace(req.Version) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "version is required")
+	}
+	dir := ""
+	if len(s.cfg.AgentDirs) > 0 {
+		dir = s.cfg.AgentDirs[0]
+	}
+	def, version, err := s.loader.RestoreAgentVersion(dir, id, req.Version)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	s.scheduler.DeregisterAgent(id)
+	if err := s.scheduler.RegisterAgent(def); err != nil {
+		s.log.Warn("scheduler re-registration failed", zap.String("agent", id), zap.Error(err))
+	}
+	return c.JSON(fiber.Map{"agent": def, "restored_version": version})
+}
+
 // handleGetAgentTier returns the capability tier for an agent plus the
 // reasons that produced it. Companion to the `sy agent tier` CLI and a
 // future GUI badge — see docs/CHANNEL_DESIGN.md Q1 and the implementation
@@ -633,12 +691,13 @@ func (s *Server) uniqueAgentID(base string) string {
 // We call engine.Handle() directly so we never touch the async inbox path.
 func (s *Server) handleChat(c *fiber.Ctx) error {
 	var req struct {
-		AgentID   string `json:"agent_id"`
-		SessionID string `json:"session_id"`
-		UserID    string `json:"user_id"`
-		Username  string `json:"username"`
-		Text      string `json:"text"`
-		Overrides struct {
+		AgentID       string   `json:"agent_id"`
+		SessionID     string   `json:"session_id"`
+		UserID        string   `json:"user_id"`
+		Username      string   `json:"username"`
+		Text          string   `json:"text"`
+		AttachmentIDs []string `json:"attachment_ids"`
+		Overrides     struct {
 			Provider    string   `json:"provider"`
 			Model       string   `json:"model"`
 			Temperature *float64 `json:"temperature"`
@@ -663,6 +722,14 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	if sessionID == "" {
 		sessionID = fmt.Sprintf("http-%s", req.UserID)
 	}
+	text := req.Text
+	if len(req.AttachmentIDs) > 0 {
+		expanded, err := s.expandChatAttachments(c.UserContext(), req.AgentID, sessionID, req.Text, req.AttachmentIDs)
+		if err != nil {
+			return s.errJSON(c, fiber.StatusBadRequest, err)
+		}
+		text = expanded
+	}
 	def := s.loader.Get(req.AgentID)
 
 	msg := message.Message{
@@ -674,7 +741,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		UserID:    req.UserID,
 		Username:  req.Username,
 		Role:      message.RoleUser,
-		Parts:     message.Text(req.Text),
+		Parts:     message.Text(text),
 		Metadata:  chatOverrideMetadata(req.Overrides.Provider, req.Overrides.Model, req.Overrides.Temperature, req.Overrides.MaxTokens, req.Overrides.MaxTurns, req.Overrides.ToolChoice),
 		CreatedAt: time.Now().UTC(),
 	}
@@ -1672,6 +1739,195 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"result": replyText})
 }
 
+func (s *Server) handleReplayAgentRun(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
+	def := s.loader.Get(id)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	if s.actions == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "action logging disabled")
+	}
+	var req struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := c.BodyParser(&req); err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	if req.SessionID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "session_id is required")
+	}
+
+	events, err := s.actions.Tail(id, 5000)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	orig, found, err := replaySourceMessage(events, id, req.SessionID)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	if !found {
+		return s.errMsg(c, fiber.StatusNotFound, "message.in event not found for session")
+	}
+
+	if !s.scheduler.TryStartRun(id) {
+		return s.errMsg(c, fiber.StatusConflict, "agent is already running")
+	}
+	defer s.scheduler.FinishRun(id)
+
+	replaySession := fmt.Sprintf("replay-%s-%s", req.SessionID, uuid.NewString()[:8])
+	msg := orig
+	msg.ID = uuid.NewString()
+	msg.SessionID = replaySession
+	msg.AgentID = id
+	msg.Channel = "http"
+	msg.ThreadID = "replay:" + req.SessionID
+	if msg.UserID == "" {
+		msg.UserID = "replay"
+	}
+	if msg.Username == "" {
+		msg.Username = "replay"
+	}
+	msg.Role = message.RoleUser
+	msg.CreatedAt = time.Now().UTC()
+	if msg.Metadata == nil {
+		msg.Metadata = map[string]string{}
+	}
+	msg.Metadata["trigger"] = "replay"
+	msg.Metadata["replay_from_session"] = req.SessionID
+	msg.Metadata["replay_from_channel"] = orig.Channel
+
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), resolveRunTimeout(def))
+	defer cancel()
+
+	reply, err := s.engine.Handle(ctx, msg)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	replyText := ""
+	for _, p := range reply.Parts {
+		if p.Type == message.ContentText && p.Text != "" {
+			replyText = p.Text
+			break
+		}
+	}
+	return c.JSON(fiber.Map{
+		"agent_id":            id,
+		"source_session_id":   req.SessionID,
+		"replay_session_id":   replaySession,
+		"source_channel":      orig.Channel,
+		"source_message_id":   orig.ID,
+		"replayed_as_channel": msg.Channel,
+		"result":              replyText,
+	})
+}
+
+func replaySourceMessage(events []message.Event, agentID, sessionID string) (message.Message, bool, error) {
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if ev.Type != "message.in" || ev.AgentID != agentID || ev.SessionID != sessionID {
+			continue
+		}
+		var msg message.Message
+		data, err := json.Marshal(ev.Payload)
+		if err != nil {
+			return message.Message{}, false, fmt.Errorf("marshal source payload: %w", err)
+		}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return message.Message{}, false, fmt.Errorf("parse source message: %w", err)
+		}
+		if msg.AgentID == "" {
+			msg.AgentID = agentID
+		}
+		if msg.SessionID == "" {
+			msg.SessionID = sessionID
+		}
+		return msg, true, nil
+	}
+	return message.Message{}, false, nil
+}
+
+func (s *Server) handleTestScheduledOutput(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if isProtectedSystemAgent(id) {
+		return protectedSystemAgentResponse(c)
+	}
+	def := s.loader.Get(id)
+	if def == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "agent not found")
+	}
+	if def.Schedule == nil || def.Schedule.Output == nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "agent has no schedule.output configured")
+	}
+	outCfg := def.Schedule.Output
+	channelID := strings.TrimSpace(outCfg.Channel)
+	to := strings.TrimSpace(outCfg.To)
+	if channelID == "" || to == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "schedule.output requires both channel and destination")
+	}
+	if s.channels == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "channel registry is unavailable")
+	}
+	statuses := s.channels.Statuses()
+	st, ok := statuses[channelID]
+	if !ok {
+		return s.errMsg(c, fiber.StatusBadRequest, "scheduled output channel is not registered: "+channelID)
+	}
+	if !st.Connected {
+		detail := strings.TrimSpace(st.Detail)
+		if detail == "" {
+			detail = "adapter is offline"
+		}
+		return s.errMsg(c, fiber.StatusBadGateway, "scheduled output channel is not connected: "+detail)
+	}
+
+	replyText := fmt.Sprintf("Soulacy scheduled-output test for %s at %s.", def.ID, time.Now().UTC().Format(time.RFC3339))
+	text := scheduler.RenderScheduledOutput(outCfg.Template, def, replyText, "test_output")
+	msg := message.Message{
+		ID:        uuid.New().String(),
+		SessionID: fmt.Sprintf("test-output-%s-%d", def.ID, time.Now().UnixNano()),
+		AgentID:   def.ID,
+		Channel:   channelID,
+		ThreadID:  to,
+		UserID:    "schedule-test",
+		Username:  "schedule-test",
+		Role:      message.RoleAssistant,
+		Parts:     message.Text(text),
+		Metadata: map[string]string{
+			"trigger":  "test_output",
+			"bot_name": outCfg.BotName,
+		},
+		CreatedAt: time.Now().UTC(),
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.UserContext()), 20*time.Second)
+	defer cancel()
+	if err := s.channels.Send(ctx, msg); err != nil {
+		s.log.Warn("scheduled output test failed",
+			zap.String("agent", def.ID),
+			zap.String("channel", channelID),
+			zap.String("to", to),
+			zap.String("bot_name", outCfg.BotName),
+			zap.Error(err))
+		return s.errJSON(c, fiber.StatusBadGateway, err)
+	}
+	s.log.Info("scheduled output test sent",
+		zap.String("agent", def.ID),
+		zap.String("channel", channelID),
+		zap.String("to", to),
+		zap.String("bot_name", outCfg.BotName))
+	return c.JSON(fiber.Map{
+		"ok":       true,
+		"agent_id": def.ID,
+		"channel":  channelID,
+		"to":       to,
+		"message":  text,
+	})
+}
+
 // resolveRunTimeout returns the max wall-clock duration for one agent run.
 // Honors agent.RunTimeout (Go duration string) when set, else falls back to
 // the gateway default (15 minutes — enough for chains involving slow tools
@@ -2596,30 +2852,45 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"agent_id": id, "path": "", "events": []message.Event{}, "note": "action logging disabled"})
 	}
 	limit := c.QueryInt("limit", 500)
-	events, err := s.actions.Tail(id, limit)
-	if err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
-	}
 
 	// Optional event-type filter — callers like the History panel only need a
-	// subset and passing types=message.in,message.out,error avoids returning
-	// thousands of tool.log lines that inflate the response and bury run boundaries.
+	// subset (message.in,message.out,error,tool.result). Filtering must happen
+	// DURING the tail: otherwise verbose tool.log lines from a few recent runs
+	// consume the whole window and older runs' boundary events fall off, so those
+	// runs vanish from the History panel. When the backend supports it, ask it to
+	// count only the allowed types toward the limit.
+	allowed := map[string]bool{}
 	if typesParam := c.Query("types", ""); typesParam != "" {
-		allowed := map[string]bool{}
 		for _, t := range strings.Split(typesParam, ",") {
 			if t = strings.TrimSpace(t); t != "" {
 				allowed[t] = true
 			}
 		}
-		if len(allowed) > 0 {
-			filtered := events[:0]
-			for _, ev := range events {
-				if allowed[ev.Type] {
-					filtered = append(filtered, ev)
-				}
+	}
+
+	var events []message.Event
+	var err error
+	if tf, ok := s.actions.(interface {
+		TailFiltered(string, int, map[string]bool) ([]message.Event, error)
+	}); ok && len(allowed) > 0 {
+		events, err = tf.TailFiltered(id, limit, allowed)
+	} else {
+		events, err = s.actions.Tail(id, limit)
+	}
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+
+	// Fallback post-filter for backends without TailFiltered (keeps behaviour
+	// correct even if the tail returned mixed types).
+	if len(allowed) > 0 {
+		filtered := events[:0]
+		for _, ev := range events {
+			if allowed[ev.Type] {
+				filtered = append(filtered, ev)
 			}
-			events = filtered
 		}
+		events = filtered
 	}
 
 	return c.JSON(fiber.Map{
@@ -2888,13 +3159,27 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	llmMap := getOrCreateMap(raw, "llm")
 	provsMap := getOrCreateMap(llmMap, "providers")
 	provMap := getOrCreateMap(provsMap, id)
+	realAPIKey := strings.TrimSpace(req.APIKey)
+	hasNewAPIKey := realAPIKey != "" && realAPIKey != "***"
+	keySavedToVault := false
+	if hasNewAPIKey && s.credVault != nil {
+		name := "llm.providers." + id + ".api_key"
+		if err := secrets.New(s.credVault).Set(c.Context(), name, realAPIKey); err != nil {
+			return s.errJSON(c, fiber.StatusInternalServerError, err)
+		}
+		keySavedToVault = true
+	}
 	// Only update fields the caller actually sent (so a Save Model only doesn't
 	// clobber the api_key — *** is not a real value).
 	if req.BaseURL != "" {
 		provMap["base_url"] = req.BaseURL
 	}
-	if req.APIKey != "" && req.APIKey != "***" {
-		provMap["api_key"] = req.APIKey
+	if hasNewAPIKey {
+		if keySavedToVault {
+			delete(provMap, "api_key")
+		} else {
+			provMap["api_key"] = realAPIKey
+		}
 	}
 	if req.Model != "" {
 		provMap["model"] = req.Model
@@ -2940,8 +3225,8 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 	if req.BaseURL != "" {
 		pc.BaseURL = req.BaseURL
 	}
-	if req.APIKey != "" && req.APIKey != "***" {
-		pc.APIKey = req.APIKey
+	if hasNewAPIKey {
+		pc.APIKey = realAPIKey
 	}
 	if req.Model != "" {
 		pc.Model = req.Model
@@ -2989,8 +3274,8 @@ func (s *Server) handleSetProviderCredentials(c *fiber.Ctx) error {
 		}
 	}
 
-	if id == "ollama" && req.APIKey != "" && req.APIKey != "***" && s.engine != nil {
-		s.engine.SetOllamaAPIKey(req.APIKey)
+	if id == "ollama" && hasNewAPIKey && s.engine != nil {
+		s.engine.SetOllamaAPIKey(realAPIKey)
 	}
 
 	s.log.Info("provider credentials updated", zap.String("provider", id))

@@ -33,6 +33,8 @@
  *     nodes (red/amber ring) and edges (red stroke).
  */
 
+import { blockReadiness } from './blockmeta.js'
+
 const KIND_META = {
   tool:   { color: '#2bb3a3', label: 'Tool',   shape: 'card' },
   agent:  { color: '#6c63ff', label: 'Agent',  shape: 'peer' },
@@ -188,6 +190,10 @@ export function toFlow(workflow, validation = null, runState = null) {
         isEntry: n.id === entry,
         invalid: errNodes.has(n.id),
         warn: warnNodes.has(n.id),
+        // Readiness accent (Guided Studio Builder, Story 8): 'ready' |
+        // 'needs-attention' | 'risky', so the canvas node shows the same status
+        // dot as the Plan view.
+        readiness: blockReadiness(n, { edges: rawEdges, entry }).status,
         // Post-build execution status ('ok'|'repaired'|'problem'|'idle') for the
         // node's semantic accent. Distinct from `invalid`/`warn` (author-time
         // validation): this reflects what the autonomous build actually did.

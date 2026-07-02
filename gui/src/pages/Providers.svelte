@@ -16,6 +16,8 @@
   let notice          = ''
   let restartNeeded   = false
   let restarting      = false
+  let doctor          = []
+  let doctorLoading   = false
 
   // Add/edit-credentials modal state
   let showAdd  = false
@@ -86,10 +88,23 @@
       defaultProvider = res.default_provider || ''
       known           = res.known || []
       registered      = res.registered || []
+      await runDoctor()
     } catch (e) {
       error = e.message
     } finally {
       loading = false
+    }
+  }
+
+  async function runDoctor() {
+    doctorLoading = true
+    try {
+      const res = await api.providers.doctor()
+      doctor = res.providers || []
+    } catch (e) {
+      error = e.message
+    } finally {
+      doctorLoading = false
     }
   }
 
@@ -304,6 +319,9 @@
   function providerIcon(id = '') { return PROVIDER_ICONS[id.toLowerCase()] || '⚙️' }
 
   $: providerList = Object.entries(providers)
+  $: doctorFailures = (doctor || []).filter(d => d.status === 'fail').length
+  $: doctorWarnings = (doctor || []).filter(d => d.status === 'warn').length
+  $: doctorById = Object.fromEntries((doctor || []).map(d => [d.id, d]))
 </script>
 
 <div class="page">
@@ -311,6 +329,9 @@
     <h1>Providers &amp; Models</h1>
     <div class="header-actions">
       <button class="btn-primary" on:click={() => openAdd('openai')}>+ Add provider</button>
+      <button class="btn-secondary" on:click={runDoctor} disabled={doctorLoading}>
+        {doctorLoading ? 'Checking…' : 'Run doctor'}
+      </button>
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
     </div>
   </div>
@@ -339,6 +360,39 @@
 
   {#if defaultProvider}
     <div class="default-banner">Default provider: <strong>{defaultProvider}</strong></div>
+  {/if}
+
+  {#if doctor.length > 0}
+    <div class="doctor-card" class:has-fail={doctorFailures > 0} class:has-warn={doctorWarnings > 0 && doctorFailures === 0}>
+      <div class="doctor-head">
+        <div>
+          <h2>Provider Doctor</h2>
+          <p>{doctorFailures} failing, {doctorWarnings} warnings, {doctor.length - doctorFailures - doctorWarnings} healthy</p>
+        </div>
+        <button class="btn-secondary small-btn" on:click={runDoctor} disabled={doctorLoading}>
+          {doctorLoading ? 'Checking…' : 'Recheck'}
+        </button>
+      </div>
+      <div class="doctor-list">
+        {#each doctor as check}
+          <div class="doctor-row" class:fail={check.status === 'fail'} class:warn={check.status === 'warn'}>
+            <div class="doctor-main">
+              <span class={'doctor-status ' + check.status}>{check.status}</span>
+              <strong>{providerIcon(check.id)} {check.id}</strong>
+              <span class="doctor-detail">{check.detail}</span>
+            </div>
+            <div class="doctor-meta">
+              <span>{check.registered ? 'registered' : 'not registered'}</span>
+              <span>key: {check.key_source}</span>
+              {#if check.model}<span>model: {check.model}</span>{/if}
+            </div>
+            {#if check.remedy}
+              <div class="doctor-remedy">{check.remedy}</div>
+            {/if}
+          </div>
+        {/each}
+      </div>
+    </div>
   {/if}
 
   {#if loading}
@@ -374,6 +428,14 @@
             {/if}
             <div class="pv-row"><span class="pv-label">Default model</span><span class="pv-val mono">{pc.model || '—'}</span></div>
             <div class="pv-row"><span class="pv-label">API key</span><span class="pv-val">{pc.api_key ? '● Set' : '○ Not set'}</span></div>
+            {#if doctorById[id]}
+              <div class="pv-row">
+                <span class="pv-label">Doctor</span>
+                <span class={'pv-val doctor-inline ' + doctorById[id].status}>
+                  {doctorById[id].status} · {doctorById[id].key_source}
+                </span>
+              </div>
+            {/if}
             {#if id === 'ollama'}
               <div class="pv-row"><span class="pv-label">Keep alive</span><span class="pv-val mono">{pc.keep_alive || DEFAULT_OLLAMA_KEEP_ALIVE}</span></div>
               <div class="pv-row"><span class="pv-label">Runtime options</span><span class="pv-val mono">{Object.entries({ ...DEFAULT_OLLAMA_OPTIONS, ...(pc.options || {}) }).map(([k, v]) => `${k}=${v}`).join(', ')}</span></div>
@@ -763,6 +825,40 @@
     background: rgba(108,99,255,.08); border: 1px solid rgba(108,99,255,.2);
     border-radius: 8px; padding: .6rem 1rem; font-size: .85rem; color: #8b85ff;
   }
+  .doctor-card {
+    background: #141626; border: 1px solid #1a1e36; border-radius: 8px;
+    padding: .95rem 1rem; display: flex; flex-direction: column; gap: .85rem;
+  }
+  .doctor-card.has-warn { border-color: rgba(240,196,96,.28); }
+  .doctor-card.has-fail { border-color: rgba(240,96,96,.32); }
+  .doctor-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+  .doctor-head h2 { font-size: .95rem; font-weight: 600; margin-bottom: .2rem; }
+  .doctor-head p { font-size: .76rem; color: #7b82a8; }
+  .doctor-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .6rem; }
+  .doctor-row {
+    border: 1px solid #1f2440; background: #101323; border-radius: 8px;
+    padding: .7rem .75rem; display: flex; flex-direction: column; gap: .45rem;
+  }
+  .doctor-row.warn { border-color: rgba(240,196,96,.24); background: rgba(240,196,96,.04); }
+  .doctor-row.fail { border-color: rgba(240,96,96,.28); background: rgba(240,96,96,.045); }
+  .doctor-main { display: flex; align-items: center; flex-wrap: wrap; gap: .45rem; font-size: .82rem; }
+  .doctor-detail { color: #9aa0c1; }
+  .doctor-status {
+    text-transform: uppercase; font-size: .62rem; line-height: 1;
+    padding: .25rem .38rem; border-radius: 999px; font-weight: 700;
+  }
+  .doctor-status.ok { background: rgba(76,175,130,.14); color: #4caf82; }
+  .doctor-status.warn { background: rgba(240,196,96,.14); color: #f0c460; }
+  .doctor-status.fail { background: rgba(240,96,96,.14); color: #f06060; }
+  .doctor-meta { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .doctor-meta span {
+    color: #7b82a8; background: #1a1e36; border: 1px solid #252a48;
+    border-radius: 999px; padding: .16rem .45rem; font-size: .68rem;
+  }
+  .doctor-remedy {
+    color: #c6ad69; font-size: .73rem; line-height: 1.45;
+    padding-top: .15rem;
+  }
   .empty-card {
     background: #141626; border: 1px solid #1a1e36; border-radius: 10px;
     padding: 3rem 2rem; text-align: center; display: flex; flex-direction: column;
@@ -791,6 +887,9 @@
   .pv-label { color: #555a7a; flex-shrink: 0; }
   .pv-val   { color: #c8cadf; text-align: right; word-break: break-all; }
   .pv-val.mono { font-family: monospace; font-size: .78rem; color: #8b85ff; }
+  .doctor-inline.ok { color: #4caf82; }
+  .doctor-inline.warn { color: #f0c460; }
+  .doctor-inline.fail { color: #f06060; }
 
   .test-result { font-size: .78rem; padding: .35rem .5rem; border-radius: 6px; margin-top: .25rem; background: #1a1e36; }
   .test-result.ok   { color: #4caf82; }

@@ -154,7 +154,7 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 				// the build loop repairs it forever (the LLM re-adds the arg, the
 				// portizer re-wires it). Port name OR Field may carry the arg key.
 				for _, want := range mcpToolReq[tool] {
-					if argFilled(n.Input, want) || nodeSuppliesViaPort(n, want) {
+					if argFilled(n.Input, want) || nodeSuppliesViaPort(draft.Flow, n, want) {
 						continue
 					}
 					add("block", "dependency", n.ID, "Required argument \""+want+"\" for \""+tool+"\" is empty or a placeholder.", "Provide a real value, or feed it from an upstream step's output.")
@@ -362,14 +362,18 @@ func paramTypes(hint string) map[string]string {
 // argument key — i.e. the value arrives by typed-port wire rather than in the
 // node's Input. The bind key is the port's Field override when set, else its Name
 // (matching the runtime's resolvePortInputs).
-func nodeSuppliesViaPort(n sdkr.FlowNode, arg string) bool {
+func nodeSuppliesViaPort(flow Flow, n sdkr.FlowNode, arg string) bool {
 	for _, p := range n.Inputs {
 		key := p.Name
 		if p.Field != "" {
 			key = p.Field
 		}
 		if key == arg {
-			return true
+			for _, e := range flow.Edges {
+				if e.To == n.ID && e.ToPort == p.Name {
+					return true
+				}
+			}
 		}
 	}
 	return false

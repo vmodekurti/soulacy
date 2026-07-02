@@ -62,7 +62,7 @@ func (e *Executor) SetOnProgress(fn func(message.ProgressEvent)) {
 // The bootstrap redirects print() to stderr so any debug output from tool
 // code does not corrupt the JSON result written to stdout at the end.
 func (e *Executor) Run(ctx context.Context, pyFile, funcName, inline string, argsJSON []byte) (string, error) {
-	script, err := buildScript(pyFile, funcName, inline)
+	script, err := BuildScript(pyFile, funcName, inline)
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +128,7 @@ func (e *Executor) Close() error { return nil }
 // buildScript constructs the Python bootstrap string that wraps the tool
 // function. It matches the logic in engine.go's runTool so callers get
 // identical behaviour regardless of which executor backend is active.
-func buildScript(pyFile, funcName, inline string) (string, error) {
+func BuildScript(pyFile, funcName, inline string) (string, error) {
 	if inline != "" {
 		// Studio "Custom Python" node: the inline source defines `funcName`
 		// (e.g. `run`). Wrap it with a harness that reads the JSON args from

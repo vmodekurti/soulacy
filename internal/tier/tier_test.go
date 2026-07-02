@@ -59,6 +59,7 @@ func TestCompute_DirectTiers(t *testing.T) {
 		{"web_search only → Active", def("a", builtins("web_search")), Active},
 		{"read_file only → Active", def("a", builtins("read_file")), Active},
 		{"kb_search only → Active", def("a", builtins("kb_search")), Active},
+		{"channel.send only → Active", def("a", builtins("channel.send")), Active},
 		{"shell_exec → Privileged", def("a", builtins("shell_exec")), Privileged},
 		{"write_file → Privileged", def("a", builtins("write_file")), Privileged},
 		{"run_script → Privileged", def("a", builtins("run_script")), Privileged},

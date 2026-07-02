@@ -360,9 +360,12 @@ function addCodeCopyButton(codeEl) {
  * content changes. Highlights code, renders mermaid/xychart fences to SVG, and
  * renders ```chart fences to interactive ECharts charts.
  */
-export function richRenderer(node) {
+export function richRenderer(node, value = '') {
   // ECharts instances (+ their ResizeObservers) to tear down on re-render/destroy.
   const liveCharts = []
+  let lastValue = value == null ? '' : String(value)
+  let rendered = false
+  let runToken = 0
 
   function disposeCharts() {
     while (liveCharts.length) {
@@ -488,12 +491,28 @@ export function richRenderer(node) {
 
   // Defer to a microtask so Svelte has injected the {@html} content first, and
   // a long message list doesn't block the main thread synchronously on mount.
-  Promise.resolve().then(run)
+  // The action replaces fenced chart blocks with live DOM. Svelte can still call
+  // update() later for unrelated chat-store changes; if the message text did not
+  // change, do NOT dispose the chart, because the original code fence is gone.
+  function scheduleRun() {
+    const token = ++runToken
+    Promise.resolve().then(() => {
+      if (token !== runToken) return
+      run()
+      rendered = true
+    })
+  }
+
+  scheduleRun()
   return {
-    update() {
-      Promise.resolve().then(run)
+    update(nextValue = '') {
+      const normalized = nextValue == null ? '' : String(nextValue)
+      if (rendered && normalized === lastValue) return
+      lastValue = normalized
+      scheduleRun()
     },
     destroy() {
+      runToken++
       disposeCharts()
     },
   }

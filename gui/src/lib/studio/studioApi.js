@@ -103,7 +103,7 @@ export const bridge = {
   autowire: (workflow) => api.studio.autowire({ workflow }),
 
   // AI troubleshoot of a runtime error.
-  troubleshoot: (workflow, error) => api.studio.troubleshoot({ workflow, error }),
+  troubleshoot: (workflow, error, opts = {}) => api.studio.troubleshoot({ workflow, error, ...opts }),
 
   // Architect: autonomous build-verify-repair loop ("Build until it works").
   build: (workflow, intent, verify) => api.studio.build({ workflow, intent, verify }),
@@ -114,6 +114,7 @@ export const bridge = {
   // Runtime self-heal: list failed runs + diagnose/heal one.
   failedRuns: () => api.studio.failedRuns(),
   diagnoseRun: (id) => api.studio.diagnoseRun({ id }),
+  diagnoseSession: (agentId, sessionId) => api.studio.diagnoseSession({ agentId, sessionId }),
 
   // Per-block run trace of a live flow run (input/output/duration/error),
   // by runId or the agent's most recent run.

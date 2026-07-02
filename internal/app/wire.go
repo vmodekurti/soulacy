@@ -66,6 +66,7 @@ func (a *App) Run(parent context.Context) error {
 
 	// ── Agent brain memory (episodic / semantic / procedural) ────────────────
 	brainStore := a.wireBrainMemory(ws, stack)
+	learningStore := a.wireLearning(ws)
 
 	// ── Memory ───────────────────────────────────────────────────────────────
 	fileStore, archive, err := a.wireMemory(stack)
@@ -231,6 +232,7 @@ func (a *App) Run(parent context.Context) error {
 		pluginProvider: pluginProvider,
 		pyExecutor:     pyExecutor,
 		brainStore:     brainStore,
+		learningStore:  learningStore,
 		ollamaAPIKey:   ollamaAPIKey,
 		searchProvider: searchProvider,
 		searchAPIKey:   searchAPIKey,
@@ -258,6 +260,7 @@ func (a *App) Run(parent context.Context) error {
 	// ── Channel Registry ─────────────────────────────────────────────────────
 	chanReg := channels.NewRegistry(512)
 	chanReg.SetLogger(log)
+	engine.SetChannelRegistry(chanReg)
 	sched.SetChannelRegistry(chanReg)
 	httpAdapter := httpchan.New()
 	chanReg.Register(httpAdapter)

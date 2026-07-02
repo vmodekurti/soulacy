@@ -7,6 +7,7 @@ Channels are adapters that connect agents to messaging platforms. Each channel h
 | Channel | Status | Config key |
 |---------|--------|-----------|
 | [HTTP](http.md) | ✅ Stable | — (always active) |
+| [Generic Webhooks](webhook.md) | ✅ Stable | agent `trigger: webhook` |
 | [Telegram](telegram.md) | ✅ Stable | `channels.telegram` |
 | [Slack](slack.md) | ✅ Stable | `channels.slack` |
 | [Discord](discord.md) | ✅ Stable | `channels.discord` |
@@ -120,6 +121,34 @@ schedule:
 ```
 
 `channel` is the adapter ID shown in **Channels -> Agent mappings**. `to` is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, or WhatsApp recipient number.
+
+## Generic outbound send
+
+Agents and Studio workflows can deliver to any registered adapter with the
+built-in `channel.send` tool:
+
+```yaml title="agents/notifier/SOUL.yaml"
+id: notifier
+builtins:
+  - channel.send
+```
+
+Tool input:
+
+```json
+{
+  "channel": "telegram",
+  "to": "123456789",
+  "text": "Daily report is ready.",
+  "metadata": {
+    "source": "daily-report"
+  }
+}
+```
+
+`channel` is the adapter ID shown in **Channels**. `to` is the platform-native
+destination: Telegram chat ID, Slack channel/user ID, Discord channel ID,
+WhatsApp recipient, or a custom sidecar thread ID.
 
 ## Multi-channel agents
 

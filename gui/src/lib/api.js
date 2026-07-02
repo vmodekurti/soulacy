@@ -81,10 +81,15 @@ export const api = {
     // sends the edited YAML text back (server parses + validates before writing).
     getYaml:   (id)        => apiFetch(`/agents/${id}/yaml`),
     updateYaml:(id, yaml)  => apiFetch(`/agents/${id}/yaml`, { method: 'PUT', body: yaml }),
+    versions: (id)         => apiFetch(`/agents/${id}/versions`),
+    version:  (id, version) => apiFetch(`/agents/${id}/versions/${encodeURIComponent(version)}`),
+    rollback: (id, version) => apiFetch(`/agents/${id}/rollback`, { method: 'POST', body: JSON.stringify({ version }) }),
     delete:  (id)      => apiFetch(`/agents/${id}`, { method: 'DELETE' }),
     enable:  (id)      => apiFetch(`/agents/${id}/enable`,  { method: 'POST' }),
     disable: (id)      => apiFetch(`/agents/${id}/disable`, { method: 'POST' }),
     trigger: (id)      => apiFetch(`/agents/${id}/trigger`, { method: 'POST' }),
+    replay:  (id, sessionId) => apiFetch(`/agents/${id}/replay`, { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
+    testScheduleOutput: (id) => apiFetch(`/agents/${id}/schedule-output/test`, { method: 'POST' }),
     clone:   (id)      => apiFetch(`/agents/${id}/clone`,   { method: 'POST' }),
     actions: (id, limit = 500, types = '') => apiFetch(`/agents/${id}/actions?limit=${limit}${types ? '&types=' + encodeURIComponent(types) : ''}`),
   },
@@ -97,11 +102,76 @@ export const api = {
     ),
   },
 
-  chat: (agentId, text, userId = 'gui-user', overrides = null, sessionId = '') =>
+  chat: (agentId, text, userId = 'gui-user', overrides = null, sessionId = '', attachmentIds = []) =>
     apiFetch('/chat', {
       method: 'POST',
-      body: JSON.stringify({ agent_id: agentId, user_id: userId, session_id: sessionId, text, ...(overrides ? { overrides } : {}) }),
+      body: JSON.stringify({
+        agent_id: agentId,
+        user_id: userId,
+        session_id: sessionId,
+        text,
+        ...(attachmentIds?.length ? { attachment_ids: attachmentIds } : {}),
+        ...(overrides ? { overrides } : {}),
+      }),
     }),
+
+  chatArtifacts: (agentId, sessionId) =>
+    apiFetch(`/chat/artifacts?agent_id=${encodeURIComponent(agentId)}&session_id=${encodeURIComponent(sessionId)}`),
+
+  downloadChatArtifact: async (agentId, sessionId, path) => {
+    const qs = new URLSearchParams({ agent_id: agentId, session_id: sessionId, path })
+    const res = await fetch('/api/v1/chat/artifacts/download?' + qs.toString(), {
+      method: 'GET',
+      headers: authHeaders(),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      if (res.status === 401 || res.status === 403) authRequired.set(true)
+      throw Object.assign(new Error(body.error || res.statusText), { status: res.status, body })
+    }
+    authRequired.set(false)
+    const cd = res.headers.get('content-disposition') || ''
+    const m = /filename="?([^";]+)"?/i.exec(cd)
+    return { blob: await res.blob(), filename: m ? m[1] : (path.split('/').pop() || 'artifact') }
+  },
+
+  chatAttachments: (agentId, sessionId) =>
+    apiFetch(`/chat/attachments?agent_id=${encodeURIComponent(agentId)}&session_id=${encodeURIComponent(sessionId)}`),
+
+  uploadChatAttachment: async (agentId, sessionId, file) => {
+    const fd = new FormData()
+    fd.append('agent_id', agentId)
+    fd.append('session_id', sessionId)
+    fd.append('file', file)
+    const key = get(apiKey)
+    const headers = {}
+    if (key) headers['Authorization'] = `Bearer ${key}`
+    const res = await fetch('/api/v1/chat/attachments', { method: 'POST', headers, body: fd })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      if (res.status === 401 || res.status === 403) authRequired.set(true)
+      throw Object.assign(new Error(body.error || res.statusText), { status: res.status, body })
+    }
+    authRequired.set(false)
+    return res.json()
+  },
+
+  downloadChatAttachment: async (agentId, sessionId, id, filename = 'attachment') => {
+    const qs = new URLSearchParams({ agent_id: agentId, session_id: sessionId })
+    const res = await fetch(`/api/v1/chat/attachments/${encodeURIComponent(id)}/download?` + qs.toString(), {
+      method: 'GET',
+      headers: authHeaders(),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      if (res.status === 401 || res.status === 403) authRequired.set(true)
+      throw Object.assign(new Error(body.error || res.statusText), { status: res.status, body })
+    }
+    authRequired.set(false)
+    const cd = res.headers.get('content-disposition') || ''
+    const m = /filename="?([^";]+)"?/i.exec(cd)
+    return { blob: await res.blob(), filename: m ? m[1] : filename }
+  },
 
   /** Cancel an in-flight run (Story #22). run_id is the session id for /chat. */
   cancelRun: (runId) =>
@@ -150,6 +220,26 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ task_input: taskInput, max_episodic: maxEpisodic, max_semantic: maxSemantic }),
       }),
+    learningProposals: (agentId = '', status = 'pending', limit = 100) => {
+      const params = new URLSearchParams()
+      if (agentId) params.set('agent_id', agentId)
+      if (status) params.set('status', status)
+      if (limit) params.set('limit', String(limit))
+      return apiFetch('/learning/proposals?' + params.toString())
+    },
+    proposeFromRun: (agentId, sessionId, maxProposals = 3) =>
+      apiFetch('/learning/propose-from-run', {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: agentId, session_id: sessionId, max_proposals: maxProposals }),
+      }),
+    updateLearning: (id, patch) =>
+      apiFetch(`/learning/proposals/${encodeURIComponent(id)}`, {
+        method: 'PATCH', body: JSON.stringify(patch),
+      }),
+    acceptLearning: (id) =>
+      apiFetch(`/learning/proposals/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
+    rejectLearning: (id) =>
+      apiFetch(`/learning/proposals/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
   },
 
   channels: {
@@ -173,6 +263,7 @@ export const api = {
 
   providers: {
     list:           ()          => apiFetch('/providers'),
+    doctor:         ()          => apiFetch('/doctor'),
     models:         (id)        => apiFetch(`/providers/${id}/models`),
     setModel:       (id, model) => apiFetch(`/providers/${id}/model`, { method: 'POST', body: JSON.stringify({ model }) }),
     setCredentials: (id, body)  => apiFetch(`/providers/${id}`,        { method: 'POST', body: JSON.stringify(body) }),
@@ -337,10 +428,10 @@ export const api = {
         body: JSON.stringify({ workflow }),
       }),
     /** Fix a draft from a RUNTIME error message via the LLM. */
-    troubleshoot: ({ workflow, error } = {}) =>
+    troubleshoot: ({ workflow, error, input, evidence } = {}) =>
       apiFetch('/studio/troubleshoot', {
         method: 'POST',
-        body: JSON.stringify({ workflow, error }),
+        body: JSON.stringify({ workflow, error, input, evidence }),
       }),
     /**
      * Architect: autonomous build-verify-repair loop. Fills capability holes
@@ -427,6 +518,11 @@ export const api = {
       apiFetch('/studio/diagnose-run', {
         method: 'POST',
         body: JSON.stringify({ id }),
+      }),
+    diagnoseSession: ({ agentId, sessionId } = {}) =>
+      apiFetch('/studio/diagnose-session', {
+        method: 'POST',
+        body: JSON.stringify({ agentId, sessionId }),
       }),
     /**
      * Advice on whether the configured builder model is strong enough for agent
@@ -588,6 +684,13 @@ export const api = {
   history: {
     get:  (sessionId, limit = 0) =>
       apiFetch(`/history/${encodeURIComponent(sessionId)}${limit ? '?limit=' + limit : ''}`),
+    search: (query, agentId = '', limit = 50) => {
+      const params = new URLSearchParams()
+      params.set('q', query)
+      if (agentId) params.set('agent_id', agentId)
+      if (limit) params.set('limit', String(limit))
+      return apiFetch('/history/search?' + params.toString())
+    },
     fork: (sessionId, body) =>
       apiFetch(`/history/${encodeURIComponent(sessionId)}/fork`, { method: 'POST', body: JSON.stringify(body) }),
   },
