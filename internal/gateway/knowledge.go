@@ -74,6 +74,14 @@ func embeddingModelOptions(provider string) []string {
 		return []string{"nomic-embed-text", "mxbai-embed-large", "all-minilm"}
 	case "openai":
 		return []string{"text-embedding-3-small", "text-embedding-3-large", "text-embedding-ada-002"}
+	case "google", "gemini":
+		return []string{"gemini-embedding-001", "text-embedding-004"}
+	case "ollama_cloud":
+		return []string{"nomic-embed-text", "mxbai-embed-large", "all-minilm"}
+	case "nvidia":
+		return []string{"nvidia/nv-embedqa-e5-v5", "nvidia/llama-3.2-nv-embedqa-1b-v2"}
+	case "openroute", "openrouter", "together", "groq", "mistral", "deepseek":
+		return []string{"text-embedding-3-small", "text-embedding-3-large"}
 	default:
 		return nil
 	}
@@ -84,6 +92,14 @@ func providerDefaultEmbeddingModel(provider string) string {
 	case "ollama":
 		return "nomic-embed-text"
 	case "openai":
+		return "text-embedding-3-small"
+	case "google", "gemini":
+		return "gemini-embedding-001"
+	case "ollama_cloud":
+		return "nomic-embed-text"
+	case "nvidia":
+		return "nvidia/nv-embedqa-e5-v5"
+	case "openroute", "openrouter", "together", "groq", "mistral", "deepseek":
 		return "text-embedding-3-small"
 	default:
 		return ""

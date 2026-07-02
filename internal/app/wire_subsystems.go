@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -365,9 +366,9 @@ func (a *App) wireLLMRouter() *llm.Router {
 	return llmRouter
 }
 
-// wireKnowledge builds the optional RAG service (SQLite + sqlite-vec + Ollama/
-// OpenAI embeddings). Disabled silently when DBPath is empty; an unavailable
-// store warns and returns nil.
+// wireKnowledge builds the optional RAG service (SQLite + sqlite-vec +
+// provider-backed embeddings). Disabled silently when DBPath is empty; an
+// unavailable store warns and returns nil.
 func (a *App) wireKnowledge(ollamaBaseURL string, stack *closerStack) *knowledge.Service {
 	cfg, log := a.cfg, a.log
 	if cfg.Knowledge.DBPath == "" {
@@ -380,15 +381,16 @@ func (a *App) wireKnowledge(ollamaBaseURL string, stack *closerStack) *knowledge
 	}
 	stack.pushClose("knowledge-store", kbStore)
 	embedders := llm.NewEmbedderRegistry()
-	// Ollama embedder — points at the same baseURL as the chat provider.
-	embedders.Register(llm.NewOllamaEmbedder(ollamaBaseURL))
-	// OpenAI embedder — same key/baseURL as the chat OpenAI provider, if configured.
-	if oc, ok := cfg.LLM.Providers["openai"]; ok && oc.APIKey != "" {
-		openaiBase := oc.BaseURL
-		if openaiBase == "" {
-			openaiBase = "https://api.openai.com"
+	if cfg.LLM.Providers == nil {
+		cfg.LLM.Providers = map[string]config.ProviderConfig{}
+	}
+	if _, ok := cfg.LLM.Providers["ollama"]; !ok {
+		cfg.LLM.Providers["ollama"] = config.ProviderConfig{BaseURL: ollamaBaseURL}
+	}
+	for id, pc := range cfg.LLM.Providers {
+		if emb := embedderForProvider(id, pc, ollamaBaseURL); emb != nil {
+			embedders.Register(emb)
 		}
-		embedders.Register(llm.NewOpenAIEmbedder(openaiBase, oc.APIKey))
 	}
 	knowledgeSvc := knowledge.NewService(kbStore, embedders)
 	log.Info("knowledge store ready",
@@ -397,6 +399,38 @@ func (a *App) wireKnowledge(ollamaBaseURL string, stack *closerStack) *knowledge
 		zap.Strings("embedders", embedders.IDs()),
 	)
 	return knowledgeSvc
+}
+
+func embedderForProvider(id string, pc config.ProviderConfig, ollamaBaseURL string) llm.Embedder {
+	id = strings.TrimSpace(id)
+	baseURL := strings.TrimSpace(pc.BaseURL)
+	switch id {
+	case "ollama":
+		if baseURL == "" {
+			baseURL = ollamaBaseURL
+		}
+		return llm.NewOllamaEmbedder(baseURL)
+	case "google", "gemini":
+		if pc.APIKey == "" {
+			return nil
+		}
+		return llm.NewGoogleCompatibleEmbedder(id, baseURL, pc.APIKey)
+	case "openai":
+		if pc.APIKey == "" {
+			return nil
+		}
+		return llm.NewOpenAIEmbedder(baseURL, pc.APIKey)
+	case "openroute", "openrouter", "ollama_cloud", "nvidia", "together", "groq", "mistral", "deepseek":
+		if pc.APIKey == "" {
+			return nil
+		}
+		return llm.NewOpenAICompatibleEmbedder(id, baseURL, pc.APIKey)
+	default:
+		if pc.APIKey != "" && strings.Contains(baseURL, "/v1") {
+			return llm.NewOpenAICompatibleEmbedder(id, baseURL, pc.APIKey)
+		}
+		return nil
+	}
 }
 
 // wireVector builds the optional vector-memory tier. Returns the sqlite-vec
@@ -422,16 +456,8 @@ func (a *App) wireVector(archive *memory.SQLiteArchive) (*memory.VectorStore, ve
 	if embedModel == "" {
 		embedModel = "nomic-embed-text"
 	}
-	embedCfg := cfg.LLM.Providers[cfg.Knowledge.EmbeddingProvider]
-	var rawEmbedder llm.Embedder
-	switch cfg.Knowledge.EmbeddingProvider {
-	case "openai":
-		openaiBase := embedCfg.BaseURL
-		if openaiBase == "" {
-			openaiBase = "https://api.openai.com"
-		}
-		rawEmbedder = llm.NewOpenAIEmbedder(openaiBase, embedCfg.APIKey)
-	default:
+	rawEmbedder := embedderForProvider(cfg.Knowledge.EmbeddingProvider, cfg.LLM.Providers[cfg.Knowledge.EmbeddingProvider], ollamaCfg.BaseURL)
+	if rawEmbedder == nil {
 		rawEmbedder = llm.NewOllamaEmbedder(ollamaCfg.BaseURL)
 	}
 	memEmbedder := &llmEmbedAdapter{inner: rawEmbedder, model: embedModel}

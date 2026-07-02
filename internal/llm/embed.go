@@ -2,10 +2,11 @@
 //
 // Embedders are intentionally lightweight and decoupled from the chat
 // Provider interface — we want to add a brand-new embedding model without
-// touching the chat router. Two providers ship:
+// touching the chat router. Built-in providers include:
 //
 //	ollama → POST <baseURL>/api/embed       (default: nomic-embed-text, 768 dims)
-//	openai → POST <baseURL>/v1/embeddings   (default: text-embedding-3-small, 1536 dims)
+//	openai-compatible → POST <baseURL>/v1/embeddings (OpenAI, OpenRoute, etc.)
+//	google → POST <baseURL>/v1beta/models/<model>:embedContent
 //
 // Either can target a custom baseURL via the embed.provider's config so
 // OpenAI-compatible servers (Together, Groq, vLLM) work transparently.
@@ -136,6 +137,7 @@ func (e *OllamaEmbedder) Dim(ctx context.Context, model string) (int, error) {
 
 // OpenAIEmbedder calls /v1/embeddings on any OpenAI-compatible host.
 type OpenAIEmbedder struct {
+	id      string
 	baseURL string
 	apiKey  string
 	client  *http.Client
@@ -148,10 +150,21 @@ type OpenAIEmbedder struct {
 // NewOpenAIEmbedder constructs the embedder. baseURL defaults to
 // https://api.openai.com when empty.
 func NewOpenAIEmbedder(baseURL, apiKey string) *OpenAIEmbedder {
+	return NewOpenAICompatibleEmbedder("openai", baseURL, apiKey)
+}
+
+// NewOpenAICompatibleEmbedder constructs an embedder for any provider exposing
+// the OpenAI /v1/embeddings contract, while preserving the provider's own id in
+// the registry (e.g. openroute, nvidia, ollama_cloud).
+func NewOpenAICompatibleEmbedder(id, baseURL, apiKey string) *OpenAIEmbedder {
 	if baseURL == "" {
 		baseURL = "https://api.openai.com"
 	}
+	if strings.TrimSpace(id) == "" {
+		id = "openai"
+	}
 	return &OpenAIEmbedder{
+		id:       strings.TrimSpace(id),
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		apiKey:   apiKey,
 		client:   SharedHTTPClient(60 * time.Second),
@@ -159,7 +172,7 @@ func NewOpenAIEmbedder(baseURL, apiKey string) *OpenAIEmbedder {
 	}
 }
 
-func (e *OpenAIEmbedder) ID() string { return "openai" }
+func (e *OpenAIEmbedder) ID() string { return e.id }
 
 type openAIEmbedRequest struct {
 	Model string   `json:"model"`
@@ -196,24 +209,24 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, model string, texts []string
 
 	resp, err := e.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("openai embed: %w", err)
+		return nil, fmt.Errorf("%s embed: %w", e.ID(), err)
 	}
 	defer resp.Body.Close()
 
 	raw, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("openai embed: HTTP %d: %s", resp.StatusCode, string(raw))
+		return nil, fmt.Errorf("%s embed: HTTP %d: %s", e.ID(), resp.StatusCode, string(raw))
 	}
 
 	var out openAIEmbedResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, fmt.Errorf("openai embed: decode: %w (body=%s)", err, string(raw))
+		return nil, fmt.Errorf("%s embed: decode: %w (body=%s)", e.ID(), err, string(raw))
 	}
 	if out.Error != nil {
-		return nil, fmt.Errorf("openai embed: %s", out.Error.Message)
+		return nil, fmt.Errorf("%s embed: %s", e.ID(), out.Error.Message)
 	}
 	if len(out.Data) != len(texts) {
-		return nil, fmt.Errorf("openai embed: returned %d, expected %d", len(out.Data), len(texts))
+		return nil, fmt.Errorf("%s embed: returned %d, expected %d", e.ID(), len(out.Data), len(texts))
 	}
 	vecs := make([][]float32, len(out.Data))
 	for i, d := range out.Data {
@@ -239,7 +252,136 @@ func (e *OpenAIEmbedder) Dim(ctx context.Context, model string) (int, error) {
 		return 0, err
 	}
 	if len(vecs) == 0 || len(vecs[0]) == 0 {
-		return 0, fmt.Errorf("openai embed: empty probe for %q", model)
+		return 0, fmt.Errorf("%s embed: empty probe for %q", e.ID(), model)
+	}
+	return len(vecs[0]), nil
+}
+
+// GoogleEmbedder calls the Gemini embedding API. It loops per text instead of
+// requiring batch support so it works across Gemini embedding model versions.
+type GoogleEmbedder struct {
+	id       string
+	baseURL  string
+	apiKey   string
+	client   *http.Client
+	dimMu    sync.Mutex
+	dimCache map[string]int
+}
+
+func NewGoogleEmbedder(baseURL, apiKey string) *GoogleEmbedder {
+	return NewGoogleCompatibleEmbedder("google", baseURL, apiKey)
+}
+
+func NewGoogleCompatibleEmbedder(id, baseURL, apiKey string) *GoogleEmbedder {
+	if baseURL == "" {
+		baseURL = "https://generativelanguage.googleapis.com"
+	}
+	if strings.TrimSpace(id) == "" {
+		id = "google"
+	}
+	return &GoogleEmbedder{
+		id:       strings.TrimSpace(id),
+		baseURL:  strings.TrimRight(baseURL, "/"),
+		apiKey:   apiKey,
+		client:   SharedHTTPClient(60 * time.Second),
+		dimCache: map[string]int{},
+	}
+}
+
+func (e *GoogleEmbedder) ID() string { return e.id }
+
+type googleEmbedRequest struct {
+	Model   string `json:"model,omitempty"`
+	Content struct {
+		Parts []struct {
+			Text string `json:"text"`
+		} `json:"parts"`
+	} `json:"content"`
+}
+
+type googleEmbedResponse struct {
+	Embedding struct {
+		Values []float32 `json:"values"`
+	} `json:"embedding"`
+	Error *struct {
+		Message string `json:"message"`
+	} `json:"error,omitempty"`
+}
+
+func (e *GoogleEmbedder) Embed(ctx context.Context, model string, texts []string) ([][]float32, error) {
+	if len(texts) == 0 {
+		return nil, nil
+	}
+	if model == "" {
+		model = "gemini-embedding-001"
+	}
+	urlModel := model
+	if !strings.HasPrefix(urlModel, "models/") {
+		urlModel = "models/" + urlModel
+	}
+	url := e.baseURL + "/v1beta/" + urlModel + ":embedContent"
+	if e.apiKey != "" {
+		sep := "?"
+		if strings.Contains(url, "?") {
+			sep = "&"
+		}
+		url += sep + "key=" + e.apiKey
+	}
+	vecs := make([][]float32, 0, len(texts))
+	for _, text := range texts {
+		var reqBody googleEmbedRequest
+		reqBody.Model = urlModel
+		reqBody.Content.Parts = append(reqBody.Content.Parts, struct {
+			Text string `json:"text"`
+		}{Text: text})
+		body, _ := json.Marshal(reqBody)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := e.client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("google embed: %w", err)
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode >= 400 {
+			return nil, fmt.Errorf("google embed: HTTP %d: %s", resp.StatusCode, string(raw))
+		}
+		var out googleEmbedResponse
+		if err := json.Unmarshal(raw, &out); err != nil {
+			return nil, fmt.Errorf("google embed: decode: %w (body=%s)", err, string(raw))
+		}
+		if out.Error != nil {
+			return nil, fmt.Errorf("google embed: %s", out.Error.Message)
+		}
+		if len(out.Embedding.Values) == 0 {
+			return nil, fmt.Errorf("google embed: empty embedding for model %q", model)
+		}
+		vecs = append(vecs, out.Embedding.Values)
+	}
+	if len(vecs) > 0 {
+		e.dimMu.Lock()
+		e.dimCache[model] = len(vecs[0])
+		e.dimMu.Unlock()
+	}
+	return vecs, nil
+}
+
+func (e *GoogleEmbedder) Dim(ctx context.Context, model string) (int, error) {
+	e.dimMu.Lock()
+	d, ok := e.dimCache[model]
+	e.dimMu.Unlock()
+	if ok {
+		return d, nil
+	}
+	vecs, err := e.Embed(ctx, model, []string{"probe"})
+	if err != nil {
+		return 0, err
+	}
+	if len(vecs) == 0 || len(vecs[0]) == 0 {
+		return 0, fmt.Errorf("google embed: empty probe for %q", model)
 	}
 	return len(vecs[0]), nil
 }

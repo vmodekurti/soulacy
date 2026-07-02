@@ -941,9 +941,9 @@ func TestSanitizeSchemaForGeminiNilReturnsNil(t *testing.T) {
 func TestSanitizeSchemaForGeminiStripsUnknownTopLevelKeys(t *testing.T) {
 	schema := map[string]any{
 		"type":                 "object",
-		"additionalProperties": false,    // not allowed
+		"additionalProperties": false,     // not allowed
 		"$schema":              "draft-7", // not allowed
-		"description":          "kept",   // allowed
+		"description":          "kept",    // allowed
 	}
 	out := sanitizeSchemaForGemini(schema)
 	if _, ok := out["additionalProperties"]; ok {
@@ -1118,6 +1118,16 @@ func TestOpenAIEmbedderID(t *testing.T) {
 	}
 }
 
+func TestOpenAICompatibleEmbedderPreservesProviderID(t *testing.T) {
+	e := NewOpenAICompatibleEmbedder("openroute", "http://proxy.test/", "key")
+	if e.ID() != "openroute" {
+		t.Errorf("ID = %q, want openroute", e.ID())
+	}
+	if e.baseURL != "http://proxy.test" {
+		t.Errorf("baseURL = %q, want trailing slash stripped", e.baseURL)
+	}
+}
+
 // TestOpenAIEmbedderDefaultBaseURL verifies the default base URL.
 func TestOpenAIEmbedderDefaultBaseURL(t *testing.T) {
 	e := NewOpenAIEmbedder("", "")
@@ -1245,6 +1255,58 @@ func TestOpenAIEmbedderSuccessfulEmbedReturnsCachedDim(t *testing.T) {
 	}
 	if d != 3 {
 		t.Errorf("Dim = %d, want 3", d)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// GoogleEmbedder — basic paths
+// ---------------------------------------------------------------------------
+
+func TestGoogleCompatibleEmbedderPreservesProviderID(t *testing.T) {
+	e := NewGoogleCompatibleEmbedder("gemini", "http://google.test/", "key")
+	if e.ID() != "gemini" {
+		t.Errorf("ID = %q, want gemini", e.ID())
+	}
+	if e.baseURL != "http://google.test" {
+		t.Errorf("baseURL = %q, want trailing slash stripped", e.baseURL)
+	}
+}
+
+func TestGoogleEmbedderSuccessfulEmbedReturnsCachedDim(t *testing.T) {
+	e := NewGoogleEmbedder("http://google.test", "key")
+	calls := 0
+	e.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Path != "/v1beta/models/gemini-embedding-001:embedContent" {
+			t.Errorf("path = %q, want Gemini embedContent endpoint", r.URL.Path)
+		}
+		if r.URL.Query().Get("key") != "key" {
+			t.Errorf("missing key query param")
+		}
+		return jsonResponse(200, `{"embedding":{"values":[0.1,0.2,0.3,0.4]}}`), nil
+	})
+
+	vecs, err := e.Embed(context.Background(), "", []string{"hello"})
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(vecs) != 1 || len(vecs[0]) != 4 {
+		t.Fatalf("vecs = %#v, want one 4-dim vector", vecs)
+	}
+
+	e.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		t.Fatal("HTTP call despite prior Embed caching the dim")
+		return nil, nil
+	})
+	d, err := e.Dim(context.Background(), "gemini-embedding-001")
+	if err != nil {
+		t.Fatalf("Dim after Embed: %v", err)
+	}
+	if d != 4 {
+		t.Errorf("Dim = %d, want 4", d)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
 	}
 }
 
