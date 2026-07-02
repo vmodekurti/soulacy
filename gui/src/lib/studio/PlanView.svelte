@@ -52,11 +52,7 @@
           {:else}
             {#each lanes[key] as card (card.id)}
               <div class="card status-{card.readiness.status}"
-                   class:clickable={!!card.node}
-                   role={card.node ? 'button' : undefined}
-                   tabindex={card.node ? 0 : undefined}
-                   on:click={() => pick(card)}
-                   on:keydown={(e) => { if (card.node && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); pick(card) } }}>
+                   class:clickable={!!card.node}>
                 <div class="card-top">
                   <span class="card-status" title={card.readiness.status}>{STATUS_ICON[card.readiness.status]}</span>
                   <span class="card-label">{card.label}</span>
@@ -79,6 +75,9 @@
                 {/if}
                 {#if card.node}
                   <div class="card-actions">
+                    <button class="card-more" on:click={() => pick(card)}>
+                      Open
+                    </button>
                     {#if onUpdateNode}
                       <button class="card-more" on:click|stopPropagation={() => toggleEdit(card.id)}>
                         {editing[card.id] ? 'Done ▲' : 'Edit ✎'}
@@ -89,7 +88,7 @@
                     </button>
                   </div>
                   {#if editing[card.id] && onUpdateNode}
-                    <div on:click|stopPropagation on:keydown|stopPropagation role="group">
+                    <div role="group">
                       <ConfigCard node={card.node} onUpdate={onUpdateNode} />
                     </div>
                   {/if}

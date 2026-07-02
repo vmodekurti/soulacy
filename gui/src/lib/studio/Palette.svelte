@@ -303,29 +303,35 @@
                  NOT draggable: dragging it onto the canvas used to wrap it in a
                  one-step workflow and corrupt a stepless agent. Reusable peer
                  agents (non-openable) stay draggable for composition. -->
-            <li
-              class="item"
-              class:draggable={!!it.drag && !it.openable}
-              class:openable={it.openable || !!it.draftId}
-              draggable={!!it.drag && !it.openable}
-              on:dragstart={(e) => { if (!it.openable) startDrag(e, it.drag) }}
-              on:click={() => {
-                if (it.draftId && onOpenDraft) onOpenDraft(it.draftId)
-                else if (it.openable && onOpenAgent) onOpenAgent(it.agentId)
-              }}
-              on:keydown={(e) => {
-                if ((e.key === 'Enter' || e.key === ' ')) {
-                  if (it.draftId && onOpenDraft) { e.preventDefault(); onOpenDraft(it.draftId) }
-                  else if (it.openable && onOpenAgent) { e.preventDefault(); onOpenAgent(it.agentId) }
-                }
-              }}
-              role={(it.openable || it.draftId) ? 'button' : undefined}
-              tabindex={(it.openable || it.draftId) ? 0 : undefined}
-              title={it.draftId ? 'Click to load this draft onto the canvas' : (it.openable ? 'Click to open this agent in the editor' : (it.sub ? it.sub : (it.drag ? 'Drag onto the canvas to add as a step' : '')))}
-            >
-              <span class="item-label">{it.label}</span>
-              {#if it.badge}<span class="item-badge">{it.badge}</span>{/if}
-              {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
+            <li class="item-wrap" class:openable={it.openable || !!it.draftId}>
+              {#if it.openable || it.draftId}
+                <button
+                  class="item openable"
+                  type="button"
+                  on:click={() => {
+                    if (it.draftId && onOpenDraft) onOpenDraft(it.draftId)
+                    else if (it.openable && onOpenAgent) onOpenAgent(it.agentId)
+                  }}
+                  title={it.draftId ? 'Click to load this draft onto the canvas' : 'Click to open this agent in the editor'}
+                >
+                  <span class="item-label">{it.label}</span>
+                  {#if it.badge}<span class="item-badge">{it.badge}</span>{/if}
+                  {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
+                </button>
+              {:else}
+                <div
+                  class="item"
+                  class:draggable={!!it.drag}
+                  role="listitem"
+                  draggable={!!it.drag}
+                  on:dragstart={(e) => startDrag(e, it.drag)}
+                  title={it.sub ? it.sub : (it.drag ? 'Drag onto the canvas to add as a step' : '')}
+                >
+                  <span class="item-label">{it.label}</span>
+                  {#if it.badge}<span class="item-badge">{it.badge}</span>{/if}
+                  {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
+                </div>
+              {/if}
               {#if it.openable && onDeleteAgent}
                 <button
                   class="item-del"
@@ -471,13 +477,18 @@
   .item {
     display: flex;
     flex-direction: column;
+    width: 100%;
     padding: 8px 10px;
     background: var(--bg-elev-2);
     border: 1px solid var(--border);
     border-radius: 8px;
+    color: inherit;
     cursor: default;
+    font: inherit;
+    text-align: left;
     transition: border-color 0.12s ease, transform 0.12s ease;
   }
+  .item-wrap { position: relative; list-style: none; }
   /* Python templates subsection under Blocks */
   .tmpl-head { list-style: none; padding: 0; background: none; border: none; }
   .tmpl-head:hover { border: none; transform: none; }
@@ -499,7 +510,7 @@
     font-size: 12px; line-height: 1; padding: 2px; cursor: pointer; opacity: 0;
     transition: opacity 0.12s ease;
   }
-  .item.openable:hover .item-del { opacity: 1; }
+  .item-wrap.openable:hover .item-del { opacity: 1; }
   .item-del:hover { color: var(--error); }
   .item:hover { border-color: var(--accent); transform: translateX(2px); }
   .item:active { cursor: grabbing; }
