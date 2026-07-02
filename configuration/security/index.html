@@ -2202,6 +2202,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#python-executor-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python Executor Backends
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#system-tools-sec-3" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3175,6 +3186,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#python-executor-backends" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Python Executor Backends
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#system-tools-sec-3" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3360,6 +3382,31 @@ isolation such as containers, VMs, or a dedicated OS account.</p>
 </span></code></pre></div>
 <p>Use <code>allowed_tool_dirs</code> to prevent <code>python_file</code> entries from pointing at
 unexpected host paths.</p>
+<h2 id="python-executor-backends">Python Executor Backends<a class="headerlink" href="#python-executor-backends" title="Permanent link">&para;</a></h2>
+<p>The <code>executor</code> block chooses where Python tools and Studio Python blocks run.</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">executor</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">process</span><span class="w">   </span><span class="c1"># process | pool | docker | ssh</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="nt">workers</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">4</span><span class="w">         </span><span class="c1"># pool only</span>
+</span></code></pre></div>
+<p>Use <code>process</code> for the simplest local setup. Use <code>pool</code> when you want lower
+latency on trusted local workloads.</p>
+<p>Use Docker when you want each Python call in a short-lived container:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">executor</span><span class="p">:</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">docker</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">docker_image</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python:3.12-slim</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">docker_network</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">none</span>
+</span></code></pre></div>
+<p>Use SSH when Python should run on another machine:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">executor</span><span class="p">:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">backend</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">ssh</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">ssh_host</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">worker.example.com</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">ssh_user</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">soulacy</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="nt">ssh_python_bin</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">python3</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">  </span><span class="nt">ssh_identity</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">/Users/me/.ssh/soulacy_worker</span>
+</span></code></pre></div>
+<p>Docker and SSH execute the same Python harness as the local backend, so workflow
+behavior stays consistent. They do not automatically copy local files or host
+packages; install needed libraries in the image or remote environment.</p>
 <h2 id="system-tools-sec-3">System Tools (SEC-3)<a class="headerlink" href="#system-tools-sec-3" title="Permanent link">&para;</a></h2>
 <p>The OS-level built-ins are split into two partitions:</p>
 <ul>
@@ -3384,31 +3431,31 @@ unexpected host paths.</p>
 the <code>system</code> capability at startup.</p>
 <p>Keep the <code>system</code> capability off for agents reachable by shared or public
 channels. When system tools are necessary, add confirmations:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">capabilities</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">system</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># (or legacy: system_tools: true)</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="nt">confirm_tools</span><span class="p">:</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shell_exec</span>
-</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">write_file</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">capabilities</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">system</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># (or legacy: system_tools: true)</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nt">confirm_tools</span><span class="p">:</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shell_exec</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">write_file</span>
 </span></code></pre></div>
 <h3 id="tool-environment-allowlist-sec-5">Tool environment allowlist (SEC-5)<a class="headerlink" href="#tool-environment-allowlist-sec-5" title="Permanent link">&para;</a></h3>
 <p>Python tool subprocesses no longer inherit the gateway's full environment.
 They receive only a base allowlist — <code>PATH</code>, <code>HOME</code>, <code>LANG</code>, <code>TMPDIR</code> — plus
 any variable <strong>names</strong> you declare per agent:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">env</span><span class="p">:</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GITHUB_TOKEN</span>
-</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">MY_SERVICE_URL</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="nt">env</span><span class="p">:</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">GITHUB_TOKEN</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">MY_SERVICE_URL</span>
 </span></code></pre></div>
 <p>Gateway secrets (e.g. <code>ANTHROPIC_API_KEY</code>) are NOT visible to tool code unless
 explicitly listed. Values are read from the gateway's own environment at spawn
 time; names with no value are skipped.</p>
 <h2 id="mcp-and-built-in-allowlists">MCP and Built-in Allowlists<a class="headerlink" href="#mcp-and-built-in-allowlists" title="Permanent link">&para;</a></h2>
 <p>Prefer explicit allowlists for production agents:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">builtins</span><span class="p">:</span>
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">web_search</span>
-</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kb_search</span>
-</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="nt">mcp_servers</span><span class="p">:</span>
-</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github</span>
-</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="nt">mcp_tools</span><span class="p">:</span>
-</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mcp__github__search_repositories</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">builtins</span><span class="p">:</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">web_search</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">kb_search</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nt">mcp_servers</span><span class="p">:</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">github</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="nt">mcp_tools</span><span class="p">:</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">mcp__github__search_repositories</span>
 </span></code></pre></div>
 <p>Use <code>builtins: []</code> or <code>mcp_servers: []</code> for agents that should not receive those
 tools.</p>
@@ -3425,16 +3472,16 @@ They are intentionally not gated by <code>server.api_key</code>, because Meta ca
 that header.</p>
 <h2 id="practical-baseline">Practical Baseline<a class="headerlink" href="#practical-baseline" title="Permanent link">&para;</a></h2>
 <p>For a conservative production baseline:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">server</span><span class="p">:</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">  </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;127.0.0.1&quot;</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sy_replace_with_a_long_random_secret&quot;</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="nt">runtime</span><span class="p">:</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span><span class="nt">allow_system_tools</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="w">  </span><span class="nt">allowed_tool_dirs</span><span class="p">:</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;/opt/soulacy/tools&quot;</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">  </span><span class="nt">sandbox</span><span class="p">:</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="nt">server</span><span class="p">:</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a><span class="w">  </span><span class="nt">host</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;127.0.0.1&quot;</span>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="w">  </span><span class="nt">api_key</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;sy_replace_with_a_long_random_secret&quot;</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a><span class="nt">runtime</span><span class="p">:</span>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a><span class="w">  </span><span class="nt">allow_system_tools</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a><span class="w">  </span><span class="nt">allowed_tool_dirs</span><span class="p">:</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a><span class="w">    </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;/opt/soulacy/tools&quot;</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a><span class="w">  </span><span class="nt">sandbox</span><span class="p">:</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
 </span></code></pre></div>
 <p>Then enable only the providers, channels, built-ins, MCP servers, and agent
 tools needed for each deployment.</p>

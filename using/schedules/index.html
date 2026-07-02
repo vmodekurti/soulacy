@@ -3319,6 +3319,7 @@
 <p>Per-row actions:</p>
 <ul>
 <li><strong>▶ Run</strong> — manual trigger. If the next scheduled fire is imminent, a prompt asks whether to run now or wait (so you don't double-run). A running job can't be started again, and a scheduled fire is skipped while one is in progress.</li>
+<li><strong>Test output</strong> — sends a clearly marked smoke-test message through the configured <code>schedule.output</code> channel without invoking the LLM. Use it after adding or rotating a Telegram/Slack/Discord/WhatsApp destination.</li>
 <li><strong>📋 History</strong> — slide-out panel of past runs, each with a ✓ success / ✗ failed badge, timestamp, channel, expandable full output, and token/cost metrics. A run counts as failed if any tool returned an error, even when the agent still produced a reply.</li>
 <li><strong>👁 Watch</strong> — jumps to the Activity page with live polling already on.</li>
 <li><strong>Edit / Clone / Delete</strong> — clone creates a disabled copy; delete removes the SOUL.yaml from disk.</li>
@@ -3349,7 +3350,7 @@
 </span></code></pre></div>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Manual <strong>▶ Run</strong> returns the result to the page banner; only cron-fired runs are delivered through <code>schedule.output</code>.</p>
+<p>Manual <strong>▶ Run</strong> returns the result to the page banner; only cron-fired runs are delivered through <code>schedule.output</code>. Use <strong>Test output</strong> to validate the channel and destination before waiting for the next cron fire.</p>
 </div>
 
 

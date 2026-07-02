@@ -1757,6 +1757,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Send Scheduled Output To Telegram">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#troubleshooting-telegram-delivery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting Telegram Delivery
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3211,6 +3228,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Send Scheduled Output To Telegram">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#troubleshooting-telegram-delivery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting Telegram Delivery
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3396,6 +3430,23 @@ the Telegram chat, user, group, or channel id:</p>
 </span></code></pre></div>
 <p>For a Telegram channel, add the bot as an administrator and use the channel id
 or public handle, for example <code>@your_channel_name</code>, as <code>schedule.output.to</code>.</p>
+<h3 id="troubleshooting-telegram-delivery">Troubleshooting Telegram Delivery<a class="headerlink" href="#troubleshooting-telegram-delivery" title="Permanent link">&para;</a></h3>
+<p>Open <strong>Channels -&gt; Telegram</strong> and read <strong>Delivery checks</strong>:</p>
+<ul>
+<li><code>Default outbound bot token is missing</code> means the top-level scheduled-output
+  sender has no token saved.</li>
+<li><code>Adapter is not registered</code> usually means settings were saved but the gateway
+  has not been restarted yet.</li>
+<li><code>Adapter is not connected</code> means the token, network, or Telegram Bot API
+  connection failed.</li>
+<li><code>No default output destination is configured</code> is fine for agents that set
+  <code>schedule.output.to</code>, but cron agents without their own destination need a
+  channel-level <code>default_output_to</code>.</li>
+<li>A dedicated bot mapping must either select an <code>agent_id</code> for interactive use
+  or be marked <code>outbound_only</code> for send-only use.</li>
+</ul>
+<p>You can also call <code>GET /api/v1/doctor</code>; its <code>channels</code> section returns the
+same diagnostics for automated production checks.</p>
 <hr />
 <h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
 <table>

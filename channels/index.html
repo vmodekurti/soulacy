@@ -1726,6 +1726,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#generic-outbound-send" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generic outbound send
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#multi-channel-agents" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3202,6 +3213,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#generic-outbound-send" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Generic outbound send
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#multi-channel-agents" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3314,6 +3336,11 @@
 <td>— (always active)</td>
 </tr>
 <tr>
+<td><a href="webhook/">Generic Webhooks</a></td>
+<td>✅ Stable</td>
+<td>agent <code>trigger: webhook</code></td>
+</tr>
+<tr>
 <td><a href="telegram/">Telegram</a></td>
 <td>✅ Stable</td>
 <td><code>channels.telegram</code></td>
@@ -3419,10 +3446,12 @@ WhatsApp Web. HTTP is always active because callers explicitly invoke its API.</
 <p>Open <strong>Channels</strong> in the web UI:</p>
 <ul>
 <li>Channel cards show <strong>Agent mappings</strong>, including adapter ID, agent ID, and connection state.</li>
+<li>Channel cards show <strong>Delivery checks</strong> with failures, warnings, and remedies for missing tokens, missing default destinations, offline adapters, and broken bot mappings.</li>
 <li>Click <strong>Edit</strong> on Telegram, Slack, or Discord to manage <strong>Bot mappings</strong>.</li>
 <li>Bot mapping rows record a friendly bot name and provide an agent ID dropdown populated from your installed agents.</li>
 <li>After saving channel settings, click <strong>Restart Gateway</strong> from the banner to reconnect adapters.</li>
 </ul>
+<p>The same readiness checks are exposed through <strong>Providers -&gt; Doctor</strong> / <code>GET /api/v1/doctor</code> so production setups can verify channel delivery before relying on scheduled agents.</p>
 <h2 id="scheduled-output-through-a-bot">Scheduled output through a bot<a class="headerlink" href="#scheduled-output-through-a-bot" title="Permanent link">&para;</a></h2>
 <p>Cron agents run internally by default. To publish a scheduled run result to a specific bot, set <code>schedule.output</code> in the agent:</p>
 <div class="language-yaml highlight"><span class="filename">agents/daily-finance/SOUL.yaml</span><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">trigger</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">cron</span>
@@ -3434,20 +3463,49 @@ WhatsApp Web. HTTP is always active because callers explicitly invoke its API.</
 </span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">bot_name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Finance</span><span class="nv"> </span><span class="s">Bot&quot;</span>
 </span></code></pre></div>
 <p><code>channel</code> is the adapter ID shown in <strong>Channels -&gt; Agent mappings</strong>. <code>to</code> is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, or WhatsApp recipient number.</p>
+<p>If a scheduled run succeeds but no message appears in the destination, check the
+channel card's <strong>Delivery checks</strong> first. The most common causes are:</p>
+<ul>
+<li>The adapter ID in <code>schedule.output.channel</code> does not match a registered mapping.</li>
+<li>The adapter is offline because the gateway was not restarted after saving credentials.</li>
+<li>The bot token is missing or invalid.</li>
+<li><code>schedule.output.to</code> or the channel-level default output destination is missing.</li>
+<li>The bot is not allowed to post to the target group/channel.</li>
+</ul>
+<h2 id="generic-outbound-send">Generic outbound send<a class="headerlink" href="#generic-outbound-send" title="Permanent link">&para;</a></h2>
+<p>Agents and Studio workflows can deliver to any registered adapter with the
+built-in <code>channel.send</code> tool:</p>
+<div class="language-yaml highlight"><span class="filename">agents/notifier/SOUL.yaml</span><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">notifier</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nt">builtins</span><span class="p">:</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">channel.send</span>
+</span></code></pre></div>
+<p>Tool input:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="p">{</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="w">  </span><span class="nt">&quot;channel&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;telegram&quot;</span><span class="p">,</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="w">  </span><span class="nt">&quot;to&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;123456789&quot;</span><span class="p">,</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="w">  </span><span class="nt">&quot;text&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Daily report is ready.&quot;</span><span class="p">,</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="w">  </span><span class="nt">&quot;metadata&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="nt">&quot;source&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;daily-report&quot;</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">  </span><span class="p">}</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="p">}</span>
+</span></code></pre></div>
+<p><code>channel</code> is the adapter ID shown in <strong>Channels</strong>. <code>to</code> is the platform-native
+destination: Telegram chat ID, Slack channel/user ID, Discord channel ID,
+WhatsApp recipient, or a custom sidecar thread ID.</p>
 <h2 id="multi-channel-agents">Multi-channel agents<a class="headerlink" href="#multi-channel-agents" title="Permanent link">&para;</a></h2>
 <p>An agent can be available on multiple channels simultaneously:</p>
-<div class="language-yaml highlight"><span class="filename">agents/assistant/SOUL.yaml</span><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assistant</span>
-</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Assistant</span>
-</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="nt">trigger</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">channel</span>
-</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="nt">llm</span><span class="p">:</span>
-</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="w">  </span><span class="nt">provider</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
-</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gpt-4o-mini</span>
-</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="nt">system_prompt</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">You are a helpful assistant.</span>
-</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="nt">channels</span><span class="p">:</span>
-</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http</span>
-</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegram</span>
-</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slack</span>
-</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">discord</span>
+<div class="language-yaml highlight"><span class="filename">agents/assistant/SOUL.yaml</span><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assistant</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">Assistant</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="nt">trigger</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">channel</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="nt">llm</span><span class="p">:</span>
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a><span class="w">  </span><span class="nt">provider</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">openai</span>
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a><span class="w">  </span><span class="nt">model</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">gpt-4o-mini</span>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="nt">system_prompt</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">You are a helpful assistant.</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a><span class="nt">channels</span><span class="p">:</span>
+</span><span id="__span-7-9"><a id="__codelineno-7-9" name="__codelineno-7-9" href="#__codelineno-7-9"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http</span>
+</span><span id="__span-7-10"><a id="__codelineno-7-10" name="__codelineno-7-10" href="#__codelineno-7-10"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">telegram</span>
+</span><span id="__span-7-11"><a id="__codelineno-7-11" name="__codelineno-7-11" href="#__codelineno-7-11"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">slack</span>
+</span><span id="__span-7-12"><a id="__codelineno-7-12" name="__codelineno-7-12" href="#__codelineno-7-12"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">discord</span>
 </span></code></pre></div>
 <p>The channel must also be configured in <code>config.yaml</code>; the agent-side list alone does not create platform credentials.</p>
 <h2 id="channel-specific-formatting">Channel-specific formatting<a class="headerlink" href="#channel-specific-formatting" title="Permanent link">&para;</a></h2>
