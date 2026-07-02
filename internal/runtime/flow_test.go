@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/pkg/agent"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 	"go.uber.org/zap"
@@ -75,6 +76,60 @@ func TestWorkflowExecutor_GraphMode_BoundedCycle(t *testing.T) {
 	assertCheckpointStatus(t, store, "workflow-agent", "flow-run-1", "judge#1", CheckpointCompleted)
 	assertCheckpointStatus(t, store, "workflow-agent", "flow-run-1", "judge#3", CheckpointCompleted)
 	assertCheckpointStatus(t, store, "workflow-agent", "flow-run-1", "ship#1", CheckpointCompleted)
+}
+
+func TestWorkflowExecutor_LLMNodeExtractsJSONForTool(t *testing.T) {
+	store := newTestCheckpointStore(t)
+	router := llm.NewRouter("test")
+	provider := &fakeHandleProvider{
+		responses: []llm.CompletionResponse{{Content: "```json\n{\"location_query\":\"Mexico City, Mexico\",\"intent\":\"current_weather\"}\n```"}},
+	}
+	router.Register(provider)
+	var gotQuery string
+	e := &Engine{llmRouter: router}
+	e.builtins = []BuiltinTool{{
+		Name: "resolve_location",
+		Handler: func(_ context.Context, args map[string]any) (string, error) {
+			gotQuery, _ = args["query"].(string)
+			return `{"ok":true}`, nil
+		},
+	}}
+	w := NewWorkflowExecutor(agent.WorkflowSpec{
+		Nodes: []sdkr.FlowNode{
+			{
+				ID:     "extract",
+				Kind:   sdkr.FlowNodeLLM,
+				Input:  "{{ .trigger.text }}",
+				Output: "intent",
+				Params: map[string]any{
+					"system":          "Extract weather intent. Return JSON.",
+					"response_format": "json",
+				},
+				Outputs: []sdkr.FlowPort{{Name: "location_query"}},
+			},
+			{
+				ID:     "resolve",
+				Kind:   sdkr.FlowNodeTool,
+				Tool:   "resolve_location",
+				Output: "location",
+				Inputs: []sdkr.FlowPort{{Name: "query", Field: "query"}},
+			},
+		},
+		Edges: []sdkr.FlowEdge{{From: "extract", FromPort: "location_query", To: "resolve", ToPort: "query"}},
+		Entry: "extract",
+	}, e, store, zap.NewNop())
+
+	_, err := w.Run(context.Background(), workflowTestMessage("What's the current weather in Mexico City, Mexico"), "flow-llm")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if gotQuery != "Mexico City, Mexico" {
+		t.Fatalf("query = %q, want Mexico City, Mexico", gotQuery)
+	}
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 1 || reqs[0].ResponseFormat != "json" {
+		t.Fatalf("llm requests = %+v, want one JSON-mode request", reqs)
+	}
 }
 
 // TestWorkflowExecutor_TypedPortHandoffAndTrace is the Phase 1 end-to-end check

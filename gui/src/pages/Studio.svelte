@@ -50,6 +50,7 @@
   let paletteStatus = 'Loading capabilities…'
   let paletteStatusKind = ''
   let paletteError = ''
+  let lastGoodCatalog = null
 
   // Map each connected MCP tool's full name → its published param hint
   // ("title*:string, …"), so the Inspector can show a tool node's allowed
@@ -64,14 +65,52 @@
 
   async function loadCatalog() {
     paletteStatus = 'Loading capabilities…'
+    paletteStatusKind = ''
     try {
-      catalog = await bridge.catalog()
-      paletteStatus = 'Capabilities loaded.'
-      paletteStatusKind = 'ok'
+      const next = await bridge.catalog()
+      const failedParts = Object.entries(next || {})
+        .filter(([, v]) => v && v.error)
+        .map(([k]) => k)
+
+      const hasAnyCatalogData =
+        (next?.agents?.agents || []).length > 0 ||
+        (next?.tools?.builtins || []).length > 0 ||
+        (next?.tools?.python_tools || []).length > 0 ||
+        (next?.tools?.mcp_tools || []).length > 0 ||
+        Object.keys(next?.providers?.providers || {}).length > 0 ||
+        (next?.channels?.channels || []).length > 0 ||
+        (next?.skills?.skills || []).length > 0 ||
+        ((next?.mcp?.servers || next?.mcp || [])).length > 0
+
+      if (!hasAnyCatalogData && lastGoodCatalog) {
+        catalog = lastGoodCatalog
+        paletteStatus = 'Using cached capabilities while Studio refreshes.'
+        paletteStatusKind = 'warn'
+        paletteError = ''
+        return
+      }
+
+      catalog = next
+      if (hasAnyCatalogData) lastGoodCatalog = next
+      paletteError = ''
+      if (failedParts.length > 0) {
+        paletteStatus = 'Capabilities loaded with limited data: ' + failedParts.join(', ')
+        paletteStatusKind = 'warn'
+      } else {
+        paletteStatus = 'Capabilities loaded.'
+        paletteStatusKind = 'ok'
+      }
     } catch (e) {
-      paletteError = 'Unavailable'
-      paletteStatus = 'Could not load capabilities: ' + (e.message || 'error')
-      paletteStatusKind = 'error'
+      if (lastGoodCatalog) {
+        catalog = lastGoodCatalog
+        paletteError = ''
+        paletteStatus = 'Using cached capabilities while Studio reconnects.'
+        paletteStatusKind = 'warn'
+      } else {
+        paletteError = 'Unavailable'
+        paletteStatus = 'Could not load capabilities: ' + (e.message || 'error')
+        paletteStatusKind = 'error'
+      }
     }
   }
 
@@ -384,6 +423,9 @@ def run(inputs):
     # TODO: your logic here
     return inputs
 `
+  const LLM_EXTRACT_SYSTEM = `Extract the user's intent into a compact JSON object.
+Return only JSON. Do not include markdown.
+Use null for fields that are not present.`
 
   function emptyWorkflow() {
     return {
@@ -523,7 +565,7 @@ def run(inputs):
       return
     }
 
-    // Agent / tool / python / skill -> a new flow node at the drop point.
+    // Agent / tool / python / llm / skill -> a new flow node at the drop point.
     // A skill becomes a `read_skill` tool node pre-pointed at the skill name
     // (read_skill takes a skill_name argument), so it's runnable immediately.
     const isSkill = drag.kind === 'skill'
@@ -542,11 +584,16 @@ def run(inputs):
             ? { code: pythonCodeFor(drag.template), description: pythonLabelFor(drag.template) }
             : { code: PYTHON_STARTER })
         : {}),
-      input: isSkill ? JSON.stringify({ skill_name: drag.name }) : '',
-      output: '',
+      ...(drag.kind === 'llm'
+        ? {
+            description: 'Extract structured intent',
+          }
+        : {}),
+      input: drag.kind === 'llm' ? '{{ .trigger.text }}' : (isSkill ? JSON.stringify({ skill_name: drag.name }) : ''),
+      output: drag.kind === 'llm' ? 'extracted' : '',
       inputs: [],
       outputs: [],
-      params: {},
+      params: drag.kind === 'llm' ? { system: LLM_EXTRACT_SYSTEM, response_format: 'json' } : {},
       x: Math.round(at.x),
       y: Math.round(at.y),
     }
@@ -1007,6 +1054,7 @@ def run(inputs):
 
   // Friendly label for the compiler's recommended execution mode.
   function recoLabel(mode) {
+    if (mode === 'auto') return 'Auto tool agent'
     if (mode === 'react') return 'ReAct (reasoning loop)'
     if (mode === 'plan_execute') return 'Plan-Execute'
     if (mode === 'workflow') return 'Workflow (fixed flow)'
@@ -4298,7 +4346,7 @@ def run(inputs):
         <div class="modal-actions">
           <button class="btn" on:click={cancelRefinement} disabled={compiling}>Cancel</button>
           <button class="btn primary" on:click={confirmRefinement} disabled={compiling || !((refinement.refined_intent || '').trim())}>
-            {compiling ? 'Generating…' : (refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoLabel(refinement.recommended_mode)} agent` : 'Generate workflow'}
+            {compiling ? 'Generating…' : (refinement.recommended_mode === 'auto' || refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoLabel(refinement.recommended_mode)} agent` : 'Generate workflow'}
           </button>
         </div>
       </div>

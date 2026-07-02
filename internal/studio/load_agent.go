@@ -42,6 +42,14 @@ func FromAgentDefinition(def agent.Definition) Draft {
 	}
 	if def.Schedule != nil && strings.TrimSpace(def.Schedule.Cron) != "" {
 		d.Trigger.Config = map[string]any{"cron": def.Schedule.Cron}
+		if def.Schedule.Output != nil {
+			d.Output = &ScheduleOutput{
+				Channel:  def.Schedule.Output.Channel,
+				To:       def.Schedule.Output.To,
+				BotName:  def.Schedule.Output.BotName,
+				Template: def.Schedule.Output.Template,
+			}
+		}
 	}
 
 	// A reasoning agent (ReAct/Plan-Execute) has NO workflow graph — its substance

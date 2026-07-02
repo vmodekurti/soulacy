@@ -38,6 +38,33 @@ func TestSynthesizeAgent_QualityReusablePrompt(t *testing.T) {
 	}
 }
 
+func TestSynthesizeAgent_WeatherExpertBlueprint(t *testing.T) {
+	node := sdkr.FlowNode{
+		ID:          "get_weather_data",
+		Kind:        "agent",
+		Agent:       "weather_expert",
+		Description: "Determine if user wants forecast or current and call appropriate tools",
+		Input:       "Use resolved location details to answer weather-related questions.",
+	}
+	na := SynthesizeAgent("weather_expert", node, "Expert Weather Agent")
+
+	for _, want := range []string{
+		"decision-focused weather assistant",
+		"not merely to report conditions",
+		"current conditions",
+		"forecast",
+		"alerts",
+		"Best window / risk window",
+		"Confidence",
+		"```chart",
+		"Do not invent measurements",
+	} {
+		if !strings.Contains(na.SystemPrompt, want) {
+			t.Errorf("weather prompt missing %q:\n%s", want, na.SystemPrompt)
+		}
+	}
+}
+
 func TestHumanizeID(t *testing.T) {
 	cases := map[string]string{
 		"notifier":        "Notifier",

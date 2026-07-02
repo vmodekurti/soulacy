@@ -207,6 +207,15 @@
           <span class="item-label">🐍 Custom Python</span>
           <span class="item-sub">inline script</span>
         </li>
+        <li
+          class="item draggable"
+          draggable="true"
+          on:dragstart={(e) => startDrag(e, { kind: 'llm' })}
+          title="Drag onto the canvas — an LLM extraction or transform step with structured output"
+        >
+          <span class="item-label">✨ LLM Extract</span>
+          <span class="item-sub">turn fuzzy text into typed JSON</span>
+        </li>
         <!-- Named Python templates (Guided Studio Builder): each drags a python
              node pre-seeded with a domain-specific starting point. -->
         <li class="tmpl-head">

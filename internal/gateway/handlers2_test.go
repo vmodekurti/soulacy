@@ -1198,14 +1198,17 @@ func TestSanitizeChannelID(t *testing.T) {
 }
 
 func TestChannelAdapterID(t *testing.T) {
-	if channelAdapterID("telegram", "my-bot", "", 0) != "telegram" {
+	if channelAdapterID("telegram", "my-bot", "", 0, false) != "telegram" {
 		t.Fatalf("index 0 should return channelID")
 	}
-	got := channelAdapterID("telegram", "", "", 1)
+	if got := channelAdapterID("telegram", "my-bot", "", 0, true); got != "telegram-my-bot" {
+		t.Fatalf("reserved default index 0 = %q, want telegram-my-bot", got)
+	}
+	got := channelAdapterID("telegram", "", "", 1, false)
 	if got != "telegram-2" {
 		t.Fatalf("got %q, want telegram-2", got)
 	}
-	got = channelAdapterID("telegram", "my-bot", "", 1)
+	got = channelAdapterID("telegram", "my-bot", "", 1, false)
 	if got != "telegram-my-bot" {
 		t.Fatalf("got %q, want telegram-my-bot", got)
 	}

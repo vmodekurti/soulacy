@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/studio/consent"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -155,6 +156,16 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 			}
 			return w.engine.RunInlinePython(ctx, node.Code, []byte(renderedInput))
 		}
+		var def *agent.Definition
+		if w.engine.loader != nil {
+			def = w.engine.loader.Get(msg.AgentID)
+		}
+		if def == nil {
+			def = &agent.Definition{}
+		}
+		if node.Kind == sdkr.FlowNodeLLM {
+			return w.engine.runFlowLLMNode(ctx, def, msg, node, renderedInput)
+		}
 		tool := node.Tool
 		if node.Kind == sdkr.FlowNodeAgent {
 			tool = "agent__" + node.Agent
@@ -197,13 +208,6 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 				"do not answer it directly):\n" + history + "\n\nUser's new message: " + base
 		}
 
-		var def *agent.Definition
-		if w.engine.loader != nil {
-			def = w.engine.loader.Get(msg.AgentID)
-		}
-		if def == nil {
-			def = &agent.Definition{}
-		}
 		outStr, rerr := w.engine.runTool(ctx, def, msg.SessionID, tc)
 		if rerr != nil {
 			return nil, rerr
@@ -284,6 +288,177 @@ func parseToolArgs(in string) (map[string]any, error) {
 		return nil, err
 	} else {
 		return nil, err
+	}
+}
+
+func (e *Engine) runFlowLLMNode(ctx context.Context, def *agent.Definition, msg message.Message, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
+	if e.llmRouter == nil {
+		return nil, fmt.Errorf("llm node: no LLM router configured")
+	}
+	system := strings.TrimSpace(flowParamString(node.Params, "system"))
+	if system == "" {
+		system = "You are a workflow transform step. Return only the requested output."
+	}
+	user := strings.TrimSpace(renderedInput)
+	if user == "" {
+		user = flattenParts(msg.Parts)
+	}
+	responseFormat := strings.ToLower(strings.TrimSpace(flowParamString(node.Params, "response_format")))
+	req := llm.CompletionRequest{
+		Model:       def.LLM.Model,
+		Temperature: def.LLM.Temperature,
+		MaxTokens:   def.LLM.MaxTokens,
+		Messages: []llm.ChatMessage{
+			{Role: "system", Content: system},
+			{Role: "user", Content: user},
+		},
+	}
+	if responseFormat == "json" || responseFormat == "json_schema" {
+		req.ResponseFormat = responseFormat
+	}
+	if schema, ok := node.Params["json_schema"].(map[string]any); ok && len(schema) > 0 {
+		req.ResponseFormat = "json_schema"
+		req.JSONSchema = schema
+	}
+
+	provider := def.LLM.Provider
+	model := def.LLM.Model
+	if provider == "" && e.llmRouter != nil {
+		provider = e.llmRouter.DefaultProvider()
+	}
+	if e.sink != nil {
+		e.sink.Emit(message.Event{
+			Type: "llm.call", AgentID: msg.AgentID, SessionID: msg.SessionID,
+			Payload:   map[string]any{"provider": provider, "model": model, "node": node.ID},
+			Timestamp: time.Now().UTC(),
+		})
+	}
+	start := time.Now()
+	resp, err := e.llmRouter.Complete(ctx, def.LLM.Provider, req)
+	if e.sink != nil {
+		payload := map[string]any{
+			"provider":    provider,
+			"model":       model,
+			"node":        node.ID,
+			"duration_ms": time.Since(start).Milliseconds(),
+		}
+		if resp != nil {
+			payload["input_tokens"] = resp.InputTokens
+			payload["output_tokens"] = resp.OutputTokens
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		e.sink.Emit(message.Event{
+			Type: "llm.result", AgentID: msg.AgentID, SessionID: msg.SessionID,
+			Payload: payload, Timestamp: time.Now().UTC(),
+		})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("llm node: %w", err)
+	}
+	out := strings.TrimSpace(resp.Content)
+	if out == "" {
+		return json.RawMessage(`""`), nil
+	}
+	if json.Valid([]byte(out)) {
+		return json.RawMessage(out), nil
+	}
+	if candidate, ok := extractLLMJSON(out); ok {
+		return json.RawMessage(candidate), nil
+	}
+	wrapped, _ := json.Marshal(out)
+	return json.RawMessage(wrapped), nil
+}
+
+func extractLLMJSON(out string) (string, bool) {
+	text := strings.TrimSpace(out)
+	if text == "" {
+		return "", false
+	}
+	if strings.HasPrefix(text, "```") {
+		if nl := strings.IndexByte(text, '\n'); nl >= 0 {
+			body := strings.TrimSpace(text[nl+1:])
+			if end := strings.LastIndex(body, "```"); end >= 0 {
+				body = strings.TrimSpace(body[:end])
+			}
+			if json.Valid([]byte(body)) {
+				return body, true
+			}
+		}
+	}
+	for i, r := range text {
+		if r != '{' && r != '[' {
+			continue
+		}
+		if candidate, ok := balancedJSONCandidate(text[i:]); ok && json.Valid([]byte(candidate)) {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
+func balancedJSONCandidate(s string) (string, bool) {
+	if s == "" {
+		return "", false
+	}
+	open := s[0]
+	var close byte
+	switch open {
+	case '{':
+		close = '}'
+	case '[':
+		close = ']'
+	default:
+		return "", false
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(s[:i+1]), true
+			}
+		}
+	}
+	return "", false
+}
+
+func flowParamString(params map[string]any, key string) string {
+	if params == nil {
+		return ""
+	}
+	switch v := params[key].(type) {
+	case string:
+		return v
+	case fmt.Stringer:
+		return v.String()
+	default:
+		if v == nil {
+			return ""
+		}
+		return fmt.Sprint(v)
 	}
 }
 

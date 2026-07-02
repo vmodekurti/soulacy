@@ -47,6 +47,14 @@ export function configFields(node) {
         { key: 'code', label: 'Python code', value: node.code || '', required: true, missing: !(node.code || '').trim(), where: 'field', type: 'code' },
         { ...outputField, suggestion: outSuggestion },
       ]
+    case 'llm':
+      return [
+        { key: 'description', label: 'Step name', value: node.description || '', required: false, missing: false, where: 'field', type: 'text' },
+        { key: 'system', label: 'Instruction', value: p.system || '', required: true, missing: !(p.system || '').trim(), where: 'param', type: 'text' },
+        { key: 'input', label: 'Input (template)', value: node.input || '', required: false, missing: false, suggestion: '{{ .trigger.text }}', where: 'field', type: 'text' },
+        { key: 'response_format', label: 'Response format', value: p.response_format || 'json', required: false, missing: false, where: 'param', type: 'select', options: ['json', 'text'] },
+        outputField,
+      ]
     case 'exit':
       return [
         { key: 'route', label: 'Deliver via', value: p.route || '', required: true, missing: !p.route, where: 'param', type: 'select', options: ['console', 'channel', 'http'] },

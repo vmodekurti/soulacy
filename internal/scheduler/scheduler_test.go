@@ -139,6 +139,62 @@ func TestSendScheduledOutputNoopsWhenIncomplete(t *testing.T) {
 	}
 }
 
+func TestSendScheduledOutputUsesDefaultChannelDestination(t *testing.T) {
+	reg := channels.NewRegistry(1)
+	adapter := &captureAdapter{id: "telegram"}
+	reg.Register(adapter)
+	s := New(nil, nil, zap.NewNop(), context.Background())
+	s.SetChannelRegistry(reg)
+	s.SetDefaultOutputs(map[string]agent.ScheduleOutput{
+		"telegram": {
+			Channel:  "telegram",
+			To:       "123456",
+			BotName:  "Shared Telegram",
+			Template: "shared {reply}",
+		},
+	})
+	def := &agent.Definition{
+		ID:       "deal-hunter",
+		Name:     "Deal Hunter",
+		Channels: []string{"telegram"},
+	}
+
+	s.sendScheduledOutput(context.Background(), def, message.Message{SessionID: "s1"}, "deal found", "cron")
+
+	if len(adapter.sent) != 1 {
+		t.Fatalf("sent count = %d, want 1", len(adapter.sent))
+	}
+	msg := adapter.sent[0]
+	if msg.Channel != "telegram" || msg.ThreadID != "123456" {
+		t.Fatalf("message route = %s/%s, want telegram/123456", msg.Channel, msg.ThreadID)
+	}
+	if got := firstText(msg); got != "shared deal found" {
+		t.Fatalf("text = %q, want templated fallback", got)
+	}
+}
+
+func TestDefaultOutputsFromChannelConfigReadsBotDefault(t *testing.T) {
+	got := DefaultOutputsFromChannelConfig(map[string]map[string]any{
+		"telegram": {
+			"bots": []any{
+				map[string]any{
+					"bot_name":                "Daily Bot",
+					"default_output_to":       "999",
+					"default_output_template": "[{agent_id}] {reply}",
+				},
+			},
+		},
+	})
+
+	out, ok := got["telegram"]
+	if !ok {
+		t.Fatal("missing canonical telegram default")
+	}
+	if out.Channel != "telegram" || out.To != "999" || out.BotName != "Daily Bot" {
+		t.Fatalf("default = %+v, want telegram/999/Daily Bot", out)
+	}
+}
+
 func TestRunningLockPreventsOverlapAndAllowsStaleReplacement(t *testing.T) {
 	s := New(nil, nil, zap.NewNop(), context.Background())
 

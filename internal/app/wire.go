@@ -262,6 +262,7 @@ func (a *App) Run(parent context.Context) error {
 	chanReg.SetLogger(log)
 	engine.SetChannelRegistry(chanReg)
 	sched.SetChannelRegistry(chanReg)
+	sched.SetDefaultOutputs(scheduler.DefaultOutputsFromChannelConfig(cfg.Channels))
 	httpAdapter := httpchan.New()
 	chanReg.Register(httpAdapter)
 

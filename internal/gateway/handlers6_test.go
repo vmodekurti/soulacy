@@ -584,7 +584,7 @@ func TestGatewayHandleChat_EmptySessionIDDefaultsToUserID(t *testing.T) {
 // ── channelAdapterID: index 0 without agentID returns channelID ──────────────
 
 func TestChannelAdapterID_Index0EmptyAgentID(t *testing.T) {
-	got := channelAdapterID("discord", "", "", 0)
+	got := channelAdapterID("discord", "", "", 0, false)
 	if got != "discord" {
 		t.Fatalf("channelAdapterID(discord, '', 0) = %q, want discord", got)
 	}
@@ -593,7 +593,7 @@ func TestChannelAdapterID_Index0EmptyAgentID(t *testing.T) {
 // ── channelAdapterID: non-zero index without agentID uses numeric suffix ──────
 
 func TestChannelAdapterID_NonZeroIndexEmptyAgentID(t *testing.T) {
-	got := channelAdapterID("telegram", "", "", 1)
+	got := channelAdapterID("telegram", "", "", 1, false)
 	if got != "telegram-2" {
 		t.Fatalf("channelAdapterID(telegram, '', 1) = %q, want telegram-2", got)
 	}

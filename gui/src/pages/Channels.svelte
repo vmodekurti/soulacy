@@ -193,16 +193,30 @@
   }
 
   function mappingRows(ch) {
+    const rows = []
+    const hasDefaultSender = ch.settings?.token || ch.settings?.default_output_to || ch.settings?.bot_name
+    if (ch.id === 'telegram' && hasDefaultSender) {
+      rows.push({
+        adapter_id: ch.id,
+        bot_name: ch.settings?.bot_name || 'Default outbound bot',
+        agent_id: ch.settings?.agent_id && !isTruthy(ch.settings?.outbound_only) ? ch.settings.agent_id : 'Default sender',
+        outbound_only: isTruthy(ch.settings?.outbound_only) || !ch.settings?.agent_id,
+        connected: ch.status?.connected,
+        detail: ch.status?.detail,
+      })
+    }
     if (ch.bots?.length) {
-      return ch.bots.map((bot, i) => ({
+      rows.push(...ch.bots.map((bot, i) => ({
         adapter_id: bot._adapter_id || botAdapterID(ch.id, bot, i),
         bot_name: bot.bot_name || bot.name || '',
         agent_id: bot.outbound_only ? 'Send only' : (bot.agent_id || '—'),
         outbound_only: isTruthy(bot.outbound_only),
         connected: bot._connected,
         detail: bot._detail,
-      }))
+      })))
+      return rows
     }
+    if (rows.length) return rows
     const agent = ch.settings?.agent_id
     const outboundOnly = isTruthy(ch.settings?.outbound_only)
     return (agent || outboundOnly) ? [{
@@ -249,7 +263,8 @@
   }
 
   function botAdapterID(channelID, bot, index) {
-    if (index === 0) return channelID
+    const defaultReserved = editing?.id === channelID && !!(form.token || form.bot_token)
+    if (index === 0 && !defaultReserved) return channelID
     const suffix = sanitizeAdapterSuffix(bot.agent_id) || sanitizeAdapterSuffix(bot.bot_name) || String(index + 1)
     return `${channelID}-${suffix}`
   }
@@ -544,16 +559,13 @@
       {#if editing.multi_bot}
         <div class="bot-editor">
           <div class="bot-editor-head">
-            <div>
-              <h3>Bot mappings</h3>
-              <p>{editing.id === 'telegram' ? 'Interactive rows route messages to an agent. Send-only rows are available as scheduled output bots.' : 'Each row creates one channel adapter and routes that bot to its agent.'}</p>
-            </div>
-            <div class="bot-editor-actions">
-              {#if editing.id === 'telegram'}
-                <button class="btn-secondary small-btn" type="button" on:click={addOutboundBotMapping}>+ Add output bot</button>
-              {/if}
-              <button class="btn-secondary small-btn" type="button" on:click={addBotMapping}>+ Add bot</button>
-            </div>
+              <div>
+                <h3>Bot mappings</h3>
+              <p>{editing.id === 'telegram' ? 'The default fields above define the outbound sender for cron jobs and manual scheduled output. Add bot mappings below for agent-specific interactive bots.' : 'Each row creates one channel adapter and routes that bot to its agent.'}</p>
+              </div>
+              <div class="bot-editor-actions">
+                <button class="btn-secondary small-btn" type="button" on:click={addBotMapping}>+ Add bot</button>
+              </div>
           </div>
 
           {#if botsForm.length === 0}

@@ -38,6 +38,24 @@ func TestBuildLightRefineInstruction_IsTouchUpNotRewrite(t *testing.T) {
 	}
 }
 
+func TestRefineInstructionsUseUnifiedArchitectureGuidance(t *testing.T) {
+	for name, p := range map[string]string{
+		"full":  BuildRefinePromptInstruction("build a weather assistant", Catalog{}),
+		"light": BuildLightRefineInstruction("build a weather assistant", Catalog{}),
+	} {
+		for _, want := range []string{
+			"workflow|auto|react|plan_execute",
+			"\"auto\": the recommended default",
+			"Do NOT choose \"react\" merely because the agent uses tools",
+			"Ordinary tool use should be \"auto\"",
+		} {
+			if !strings.Contains(p, want) {
+				t.Errorf("%s refine instruction missing %q", name, want)
+			}
+		}
+	}
+}
+
 func TestLightRefinePrompt_UsesLightInstructionAndParses(t *testing.T) {
 	out := `{
 	  "refined_intent": "Every weekday at 8am, search the web for AI news, summarize the top 5, and post to Telegram.",

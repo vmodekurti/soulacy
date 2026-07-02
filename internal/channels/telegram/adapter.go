@@ -20,9 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -204,7 +206,11 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	// S2.8 — Telegram rejects messages over 4096 chars. Split long replies so
 	// they arrive as several messages instead of failing the whole send.
 	chatID := mustParseInt64(msg.ThreadID)
-	for _, chunk := range channels.SplitForLimit(msg.Parts[0].Text, 4096) {
+	text := channels.PlainTextForMessaging(msg.Parts[0].Text)
+	if text == "" {
+		return nil
+	}
+	for _, chunk := range channels.SplitForLimit(text, 4096) {
 		if err := a.sendText(ctx, chatID, chunk); err != nil {
 			return err
 		}
@@ -244,9 +250,33 @@ func (a *Adapter) sendText(ctx context.Context, chatID int64, text string) error
 	// S2.8 — surface API rejections (e.g. 400 message too long, 429 rate limit)
 	// instead of silently swallowing them.
 	if resp.StatusCode >= 400 {
+		if detail := telegramErrorDetail(resp.Body); detail != "" {
+			return fmt.Errorf("telegram: send: API returned status %d: %s", resp.StatusCode, detail)
+		}
 		return fmt.Errorf("telegram: send: API returned status %d", resp.StatusCode)
 	}
 	return nil
+}
+
+func telegramErrorDetail(r io.Reader) string {
+	if r == nil {
+		return ""
+	}
+	data, err := io.ReadAll(io.LimitReader(r, 4096))
+	if err != nil {
+		return ""
+	}
+	raw := strings.TrimSpace(string(data))
+	if raw == "" {
+		return ""
+	}
+	var env struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(data, &env); err == nil && strings.TrimSpace(env.Description) != "" {
+		return strings.TrimSpace(env.Description)
+	}
+	return raw
 }
 
 func (a *Adapter) Stop() error {

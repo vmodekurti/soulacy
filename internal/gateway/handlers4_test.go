@@ -479,7 +479,7 @@ func TestMaskChannelBots_MasksSecrets(t *testing.T) {
 		{"token": "secret-token", "agent_id": "my-bot"},
 	}
 	statuses := map[string]channels.AdapterStatus{}
-	result := maskChannelBots(spec, raw, statuses)
+	result := maskChannelBots(spec, map[string]any{"bots": raw}, statuses)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 masked bot, got %d", len(result))
 	}

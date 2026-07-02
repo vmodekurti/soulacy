@@ -37,10 +37,10 @@ type PromptRefinement struct {
 	// compile that follows. Empty when the intent is already clear enough.
 	Questions []Question `json:"questions"`
 	// RecommendedMode is the architecture the analyst judges best: "workflow"
-	// (fixed pipeline), "react" (reasoning loop — for tasks that loop or depend
-	// on intermediate/async results), or "plan_execute". The wizard uses it to
-	// decide whether Generate produces a flow or a ReAct agent. ModeReason is a
-	// one-line justification.
+	// (fixed pipeline), "auto" (normal tool-calling agent), "react" (explicit
+	// reasoning loop), or "plan_execute". The wizard uses it to decide whether
+	// Generate produces a flow or an agent. ModeReason is a one-line
+	// justification.
 	RecommendedMode string `json:"recommended_mode"`
 	ModeReason      string `json:"mode_reason"`
 }
@@ -87,10 +87,7 @@ func BuildRefinePromptInstruction(intent string, catalog Catalog) string {
 	sb.WriteString("- The \"refined_intent\" must be self-contained: a person reading ONLY it should understand the whole automation. Write it as clear prose or a short ordered list, not JSON.\n")
 	sb.WriteString("- \"summary\" is one or two plain sentences describing what the automation will do.\n\n")
 
-	sb.WriteString("Also decide the best ARCHITECTURE and return it:\n")
-	sb.WriteString("- \"workflow\": a fixed, deterministic pipeline — the same steps in the same order every run, knowable up front (e.g. \"each morning search X, summarize, post to Telegram\").\n")
-	sb.WriteString("- \"react\": a reasoning loop — when steps DEPEND on intermediate results, the task loops over items, or it polls an ASYNCHRONOUS job until done (e.g. driving NotebookLM: add each source, then poll audio status until ready). A frozen graph is brittle here.\n")
-	sb.WriteString("- \"plan_execute\": a long, multi-phase job worth decomposing first.\n\n")
+	writeUnifiedArchitectureGuidance(&sb)
 
 	sb.WriteString("Respond with ONLY a single JSON object, no prose, no markdown, no code fences, matching exactly:\n")
 	sb.WriteString("{\n")
@@ -98,7 +95,7 @@ func BuildRefinePromptInstruction(intent string, catalog Catalog) string {
 	sb.WriteString("  \"summary\": \"<one or two sentences: what this automation does>\",\n")
 	sb.WriteString("  \"assumptions\": [\"<each gap you filled and the default you chose>\"],\n")
 	sb.WriteString("  \"questions\": [ { \"id\": \"<short_id>\", \"text\": \"<question>\", \"options\": [\"<opt>\", \"...\"] } ],\n")
-	sb.WriteString("  \"recommended_mode\": \"workflow|react|plan_execute\",\n")
+	sb.WriteString("  \"recommended_mode\": \"workflow|auto|react|plan_execute\",\n")
 	sb.WriteString("  \"mode_reason\": \"<1 sentence on why this architecture fits>\"\n")
 	sb.WriteString("}\n")
 	sb.WriteString("(\"options\" is optional — include it only when the answer is a closed choice. \"assumptions\" and \"questions\" may be empty arrays.)\n\n")
@@ -110,6 +107,15 @@ func BuildRefinePromptInstruction(intent string, catalog Catalog) string {
 	sb.WriteString(intent)
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+func writeUnifiedArchitectureGuidance(sb *strings.Builder) {
+	sb.WriteString("Also decide the best ARCHITECTURE using the same rule Studio uses for generation, and return it:\n")
+	sb.WriteString("- \"workflow\": a fixed, deterministic pipeline: the same steps in the same order every run, knowable up front (e.g. each morning search X, summarize, post to Telegram).\n")
+	sb.WriteString("- \"auto\": the recommended default for a conversational or tool-using agent that decides which available tool to call at run time (e.g. weather assistant, flight finder, research assistant, deal finder). The engine runs it as a native tool-calling loop with no fixed graph.\n")
+	sb.WriteString("- \"react\": an explicit reasoning loop for genuinely open-ended execution where the agent must think/act/observe over many steps, route dynamically across broad capabilities, loop over items, or poll asynchronous jobs until done.\n")
+	sb.WriteString("- \"plan_execute\": a long, multi-phase job where the agent should make a plan first and then execute the plan.\n")
+	sb.WriteString("Do NOT choose \"react\" merely because the agent uses tools. Ordinary tool use should be \"auto\"; fixed scheduled pipelines should be \"workflow\".\n\n")
 }
 
 // writeCatalogGrounding appends the available-capabilities context (skills, MCP
@@ -245,10 +251,7 @@ func BuildLightRefineInstruction(intent string, catalog Catalog) string {
 	sb.WriteString("- Only reference capabilities that exist in the catalog below.\n")
 	sb.WriteString("- Ask a clarifying question ONLY if the user's edit introduced a genuine, workflow-changing contradiction. Prefer 0 questions.\n\n")
 
-	sb.WriteString("Also re-check the best ARCHITECTURE for the edited spec and return it:\n")
-	sb.WriteString("- \"workflow\": a fixed, deterministic pipeline.\n")
-	sb.WriteString("- \"react\": a reasoning loop (steps depend on intermediate results, per-item loops, or polling an async job).\n")
-	sb.WriteString("- \"plan_execute\": a long, multi-phase job worth decomposing first.\n\n")
+	writeUnifiedArchitectureGuidance(&sb)
 
 	sb.WriteString("Respond with ONLY a single JSON object, no prose, no markdown, no code fences, matching exactly:\n")
 	sb.WriteString("{\n")
@@ -256,7 +259,7 @@ func BuildLightRefineInstruction(intent string, catalog Catalog) string {
 	sb.WriteString("  \"summary\": \"<one or two sentences: what this automation does>\",\n")
 	sb.WriteString("  \"assumptions\": [\"<only gaps you had to fill>\"],\n")
 	sb.WriteString("  \"questions\": [ { \"id\": \"<short_id>\", \"text\": \"<question>\", \"options\": [\"<opt>\", \"...\"] } ],\n")
-	sb.WriteString("  \"recommended_mode\": \"workflow|react|plan_execute\",\n")
+	sb.WriteString("  \"recommended_mode\": \"workflow|auto|react|plan_execute\",\n")
 	sb.WriteString("  \"mode_reason\": \"<1 sentence on why this architecture fits>\"\n")
 	sb.WriteString("}\n")
 	sb.WriteString("(\"assumptions\" and \"questions\" may be empty arrays.)\n\n")
@@ -356,6 +359,8 @@ func normalizeMode(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "workflow", "flow":
 		return "workflow"
+	case "auto", "tool", "tool_agent", "tool-agent", "native_tool", "native-tool":
+		return "auto"
 	case "react":
 		return "react"
 	case "plan_execute", "plan-execute", "planexecute":

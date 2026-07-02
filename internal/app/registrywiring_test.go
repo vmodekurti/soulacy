@@ -12,6 +12,7 @@ import (
 
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/runtime"
 )
 
 func TestProviderCfgMapOmitsZeroValues(t *testing.T) {
@@ -71,7 +72,7 @@ func TestRegisterChannelsAllowsTelegramOutboundOnlyWithoutAgentBinding(t *testin
 			"token":         "123:abc",
 			"outbound_only": true,
 		},
-	}, reg, nil, config.Paths{})
+	}, reg, runtime.NewLoader(nil), config.Paths{})
 
 	st, ok := reg.Statuses()["telegram"]
 	if !ok {
@@ -79,5 +80,31 @@ func TestRegisterChannelsAllowsTelegramOutboundOnlyWithoutAgentBinding(t *testin
 	}
 	if st.Detail != "outbound-only" {
 		t.Fatalf("status detail = %q, want outbound-only", st.Detail)
+	}
+}
+
+func TestRegisterChannelsTelegramDefaultSenderAndAgentMapping(t *testing.T) {
+	app := &App{log: zap.NewNop()}
+	reg := channels.NewRegistry(1)
+	app.registerChannels(map[string]map[string]any{
+		"telegram": {
+			"enabled":       true,
+			"token":         "123:default",
+			"outbound_only": true,
+			"bots": []any{
+				map[string]any{
+					"token":    "123:weather",
+					"agent_id": "weather-agent",
+				},
+			},
+		},
+	}, reg, runtime.NewLoader(nil), config.Paths{})
+
+	statuses := reg.Statuses()
+	if _, ok := statuses["telegram"]; !ok {
+		t.Fatal("default telegram sender was not registered")
+	}
+	if _, ok := statuses["telegram-weather-agent"]; !ok {
+		t.Fatal("agent-specific telegram mapping was not registered with a distinct adapter ID")
 	}
 }

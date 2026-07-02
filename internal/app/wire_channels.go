@@ -28,12 +28,28 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 	log := a.log
 
 	// ── Telegram ─────────────────────────────────────────────────────────────
-	// Single-bot (legacy): channels.telegram.token / agent_id.
-	// Multi-bot: channels.telegram.bots: [{token, agent_id, ...}, ...].
-	// Each bot gets a unique adapter ID: "telegram" for the primary (or first
-	// when multi-bot), "telegram-<agentID>" for subsequent bots.
+	// Top-level config is the canonical/default adapter ID ("telegram"). It is
+	// commonly used as the default scheduled-output sender. Bot rows are
+	// additional agent mappings and get distinct IDs when a top-level bot exists.
 	if tgCfg, ok := chanCfg["telegram"]; ok {
 		if enabled, _ := tgCfg["enabled"].(bool); enabled {
+			hasDefaultBot := false
+			if token, _ := tgCfg["token"].(string); token != "" {
+				hasDefaultBot = true
+				agentID, _ := tgCfg["agent_id"].(string)
+				outboundOnly, _ := tgCfg["outbound_only"].(bool)
+				if agentID == "" || outboundOnly || bindingDecision("telegram", agentID, "telegram", tgCfg, loader, log) {
+					if tg, cerr := buildChannel("telegram", "telegram", tgCfg, log); cerr != nil {
+						log.Warn("telegram channel skipped", zap.Error(cerr))
+					} else {
+						chanReg.Register(tg)
+						log.Info("telegram default bot registered",
+							zap.String("adapter_id", "telegram"),
+							zap.String("agent_id", agentID),
+							zap.Bool("outbound_only", outboundOnly || agentID == ""))
+					}
+				}
+			}
 			if rawBots, hasBots := tgCfg["bots"]; hasBots {
 				if botList, ok := rawBots.([]any); ok {
 					for i, rawBot := range botList {
@@ -47,10 +63,8 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 						if token == "" {
 							continue
 						}
-						// Primary bot keeps the canonical "telegram" ID for backwards
-						// compatibility; additional bots get "telegram-<agentID>".
 						adapterID := "telegram"
-						if i > 0 {
+						if hasDefaultBot || i > 0 {
 							suffix := sanitizeID(agentID)
 							if suffix == "" {
 								suffix = sanitizeID(botName)
@@ -76,20 +90,6 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 							zap.String("adapter_id", adapterID),
 							zap.String("agent_id", agentID),
 							zap.String("bot_name", botName))
-					}
-				}
-			} else {
-				// Single-bot (legacy) path
-				token, _ := tgCfg["token"].(string)
-				agentID, _ := tgCfg["agent_id"].(string)
-				if token != "" {
-					outboundOnly, _ := tgCfg["outbound_only"].(bool)
-					if agentID == "" || outboundOnly || bindingDecision("telegram", agentID, "telegram", tgCfg, loader, log) {
-						if tg, cerr := buildChannel("telegram", "telegram", tgCfg, log); cerr != nil {
-							log.Warn("telegram channel skipped", zap.Error(cerr))
-						} else {
-							chanReg.Register(tg)
-						}
 					}
 				}
 			}

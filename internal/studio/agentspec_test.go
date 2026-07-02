@@ -33,6 +33,31 @@ func TestCompileAgent_ProducesReActDraft(t *testing.T) {
 	}
 }
 
+func TestCompileAgent_PreservesAutoStrategy(t *testing.T) {
+	out := `{
+	  "name": "Weather Assistant",
+	  "system_prompt": "Answer weather questions by selecting the right available weather tool and returning practical guidance.",
+	  "trigger": {"type":"channel"},
+	  "channels": ["http"],
+	  "tools": ["mcp__weather__get_forecast"],
+	  "skills": [],
+	  "knowledge": [],
+	  "rationale": "Ordinary runtime tool selection fits auto mode."
+	}`
+	res, err := CompileAgent(context.Background(), fakeLLM{out: out}, "interactive weather assistant", Catalog{
+		Tools: []string{"mcp__weather__get_forecast"},
+	}, "auto", nil)
+	if err != nil {
+		t.Fatalf("CompileAgent: %v", err)
+	}
+	if res.Workflow.Strategy != "auto" {
+		t.Fatalf("strategy = %q, want auto", res.Workflow.Strategy)
+	}
+	if res.Workflow.Recommendation == nil || res.Workflow.Recommendation.Mode != "auto" {
+		t.Fatalf("recommendation = %+v, want auto", res.Workflow.Recommendation)
+	}
+}
+
 // End-to-end grounding through CompileAgent: a near-miss skill the model named is
 // corrected to the installed one, an installed skill the intent clearly references
 // but the model omitted is injected, and a named-but-uninstalled skill surfaces as

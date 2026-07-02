@@ -60,6 +60,9 @@ type Scheduler struct {
 	failMu               sync.Mutex
 	failCounts           map[string]int
 	consecutiveFailLimit int
+
+	defaultMu      sync.RWMutex
+	defaultOutputs map[string]agent.ScheduleOutput
 }
 
 type scheduleState struct {
@@ -94,7 +97,29 @@ func New(engine *runtime.Engine, loader *runtime.Loader, log *zap.Logger, appCtx
 		running:              make(map[string]time.Time),
 		state:                scheduleState{LastCompleted: make(map[string]time.Time)},
 		failCounts:           make(map[string]int),
+		defaultOutputs:       make(map[string]agent.ScheduleOutput),
 		consecutiveFailLimit: 10, // default; override with SetConsecutiveFailLimit
+	}
+}
+
+// SetDefaultOutputs configures shared scheduled-output destinations keyed by
+// channel adapter id. Agents may still override with schedule.output; these
+// defaults are only used when an agent names an output channel but omits the
+// destination.
+func (s *Scheduler) SetDefaultOutputs(outputs map[string]agent.ScheduleOutput) {
+	s.defaultMu.Lock()
+	defer s.defaultMu.Unlock()
+	s.defaultOutputs = make(map[string]agent.ScheduleOutput, len(outputs))
+	for id, out := range outputs {
+		id = strings.TrimSpace(id)
+		out.Channel = strings.TrimSpace(out.Channel)
+		out.To = strings.TrimSpace(out.To)
+		out.BotName = strings.TrimSpace(out.BotName)
+		out.Template = strings.TrimSpace(out.Template)
+		if id == "" || out.Channel == "" || out.To == "" {
+			continue
+		}
+		s.defaultOutputs[id] = out
 	}
 }
 
@@ -554,10 +579,13 @@ func (s *Scheduler) saveStateLocked() error {
 }
 
 func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string) {
-	if def == nil || def.Schedule == nil || def.Schedule.Output == nil || strings.TrimSpace(replyText) == "" {
+	if def == nil || strings.TrimSpace(replyText) == "" {
 		return
 	}
-	outCfg := def.Schedule.Output
+	outCfg, ok := s.resolveScheduledOutput(def)
+	if !ok {
+		return
+	}
 	channelID := strings.TrimSpace(outCfg.Channel)
 	to := strings.TrimSpace(outCfg.To)
 	if channelID == "" || to == "" {
@@ -615,6 +643,148 @@ func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definiti
 		zap.String("channel", channelID),
 		zap.String("to", to),
 		zap.String("bot_name", outCfg.BotName))
+}
+
+func (s *Scheduler) resolveScheduledOutput(def *agent.Definition) (*agent.ScheduleOutput, bool) {
+	if def == nil {
+		return nil, false
+	}
+	if def.Schedule != nil && def.Schedule.Output != nil {
+		out := *def.Schedule.Output
+		out.Channel = strings.TrimSpace(out.Channel)
+		out.To = strings.TrimSpace(out.To)
+		out.BotName = strings.TrimSpace(out.BotName)
+		out.Template = strings.TrimSpace(out.Template)
+		if out.Channel != "" && out.To != "" {
+			return &out, true
+		}
+		if out.Channel != "" {
+			if fallback, ok := s.defaultOutput(out.Channel); ok {
+				if out.To == "" {
+					out.To = fallback.To
+				}
+				if out.BotName == "" {
+					out.BotName = fallback.BotName
+				}
+				if out.Template == "" {
+					out.Template = fallback.Template
+				}
+				if out.To != "" {
+					return &out, true
+				}
+			}
+		}
+	}
+	for _, channelID := range def.Channels {
+		if out, ok := s.defaultOutput(channelID); ok {
+			return &out, true
+		}
+	}
+	return nil, false
+}
+
+func (s *Scheduler) defaultOutput(channelID string) (agent.ScheduleOutput, bool) {
+	channelID = strings.TrimSpace(channelID)
+	if channelID == "" {
+		return agent.ScheduleOutput{}, false
+	}
+	s.defaultMu.RLock()
+	defer s.defaultMu.RUnlock()
+	out, ok := s.defaultOutputs[channelID]
+	return out, ok
+}
+
+// DefaultOutputsFromChannelConfig extracts shared scheduled-output defaults
+// from channel config. Put default_output_to on a channel or on a multi-bot row.
+// When placed on a bot row, that bot's adapter id becomes the sender.
+func DefaultOutputsFromChannelConfig(cfg map[string]map[string]any) map[string]agent.ScheduleOutput {
+	out := map[string]agent.ScheduleOutput{}
+	for channelID, channelCfg := range cfg {
+		channelID = strings.TrimSpace(channelID)
+		if channelID == "" || channelCfg == nil {
+			continue
+		}
+		if dest := cfgString(channelCfg, "default_output_to"); dest != "" {
+			out[channelID] = agent.ScheduleOutput{
+				Channel:  channelID,
+				To:       dest,
+				BotName:  cfgString(channelCfg, "bot_name"),
+				Template: cfgString(channelCfg, "default_output_template"),
+			}
+		}
+		hasDefaultBot := cfgString(channelCfg, "token") != "" || cfgString(channelCfg, "bot_token") != ""
+		for i, bot := range rawBotMaps(channelCfg["bots"]) {
+			if dest := cfgString(bot, "default_output_to"); dest != "" {
+				adapterID := defaultAdapterID(channelID, bot, i, hasDefaultBot)
+				out[adapterID] = agent.ScheduleOutput{
+					Channel:  adapterID,
+					To:       dest,
+					BotName:  cfgString(bot, "bot_name"),
+					Template: cfgString(bot, "default_output_template"),
+				}
+				if _, exists := out[channelID]; !exists {
+					out[channelID] = out[adapterID]
+				}
+			}
+		}
+	}
+	return out
+}
+
+func cfgString(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func rawBotMaps(raw any) []map[string]any {
+	switch list := raw.(type) {
+	case []map[string]any:
+		return list
+	case []any:
+		out := make([]map[string]any, 0, len(list))
+		for _, item := range list {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func defaultAdapterID(channelID string, bot map[string]any, index int, defaultReserved bool) string {
+	if index == 0 && !defaultReserved {
+		return channelID
+	}
+	suffix := sanitizeDefaultOutputID(cfgString(bot, "agent_id"))
+	if suffix == "" {
+		suffix = sanitizeDefaultOutputID(cfgString(bot, "bot_name"))
+	}
+	if suffix == "" {
+		suffix = fmt.Sprintf("%d", index+1)
+	}
+	return channelID + "-" + suffix
+}
+
+func sanitizeDefaultOutputID(s string) string {
+	var b strings.Builder
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z',
+			r >= '0' && r <= '9', r == '-', r == '_':
+			b.WriteRune(r)
+		default:
+			b.WriteRune('-')
+		}
+	}
+	return b.String()
 }
 
 func RenderScheduledOutput(tpl string, def *agent.Definition, replyText, triggerType string) string {

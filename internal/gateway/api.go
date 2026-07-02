@@ -1025,10 +1025,12 @@ type channelSpec struct {
 var channelSpecs = []channelSpec{
 	{ID: "http", Name: "HTTP", Always: true, Fields: nil},
 	{ID: "telegram", Name: "Telegram", Fields: []channelField{
-		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
-		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "Get one from @BotFather"},
-		{Key: "outbound_only", Label: "Send only", Type: "checkbox", Required: false, Help: "Use this bot only for scheduled/manual output; it will not poll Telegram or route inbound messages to an agent"},
-		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: false, Help: "Required only when this bot should respond interactively to Telegram messages"},
+		{Key: "bot_name", Label: "Default outbound bot name", Type: "text", Required: false, Help: "Friendly name for the default sender used by scheduled/manual output"},
+		{Key: "token", Label: "Default outbound bot token", Type: "password", Required: true, Secret: true, Help: "Get one from @BotFather; this top-level bot is the default sender for cron jobs"},
+		{Key: "outbound_only", Label: "Send only", Type: "checkbox", Required: false, Help: "Recommended for the default outbound bot; interactive agents should use bot mappings below"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default chat/channel ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
+		{Key: "agent_id", Label: "Default interactive agent ID", Type: "text", Required: false, Help: "Legacy single-bot mode only; prefer Add bot mapping for interactive agents"},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated Telegram chat IDs to allow"},
@@ -1037,6 +1039,8 @@ var channelSpecs = []channelSpec{
 	{ID: "discord", Name: "Discord", Fields: []channelField{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "token", Label: "Bot token", Type: "password", Required: true, Secret: true},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore servers", Type: "text", Required: false, Help: "true by default; set false only for deliberate server usage"},
@@ -1048,6 +1052,8 @@ var channelSpecs = []channelSpec{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "bot_token", Label: "Bot token", Type: "password", Required: true, Secret: true, Help: "xoxb-..."},
 		{Key: "app_token", Label: "App token", Type: "password", Required: true, Secret: true, Help: "xapp-..."},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore channels", Type: "text", Required: false, Help: "true by default; set false only for deliberate channel usage"},
@@ -1060,12 +1066,16 @@ var channelSpecs = []channelSpec{
 		{Key: "access_token", Label: "Access token", Type: "password", Required: true, Secret: true},
 		{Key: "verify_token", Label: "Verify token", Type: "password", Required: true, Secret: true},
 		{Key: "app_secret", Label: "App secret", Type: "password", Required: true, Secret: true, Help: "Meta app secret used to verify webhook signatures"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default phone/user ID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "allowed_user_ids", Label: "Allowed phone numbers", Type: "text", Required: false, Help: "Optional comma-separated WhatsApp sender IDs to allow"},
 	}},
 	{ID: "whatsapp_web", Name: "WhatsApp Web (experimental)", Fields: []channelField{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default chat JID used by scheduled agents when no destination is set"},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated WhatsApp chat JIDs to allow"},
@@ -1192,9 +1202,10 @@ func normalizeChannelBots(spec channelSpec, bots []map[string]any, existingRaw a
 	return out
 }
 
-func maskChannelBots(spec channelSpec, raw any, statuses map[string]channels.AdapterStatus) []fiber.Map {
-	botList := rawBotList(raw)
+func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]channels.AdapterStatus) []fiber.Map {
+	botList := rawBotList(cfg["bots"])
 	out := make([]fiber.Map, 0, len(botList))
+	defaultReserved := valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"])
 	for i, bot := range botList {
 		row := fiber.Map{}
 		for _, f := range spec.Fields {
@@ -1207,7 +1218,7 @@ func maskChannelBots(spec channelSpec, raw any, statuses map[string]channels.Ada
 		}
 		agentID, _ := bot["agent_id"].(string)
 		botName, _ := bot["bot_name"].(string)
-		adapterID := channelAdapterID(spec.ID, agentID, botName, i)
+		adapterID := channelAdapterID(spec.ID, agentID, botName, i, defaultReserved)
 		st := statuses[adapterID]
 		row["_adapter_id"] = adapterID
 		row["_connected"] = st.Connected
@@ -1234,8 +1245,8 @@ func rawBotList(raw any) []map[string]any {
 	}
 }
 
-func channelAdapterID(channelID, agentID, botName string, index int) string {
-	if index == 0 {
+func channelAdapterID(channelID, agentID, botName string, index int, defaultReserved bool) string {
+	if index == 0 && !defaultReserved {
 		return channelID
 	}
 	suffix := sanitizeChannelID(agentID)
@@ -1291,7 +1302,7 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 				settings[f.Key] = displayChannelValue(raw)
 			}
 		}
-		bots := maskChannelBots(spec, cfg["bots"], statuses)
+		bots := maskChannelBots(spec, cfg, statuses)
 		if len(bots) > 0 {
 			configured = true
 		}

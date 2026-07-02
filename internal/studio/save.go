@@ -177,6 +177,17 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	if def.Trigger == agent.TriggerCron {
 		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
 			def.Schedule = &agent.Schedule{Cron: cron}
+			if draft.Output != nil {
+				out := &agent.ScheduleOutput{
+					Channel:  strings.TrimSpace(draft.Output.Channel),
+					To:       strings.TrimSpace(draft.Output.To),
+					BotName:  strings.TrimSpace(draft.Output.BotName),
+					Template: strings.TrimSpace(draft.Output.Template),
+				}
+				if out.Channel != "" && out.To != "" {
+					def.Schedule.Output = out
+				}
+			}
 		}
 	}
 

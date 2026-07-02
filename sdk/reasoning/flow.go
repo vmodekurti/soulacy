@@ -14,6 +14,7 @@ const (
 	FlowNodeAgent  = "agent"  // invoke a peer agent (Agent = agent id)
 	FlowNodeBranch = "branch" // no action; exists to fan edges out
 	FlowNodePython = "python" // run inline Python (Code) or a deployed python tool (Tool)
+	FlowNodeLLM    = "llm"    // run a constrained LLM transform/extraction step
 	// FlowNodeTrigger and FlowNodeExit are STRUCTURAL endpoint blocks (Studio
 	// visual authoring): a trigger marks where the flow starts (its Params carry
 	// {kind: cron|http|channel, config}); an exit marks where it ends and how the

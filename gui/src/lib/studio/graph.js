@@ -40,6 +40,7 @@ const KIND_META = {
   agent:  { color: '#6c63ff', label: 'Agent',  shape: 'peer' },
   branch: { color: '#f5a742', label: 'Branch', shape: 'decision' },
   python: { color: '#e06c9f', label: 'Python', shape: 'card' },
+  llm:    { color: '#9b7cff', label: 'LLM',    shape: 'card' },
 }
 
 // Normalise a declared-port array ([{name,type,label}] | ["name"]) to a

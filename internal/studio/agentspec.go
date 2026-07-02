@@ -30,12 +30,15 @@ type agentSpecPayload struct {
 func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers map[string]string) string {
 	var sb strings.Builder
 	sb.WriteString("You are the Soulacy Studio agent designer. Turn the user's intent into a ")
-	if strings.EqualFold(strategy, "plan_execute") {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "plan_execute":
 		sb.WriteString("PLAN-EXECUTE")
-	} else {
+	case "auto":
+		sb.WriteString("AUTO tool-calling")
+	default:
 		sb.WriteString("ReAct (reasoning-loop)")
 	}
-	sb.WriteString(" agent — NOT a fixed workflow. The agent reasons step by step and calls tools dynamically, so it can loop over lists and poll asynchronous jobs until they finish (things a frozen graph cannot do).\n\n")
+	sb.WriteString(" agent — NOT a fixed workflow. The agent is driven by its system prompt and tool allowlist rather than a canvas graph. AUTO agents use the model's native tool-calling loop for ordinary tool use; ReAct/Plan-Execute agents are for more explicit long-running reasoning.\n\n")
 
 	sb.WriteString("Output RULES:\n")
 	sb.WriteString("- Respond with ONLY a single JSON object. No prose, no markdown, no code fences.\n")
@@ -82,10 +85,10 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	return sb.String()
 }
 
-// CompileAgent generates a ReAct/Plan-Execute agent Draft (no flow) from an
-// intent. strategy is "react" (default) or "plan_execute". Like Compile it is
-// tolerant of fenced/prose-wrapped model output; it validates that the result
-// has a system prompt and at least one tool or peer agent.
+// CompileAgent generates a tool/reasoning agent Draft (no flow) from an intent.
+// strategy is "auto" (default native tool calling), "react", or "plan_execute".
+// Like Compile it is tolerant of fenced/prose-wrapped model output; it validates
+// that the result has a system prompt and at least one tool or peer agent.
 func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, strategy string, answers map[string]string) (Result, error) {
 	if strings.TrimSpace(intent) == "" {
 		return Result{}, fmt.Errorf("studio: intent is required")
@@ -94,7 +97,9 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 		return Result{}, fmt.Errorf("studio: no LLM configured")
 	}
 	strategy = strings.ToLower(strings.TrimSpace(strategy))
-	if strategy != "plan_execute" {
+	switch strategy {
+	case "auto", "react", "plan_execute":
+	default:
 		strategy = "react"
 	}
 

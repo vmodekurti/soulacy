@@ -212,15 +212,6 @@ func pythonInputRefs(code string) []pythonInputRef {
 	return out
 }
 
-func pythonInputKeys(code string) []string {
-	refs := pythonInputRefs(code)
-	out := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		out = append(out, ref.Key)
-	}
-	return out
-}
-
 func inputObjectHasKey(input, key string) bool {
 	input = strings.TrimSpace(input)
 	if input == "" {

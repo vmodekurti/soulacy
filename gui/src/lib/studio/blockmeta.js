@@ -31,6 +31,7 @@ export function stepLabel(node) {
     }
     case 'branch': return desc || 'Decision'
     case 'python': return desc || 'Custom Python'
+    case 'llm': return desc || 'LLM Extract'
     case 'agent': return desc || (node.agent ? `Run ${humanize(node.agent)}` : 'Run agent')
     case 'tool':
     default:
@@ -58,6 +59,7 @@ export function riskLevel(node) {
   if (kind === 'python') {
     return CODE_ELEVATED.test(node.code || '') ? 'high' : 'medium'
   }
+  if (kind === 'llm') return 'medium'
   if (kind === 'agent') return 'medium'
   return 'low'
 }
@@ -91,6 +93,7 @@ export function blockReadiness(node, ctx = {}) {
   if (kind === 'tool' && !node.tool) { missing.push('tool'); reasons.push('Pick which tool this step runs') }
   if (kind === 'agent' && !node.agent) { missing.push('agent'); reasons.push('Pick which agent this step calls') }
   if (kind === 'python' && pythonUnwritten(node.code)) { missing.push('code'); reasons.push('Add the Python code for this step') }
+  if (kind === 'llm' && !((node.params && node.params.system) || '').trim()) { missing.push('system'); reasons.push('Describe what the LLM should extract or transform') }
   if (kind === 'exit' && !node.params?.route) { missing.push('route'); reasons.push('Choose where the result is delivered') }
   if (kind === 'trigger' && !node.params?.kind) { missing.push('trigger'); reasons.push('Choose what starts the flow') }
 

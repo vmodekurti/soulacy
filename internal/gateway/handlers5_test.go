@@ -228,7 +228,7 @@ func TestNormalizeChannelValue_BoolFields(t *testing.T) {
 
 func TestChannelAdapterID_Index0WithAgentID(t *testing.T) {
 	// At index 0, agentID is ignored; always returns channelID.
-	got := channelAdapterID("telegram", "my-bot", "", 0)
+	got := channelAdapterID("telegram", "my-bot", "", 0, false)
 	if got != "telegram" {
 		t.Fatalf("channelAdapterID at index 0 = %q, want telegram", got)
 	}
@@ -236,14 +236,14 @@ func TestChannelAdapterID_Index0WithAgentID(t *testing.T) {
 
 func TestChannelAdapterID_Index2WithAgentID(t *testing.T) {
 	// Non-zero index with agentID → channelID-agentID
-	got := channelAdapterID("telegram", "second-bot", "", 2)
+	got := channelAdapterID("telegram", "second-bot", "", 2, false)
 	if got != "telegram-second-bot" {
 		t.Fatalf("channelAdapterID at index 2 = %q, want telegram-second-bot", got)
 	}
 }
 
 func TestChannelAdapterID_OutboundOnlyUsesBotName(t *testing.T) {
-	got := channelAdapterID("telegram", "", "Daily Stock Screener", 1)
+	got := channelAdapterID("telegram", "", "Daily Stock Screener", 1, false)
 	if got != "telegram-Daily-Stock-Screener" {
 		t.Fatalf("channelAdapterID outbound-only = %q, want telegram-Daily-Stock-Screener", got)
 	}
@@ -259,7 +259,7 @@ func TestMaskChannelBots_ConnectedStatusReflected(t *testing.T) {
 	statuses := map[string]channels.AdapterStatus{
 		"telegram": {Connected: true, Detail: "running"},
 	}
-	result := maskChannelBots(spec, raw, statuses)
+	result := maskChannelBots(spec, map[string]any{"bots": raw}, statuses)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 bot, got %d", len(result))
 	}
