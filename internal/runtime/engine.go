@@ -903,6 +903,7 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// kb_search — see buildKBSearchBuiltin below. Gated by `def.Knowledge`.
 	if e.knowledge != nil {
 		tools = append(tools, e.buildKBSearchBuiltin())
+		tools = append(tools, e.buildKBWriteBuiltin())
 	}
 
 	// semantic_memory_search — embedding-based long-term memory retrieval.
@@ -1056,6 +1057,66 @@ func (e *Engine) buildKBSearchBuiltin() BuiltinTool {
 				return "", fmt.Errorf("kb_search: kb is required")
 			}
 			return e.knowledge.Search(ctx, kbName, query, topK)
+		},
+	}
+}
+
+// buildKBWriteBuiltin stores content in an attached knowledge base through the
+// RAG service. Unlike write_file, this cannot write arbitrary host paths and
+// does not require the system capability.
+func (e *Engine) buildKBWriteBuiltin() BuiltinTool {
+	return BuiltinTool{
+		Gate:        "knowledge",
+		Name:        "kb_write",
+		Description: "Ingest text content into one of this agent's attached knowledge bases. Use this to store fetched URLs, uploaded documents, notes, summaries, or tagged artifacts for future kb_search retrieval. This is scoped to knowledge storage and does not write arbitrary files.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"kb": map[string]any{
+					"type":        "string",
+					"description": "The knowledge base name to write to. Must be listed in this agent's available knowledge bases.",
+				},
+				"title": map[string]any{
+					"type":        "string",
+					"description": "Human-readable document title.",
+				},
+				"source": map[string]any{
+					"type":        "string",
+					"description": "Original source URI, filename, or note describing where the content came from.",
+				},
+				"mime_type": map[string]any{
+					"type":        "string",
+					"description": "Optional MIME type such as text/plain or text/markdown.",
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "The text content to ingest.",
+				},
+			},
+			"required": []string{"kb", "content"},
+		},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			kbName := argString(args, "kb")
+			content := argString(args, "content")
+			if kbName == "" {
+				return "", fmt.Errorf("kb_write: kb is required")
+			}
+			if strings.TrimSpace(content) == "" {
+				return "", fmt.Errorf("kb_write: content is required")
+			}
+			doc, err := e.knowledge.IngestText(ctx, kbName, argString(args, "title"), argString(args, "source"), argString(args, "mime_type"), content)
+			if err != nil {
+				return "", err
+			}
+			payload, _ := json.Marshal(map[string]any{
+				"status":      "stored",
+				"kb":          kbName,
+				"document_id": doc.ID,
+				"title":       doc.Title,
+				"source":      doc.Source,
+				"chunk_count": doc.ChunkCount,
+			})
+			return string(payload), nil
 		},
 	}
 }
