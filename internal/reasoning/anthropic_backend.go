@@ -97,7 +97,9 @@ Respond ONLY with a JSON object in this exact schema — no markdown fences, no 
   "action":       { "tool": "<tool_name>", "input": { "<key>": "<value>" } },
   "final_answer": ""
 }
-When the task is complete set "is_done": true, put your answer in "final_answer", and omit "action".`
+When the next step requires a tool, set "is_done": false and put the tool in "action"; never write tool_name({...}) as prose.
+Only set "is_done": true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
+When the task is complete set "is_done": true, put your completed answer in "final_answer", and omit "action".`
 
 // ─── Plan ─────────────────────────────────────────────────────────────────────
 

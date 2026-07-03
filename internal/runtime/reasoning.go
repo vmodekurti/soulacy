@@ -181,9 +181,15 @@ type reasoningToolExecutor struct {
 }
 
 func (x reasoningToolExecutor) Execute(ctx context.Context, call reasoning.ToolCall) reasoning.Observation {
-	args := make(map[string]any, len(call.Input))
-	for k, v := range call.Input {
-		args[k] = v
+	args := make(map[string]any, len(call.Arguments)+len(call.Input))
+	if len(call.Arguments) > 0 {
+		for k, v := range call.Arguments {
+			args[k] = v
+		}
+	} else {
+		for k, v := range call.Input {
+			args[k] = v
+		}
 	}
 	tc := normalizeToolCall(message.ToolCall{
 		ID:        "rsn-" + uuidShort(),

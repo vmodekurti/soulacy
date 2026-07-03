@@ -101,7 +101,9 @@ const ollamaThinkInstructions = `
 You must respond with ONLY a JSON object — no explanation, no markdown, no prose.
 Required schema:
 {"thought":"your reasoning","is_done":false,"action":{"tool":"tool_name","input":{"key":"value"}},"final_answer":""}
-When the task is complete: set "is_done":true, put your answer in "final_answer", omit "action".`
+When the next step requires a tool, set "is_done":false and put the tool in "action"; never write tool_name({...}) as prose.
+Only set "is_done":true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
+When the task is complete: set "is_done":true, put your completed answer in "final_answer", omit "action".`
 
 // ─── Plan ─────────────────────────────────────────────────────────────────────
 
@@ -162,11 +164,11 @@ Required schema:
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 
 type ollamaChatRequest struct {
-	Model    string               `json:"model"`
-	Messages []ollamaChatMessage  `json:"messages"`
-	Stream   bool                 `json:"stream"`
-	Format   string               `json:"format"`
-	Options  ollamaOptions        `json:"options"`
+	Model    string              `json:"model"`
+	Messages []ollamaChatMessage `json:"messages"`
+	Stream   bool                `json:"stream"`
+	Format   string              `json:"format"`
+	Options  ollamaOptions       `json:"options"`
 }
 
 type ollamaChatMessage struct {

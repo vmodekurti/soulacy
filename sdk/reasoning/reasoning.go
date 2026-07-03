@@ -13,6 +13,8 @@ package reasoning
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -26,8 +28,53 @@ const (
 
 // ToolCall is a request from the LLM to invoke a tool.
 type ToolCall struct {
-	Tool  string            `json:"tool"`
-	Input map[string]string `json:"input"`
+	Tool string `json:"tool"`
+	// Input is the legacy string-only argument map. It remains for SDK
+	// compatibility with older strategies and tests.
+	Input map[string]string `json:"input,omitempty"`
+	// Arguments carries the full JSON argument object, including nested values.
+	// Hosts should prefer Arguments when present and fall back to Input.
+	Arguments map[string]any `json:"arguments,omitempty"`
+}
+
+// UnmarshalJSON accepts both the original string-only input contract and full
+// JSON tool arguments. Models usually emit {"input":{...}}, while some newer
+// prompts emit {"arguments":{...}}; both populate Arguments.
+func (c *ToolCall) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Tool      string         `json:"tool"`
+		Input     map[string]any `json:"input"`
+		Arguments map[string]any `json:"arguments"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Tool = raw.Tool
+	args := raw.Arguments
+	if len(args) == 0 {
+		args = raw.Input
+	}
+	if len(args) > 0 {
+		c.Arguments = args
+		c.Input = make(map[string]string, len(args))
+		for k, v := range args {
+			switch t := v.(type) {
+			case string:
+				c.Input[k] = t
+			case nil:
+				c.Input[k] = ""
+			case bool, float64:
+				c.Input[k] = fmt.Sprint(t)
+			default:
+				b, err := json.Marshal(t)
+				if err != nil {
+					return err
+				}
+				c.Input[k] = string(b)
+			}
+		}
+	}
+	return nil
 }
 
 // Observation is the result returned by ToolExecutor.Execute().

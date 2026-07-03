@@ -13,10 +13,10 @@ import (
 
 // stubLLM is a controllable LLMBackend for testing.
 type stubLLM struct {
-	thinkCalls  int
-	doneOnStep  int // Think returns IsDone=true on this call number
-	planSteps   []reasoning.PlannedStep
-	reflectOut  string
+	thinkCalls int
+	doneOnStep int // Think returns IsDone=true on this call number
+	planSteps  []reasoning.PlannedStep
+	reflectOut string
 }
 
 func (s *stubLLM) Think(_ context.Context, req reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
@@ -57,6 +57,41 @@ func (e *errorExecutor) Execute(_ context.Context, call reasoning.ToolCall) reas
 	return reasoning.Observation{Error: errors.New("injected tool failure")}
 }
 
+type scriptedLLM struct {
+	responses  []reasoning.ThinkResponse
+	thinkCalls int
+	reflectOut string
+}
+
+func (s *scriptedLLM) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	s.thinkCalls++
+	if s.thinkCalls <= len(s.responses) {
+		return s.responses[s.thinkCalls-1], nil
+	}
+	return reasoning.ThinkResponse{IsDone: true, FinalAnswer: "done"}, nil
+}
+
+func (s *scriptedLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{}, errors.New("plan not scripted")
+}
+
+func (s *scriptedLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	out := s.reflectOut
+	if out == "" {
+		out = "done"
+	}
+	return reasoning.ReflectResponse{Output: out}, nil
+}
+
+type recordingExecutor struct {
+	calls []reasoning.ToolCall
+}
+
+func (r *recordingExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
+	r.calls = append(r.calls, call)
+	return reasoning.Observation{Content: "ok", Source: call.Tool}
+}
+
 // ─── Scenario A — ReAct loop ─────────────────────────────────────────────────
 
 // Scenario A: stub LLM returns IsDone=true on step 2.
@@ -85,6 +120,66 @@ func TestScenarioA_ReActLoop(t *testing.T) {
 	}
 	if result.Duration <= 0 {
 		t.Error("expected Duration > 0")
+	}
+}
+
+func TestReActRecoversTextualToolCallFinalAnswer(t *testing.T) {
+	llm := &scriptedLLM{responses: []reasoning.ThinkResponse{
+		{
+			IsDone:      true,
+			Thought:     "queue the URL",
+			FinalAnswer: `queue_put({"name":"pending_resources","item":{"id":"abc","type":"url","content":"https://example.com"}})`,
+		},
+		{IsDone: true, FinalAnswer: "queued"},
+	}}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_put"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "research-librarian", "add this url https://example.com")
+
+	if len(exec.calls) != 1 {
+		t.Fatalf("expected recovered queue_put call, got %d", len(exec.calls))
+	}
+	if exec.calls[0].Tool != "queue_put" {
+		t.Fatalf("tool = %q, want queue_put", exec.calls[0].Tool)
+	}
+	item, ok := exec.calls[0].Arguments["item"].(map[string]any)
+	if !ok || item["content"] != "https://example.com" {
+		t.Fatalf("nested item was not preserved: %#v", exec.calls[0].Arguments["item"])
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("steps = %d, want 1", len(result.Steps))
+	}
+}
+
+func TestReActDoesNotStopOnProgressNoteFinalAnswer(t *testing.T) {
+	llm := &scriptedLLM{responses: []reasoning.ThinkResponse{
+		{IsDone: true, Thought: "auth complete", FinalAnswer: "Starting daily processing. Proceeding to Step 1: checking for pending resources."},
+		{IsDone: false, Thought: "check queue", Action: reasoning.ToolCall{Tool: "queue_names"}},
+		{IsDone: true, FinalAnswer: "No pending resources."},
+	}}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     4,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_names"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "research-librarian", "__trigger:manual__")
+
+	if len(exec.calls) != 1 || exec.calls[0].Tool != "queue_names" {
+		t.Fatalf("expected loop to continue into queue_names, calls=%#v", exec.calls)
+	}
+	if len(result.Steps) < 2 {
+		t.Fatalf("expected controller step plus tool step, got %d", len(result.Steps))
 	}
 }
 

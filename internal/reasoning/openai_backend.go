@@ -28,8 +28,8 @@ import (
 
 // OpenAIBackend implements LLMBackend using any OpenAI-compatible chat API.
 type OpenAIBackend struct {
-	baseURL  string
-	apiKey   string
+	baseURL string
+	apiKey  string
 	// ThinkModel is used for Think() — the hot path. Defaults to the model
 	// set at construction time, or gpt-4o-mini for low latency.
 	ThinkModel string
@@ -93,7 +93,9 @@ const openaiThinkInstructions = `
 
 Respond with ONLY a JSON object — no markdown, no explanation.
 Schema: {"thought":"...","is_done":false,"action":{"tool":"name","input":{"key":"value"}},"final_answer":""}
-When done: set "is_done":true, put answer in "final_answer", omit "action".`
+When the next step requires a tool, set "is_done":false and put the tool in "action"; never write tool_name({...}) as prose.
+Only set "is_done":true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
+When done: set "is_done":true, put the completed answer in "final_answer", omit "action".`
 
 // ─── Plan ─────────────────────────────────────────────────────────────────────
 
@@ -146,12 +148,12 @@ Schema: {"output":"final answer here","updated_rules":"revised operating rules i
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 
 type openaiChatRequest struct {
-	Model          string               `json:"model"`
-	Messages       []openaiChatMessage  `json:"messages"`
-	MaxTokens      int                  `json:"max_tokens,omitempty"`
-	Temperature    float64              `json:"temperature"`
-	Stream         bool                 `json:"stream"`
-	ResponseFormat map[string]string    `json:"response_format"`
+	Model          string              `json:"model"`
+	Messages       []openaiChatMessage `json:"messages"`
+	MaxTokens      int                 `json:"max_tokens,omitempty"`
+	Temperature    float64             `json:"temperature"`
+	Stream         bool                `json:"stream"`
+	ResponseFormat map[string]string   `json:"response_format"`
 }
 
 type openaiChatMessage struct {
@@ -178,9 +180,9 @@ func (b *OpenAIBackend) chat(ctx context.Context, model, system, user string, ma
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		MaxTokens:   maxTokens,
-		Temperature: 0.1,
-		Stream:      false,
+		MaxTokens:      maxTokens,
+		Temperature:    0.1,
+		Stream:         false,
 		ResponseFormat: map[string]string{"type": "json_object"},
 	}
 
