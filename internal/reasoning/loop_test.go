@@ -183,6 +183,38 @@ func TestReActDoesNotStopOnProgressNoteFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestReActDoesNotStopOnProgressNoteReflectOutput(t *testing.T) {
+	llm := &scriptedLLM{
+		responses: []reasoning.ThinkResponse{
+			{IsDone: false, Thought: "check queues", Action: reasoning.ToolCall{Tool: "queue_names"}},
+			{IsDone: true, Thought: "queue exists", FinalAnswer: "ready to process"},
+			{IsDone: false, Thought: "list queue", Action: reasoning.ToolCall{Tool: "queue_list", Input: map[string]string{"name": "pending_resources"}}},
+			{IsDone: true, FinalAnswer: "processed"},
+		},
+		reflectOut: "Daily processing triggered. The pending_resources queue exists with 1 item. Proceeding to list and process pending items.",
+	}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     5,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_names", "queue_list"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "research-librarian", "__trigger:manual__")
+
+	if len(exec.calls) < 2 {
+		t.Fatalf("expected loop to reject progress-note reflection and continue, calls=%#v", exec.calls)
+	}
+	if exec.calls[0].Tool != "queue_names" || exec.calls[1].Tool != "queue_list" {
+		t.Fatalf("unexpected calls: %#v", exec.calls)
+	}
+	if len(result.Steps) < 3 {
+		t.Fatalf("expected queue_names, controller note, and queue_list steps, got %d", len(result.Steps))
+	}
+}
+
 // ─── Scenario B — Plan-Execute ───────────────────────────────────────────────
 
 // Scenario B: 3-step plan; assert Steps has 3 entries, dependency ordering respected.

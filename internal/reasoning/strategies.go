@@ -89,6 +89,17 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			if resp.Output == "" && think.FinalAnswer != "" {
 				resp.Output = think.FinalAnswer
 			}
+			if isPrematureFinalAnswer(resp.Output) && i < env.Config.MaxSteps-1 {
+				steps = append(steps, Step{
+					ID:      fmt.Sprintf("step-%d", i+1),
+					Thought: firstNonEmpty(think.Thought, "The model reflected a progress note instead of a final answer."),
+					Obs: Observation{
+						Content: "controller: reflected output was a progress note, not a completed result. Continue by making the next concrete tool call.",
+						Source:  "controller",
+					},
+				})
+				continue
+			}
 			return steps, resp
 		}
 
@@ -180,8 +191,12 @@ func isPrematureFinalAnswer(text string) bool {
 	}
 	for _, phrase := range []string{
 		"proceeding to step",
+		"proceeding to list",
+		"proceeding to process",
+		"proceeding to check",
 		"starting daily processing",
 		"checking for pending",
+		"pending resources queue exists",
 		"i need to ",
 		"let me ",
 		"i will ",
