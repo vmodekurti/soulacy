@@ -36,20 +36,24 @@ func builtinToolParams() map[string][]ToolParam {
 			{Name: "source", Type: "string"},
 			{Name: "mime_type", Type: "string"},
 		},
+		"queue_create": {
+			{Name: "queue", Type: "string"},
+		},
+		"queue_names": {},
 		"queue_put": {
-			{Name: "queue", Type: "string", Required: true},
+			{Name: "queue", Type: "string"},
 			{Name: "item", Type: "object|array|string|number|boolean", Required: true},
 			{Name: "ttl_seconds", Type: "integer"},
 		},
 		"queue_take": {
-			{Name: "queue", Type: "string", Required: true},
+			{Name: "queue", Type: "string"},
 		},
 		"queue_list": {
-			{Name: "queue", Type: "string", Required: true},
+			{Name: "queue", Type: "string"},
 			{Name: "limit", Type: "integer"},
 		},
 		"queue_clear": {
-			{Name: "queue", Type: "string", Required: true},
+			{Name: "queue", Type: "string"},
 		},
 		"channel_send": {
 			{Name: "channel", Type: "string", Required: true},

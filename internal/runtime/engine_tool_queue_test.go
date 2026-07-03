@@ -92,3 +92,41 @@ func TestQueueBuiltins_RoundTripJSON(t *testing.T) {
 		t.Fatalf("unexpected take result: %+v", got)
 	}
 }
+
+func TestQueueBuiltins_DefaultQueueAndNames(t *testing.T) {
+	e := &Engine{queueStore: newAgentQueueStore()}
+	tools := e.buildQueueBuiltins()
+	byName := map[string]BuiltinTool{}
+	for _, tool := range tools {
+		byName[tool.Name] = tool
+	}
+
+	out, err := byName["queue_create"].Handler(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("queue_create default: %v", err)
+	}
+	if !strings.Contains(out, `"queue":"default"`) {
+		t.Fatalf("queue_create output = %s, want default queue", out)
+	}
+	if _, err := byName["queue_put"].Handler(context.Background(), map[string]any{
+		"item": "saved without explicit queue",
+	}); err != nil {
+		t.Fatalf("queue_put default: %v", err)
+	}
+
+	names, err := byName["queue_names"].Handler(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("queue_names: %v", err)
+	}
+	if !strings.Contains(names, `"queue":"default"`) || !strings.Contains(names, `"count":1`) {
+		t.Fatalf("queue_names output = %s, want default count 1", names)
+	}
+
+	taken, err := byName["queue_take"].Handler(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("queue_take default: %v", err)
+	}
+	if !strings.Contains(taken, "saved without explicit queue") {
+		t.Fatalf("queue_take output = %s, want default item", taken)
+	}
+}

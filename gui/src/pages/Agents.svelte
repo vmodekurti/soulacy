@@ -1566,6 +1566,7 @@ console.log(reply);` : ''
                   value={editing.builtins || []}
                   options={builtinOptions}
                   placeholder="Pick which built-ins this agent can use"
+                  placement="up"
                   on:change={(e) => editing.builtins = e.detail}
                 />
               {/if}

@@ -15,6 +15,7 @@
    *   allowFreeform  — true = allow values not in options (e.g. for fields
    *                    that may legitimately reference unknown items). false
    *                    = only options are addable.
+   *   placement      — "down" (default) or "up" for the suggestions menu.
    *   disabled       — disables the entire control.
    *
    * Events: dispatches `change` with the new value[] whenever value changes.
@@ -26,6 +27,7 @@
   export let placeholder = ''
   export let single = false
   export let allowFreeform = false
+  export let placement = 'down'
   export let disabled = false
 
   const dispatch = createEventDispatcher()
@@ -133,6 +135,7 @@
 <div
   class="chip-picker"
   class:disabled
+  class:open-up={placement === 'up'}
   bind:this={containerEl}
   on:click={onContainerClick}
   on:keydown={(e) => e.key === 'Enter' && onContainerClick()}
@@ -253,6 +256,11 @@
     background: #141626; border: 1px solid #2a2f4a; border-radius: 8px;
     max-height: 280px; overflow-y: auto;
     box-shadow: 0 8px 24px rgba(0,0,0,.45);
+  }
+  .chip-picker.open-up .suggestions {
+    top: auto;
+    bottom: calc(100% + 4px);
+    box-shadow: 0 -8px 24px rgba(0,0,0,.45);
   }
   .suggestion-group {
     padding: .35rem .7rem .2rem; font-size: .65rem;

@@ -92,6 +92,8 @@ var activeBuiltins = map[string]bool{
 	"list_dir":               true,
 	"semantic_memory_search": true,
 	"channel.send":           true,
+	"queue_create":           true,
+	"queue_names":            true,
 	"queue_put":              true,
 	"queue_take":             true,
 	"queue_list":             true,

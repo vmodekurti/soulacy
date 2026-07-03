@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 
@@ -17,6 +18,7 @@ const (
 	agentQueueMaxQueues    = 256
 	agentQueueMaxItems     = 1000
 	agentQueueMaxItemBytes = 64 * 1024
+	agentQueueDefaultName  = "default"
 )
 
 var agentQueueNameRE = regexp.MustCompile(`^[A-Za-z0-9._:-]{1,128}$`)
@@ -38,7 +40,47 @@ func newAgentQueueStore() *agentQueueStore {
 	return &agentQueueStore{queues: map[string][]agentQueueItem{}}
 }
 
+func (s *agentQueueStore) create(queue string) (bool, error) {
+	if !agentQueueNameRE.MatchString(queue) {
+		return false, fmt.Errorf("queue name must be 1-128 characters and contain only letters, numbers, dot, underscore, colon, or dash")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(time.Now().UTC())
+	if _, ok := s.queues[queue]; ok {
+		return false, nil
+	}
+	if len(s.queues) >= agentQueueMaxQueues {
+		return false, fmt.Errorf("queue limit reached: max %d queues", agentQueueMaxQueues)
+	}
+	s.queues[queue] = nil
+	return true, nil
+}
+
+func (s *agentQueueStore) names() []map[string]any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sweepLocked(time.Now().UTC())
+	names := make([]string, 0, len(s.queues))
+	for name := range s.queues {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	out := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		out = append(out, map[string]any{
+			"queue": name,
+			"count": len(s.queues[name]),
+		})
+	}
+	return out
+}
+
 func (s *agentQueueStore) put(queue string, raw json.RawMessage, ttl time.Duration) (agentQueueItem, error) {
+	if queue == "" {
+		queue = agentQueueDefaultName
+	}
 	if !agentQueueNameRE.MatchString(queue) {
 		return agentQueueItem{}, fmt.Errorf("queue name must be 1-128 characters and contain only letters, numbers, dot, underscore, colon, or dash")
 	}
@@ -79,6 +121,9 @@ func (s *agentQueueStore) put(queue string, raw json.RawMessage, ttl time.Durati
 }
 
 func (s *agentQueueStore) list(queue string, limit int) ([]agentQueueItem, error) {
+	if queue == "" {
+		queue = agentQueueDefaultName
+	}
 	if !agentQueueNameRE.MatchString(queue) {
 		return nil, fmt.Errorf("queue name must be 1-128 characters and contain only letters, numbers, dot, underscore, colon, or dash")
 	}
@@ -97,6 +142,9 @@ func (s *agentQueueStore) list(queue string, limit int) ([]agentQueueItem, error
 }
 
 func (s *agentQueueStore) take(queue string) (agentQueueItem, bool, error) {
+	if queue == "" {
+		queue = agentQueueDefaultName
+	}
 	if !agentQueueNameRE.MatchString(queue) {
 		return agentQueueItem{}, false, fmt.Errorf("queue name must be 1-128 characters and contain only letters, numbers, dot, underscore, colon, or dash")
 	}
@@ -119,6 +167,9 @@ func (s *agentQueueStore) take(queue string) (agentQueueItem, bool, error) {
 }
 
 func (s *agentQueueStore) clear(queue string) (int, error) {
+	if queue == "" {
+		queue = agentQueueDefaultName
+	}
 	if !agentQueueNameRE.MatchString(queue) {
 		return 0, fmt.Errorf("queue name must be 1-128 characters and contain only letters, numbers, dot, underscore, colon, or dash")
 	}
@@ -152,6 +203,49 @@ func (e *Engine) buildQueueBuiltins() []BuiltinTool {
 	}
 	return []BuiltinTool{
 		{
+			Name:        "queue_create",
+			Gate:        "",
+			Description: "Create a named in-memory queue for temporary Soulacy workflow state. queue_put also auto-creates queues, but use this when a workflow should declare the queue up front.",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"queue": map[string]any{
+						"type":        "string",
+						"description": "Queue name, e.g. drafts, pending_docs, weather_jobs. Defaults to default. Use letters, numbers, dot, underscore, colon, or dash.",
+					},
+				},
+			},
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
+				queueName := queueArg(args)
+				created, err := e.queueStore.create(queueName)
+				if err != nil {
+					return "", fmt.Errorf("queue_create: %w", err)
+				}
+				return queueResult(map[string]any{
+					"ok":      true,
+					"queue":   queueName,
+					"created": created,
+				}), nil
+			},
+		},
+		{
+			Name:        "queue_names",
+			Gate:        "",
+			Description: "List named in-memory queues currently known to this Soulacy gateway process, including item counts. Queues are ephemeral and reset on restart.",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+			Handler: func(ctx context.Context, args map[string]any) (string, error) {
+				queues := e.queueStore.names()
+				return queueResult(map[string]any{
+					"ok":     true,
+					"count":  len(queues),
+					"queues": queues,
+				}), nil
+			},
+		},
+		{
 			Name:        "queue_put",
 			Gate:        "",
 			Description: "Store a JSON value in Soulacy's in-memory ephemeral queue for later workflow steps. Use instead of write_file for temporary handoffs. Data is not persisted across restarts.",
@@ -160,7 +254,7 @@ func (e *Engine) buildQueueBuiltins() []BuiltinTool {
 				"properties": map[string]any{
 					"queue": map[string]any{
 						"type":        "string",
-						"description": "Queue name, e.g. drafts, pending_docs, weather_jobs",
+						"description": "Queue name, e.g. drafts, pending_docs, weather_jobs. Defaults to default if omitted.",
 					},
 					"item": map[string]any{
 						"description": "Any JSON-serializable value to enqueue",
@@ -170,10 +264,10 @@ func (e *Engine) buildQueueBuiltins() []BuiltinTool {
 						"description": "Optional time-to-live in seconds. Defaults to 24 hours, max 7 days.",
 					},
 				},
-				"required": []string{"queue", "item"},
+				"required": []string{"item"},
 			},
 			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				queueName := argString(args, "queue")
+				queueName := queueArg(args)
 				raw, err := json.Marshal(args["item"])
 				if err != nil {
 					return "", fmt.Errorf("queue_put: item is not JSON-serializable: %w", err)
@@ -199,13 +293,12 @@ func (e *Engine) buildQueueBuiltins() []BuiltinTool {
 				"properties": map[string]any{
 					"queue": map[string]any{
 						"type":        "string",
-						"description": "Queue name to read from",
+						"description": "Queue name to read from. Defaults to default if omitted.",
 					},
 				},
-				"required": []string{"queue"},
 			},
 			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				item, ok, err := e.queueStore.take(argString(args, "queue"))
+				item, ok, err := e.queueStore.take(queueArg(args))
 				if err != nil {
 					return "", fmt.Errorf("queue_take: %w", err)
 				}
@@ -231,17 +324,16 @@ func (e *Engine) buildQueueBuiltins() []BuiltinTool {
 				"properties": map[string]any{
 					"queue": map[string]any{
 						"type":        "string",
-						"description": "Queue name to inspect",
+						"description": "Queue name to inspect. Defaults to default if omitted.",
 					},
 					"limit": map[string]any{
 						"type":        "integer",
 						"description": "Maximum items to return, default 25, max 100",
 					},
 				},
-				"required": []string{"queue"},
 			},
 			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				items, err := e.queueStore.list(argString(args, "queue"), argInt(args, "limit", 25))
+				items, err := e.queueStore.list(queueArg(args), argInt(args, "limit", 25))
 				if err != nil {
 					return "", fmt.Errorf("queue_list: %w", err)
 				}
@@ -261,13 +353,12 @@ func (e *Engine) buildQueueBuiltins() []BuiltinTool {
 				"properties": map[string]any{
 					"queue": map[string]any{
 						"type":        "string",
-						"description": "Queue name to clear",
+						"description": "Queue name to clear. Defaults to default if omitted.",
 					},
 				},
-				"required": []string{"queue"},
 			},
 			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				n, err := e.queueStore.clear(argString(args, "queue"))
+				n, err := e.queueStore.clear(queueArg(args))
 				if err != nil {
 					return "", fmt.Errorf("queue_clear: %w", err)
 				}
@@ -280,4 +371,17 @@ func (e *Engine) buildQueueBuiltins() []BuiltinTool {
 func queueResult(v map[string]any) string {
 	b, _ := json.Marshal(v)
 	return string(b)
+}
+
+func queueArg(args map[string]any) string {
+	if v := argString(args, "queue"); v != "" {
+		return v
+	}
+	if v := argString(args, "name"); v != "" {
+		return v
+	}
+	if v := argString(args, "queue_name"); v != "" {
+		return v
+	}
+	return agentQueueDefaultName
 }
