@@ -2965,6 +2965,9 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 		}
 		events = filtered
 	}
+	for i := range events {
+		events[i].Payload = compactActionPayload(events[i].Payload, 64*1024)
+	}
 
 	return c.JSON(fiber.Map{
 		"agent_id": id,
@@ -2972,6 +2975,45 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 		"events":   events,
 		"count":    len(events),
 	})
+}
+
+func compactActionPayload(payload any, maxBytes int) any {
+	if maxBytes <= 0 {
+		maxBytes = 64 * 1024
+	}
+	b, err := json.Marshal(payload)
+	if err != nil || len(b) <= maxBytes {
+		return payload
+	}
+	return fiber.Map{
+		"truncated": true,
+		"bytes":     len(b),
+		"preview":   compactPayloadPreview(payload, 1200),
+	}
+}
+
+func compactPayloadPreview(payload any, max int) string {
+	if max <= 0 {
+		max = 1200
+	}
+	var s string
+	switch v := payload.(type) {
+	case string:
+		s = v
+	default:
+		b, err := json.Marshal(payload)
+		if err != nil {
+			s = fmt.Sprint(payload)
+		} else {
+			s = string(b)
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
 }
 
 // --- Memory ---
