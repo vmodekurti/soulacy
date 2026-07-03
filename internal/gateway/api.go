@@ -1037,6 +1037,7 @@ var channelSpecs = []channelSpec{
 		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default chat/channel ID used by scheduled agents when no destination is set"},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default interactive agent ID", Type: "text", Required: false, Help: "Legacy single-bot mode only; prefer Add bot mapping for interactive agents"},
+		{Key: "accept_privileged_exposure", Label: "Allow privileged agent exposure", Type: "checkbox", Required: false, Help: "Required before an interactive bot can expose an agent with system/file/write capabilities. Bot mappings inherit this unless they set their own value."},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated Telegram chat IDs to allow"},
@@ -1048,6 +1049,7 @@ var channelSpecs = []channelSpec{
 		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "accept_privileged_exposure", Label: "Allow privileged agent exposure", Type: "checkbox", Required: false, Help: "Required before this bot can expose an agent with system/file/write capabilities."},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore servers", Type: "text", Required: false, Help: "true by default; set false only for deliberate server usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed channel IDs", Type: "text", Required: false, Help: "Optional comma-separated Discord channel IDs to allow"},
@@ -1061,6 +1063,7 @@ var channelSpecs = []channelSpec{
 		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "accept_privileged_exposure", Label: "Allow privileged agent exposure", Type: "checkbox", Required: false, Help: "Required before this bot can expose an agent with system/file/write capabilities."},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore channels", Type: "text", Required: false, Help: "true by default; set false only for deliberate channel usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed channel IDs", Type: "text", Required: false, Help: "Optional comma-separated Slack channel IDs to allow"},
@@ -1157,7 +1160,7 @@ func displayChannelValue(v any) any {
 }
 
 func normalizeChannelValue(key, val string) any {
-	if key == "outbound_only" || key == "ignore_groups" {
+	if key == "outbound_only" || key == "ignore_groups" || key == "accept_privileged_exposure" {
 		return strings.EqualFold(strings.TrimSpace(val), "true") || strings.TrimSpace(val) == "1"
 	}
 	if key == "args" {
@@ -1208,7 +1211,7 @@ func normalizeChannelBots(spec channelSpec, bots []map[string]any, existingRaw a
 	return out
 }
 
-func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]channels.AdapterStatus) []fiber.Map {
+func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]channels.AdapterStatus, loader *runtime.Loader) []fiber.Map {
 	botList := rawBotList(cfg["bots"])
 	out := make([]fiber.Map, 0, len(botList))
 	defaultReserved := valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"])
@@ -1229,9 +1232,25 @@ func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]c
 		row["_adapter_id"] = adapterID
 		row["_connected"] = st.Connected
 		row["_detail"] = st.Detail
+		if privilegedBotBlocked(bot, loader) {
+			row["_blocked_reason"] = "privileged agent requires exposure approval"
+		}
 		out = append(out, row)
 	}
 	return out
+}
+
+func privilegedBotBlocked(bot map[string]any, loader *runtime.Loader) bool {
+	if loader == nil || channels.ParseBoolValue(bot["outbound_only"], false) {
+		return false
+	}
+	agentID, _ := bot["agent_id"].(string)
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || channels.ParseBoolValue(bot["accept_privileged_exposure"], false) {
+		return false
+	}
+	def := loader.Get(agentID)
+	return tier.Compute(def, loader.Get) == tier.Privileged
 }
 
 func channelDiagnostics(spec channelSpec, cfg map[string]any, enabled, registered bool, st channels.AdapterStatus, bots []fiber.Map) []channelDiagnostic {
@@ -1283,7 +1302,11 @@ func channelDiagnostics(spec channelSpec, cfg map[string]any, enabled, registere
 			add("fail", "Bot mapping "+adapterID+" has no agent.", "Select an agent for interactive bot mappings or mark the row send-only.")
 		}
 		if !connected {
-			add("warn", "Bot mapping "+adapterID+" is not connected.", "Restart the gateway or check that the bot token is valid.")
+			if reason, _ := bot["_blocked_reason"].(string); reason != "" {
+				add("fail", "Bot mapping "+adapterID+" is blocked: "+reason+".", "Open the bot mapping, enable privileged exposure, save, then restart the gateway.")
+			} else {
+				add("warn", "Bot mapping "+adapterID+" is not connected.", "Restart the gateway or check that the bot token is valid.")
+			}
 		}
 	}
 	return out
@@ -1363,7 +1386,7 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 				settings[f.Key] = displayChannelValue(raw)
 			}
 		}
-		bots := maskChannelBots(spec, cfg, statuses)
+		bots := maskChannelBots(spec, cfg, statuses, s.loader)
 		if len(bots) > 0 {
 			configured = true
 		}

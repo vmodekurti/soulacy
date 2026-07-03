@@ -133,7 +133,7 @@ func (s *Server) channelDoctorChecks() []doctorChannelCheck {
 				break
 			}
 		}
-		bots := maskChannelBots(spec, cfg, statuses)
+		bots := maskChannelBots(spec, cfg, statuses, s.loader)
 		if len(bots) > 0 {
 			configured = true
 		}

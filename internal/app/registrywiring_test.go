@@ -13,6 +13,7 @@ import (
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/runtime"
+	"github.com/soulacy/soulacy/pkg/agent"
 )
 
 func TestProviderCfgMapOmitsZeroValues(t *testing.T) {
@@ -106,5 +107,40 @@ func TestRegisterChannelsTelegramDefaultSenderAndAgentMapping(t *testing.T) {
 	}
 	if _, ok := statuses["telegram-weather-agent"]; !ok {
 		t.Fatal("agent-specific telegram mapping was not registered with a distinct adapter ID")
+	}
+}
+
+func TestRegisterChannelsTelegramBotInheritsPrivilegedConsent(t *testing.T) {
+	dir := t.TempDir()
+	loader := runtime.NewLoader([]string{dir})
+	if err := loader.Upsert(dir, &agent.Definition{
+		ID:          "librarian",
+		Trigger:     agent.TriggerCron,
+		Enabled:     true,
+		SystemTools: true,
+		Schedule:    &agent.Schedule{Cron: "0 7 * * *"},
+	}); err != nil {
+		t.Fatalf("upsert privileged agent: %v", err)
+	}
+
+	app := &App{log: zap.NewNop()}
+	reg := channels.NewRegistry(1)
+	app.registerChannels(map[string]map[string]any{
+		"telegram": {
+			"enabled":                    true,
+			"token":                      "123:default",
+			"outbound_only":              true,
+			"accept_privileged_exposure": true,
+			"bots": []any{
+				map[string]any{
+					"token":    "123:librarian",
+					"agent_id": "librarian",
+				},
+			},
+		},
+	}, reg, loader, config.Paths{})
+
+	if _, ok := reg.Statuses()["telegram-librarian"]; !ok {
+		t.Fatal("privileged bot should register when consent is inherited from the telegram channel")
 	}
 }

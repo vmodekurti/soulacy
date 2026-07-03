@@ -479,7 +479,7 @@ func TestMaskChannelBots_MasksSecrets(t *testing.T) {
 		{"token": "secret-token", "agent_id": "my-bot"},
 	}
 	statuses := map[string]channels.AdapterStatus{}
-	result := maskChannelBots(spec, map[string]any{"bots": raw}, statuses)
+	result := maskChannelBots(spec, map[string]any{"bots": raw}, statuses, nil)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 masked bot, got %d", len(result))
 	}
@@ -495,7 +495,7 @@ func TestMaskChannelBots_MasksSecrets(t *testing.T) {
 
 func TestMaskChannelBots_EmptyRaw(t *testing.T) {
 	spec := channelSpecs[1]
-	result := maskChannelBots(spec, nil, map[string]channels.AdapterStatus{})
+	result := maskChannelBots(spec, nil, map[string]channels.AdapterStatus{}, nil)
 	if len(result) != 0 {
 		t.Fatalf("expected empty result for nil raw, got %d", len(result))
 	}

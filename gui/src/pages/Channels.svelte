@@ -164,17 +164,40 @@
   onMount(load)
 
   function statusColor(ch) {
-    if (ch.status?.connected) return '#4caf82'
+    if (ch.status?.connected || connectedInteractiveBots(ch).length > 0) return '#4caf82'
     if (ch.enabled && ch.configured) return '#f0a060'  // should connect but isn't
     return '#555a7a'
   }
   function statusLabel(ch) {
+    const aggregate = aggregateChannelLabel(ch)
+    if (aggregate) return aggregate
     if (ch.status?.connected) return ch.status.detail || 'connected'
     if (ch.always) return 'always on'
     if (ch.enabled && !ch.configured) return 'needs config'
     if (ch.enabled) return ch.status?.detail || 'restart to connect'
     if (ch.configured) return 'disabled'
     return 'not configured'
+  }
+
+  function connectionLabel(ch) {
+    if (ch.status?.connected) return '● Live'
+    const liveInteractive = connectedInteractiveBots(ch).length
+    if (liveInteractive > 0) return `● ${plural(liveInteractive, 'bot')} live`
+    return '○ Offline'
+  }
+
+  function aggregateChannelLabel(ch) {
+    if (ch.id !== 'telegram') return ''
+    const interactive = interactiveBots(ch)
+    if (!interactive.length) return ''
+    const liveInteractive = connectedInteractiveBots(ch)
+    const hasDefaultOutbound = isTruthy(ch.settings?.outbound_only) || hasDefaultSender(ch)
+    if (hasDefaultOutbound) {
+      if (liveInteractive.length) return `default outbound + ${plural(liveInteractive.length, 'live bot')}`
+      return `default outbound + ${plural(interactive.length, 'bot mapping')}`
+    }
+    if (liveInteractive.length) return plural(liveInteractive.length, 'live interactive bot')
+    return plural(interactive.length, 'interactive bot mapping')
   }
 
   const CHANNEL_ICONS = {
@@ -192,10 +215,25 @@
     return v
   }
 
+  function hasDefaultSender(ch) {
+    return !!(ch.settings?.token || ch.settings?.default_output_to || ch.settings?.bot_name)
+  }
+
+  function interactiveBots(ch) {
+    return (ch.bots || []).filter(bot => !isTruthy(bot.outbound_only))
+  }
+
+  function connectedInteractiveBots(ch) {
+    return interactiveBots(ch).filter(bot => bot._connected)
+  }
+
+  function plural(count, label) {
+    return `${count} ${label}${count === 1 ? '' : 's'}`
+  }
+
   function mappingRows(ch) {
     const rows = []
-    const hasDefaultSender = ch.settings?.token || ch.settings?.default_output_to || ch.settings?.bot_name
-    if (ch.id === 'telegram' && hasDefaultSender) {
+    if (ch.id === 'telegram' && hasDefaultSender(ch)) {
       rows.push({
         adapter_id: ch.id,
         bot_name: ch.settings?.bot_name || 'Default outbound bot',
@@ -275,8 +313,20 @@
 
   function shouldShowChannelField(f, values = {}) {
     if (editing?.id === 'telegram' && f.key === 'agent_id' && isTruthy(values.outbound_only)) return false
-    if (editing?.id === 'telegram' && ['trigger_phrase', 'ignore_groups', 'allowed_chat_ids', 'allowed_user_ids'].includes(f.key) && isTruthy(values.outbound_only)) return false
+    if (editing?.id === 'telegram' && ['accept_privileged_exposure', 'trigger_phrase', 'ignore_groups', 'allowed_chat_ids', 'allowed_user_ids'].includes(f.key) && isTruthy(values.outbound_only)) return false
     return true
+  }
+
+  function checkboxLabel(f) {
+    if (f.key === 'outbound_only') return 'Use this bot only for scheduled output'
+    if (f.key === 'accept_privileged_exposure') return 'I understand this bot can expose privileged agent capabilities'
+    return 'Enabled'
+  }
+
+  function botCheckboxLabel(f) {
+    if (f.key === 'outbound_only') return 'Send scheduled output only'
+    if (f.key === 'accept_privileged_exposure') return 'Allow this bot to expose privileged agent capabilities'
+    return 'Enabled'
   }
 
   function agentLabel(agent) {
@@ -338,7 +388,7 @@
             <div class="ch-row">
               <span class="ch-label">Connection</span>
               <span class="ch-val" style="color:{statusColor(ch)}">
-                {ch.status?.connected ? '● Live' : '○ Offline'}
+                {connectionLabel(ch)}
               </span>
             </div>
             <div class="ch-row">
@@ -547,7 +597,7 @@
                 {:else if f.type === 'checkbox' || f.key === 'ignore_groups'}
                   <label class="check-row compact">
                     <input type="checkbox" bind:checked={form[f.key]} />
-                    <span>{f.key === 'outbound_only' ? 'Use this bot only for scheduled output' : 'Enabled'}</span>
+                    <span>{checkboxLabel(f)}</span>
                   </label>
                 {:else if f.key === 'agent_id' && agents.length}
                   <select bind:value={form[f.key]}>
@@ -611,7 +661,7 @@
                               <input type="checkbox"
                                 checked={isTruthy(bot[f.key])}
                                 on:change={(e) => updateBotField(i, f.key, e.currentTarget.checked)} />
-                              <span>{f.key === 'outbound_only' ? 'Send scheduled output only' : 'Enabled'}</span>
+                              <span>{botCheckboxLabel(f)}</span>
                             </label>
                           {:else if f.key === 'agent_id' && agents.length}
                             <select
