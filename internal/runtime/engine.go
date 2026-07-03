@@ -103,6 +103,7 @@ type Engine struct {
 	skillLoader     SkillLoader
 	builtins        []BuiltinTool
 	channelRegistry *channels.Registry
+	queueStore      *agentQueueStore
 
 	// ollamaAPIKey is used by the built-in web_search tool (Ollama Web Search API).
 	// Falls back to the OLLAMA_API_KEY env var at call time.
@@ -403,6 +404,7 @@ func NewEngine(
 		allowSystemAgents: allowSystemAgents,
 		vectorStore:       vectorStore,
 		pluginProvider:    pluginProvider,
+		queueStore:        newAgentQueueStore(),
 	}
 	e.broker = newConfirmBroker()
 	e.builtins = e.buildBuiltins()
@@ -893,6 +895,11 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// adapter. Studio already emits this for Deliver steps; backing it with the
 	// registry makes generated workflows executable instead of merely plausible.
 	tools = append(tools, e.buildChannelSendBuiltin())
+
+	// queue_* — safe, in-memory handoff for interactive agents and Studio
+	// workflows. These tools avoid write_file/system access for ephemeral
+	// intermediate state.
+	tools = append(tools, e.buildQueueBuiltins()...)
 
 	// Skill built-ins are only added when a skill loader is configured;
 	// other built-ins (kb_search, …) are appended below regardless.

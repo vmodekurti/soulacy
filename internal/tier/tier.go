@@ -92,6 +92,10 @@ var activeBuiltins = map[string]bool{
 	"list_dir":               true,
 	"semantic_memory_search": true,
 	"channel.send":           true,
+	"queue_put":              true,
+	"queue_take":             true,
+	"queue_list":             true,
+	"queue_clear":            true,
 }
 
 // Compute returns the capability tier of `def`, walking peer agents

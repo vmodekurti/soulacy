@@ -455,6 +455,7 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 		sb.WriteString(")\n")
 	}
 	sb.WriteString("- For intents like \"store in Soulacy's Knowledge store\", \"save to KB\", \"ingest documents/URLs into knowledge\", use a safe Knowledge Ingestion flow and the `kb_write` tool with an attached `knowledge` base. Do NOT use `write_file`; it is only for arbitrary host files and requires system authorization. The `kb_write` input must be a JSON object with `kb` and `content`. Prefer storing a structured artifact object such as {summary,tags,source,content}; pass it as `\"content\": {{ toJson .tagged_artifact }}` unquoted so markdown, quotes, and newlines stay valid JSON.\n")
+	sb.WriteString("- For temporary state, queues, buffers, or handoffs between interactive workflow steps, use `queue_put` and `queue_take` instead of `write_file`. Queue tools are in-memory and safe for non-system agents; they are not durable across gateway restarts.\n")
 	if len(catalog.Providers) > 0 {
 		sb.WriteString("Available providers: ")
 		sb.WriteString(strings.Join(catalog.Providers, ", "))

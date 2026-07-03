@@ -92,8 +92,44 @@ Common built-ins and their gates:
 |------|------|
 | `web_search` | Web search API key configured. |
 | `kb_search` | Agent declares `knowledge:`. |
+| `kb_write` | Agent declares `knowledge:`. |
+| `queue_put`, `queue_take`, `queue_list`, `queue_clear` | Always available unless `builtins` restricts them. |
+| `channel.send` | Channel registry configured. |
 | `read_skill`, `read_skill_file` | Agent declares `skills:`. |
 | `shell_exec`, `run_script`, `read_file`, `write_file`, `list_dir`, `install_library` | System tools — double opt-in (below). |
+
+### Ephemeral Queues
+
+Use the queue built-ins when an agent or Studio workflow needs temporary
+handoff state but should not receive filesystem access:
+
+- `queue_put` stores a JSON value in memory.
+- `queue_take` returns and removes the oldest item.
+- `queue_list` inspects queued items without removing them.
+- `queue_clear` deletes all items in a queue.
+
+Queues are process-local, bounded, and expire items automatically. They are
+not persisted across gateway restarts. For durable searchable content, use
+`kb_write`; for generated files, use a deliberately scoped filesystem or
+artifact tool rather than broad `write_file` access.
+
+Example restricted agent:
+
+```yaml
+builtins:
+  - queue_put
+  - queue_take
+  - queue_list
+  - queue_clear
+```
+
+Typical handoff:
+
+```json
+{"queue":"pending_docs","item":{"url":"https://example.com/doc","tags":["governance"]}}
+```
+
+Then a downstream step calls `queue_take` with `{"queue":"pending_docs"}`.
 
 ## System Tools
 
