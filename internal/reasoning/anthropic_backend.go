@@ -76,13 +76,16 @@ func (b *AnthropicBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRe
 		formatStepHistory(req.StepHistory),
 	)
 
-	body, err := b.complete(ctx, b.ThinkModel, systemPrompt, userContent, 512)
+	body, err := b.complete(ctx, b.ThinkModel, systemPrompt, userContent, 1024)
 	if err != nil {
 		return ThinkResponse{}, err
 	}
 
 	var resp ThinkResponse
 	if err := unmarshalJSON(body, &resp); err != nil {
+		if recovered, ok := recoverThinkResponseFromRaw(body, req.ToolNames); ok {
+			return recovered, nil
+		}
 		return ThinkResponse{}, fmt.Errorf("reasoning: Think: parse response: %w (raw: %s)", err, truncate(body, 200))
 	}
 	return resp, nil
@@ -97,6 +100,7 @@ Respond ONLY with a JSON object in this exact schema — no markdown fences, no 
   "action":       { "tool": "<tool_name>", "input": { "<key>": "<value>" } },
   "final_answer": ""
 }
+Keep "thought" under 25 words. Keep tool arguments concise; do not paste fetched documents, HTML, or long code into thought.
 When the next step requires a tool, set "is_done": false and put the tool in "action"; never write tool_name({...}) as prose.
 Only set "is_done": true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
 When the task is complete set "is_done": true, put your completed answer in "final_answer", and omit "action".`

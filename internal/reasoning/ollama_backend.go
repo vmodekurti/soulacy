@@ -84,13 +84,16 @@ func (b *OllamaBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.chat(ctx, b.ThinkModel, system, user, 512)
+	raw, err := b.chat(ctx, b.ThinkModel, system, user, 1024)
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/ollama: Think: %w", err)
 	}
 
 	var resp ThinkResponse
 	if err := unmarshalJSON(raw, &resp); err != nil {
+		if recovered, ok := recoverThinkResponseFromRaw(raw, req.ToolNames); ok {
+			return recovered, nil
+		}
 		return ThinkResponse{}, fmt.Errorf("reasoning/ollama: Think: parse %q: %w", truncate(raw, 120), err)
 	}
 	return resp, nil
@@ -101,6 +104,7 @@ const ollamaThinkInstructions = `
 You must respond with ONLY a JSON object — no explanation, no markdown, no prose.
 Required schema:
 {"thought":"your reasoning","is_done":false,"action":{"tool":"tool_name","input":{"key":"value"}},"final_answer":""}
+Keep "thought" under 25 words. Keep tool arguments concise; do not paste fetched documents, HTML, or long code into thought.
 When the next step requires a tool, set "is_done":false and put the tool in "action"; never write tool_name({...}) as prose.
 Only set "is_done":true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
 When the task is complete: set "is_done":true, put your completed answer in "final_answer", omit "action".`

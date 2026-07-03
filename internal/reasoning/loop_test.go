@@ -3,6 +3,7 @@ package reasoning_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,66 @@ type recordingExecutor struct {
 func (r *recordingExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
 	r.calls = append(r.calls, call)
 	return reasoning.Observation{Content: "ok", Source: call.Tool}
+}
+
+type htmlExecutor struct{}
+
+func (h *htmlExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
+	return reasoning.Observation{
+		Source: call.Tool,
+		Content: "URL: https://example.com\nStatus: 200\nContent-Type: text/html; charset=UTF-8\n\n" +
+			`<!doctype html><html><head><title>Example Article</title><script>huge()</script></head><body><h1>Example Article</h1><p>Useful article text.</p></body></html>`,
+	}
+}
+
+type htmlHistoryLLM struct {
+	thinkCalls int
+	sawRawHTML bool
+	sawText    bool
+}
+
+func (h *htmlHistoryLLM) Think(_ context.Context, req reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	h.thinkCalls++
+	if h.thinkCalls == 1 {
+		return reasoning.ThinkResponse{
+			IsDone: false,
+			Action: reasoning.ToolCall{
+				Tool:  "fetch_url",
+				Input: map[string]string{"url": "https://example.com"},
+			},
+		}, nil
+	}
+	if len(req.StepHistory) > 0 {
+		obs := req.StepHistory[0].Obs.Content
+		h.sawRawHTML = strings.Contains(strings.ToLower(obs), "<html") || strings.Contains(strings.ToLower(obs), "<script")
+		h.sawText = strings.Contains(obs, "HTML fetched; readable text excerpt") && strings.Contains(obs, "Useful article text.")
+	}
+	return reasoning.ThinkResponse{IsDone: true, FinalAnswer: "done"}, nil
+}
+
+func (h *htmlHistoryLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{}, errors.New("plan not scripted")
+}
+
+func (h *htmlHistoryLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	return reasoning.ReflectResponse{Output: "done"}, nil
+}
+
+type alwaysBadThinkLLM struct {
+	thinkCalls int
+}
+
+func (a *alwaysBadThinkLLM) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	a.thinkCalls++
+	return reasoning.ThinkResponse{}, errors.New("unexpected end of JSON input")
+}
+
+func (a *alwaysBadThinkLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{}, errors.New("plan not scripted")
+}
+
+func (a *alwaysBadThinkLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	return reasoning.ReflectResponse{Output: "should not need reflect"}, nil
 }
 
 // ─── Scenario A — ReAct loop ─────────────────────────────────────────────────
@@ -301,6 +362,48 @@ func TestReActRecoversLegacyActionFromReflectOutput(t *testing.T) {
 	}
 	if len(result.Steps) != 1 {
 		t.Fatalf("steps = %d, want 1 recovered tool step", len(result.Steps))
+	}
+}
+
+func TestReActCompactsHTMLObservationBeforeNextThink(t *testing.T) {
+	llm := &htmlHistoryLLM{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"fetch_url"},
+	}, llm, &htmlExecutor{})
+
+	_ = loop.Run(context.Background(), "any-react-agent", "fetch https://example.com")
+
+	if llm.sawRawHTML {
+		t.Fatalf("expected raw HTML/script tags to be compacted before the next Think")
+	}
+	if !llm.sawText {
+		t.Fatalf("expected readable HTML text excerpt in step history")
+	}
+}
+
+func TestReActStopsAfterRepeatedThinkErrors(t *testing.T) {
+	llm := &alwaysBadThinkLLM{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     30,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+	}, llm, &recordingExecutor{})
+
+	result := loop.Run(context.Background(), "any-react-agent", "do work")
+
+	if llm.thinkCalls != 4 {
+		t.Fatalf("think calls = %d, want 4 before controller stop", llm.thinkCalls)
+	}
+	if len(result.Steps) != 4 {
+		t.Fatalf("steps = %d, want 4 controller error steps", len(result.Steps))
+	}
+	if !strings.Contains(result.Output, "invalid ReAct JSON repeatedly") {
+		t.Fatalf("unexpected output: %q", result.Output)
 	}
 }
 

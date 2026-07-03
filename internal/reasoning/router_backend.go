@@ -47,12 +47,15 @@ func (b *RouterBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.comp.Complete(ctx, b.ThinkModel, system, user, 512)
+	raw, err := b.comp.Complete(ctx, b.ThinkModel, system, user, 1024)
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/router: Think: %w", err)
 	}
 	var resp ThinkResponse
 	if err := unmarshalJSON(raw, &resp); err != nil {
+		if recovered, ok := recoverThinkResponseFromRaw(raw, req.ToolNames); ok {
+			return recovered, nil
+		}
 		return ThinkResponse{}, fmt.Errorf("reasoning/router: Think: parse %q: %w", truncate(raw, 120), err)
 	}
 	return resp, nil

@@ -33,6 +33,7 @@ type reactStrategy struct{}
 
 func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step, ReflectResponse) {
 	var steps []Step
+	consecutiveThinkErrors := 0
 
 	for i := 0; i < env.Config.MaxSteps; i++ {
 		if ctx.Err() != nil {
@@ -49,18 +50,23 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			ToolNames:    env.Config.ToolNames,
 		})
 		if err != nil {
+			consecutiveThinkErrors++
 			steps = append(steps, Step{
 				ID:      fmt.Sprintf("step-%d", i+1),
 				Thought: "The model returned an invalid reasoning step.",
 				Obs: Observation{
-					Content: fmt.Sprintf("controller: Think failed (%s). Continue with a valid JSON tool action; do not answer in prose until the task is complete.", err.Error()),
+					Content: fmt.Sprintf("controller: Think failed (%s). Return one short valid JSON object only. Keep thought under 25 words. If a tool is needed, use action with concise arguments.", err.Error()),
 					Source:  "controller",
 				},
 				Duration: time.Since(stepStart),
 			})
 			cancel()
+			if consecutiveThinkErrors >= 4 {
+				return steps, ReflectResponse{Output: "The run stopped because the model returned invalid ReAct JSON repeatedly. The last successful tool observation is preserved in the trace; retry with a smaller input or switch this workflow step to a deterministic tool/flow node."}
+			}
 			continue
 		}
+		consecutiveThinkErrors = 0
 
 		if think.IsDone {
 			if call, ok := recoverTextualToolCall(think.FinalAnswer, env.Config.ToolNames); ok {
@@ -99,14 +105,17 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 				resp.Output = think.FinalAnswer
 			}
 			if call, ok := recoverTextualToolCall(resp.Output, env.Config.ToolNames); ok {
-				obs := env.Tools.Execute(stepCtx, call)
+				recoveredCtx, recoveredCancel := context.WithTimeout(ctx, env.Config.StepTimeout)
+				recoveredStart := time.Now()
+				obs := env.Tools.Execute(recoveredCtx, call)
+				recoveredCancel()
 				obs = boundObservation(obs)
 				steps = append(steps, Step{
 					ID:       fmt.Sprintf("step-%d", i+1),
 					Thought:  firstNonEmpty(think.Thought, "Recovered plain-text tool call from reflected output."),
 					Action:   call,
 					Obs:      obs,
-					Duration: time.Since(stepStart),
+					Duration: time.Since(recoveredStart),
 				})
 				continue
 			}
@@ -223,6 +232,27 @@ func recoverTextualToolCall(text string, toolNames []string) (ToolCall, bool) {
 		}
 	}
 	return ToolCall{Tool: name, Input: input, Arguments: args}, true
+}
+
+func recoverThinkResponseFromRaw(raw string, toolNames []string) (ThinkResponse, bool) {
+	call, ok := recoverTextualToolCall(raw, toolNames)
+	if !ok {
+		return ThinkResponse{}, false
+	}
+	thought := strings.TrimSpace(raw)
+	if idx := strings.LastIndex(strings.ToLower(thought), "action:"); idx >= 0 {
+		thought = strings.TrimSpace(thought[:idx])
+	}
+	thought = strings.TrimPrefix(thought, "Thought:")
+	thought = strings.TrimSpace(thought)
+	if thought == "" {
+		thought = "Recovered legacy ReAct tool action."
+	}
+	return ThinkResponse{
+		Thought: thought,
+		IsDone:  false,
+		Action:  call,
+	}, true
 }
 
 func parseLegacyMapArgs(raw string) (map[string]any, bool) {
