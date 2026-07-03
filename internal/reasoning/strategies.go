@@ -49,8 +49,17 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			ToolNames:    env.Config.ToolNames,
 		})
 		if err != nil {
+			steps = append(steps, Step{
+				ID:      fmt.Sprintf("step-%d", i+1),
+				Thought: "The model returned an invalid reasoning step.",
+				Obs: Observation{
+					Content: fmt.Sprintf("controller: Think failed (%s). Continue with a valid JSON tool action; do not answer in prose until the task is complete.", err.Error()),
+					Source:  "controller",
+				},
+				Duration: time.Since(stepStart),
+			})
 			cancel()
-			break // LLM error — reflect on partial trace
+			continue
 		}
 
 		if think.IsDone {
@@ -89,6 +98,18 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			if resp.Output == "" && think.FinalAnswer != "" {
 				resp.Output = think.FinalAnswer
 			}
+			if call, ok := recoverTextualToolCall(resp.Output, env.Config.ToolNames); ok {
+				obs := env.Tools.Execute(stepCtx, call)
+				obs = boundObservation(obs)
+				steps = append(steps, Step{
+					ID:       fmt.Sprintf("step-%d", i+1),
+					Thought:  firstNonEmpty(think.Thought, "Recovered plain-text tool call from reflected output."),
+					Action:   call,
+					Obs:      obs,
+					Duration: time.Since(stepStart),
+				})
+				continue
+			}
 			if isPrematureFinalAnswer(resp.Output) && i < env.Config.MaxSteps-1 {
 				steps = append(steps, Step{
 					ID:      fmt.Sprintf("step-%d", i+1),
@@ -124,6 +145,26 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 		SystemPrompt: env.Config.SystemPrompt,
 		OutputFormat: env.Config.OutputFormat,
 	})
+	if call, ok := recoverTextualToolCall(resp.Output, env.Config.ToolNames); ok {
+		stepCtx, cancel := context.WithTimeout(ctx, env.Config.StepTimeout)
+		stepStart := time.Now()
+		obs := env.Tools.Execute(stepCtx, call)
+		cancel()
+		obs = boundObservation(obs)
+		steps = append(steps, Step{
+			ID:       fmt.Sprintf("step-%d", len(steps)+1),
+			Thought:  "Recovered plain-text tool call from reflected output.",
+			Action:   call,
+			Obs:      obs,
+			Duration: time.Since(stepStart),
+		})
+		resp, _ = env.LLM.Reflect(ctx, ReflectRequest{
+			TaskInput:    taskInput,
+			Steps:        steps,
+			SystemPrompt: env.Config.SystemPrompt,
+			OutputFormat: env.Config.OutputFormat,
+		})
+	}
 	return steps, resp
 }
 
@@ -137,6 +178,9 @@ func recoverTextualToolCall(text string, toolNames []string) (ToolCall, bool) {
 			s = s[:j]
 		}
 		s = strings.TrimSpace(s)
+	}
+	if idx := strings.LastIndex(strings.ToLower(s), "action:"); idx >= 0 {
+		s = strings.TrimSpace(s[idx+len("action:"):])
 	}
 	open := strings.Index(s, "(")
 	close := strings.LastIndex(s, ")")
@@ -152,7 +196,13 @@ func recoverTextualToolCall(text string, toolNames []string) (ToolCall, bool) {
 		rawArgs = "{}"
 	}
 	var args map[string]any
-	if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
+	if strings.HasPrefix(rawArgs, "map[") && strings.HasSuffix(rawArgs, "]") {
+		var ok bool
+		args, ok = parseLegacyMapArgs(rawArgs)
+		if !ok {
+			return ToolCall{}, false
+		}
+	} else if err := json.Unmarshal([]byte(rawArgs), &args); err != nil {
 		return ToolCall{}, false
 	}
 	input := make(map[string]string, len(args))
@@ -173,6 +223,23 @@ func recoverTextualToolCall(text string, toolNames []string) (ToolCall, bool) {
 		}
 	}
 	return ToolCall{Tool: name, Input: input, Arguments: args}, true
+}
+
+func parseLegacyMapArgs(raw string) (map[string]any, bool) {
+	body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "map["), "]"))
+	if body == "" {
+		return map[string]any{}, true
+	}
+	args := map[string]any{}
+	fields := strings.Fields(body)
+	for _, f := range fields {
+		k, v, ok := strings.Cut(f, ":")
+		if !ok || strings.TrimSpace(k) == "" {
+			return nil, false
+		}
+		args[strings.TrimSpace(k)] = strings.TrimSpace(v)
+	}
+	return args, true
 }
 
 func toolAllowed(name string, toolNames []string) bool {

@@ -58,9 +58,11 @@ func (e *errorExecutor) Execute(_ context.Context, call reasoning.ToolCall) reas
 }
 
 type scriptedLLM struct {
-	responses  []reasoning.ThinkResponse
-	thinkCalls int
-	reflectOut string
+	responses      []reasoning.ThinkResponse
+	thinkCalls     int
+	reflectOut     string
+	reflectOutputs []string
+	reflectCalls   int
 }
 
 func (s *scriptedLLM) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
@@ -76,11 +78,44 @@ func (s *scriptedLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Pla
 }
 
 func (s *scriptedLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	s.reflectCalls++
+	if s.reflectCalls <= len(s.reflectOutputs) {
+		return reasoning.ReflectResponse{Output: s.reflectOutputs[s.reflectCalls-1]}, nil
+	}
 	out := s.reflectOut
 	if out == "" {
 		out = "done"
 	}
 	return reasoning.ReflectResponse{Output: out}, nil
+}
+
+type flakyThinkLLM struct {
+	thinkCalls int
+}
+
+func (f *flakyThinkLLM) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	f.thinkCalls++
+	if f.thinkCalls == 1 {
+		return reasoning.ThinkResponse{}, errors.New("invalid JSON reasoning response")
+	}
+	if f.thinkCalls == 2 {
+		return reasoning.ThinkResponse{
+			IsDone: false,
+			Action: reasoning.ToolCall{
+				Tool:  "fetch_url",
+				Input: map[string]string{"url": "https://example.com"},
+			},
+		}, nil
+	}
+	return reasoning.ThinkResponse{IsDone: true, FinalAnswer: "fetched"}, nil
+}
+
+func (f *flakyThinkLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{}, errors.New("plan not scripted")
+}
+
+func (f *flakyThinkLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	return reasoning.ReflectResponse{Output: "done"}, nil
 }
 
 type recordingExecutor struct {
@@ -212,6 +247,60 @@ func TestReActDoesNotStopOnProgressNoteReflectOutput(t *testing.T) {
 	}
 	if len(result.Steps) < 3 {
 		t.Fatalf("expected queue_names, controller note, and queue_list steps, got %d", len(result.Steps))
+	}
+}
+
+func TestReActContinuesAfterThinkError(t *testing.T) {
+	llm := &flakyThinkLLM{}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     4,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"fetch_url"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "any-react-agent", "fetch https://example.com")
+
+	if len(exec.calls) != 1 || exec.calls[0].Tool != "fetch_url" {
+		t.Fatalf("expected loop to continue after Think error and call fetch_url, calls=%#v", exec.calls)
+	}
+	if len(result.Steps) < 2 {
+		t.Fatalf("expected controller note plus recovered tool step, got %d", len(result.Steps))
+	}
+}
+
+func TestReActRecoversLegacyActionFromReflectOutput(t *testing.T) {
+	llm := &scriptedLLM{
+		responses: []reasoning.ThinkResponse{
+			{IsDone: true, Thought: "need to fetch", FinalAnswer: "ready"},
+			{IsDone: true, FinalAnswer: "done"},
+		},
+		reflectOutputs: []string{
+			"I need to fetch the URL content first.\nAction: fetch_url(map[url:https://example.com/article])",
+			"fetched",
+		},
+	}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     4,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"fetch_url"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "any-react-agent", "process queued resource")
+
+	if len(exec.calls) != 1 {
+		t.Fatalf("expected recovered legacy fetch_url call, got %d", len(exec.calls))
+	}
+	if exec.calls[0].Tool != "fetch_url" || exec.calls[0].Input["url"] != "https://example.com/article" {
+		t.Fatalf("unexpected recovered call: %#v", exec.calls[0])
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("steps = %d, want 1 recovered tool step", len(result.Steps))
 	}
 }
 
