@@ -50,6 +50,18 @@ func TestNodeExecTimeout(t *testing.T) {
 			want:     defaultMCPFlowTimeout,
 		},
 		{
+			name:     "kb_write with no declared wait gets bounded knowledge default",
+			node:     sdkr.FlowNode{Tool: "kb_write"},
+			rendered: `{"kb":"AI-Docs","content":"hello"}`,
+			want:     defaultKBWriteFlowTimeout,
+		},
+		{
+			name:     "declared wait still wins for kb_write",
+			node:     sdkr.FlowNode{Tool: "kb_write"},
+			rendered: `{"kb":"AI-Docs","content":"hello","timeout_s":300}`,
+			want:     300*time.Second + nodeWaitHeadroom,
+		},
+		{
 			name:     "explicit timeout still wins for an MCP tool",
 			node:     sdkr.FlowNode{Tool: "mcp__x__y", Timeout: "30s"},
 			rendered: `{}`,

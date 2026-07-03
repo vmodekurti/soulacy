@@ -210,6 +210,9 @@ func (s *Service) IngestText(ctx context.Context, kbName, title, source, mimeTyp
 	const batchSize = 64
 	vecs := make([][]float32, 0, len(childTexts))
 	for i := 0; i < len(childTexts); i += batchSize {
+		if err := ctx.Err(); err != nil {
+			return nil, fmt.Errorf("kb_write: cancelled before embed batch %d: %w", i, err)
+		}
 		end := i + batchSize
 		if end > len(childTexts) {
 			end = len(childTexts)

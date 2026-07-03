@@ -61,6 +61,9 @@ func nodeExecTimeout(node sdkr.FlowNode, renderedInput string) time.Duration {
 	if sec > 0 {
 		return time.Duration(sec)*time.Second + nodeWaitHeadroom
 	}
+	if strings.TrimSpace(node.Tool) == "kb_write" {
+		return defaultKBWriteFlowTimeout
+	}
 	// Slow-by-design external tools: an MCP call in a flow talks to an outside
 	// service and routinely does real work that exceeds the tight global
 	// tool_timeout (default 120s) — e.g. NotebookLM's research_import. Give such a
@@ -78,6 +81,12 @@ func nodeExecTimeout(node sdkr.FlowNode, renderedInput string) time.Duration {
 // when it declares no timeout of its own — generous because external operations
 // are slow and variable, while local builtins keep the tight global default.
 const defaultMCPFlowTimeout = 10 * time.Minute
+
+// defaultKBWriteFlowTimeout keeps Knowledge writes from inheriting an
+// operator-wide tool timeout meant for long external MCP jobs. Small text
+// ingests complete quickly; large or unhealthy embedder writes should fail
+// visibly and let Studio self-heal instead of making the chat look stuck.
+const defaultKBWriteFlowTimeout = 2 * time.Minute
 
 // decodeJSONObject parses a JSON object string, or returns nil.
 func decodeJSONObject(s string) map[string]any {

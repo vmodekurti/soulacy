@@ -1089,15 +1089,14 @@ func (e *Engine) buildKBWriteBuiltin() BuiltinTool {
 					"description": "Optional MIME type such as text/plain or text/markdown.",
 				},
 				"content": map[string]any{
-					"type":        "string",
-					"description": "The text content to ingest.",
+					"description": "The text content to ingest. Structured JSON values are accepted and stored as readable JSON text.",
 				},
 			},
 			"required": []string{"kb", "content"},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			kbName := argString(args, "kb")
-			content := argString(args, "content")
+			content := argContentText(args, "content")
 			if kbName == "" {
 				return "", fmt.Errorf("kb_write: kb is required")
 			}

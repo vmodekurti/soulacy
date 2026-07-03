@@ -29,10 +29,11 @@ under "Tier 2" so the builder knows each tool's real shape.
 - R8. Every tool node input MUST be a JSON object. Never pass raw text or a whole upstream reply directly into a tool node.
 - R9. If a tool expects structured arguments and the upstream node is an agent/LLM/free-form output, insert an LLM Extract or Python Transform node, or pass the upstream text through a JSON-safe field using {{ toJson .var }} unquoted.
 - R10. Prefer typed ports or JSON-safe {{ toJson .var }} handoffs. Never put a free-form or structured upstream value inside quotes like "content": "{{ .agent_reply }}"; quotes/newlines in the reply will break JSON.
+- R11. For "ingest documents/URLs into KB" tasks, build a safe Knowledge Ingestion flow: extract source(s) -> fetch/read content -> classify/tag/summarize -> kb_write -> optional verification search. Store the cleaned artifact record and metadata, not raw HTML dumps, activity traces, or arbitrary host files.
 
 ### Scheduling & Delivery
-- R11. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
-- R12. Every channel the agent delivers to must be configured and enabled.
+- R12. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
+- R13. Every channel the agent delivers to must be configured and enabled.
 
 ## Tier 2 — Tool contracts (input args + output shapes)
 
@@ -43,7 +44,7 @@ builder automatically from the live catalog; add OUTPUT shapes here.)
 - web_search — input {query, num_results}; output
   {query, result_count, results:[{title, url, content}]}. Read .results.
 - fetch_url — input {url, max_bytes}; output is fetched page text. Always pass a JSON object such as {"url":"{{ .url }}"}.
-- kb_write — input {kb, content, title, source, mime_type}; requires kb and content. Use it for knowledge ingestion. Never pass raw agent text directly; use {"kb":"KB Name","content":{{ toJson .tagged_text }},"title":"...","source":"..."}.
+- kb_write — input {kb, content, title, source, mime_type}; requires kb and content. Use it for knowledge ingestion. content may be a string, object, or array; pass structured artifacts unquoted with {"kb":"KB Name","content":{{ toJson .tagged_artifact }},"title":"...","source":"..."}. Do not use write_file for KB ingestion.
 - kb_search — input {kb, query, top_k}; output is search results text.
 - (add your tools below, e.g.)
 - mcp__notebooklm__notebook_create — output {notebook_id, title}; the notebook id is

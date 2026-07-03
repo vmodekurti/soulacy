@@ -16,8 +16,10 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 )
 
 // argString extracts a string argument by name. Returns "" if the key is
@@ -44,6 +46,41 @@ func argStringDefault(args map[string]any, key, def string) string {
 		return def
 	}
 	return s
+}
+
+// argContentText extracts text-like content for storage tools. It preserves
+// strings exactly, but also accepts parsed JSON objects/arrays from Studio's
+// {{ toJson .value }} handoffs and serializes them as readable JSON text.
+func argContentText(args map[string]any, key string) string {
+	v, ok := args[key]
+	if !ok || v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return strings.TrimSpace(stripMarkdownJSONFence(s))
+	}
+	if b, err := json.MarshalIndent(v, "", "  "); err == nil {
+		return string(b)
+	}
+	return strings.TrimSpace(fmt.Sprintf("%v", v))
+}
+
+func stripMarkdownJSONFence(s string) string {
+	t := strings.TrimSpace(s)
+	if !strings.HasPrefix(t, "```") {
+		return s
+	}
+	lines := strings.Split(t, "\n")
+	if len(lines) < 2 {
+		return s
+	}
+	first := strings.TrimSpace(lines[0])
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if !strings.HasPrefix(first, "```") || last != "```" {
+		return s
+	}
+	inner := strings.Join(lines[1:len(lines)-1], "\n")
+	return strings.TrimSpace(inner)
 }
 
 // argInt extracts an integer argument by name, returning def when the key is
