@@ -31,7 +31,7 @@ func builtinToolParams() map[string][]ToolParam {
 		},
 		"kb_write": {
 			{Name: "kb", Type: "string", Required: true},
-			{Name: "content", Type: "string", Required: true},
+			{Name: "content", Type: "string|object|array", Required: true},
 			{Name: "title", Type: "string"},
 			{Name: "source", Type: "string"},
 			{Name: "mime_type", Type: "string"},

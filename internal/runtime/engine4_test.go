@@ -104,6 +104,26 @@ func TestArgStringDefault_EmptyStringReturnsFallback(t *testing.T) {
 	}
 }
 
+func TestArgContentText_AcceptsStructuredJSON(t *testing.T) {
+	args := map[string]any{
+		"content": map[string]any{
+			"tags":    []any{"governance", "ai"},
+			"content": "stored text",
+		},
+	}
+	got := argContentText(args, "content")
+	if !strings.Contains(got, `"tags"`) || !strings.Contains(got, `"stored text"`) {
+		t.Fatalf("structured content rendered as %q", got)
+	}
+}
+
+func TestArgContentText_StripsMarkdownJSONFence(t *testing.T) {
+	args := map[string]any{"content": "```json\n{\"ok\":true}\n```"}
+	if got := argContentText(args, "content"); got != `{"ok":true}` {
+		t.Fatalf("got %q, want unfenced JSON", got)
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // toolargs.go — argInt
 // ─────────────────────────────────────────────────────────────────────────────
