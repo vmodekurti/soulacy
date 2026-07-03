@@ -1642,7 +1642,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 
 	e.sink.Emit(message.Event{
 		Type: "message.in", AgentID: msg.AgentID, SessionID: msg.SessionID,
-		Payload: msg, Timestamp: time.Now().UTC(),
+		Payload: trimMessageForEvent(msg), Timestamp: time.Now().UTC(),
 	})
 
 	// E5 — Structured Workflow Scaffolding: if the agent declares a workflow,
@@ -1681,7 +1681,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		}
 		e.sink.Emit(message.Event{
 			Type: "message.out", AgentID: msg.AgentID, SessionID: msg.SessionID,
-			Payload: reply, Timestamp: time.Now().UTC(),
+			Payload: trimMessageForEvent(reply), Timestamp: time.Now().UTC(),
 		})
 		// Workflow agents bypass finalizeReply, so persist the episodic record
 		// here too. The workflow IS the active feature, so it qualifies for the
@@ -2369,7 +2369,7 @@ func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess 
 
 	e.sink.Emit(message.Event{
 		Type: "message.out", AgentID: msg.AgentID, SessionID: msg.SessionID,
-		Payload: reply, Timestamp: time.Now().UTC(),
+		Payload: trimMessageForEvent(reply), Timestamp: time.Now().UTC(),
 	})
 
 	// Persist user + assistant turns to the conversation history store.
@@ -4498,6 +4498,30 @@ func flattenParts(parts []message.Part) string {
 		}
 	}
 	return sb.String()
+}
+
+const messageEventTextMaxRunes = 16_000
+
+func trimMessageForEvent(msg message.Message) message.Message {
+	if len(msg.Parts) == 0 {
+		return msg
+	}
+	out := msg
+	out.Parts = append([]message.Part(nil), msg.Parts...)
+	for i := range out.Parts {
+		if out.Parts[i].Type != message.ContentText {
+			continue
+		}
+		text := strings.TrimSpace(out.Parts[i].Text)
+		r := []rune(text)
+		if len(r) <= messageEventTextMaxRunes {
+			out.Parts[i].Text = text
+			continue
+		}
+		out.Parts[i].Text = strings.TrimSpace(string(r[:messageEventTextMaxRunes])) +
+			fmt.Sprintf("\n\n[truncated: %d chars omitted from action log]", len(r)-messageEventTextMaxRunes)
+	}
+	return out
 }
 
 const (
