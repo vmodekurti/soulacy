@@ -103,6 +103,7 @@ type Engine struct {
 	skillLoader     SkillLoader
 	builtins        []BuiltinTool
 	channelRegistry *channels.Registry
+	queueStore      *agentQueueStore
 
 	// ollamaAPIKey is used by the built-in web_search tool (Ollama Web Search API).
 	// Falls back to the OLLAMA_API_KEY env var at call time.
@@ -403,6 +404,7 @@ func NewEngine(
 		allowSystemAgents: allowSystemAgents,
 		vectorStore:       vectorStore,
 		pluginProvider:    pluginProvider,
+		queueStore:        newAgentQueueStore(),
 	}
 	e.broker = newConfirmBroker()
 	e.builtins = e.buildBuiltins()
@@ -894,6 +896,11 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// registry makes generated workflows executable instead of merely plausible.
 	tools = append(tools, e.buildChannelSendBuiltin())
 
+	// queue_* — safe, in-memory handoff for interactive agents and Studio
+	// workflows. These tools avoid write_file/system access for ephemeral
+	// intermediate state.
+	tools = append(tools, e.buildQueueBuiltins()...)
+
 	// Skill built-ins are only added when a skill loader is configured;
 	// other built-ins (kb_search, …) are appended below regardless.
 	if e.skillLoader != nil {
@@ -1089,15 +1096,14 @@ func (e *Engine) buildKBWriteBuiltin() BuiltinTool {
 					"description": "Optional MIME type such as text/plain or text/markdown.",
 				},
 				"content": map[string]any{
-					"type":        "string",
-					"description": "The text content to ingest.",
+					"description": "The text content to ingest. Structured JSON values are accepted and stored as readable JSON text.",
 				},
 			},
 			"required": []string{"kb", "content"},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
 			kbName := argString(args, "kb")
-			content := argString(args, "content")
+			content := argContentText(args, "content")
 			if kbName == "" {
 				return "", fmt.Errorf("kb_write: kb is required")
 			}
@@ -1643,7 +1649,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 
 	e.sink.Emit(message.Event{
 		Type: "message.in", AgentID: msg.AgentID, SessionID: msg.SessionID,
-		Payload: msg, Timestamp: time.Now().UTC(),
+		Payload: trimMessageForEvent(msg), Timestamp: time.Now().UTC(),
 	})
 
 	// E5 — Structured Workflow Scaffolding: if the agent declares a workflow,
@@ -1682,7 +1688,7 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		}
 		e.sink.Emit(message.Event{
 			Type: "message.out", AgentID: msg.AgentID, SessionID: msg.SessionID,
-			Payload: reply, Timestamp: time.Now().UTC(),
+			Payload: trimMessageForEvent(reply), Timestamp: time.Now().UTC(),
 		})
 		// Workflow agents bypass finalizeReply, so persist the episodic record
 		// here too. The workflow IS the active feature, so it qualifies for the
@@ -1980,12 +1986,17 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		}
 
 		req := llm.CompletionRequest{
-			Model:       def.LLM.Model,
-			Messages:    chatMsgs,
-			Tools:       tools,
-			Temperature: def.LLM.Temperature,
-			MaxTokens:   def.LLM.MaxTokens,
-			Stream:      wantStream,
+			Model:            def.LLM.Model,
+			Messages:         chatMsgs,
+			Tools:            tools,
+			Temperature:      def.LLM.Temperature,
+			TopP:             def.LLM.TopP,
+			MaxTokens:        def.LLM.MaxTokens,
+			Stream:           wantStream,
+			ResponseFormat:   def.LLM.ResponseFormat,
+			ReasoningEffort:  def.LLM.ReasoningEffort,
+			PresencePenalty:  def.LLM.PresencePenalty,
+			FrequencyPenalty: def.LLM.FrequencyPenalty,
 		}
 		// Tool-choice constraint applies ONLY on turn 1 AND only if we didn't
 		// already auto-delegate above (otherwise we'd force the same tool a
@@ -2370,7 +2381,7 @@ func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess 
 
 	e.sink.Emit(message.Event{
 		Type: "message.out", AgentID: msg.AgentID, SessionID: msg.SessionID,
-		Payload: reply, Timestamp: time.Now().UTC(),
+		Payload: trimMessageForEvent(reply), Timestamp: time.Now().UTC(),
 	})
 
 	// Persist user + assistant turns to the conversation history store.
@@ -2470,10 +2481,14 @@ func (e *Engine) finalSynthesis(ctx context.Context, def *agent.Definition, agen
 	})
 	start := time.Now()
 	resp, err := e.llmRouter.Complete(ctx, def.LLM.Provider, llm.CompletionRequest{
-		Model:       def.LLM.Model,
-		Messages:    msgs,
-		Temperature: def.LLM.Temperature,
-		MaxTokens:   def.LLM.MaxTokens,
+		Model:            def.LLM.Model,
+		Messages:         msgs,
+		Temperature:      def.LLM.Temperature,
+		TopP:             def.LLM.TopP,
+		MaxTokens:        def.LLM.MaxTokens,
+		ReasoningEffort:  def.LLM.ReasoningEffort,
+		PresencePenalty:  def.LLM.PresencePenalty,
+		FrequencyPenalty: def.LLM.FrequencyPenalty,
 		// Tools intentionally omitted so the model must answer in text.
 	})
 	if err != nil {
@@ -2512,10 +2527,14 @@ func (e *Engine) finalSynthesis(ctx context.Context, def *agent.Definition, agen
 				"Do not include any <think> blocks or analysis — write the user-facing answer now.",
 		})
 		retryResp, retryErr := e.llmRouter.Complete(ctx, def.LLM.Provider, llm.CompletionRequest{
-			Model:       def.LLM.Model,
-			Messages:    retryMsgs,
-			Temperature: def.LLM.Temperature,
-			MaxTokens:   def.LLM.MaxTokens,
+			Model:            def.LLM.Model,
+			Messages:         retryMsgs,
+			Temperature:      def.LLM.Temperature,
+			TopP:             def.LLM.TopP,
+			MaxTokens:        def.LLM.MaxTokens,
+			ReasoningEffort:  def.LLM.ReasoningEffort,
+			PresencePenalty:  def.LLM.PresencePenalty,
+			FrequencyPenalty: def.LLM.FrequencyPenalty,
 			// Tools still omitted so the model must answer in text.
 		})
 		if retryErr == nil && strings.TrimSpace(retryResp.Content) != "" {
@@ -2550,12 +2569,16 @@ func (e *Engine) finalSynthesisStructured(ctx context.Context, def *agent.Defini
 		Timestamp: time.Now().UTC(),
 	})
 	resp, err := e.llmRouter.Complete(ctx, def.LLM.Provider, llm.CompletionRequest{
-		Model:          def.LLM.Model,
-		Messages:       msgs,
-		Temperature:    def.LLM.Temperature,
-		MaxTokens:      def.LLM.MaxTokens,
-		ResponseFormat: "json_schema",
-		JSONSchema:     def.LLM.OutputSchema,
+		Model:            def.LLM.Model,
+		Messages:         msgs,
+		Temperature:      def.LLM.Temperature,
+		TopP:             def.LLM.TopP,
+		MaxTokens:        def.LLM.MaxTokens,
+		ResponseFormat:   "json_schema",
+		JSONSchema:       def.LLM.OutputSchema,
+		ReasoningEffort:  def.LLM.ReasoningEffort,
+		PresencePenalty:  def.LLM.PresencePenalty,
+		FrequencyPenalty: def.LLM.FrequencyPenalty,
 	})
 	if err != nil {
 		e.sink.Emit(message.Event{
@@ -4326,6 +4349,27 @@ func applyPlaygroundOverrides(def *agent.Definition, meta map[string]string) {
 			def.LLM.MaxTokens = n
 		}
 	}
+	if v := strings.TrimSpace(meta["playground.llm.top_p"]); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			def.LLM.TopP = f
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.llm.response_format"]); v != "" {
+		def.LLM.ResponseFormat = v
+	}
+	if v := strings.TrimSpace(meta["playground.llm.reasoning_effort"]); v != "" {
+		def.LLM.ReasoningEffort = v
+	}
+	if v := strings.TrimSpace(meta["playground.llm.presence_penalty"]); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			def.LLM.PresencePenalty = f
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.llm.frequency_penalty"]); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			def.LLM.FrequencyPenalty = f
+		}
+	}
 	if v := strings.TrimSpace(meta["playground.max_turns"]); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			def.MaxTurns = n
@@ -4499,6 +4543,30 @@ func flattenParts(parts []message.Part) string {
 		}
 	}
 	return sb.String()
+}
+
+const messageEventTextMaxRunes = 16_000
+
+func trimMessageForEvent(msg message.Message) message.Message {
+	if len(msg.Parts) == 0 {
+		return msg
+	}
+	out := msg
+	out.Parts = append([]message.Part(nil), msg.Parts...)
+	for i := range out.Parts {
+		if out.Parts[i].Type != message.ContentText {
+			continue
+		}
+		text := strings.TrimSpace(out.Parts[i].Text)
+		r := []rune(text)
+		if len(r) <= messageEventTextMaxRunes {
+			out.Parts[i].Text = text
+			continue
+		}
+		out.Parts[i].Text = strings.TrimSpace(string(r[:messageEventTextMaxRunes])) +
+			fmt.Sprintf("\n\n[truncated: %d chars omitted from action log]", len(r)-messageEventTextMaxRunes)
+	}
+	return out
 }
 
 const (

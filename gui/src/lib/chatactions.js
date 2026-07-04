@@ -56,8 +56,19 @@ export function buildOverrides(controls = {}) {
   if (controls.temperature !== '' && controls.temperature != null && !Number.isNaN(Number(controls.temperature))) {
     llm.temperature = Number(controls.temperature)
   }
+  if (controls.topP !== '' && controls.topP != null && Number(controls.topP) > 0) {
+    llm.top_p = Number(controls.topP)
+  }
   if (controls.maxTokens !== '' && controls.maxTokens != null && Number(controls.maxTokens) > 0) {
     llm.max_tokens = Number(controls.maxTokens)
+  }
+  if (str(controls.responseFormat)) llm.response_format = str(controls.responseFormat)
+  if (str(controls.reasoningEffort)) llm.reasoning_effort = str(controls.reasoningEffort)
+  if (controls.presencePenalty !== '' && controls.presencePenalty != null && !Number.isNaN(Number(controls.presencePenalty))) {
+    llm.presence_penalty = Number(controls.presencePenalty)
+  }
+  if (controls.frequencyPenalty !== '' && controls.frequencyPenalty != null && !Number.isNaN(Number(controls.frequencyPenalty))) {
+    llm.frequency_penalty = Number(controls.frequencyPenalty)
   }
   if (str(controls.toolChoice)) llm.tool_choice = str(controls.toolChoice)
   if (Object.keys(llm).length) o.llm = llm

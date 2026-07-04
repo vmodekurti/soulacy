@@ -41,31 +41,46 @@
 
   // History panel
   let historyAgent   = null   // agent whose history is open
-  let historyRuns    = []     // [{sessionId, startTime, status, output}]
+  let historyRuns    = []     // [{id, sessionId, startTime, status, output}]
   let historyLoading = false
   let historyError   = ''
-  let expandedRuns   = {}     // sessionId → true (output expanded)
+  let expandedRuns   = {}     // run id → true (output expanded)
 
   function partsText(payload) {
     return (payload?.parts || []).filter(x => x.type === 'text').map(x => x.text).join('\n')
   }
 
   function groupRuns(events) {
-    const sessions = {}
-    for (const ev of events) {
+    const ordered = events.slice().sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+    const runs = []
+    const activeBySession = {}
+    const startTypes = new Set(['message.in'])
+
+    for (const ev of ordered) {
       const sid = ev.session_id || 'unknown'
-      if (!sessions[sid]) sessions[sid] = []
-      sessions[sid].push(ev)
+      if (!activeBySession[sid] || startTypes.has(ev.type)) {
+        const run = {
+          id: `${sid}:${ev.timestamp || runs.length}`,
+          sessionId: sid,
+          events: [],
+        }
+        runs.push(run)
+        activeBySession[sid] = run
+      }
+      activeBySession[sid].events.push(ev)
     }
-    return Object.entries(sessions).map(([sid, evs]) => {
+
+    return runs.map((run) => {
+      const sid = run.sessionId
+      const evs = run.events
       // Event timestamp field is "timestamp" (not "created_at") per message.Event struct
       const sorted = evs.slice().sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
-      const outEv    = evs.find(e => e.type === 'message.out')
-      const errEv    = evs.find(e => e.type === 'error')
-      const inEv     = evs.find(e => e.type === 'message.in')
+      const outEv    = sorted.find(e => e.type === 'message.out')
+      const errEv    = sorted.find(e => e.type === 'error')
+      const inEv     = sorted.find(e => e.type === 'message.in')
       // A run is failed if any tool returned is_error:true, even when the LLM
       // still produced a message.out summarising the failure.
-      const toolFailed = evs.some(e => e.type === 'tool.result' && e.payload?.is_error === true)
+      const toolFailed = sorted.some(e => e.type === 'tool.result' && e.payload?.is_error === true)
 
       let status = 'unknown'
       if (outEv && !toolFailed && !errEv) status = 'success'
@@ -87,7 +102,7 @@
       const channel = inEv?.payload?.channel || ''
       const startTime = (inEv || sorted[0])?.timestamp
 
-      return { sessionId: sid, startTime, status, output, channel }
+      return { id: run.id, sessionId: sid, startTime, status, output, channel }
     }).sort((a, b) => new Date(b.startTime) - new Date(a.startTime))
   }
 
@@ -111,7 +126,7 @@
   }
 
   function closeHistory() { historyAgent = null }
-  function toggleRun(sid) { expandedRuns = { ...expandedRuns, [sid]: !expandedRuns[sid] } }
+  function toggleRun(runId) { expandedRuns = { ...expandedRuns, [runId]: !expandedRuns[runId] } }
 
   let statusTimer, tick
 
@@ -625,17 +640,17 @@ schedule:
         {:else if historyRuns.length === 0}
           <div class="panel-empty">No runs recorded yet.</div>
         {:else}
-          {#each historyRuns as run}
+          {#each historyRuns as run (run.id)}
             <div class="run" class:run-fail={run.status === 'failed'}>
-              <button class="run-hdr" on:click={() => toggleRun(run.sessionId)}>
+              <button class="run-hdr" on:click={() => toggleRun(run.id)}>
                 <span class="run-badge" class:badge-ok={run.status === 'success'} class:badge-fail={run.status === 'failed'} class:badge-unk={run.status === 'unknown'}>
                   {run.status === 'success' ? '✓ success' : run.status === 'failed' ? '✗ failed' : '? unknown'}
                 </span>
                 <span class="run-time">{run.startTime ? new Date(run.startTime).toLocaleString() : '—'}</span>
                 {#if run.channel}<span class="run-channel">{run.channel}</span>{/if}
-                <span class="run-chevron">{expandedRuns[run.sessionId] ? '▲' : '▼'}</span>
+                <span class="run-chevron">{expandedRuns[run.id] ? '▲' : '▼'}</span>
               </button>
-              {#if expandedRuns[run.sessionId]}
+              {#if expandedRuns[run.id]}
                 <div class="run-output">
                   <div class="run-metrics-row">
                     <RunMetrics sessionId={run.sessionId} agentId={historyAgent.id} />

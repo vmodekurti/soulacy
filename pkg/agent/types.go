@@ -49,6 +49,18 @@ type ReasoningConfig struct {
 	StepTimeout string `yaml:"step_timeout,omitempty" json:"step_timeout,omitempty"`
 	// TotalTimeout is the whole-task deadline (e.g. "180s").
 	TotalTimeout string `yaml:"total_timeout,omitempty" json:"total_timeout,omitempty"`
+	// Optional per-phase LLM tuning. Leave empty for Soulacy's reliable defaults.
+	Think   ReasoningPhaseConfig `yaml:"think,omitempty" json:"think,omitempty"`
+	Plan    ReasoningPhaseConfig `yaml:"plan,omitempty" json:"plan,omitempty"`
+	Reflect ReasoningPhaseConfig `yaml:"reflect,omitempty" json:"reflect,omitempty"`
+}
+
+// ReasoningPhaseConfig tunes an internal reasoning LLM phase.
+type ReasoningPhaseConfig struct {
+	Temperature    float64 `yaml:"temperature,omitempty" json:"temperature,omitempty"`
+	TopP           float64 `yaml:"top_p,omitempty" json:"top_p,omitempty"`
+	MaxTokens      int     `yaml:"max_tokens,omitempty" json:"max_tokens,omitempty"`
+	ResponseFormat string  `yaml:"response_format,omitempty" json:"response_format,omitempty"`
 }
 
 // BrainMemoryConfig controls long-term agent memory behaviour (CFG-02).
@@ -87,11 +99,16 @@ type ProceduralMemoryConfig struct {
 
 // LLMConfig specifies which model and parameters to use.
 type LLMConfig struct {
-	Provider    string  `yaml:"provider"           json:"provider"`
-	Model       string  `yaml:"model"              json:"model"`
-	Temperature float64 `yaml:"temperature"        json:"temperature"`
-	MaxTokens   int     `yaml:"max_tokens"         json:"max_tokens"`
-	BaseURL     string  `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	Provider         string  `yaml:"provider"           json:"provider"`
+	Model            string  `yaml:"model"              json:"model"`
+	Temperature      float64 `yaml:"temperature"        json:"temperature"`
+	TopP             float64 `yaml:"top_p,omitempty"   json:"top_p,omitempty"`
+	MaxTokens        int     `yaml:"max_tokens"         json:"max_tokens"`
+	BaseURL          string  `yaml:"base_url,omitempty" json:"base_url,omitempty"`
+	ResponseFormat   string  `yaml:"response_format,omitempty"   json:"response_format,omitempty"`
+	ReasoningEffort  string  `yaml:"reasoning_effort,omitempty"  json:"reasoning_effort,omitempty"`
+	PresencePenalty  float64 `yaml:"presence_penalty,omitempty"  json:"presence_penalty,omitempty"`
+	FrequencyPenalty float64 `yaml:"frequency_penalty,omitempty" json:"frequency_penalty,omitempty"`
 
 	// OutputSchema, when set, constrains the final reply to valid JSON matching
 	// the supplied JSON Schema. Translated per provider:

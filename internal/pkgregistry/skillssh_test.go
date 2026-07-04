@@ -85,6 +85,59 @@ func TestSkillsSh_Search(t *testing.T) {
 	}
 }
 
+func TestSkillsSh_SearchSendsConfiguredAuthHeader(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer token-123" {
+			t.Fatalf("Authorization = %q, want configured bearer token", got)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p, err := newSkillsShProvider(map[string]any{
+		"id":       "skills-sh",
+		"base_url": srv.URL,
+		"auth_headers": map[string]any{
+			"Authorization": "Bearer token-123",
+		},
+	})
+	if err != nil {
+		t.Fatalf("newSkillsShProvider: %v", err)
+	}
+	if _, err := p.Search(context.Background(), "audit"); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+}
+
+func TestSkillsSh_SearchUsesVercelOIDCTokenForSkillsSh(t *testing.T) {
+	t.Setenv("VERCEL_OIDC_TOKEN", "oidc-token-123")
+	p, err := newSkillsShProvider(map[string]any{"id": "skills-sh", "base_url": "https://skills.sh"})
+	if err != nil {
+		t.Fatalf("newSkillsShProvider: %v", err)
+	}
+	if got := p.headers["Authorization"]; got != "Bearer oidc-token-123" {
+		t.Fatalf("Authorization = %q, want env bearer token", got)
+	}
+}
+
+func TestSkillsSh_SearchReturnsHTTPErrorMessage(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"authentication_required","message":"token required"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p := newTestSkillsShProvider(t, srv.URL)
+	_, err := p.Search(context.Background(), "audit")
+	if err == nil || !strings.Contains(err.Error(), "authentication_required: token required") {
+		t.Fatalf("Search err = %v, want authentication message", err)
+	}
+}
+
 func TestSkillsSh_ResolveKnownAndUnknown(t *testing.T) {
 	srv := fakeSkillsSh(t)
 	p := newTestSkillsShProvider(t, srv.URL)

@@ -147,13 +147,22 @@ func (e *Engine) Resolve(ctx context.Context, slug string) (sdkpkg.Package, erro
 // results, and dedupes by slug (first/highest-priority hit wins). Provider
 // errors are logged and skipped — one broken registry never hides the rest.
 func (e *Engine) Search(ctx context.Context, query string) []sdkpkg.Package {
+	out, _ := e.SearchDetailed(ctx, query)
+	return out
+}
+
+// SearchDetailed is Search plus provider warnings. Use it for UI/API surfaces
+// where an empty result set should not hide a broken or unauthorized registry.
+func (e *Engine) SearchDetailed(ctx context.Context, query string) ([]sdkpkg.Package, []error) {
 	var out []sdkpkg.Package
+	var warnings []error
 	seen := map[string]struct{}{}
 	for _, en := range e.entries {
 		results, err := en.Provider.Search(ctx, query)
 		if err != nil {
 			e.log.Warn("package registry search failed; skipping",
 				zap.String("registry", en.Provider.ID()), zap.Error(err))
+			warnings = append(warnings, fmt.Errorf("%s: %w", en.Provider.ID(), err))
 			continue
 		}
 		for _, pkg := range results {
@@ -167,7 +176,7 @@ func (e *Engine) Search(ctx context.Context, query string) []sdkpkg.Package {
 			out = append(out, pkg)
 		}
 	}
-	return out
+	return out, warnings
 }
 
 // Fetch routes the download to the provider that resolved pkg (pkg.Provider).

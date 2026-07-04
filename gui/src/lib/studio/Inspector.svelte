@@ -743,12 +743,12 @@
       🗑 Delete node
     </button>
   {:else if workflow}
-    <!-- No node selected: edit the workflow framing (trigger + output). -->
-    <p class="insp-hint">Editing how this workflow starts and where it sends output. Select a node to inspect it.</p>
+    <!-- No node selected: edit the workflow framing (start mode + channel surfaces). -->
+    <p class="insp-hint">Editing how this workflow starts and which channels can deliver or expose it. Select a node to inspect it.</p>
 
     <section class="frame">
-      <h3 class="sub">Trigger</h3>
-      <label class="field-label" for="trigger-type">type</label>
+      <h3 class="sub">Start mode</h3>
+      <label class="field-label" for="trigger-type">primary start</label>
       <select
         id="trigger-type"
         value={triggerType}
@@ -790,10 +790,14 @@
       {:else if triggerType === 'manual'}
         <p class="insp-hint">Runs only when triggered by hand.</p>
       {/if}
+      {#if triggerType === 'schedule' && selectedChannels.size > 0}
+        <p class="insp-hint">This agent can be scheduled and still respond through mapped interactive channel bots. Configure those bot mappings in Channels.</p>
+      {/if}
     </section>
 
     <section class="frame">
-      <h3 class="sub">Output channels</h3>
+      <h3 class="sub">Channels &amp; delivery</h3>
+      <p class="insp-hint">Select channels for scheduled delivery and channel exposure. Interactive bot-to-agent routing is configured on the Channels page.</p>
       {#if !channels.length}
         <p class="insp-empty">No channels in catalog.</p>
       {:else}

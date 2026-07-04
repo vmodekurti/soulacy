@@ -104,6 +104,43 @@ func TestArgStringDefault_EmptyStringReturnsFallback(t *testing.T) {
 	}
 }
 
+func TestArgContentText_AcceptsStructuredJSON(t *testing.T) {
+	args := map[string]any{
+		"content": map[string]any{
+			"tags":    []any{"governance", "ai"},
+			"content": "stored text",
+		},
+	}
+	got := argContentText(args, "content")
+	if !strings.Contains(got, `"tags"`) || !strings.Contains(got, `"stored text"`) {
+		t.Fatalf("structured content rendered as %q", got)
+	}
+}
+
+func TestArgContentText_StripsMarkdownJSONFence(t *testing.T) {
+	args := map[string]any{"content": "```json\n{\"ok\":true}\n```"}
+	if got := argContentText(args, "content"); got != `{"ok":true}` {
+		t.Fatalf("got %q, want unfenced JSON", got)
+	}
+}
+
+func TestTrimMessageForEvent_CapsLargeTextParts(t *testing.T) {
+	msg := message.Message{Parts: message.Text(strings.Repeat("x", messageEventTextMaxRunes+100))}
+	got := trimMessageForEvent(msg)
+	if len(got.Parts) != 1 {
+		t.Fatalf("parts = %d", len(got.Parts))
+	}
+	if len([]rune(got.Parts[0].Text)) >= len([]rune(msg.Parts[0].Text)) {
+		t.Fatalf("message was not trimmed")
+	}
+	if !strings.Contains(got.Parts[0].Text, "truncated") {
+		t.Fatalf("missing truncation marker: %q", got.Parts[0].Text)
+	}
+	if msg.Parts[0].Text == got.Parts[0].Text {
+		t.Fatalf("expected event copy to differ from original message")
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // toolargs.go — argInt
 // ─────────────────────────────────────────────────────────────────────────────

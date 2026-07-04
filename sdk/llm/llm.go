@@ -18,8 +18,13 @@ type CompletionRequest struct {
 	Messages    []ChatMessage
 	Tools       []ToolSchema
 	Temperature float64
+	TopP        float64
 	MaxTokens   int
 	Stream      bool
+	// Optional provider-specific tuning. Zero values preserve existing behavior.
+	PresencePenalty  float64
+	FrequencyPenalty float64
+	ReasoningEffort  string
 
 	// ResponseFormat hints the provider to constrain its output. Empty = free
 	// text. "json" = the response must be a single JSON value (object/array).

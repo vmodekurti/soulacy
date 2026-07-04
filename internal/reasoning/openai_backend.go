@@ -28,8 +28,8 @@ import (
 
 // OpenAIBackend implements LLMBackend using any OpenAI-compatible chat API.
 type OpenAIBackend struct {
-	baseURL  string
-	apiKey   string
+	baseURL string
+	apiKey  string
 	// ThinkModel is used for Think() — the hot path. Defaults to the model
 	// set at construction time, or gpt-4o-mini for low latency.
 	ThinkModel string
@@ -37,6 +37,9 @@ type OpenAIBackend struct {
 	// for better reasoning on complex tasks.
 	PlanReflectModel string
 	client           *http.Client
+	ThinkParams      PhaseParams
+	PlanParams       PhaseParams
+	ReflectParams    PhaseParams
 }
 
 // NewOpenAIBackend creates a backend for the OpenAI API.
@@ -78,12 +81,15 @@ func (b *OpenAIBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.chat(ctx, b.ThinkModel, system, user, 512)
+	raw, err := b.chat(ctx, b.ThinkModel, system, user, phaseParamsWithDefaults(b.ThinkParams, 1024, 0.1, "json"))
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/openai: Think: %w", err)
 	}
 	var resp ThinkResponse
 	if err := unmarshalJSON(raw, &resp); err != nil {
+		if recovered, ok := recoverThinkResponseFromRaw(raw, req.ToolNames); ok {
+			return recovered, nil
+		}
 		return ThinkResponse{}, fmt.Errorf("reasoning/openai: Think: parse %q: %w", truncate(raw, 120), err)
 	}
 	return resp, nil
@@ -93,13 +99,16 @@ const openaiThinkInstructions = `
 
 Respond with ONLY a JSON object — no markdown, no explanation.
 Schema: {"thought":"...","is_done":false,"action":{"tool":"name","input":{"key":"value"}},"final_answer":""}
-When done: set "is_done":true, put answer in "final_answer", omit "action".`
+Keep "thought" under 25 words. Keep tool arguments concise; do not paste fetched documents, HTML, or long code into thought.
+When the next step requires a tool, set "is_done":false and put the tool in "action"; never write tool_name({...}) as prose.
+Only set "is_done":true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
+When done: set "is_done":true, put the completed answer in "final_answer", omit "action".`
 
 // ─── Plan ─────────────────────────────────────────────────────────────────────
 
 func (b *OpenAIBackend) Plan(ctx context.Context, systemPrompt, taskInput string, maxSteps int) (Plan, error) {
 	system := systemPrompt + fmt.Sprintf(openaiPlanInstructions, maxSteps)
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, "Task: "+taskInput, 1024)
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, "Task: "+taskInput, phaseParamsWithDefaults(b.PlanParams, 1024, 0.1, "json"))
 	if err != nil {
 		return Plan{}, fmt.Errorf("reasoning/openai: Plan: %w", err)
 	}
@@ -127,7 +136,7 @@ func (b *OpenAIBackend) Reflect(ctx context.Context, req ReflectRequest) (Reflec
 	user := fmt.Sprintf("Task: %s\n\nStep trace:\n%s\n\nProduce the final answer.",
 		req.TaskInput, formatStepHistory(req.Steps))
 
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, 2048)
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, phaseParamsWithDefaults(b.ReflectParams, 2048, 0.1, "json"))
 	if err != nil {
 		return ReflectResponse{}, fmt.Errorf("reasoning/openai: Reflect: %w", err)
 	}
@@ -146,12 +155,13 @@ Schema: {"output":"final answer here","updated_rules":"revised operating rules i
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 
 type openaiChatRequest struct {
-	Model          string               `json:"model"`
-	Messages       []openaiChatMessage  `json:"messages"`
-	MaxTokens      int                  `json:"max_tokens,omitempty"`
-	Temperature    float64              `json:"temperature"`
-	Stream         bool                 `json:"stream"`
-	ResponseFormat map[string]string    `json:"response_format"`
+	Model          string              `json:"model"`
+	Messages       []openaiChatMessage `json:"messages"`
+	MaxTokens      int                 `json:"max_tokens,omitempty"`
+	Temperature    float64             `json:"temperature"`
+	TopP           float64             `json:"top_p,omitempty"`
+	Stream         bool                `json:"stream"`
+	ResponseFormat map[string]string   `json:"response_format"`
 }
 
 type openaiChatMessage struct {
@@ -171,17 +181,24 @@ type openaiChatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func (b *OpenAIBackend) chat(ctx context.Context, model, system, user string, maxTokens int) (string, error) {
+func (b *OpenAIBackend) chat(ctx context.Context, model, system, user string, params PhaseParams) (string, error) {
 	payload := openaiChatRequest{
 		Model: model,
 		Messages: []openaiChatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		MaxTokens:   maxTokens,
-		Temperature: 0.1,
-		Stream:      false,
+		MaxTokens:      params.MaxTokens,
+		Temperature:    params.Temperature,
+		TopP:           params.TopP,
+		Stream:         false,
 		ResponseFormat: map[string]string{"type": "json_object"},
+	}
+	if strings.TrimSpace(params.ResponseFormat) == "" {
+		params.ResponseFormat = "json"
+	}
+	if params.ResponseFormat != "json" && params.ResponseFormat != "json_schema" {
+		payload.ResponseFormat = nil
 	}
 
 	body, err := json.Marshal(payload)

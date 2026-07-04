@@ -147,3 +147,156 @@ func TestAnthropicStructuredOutputReturnsForcedToolInputAsContent(t *testing.T) 
 		t.Fatalf("schema respond tool should not surface as tool call: %+v", resp.ToolCalls)
 	}
 }
+
+func TestAnthropicCompleteSanitizesToolNamesAndMapsBack(t *testing.T) {
+	var got map[string]any
+	provider := NewAnthropicProvider("http://anthropic.test", "sk-ant", "claude-test")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		tools := got["tools"].([]any)
+		if tools[0].(map[string]any)["name"] != "channel_send" {
+			t.Fatalf("tool name on wire = %#v, want channel_send", tools[0])
+		}
+		if got["tool_choice"].(map[string]any)["name"] != "channel_send" {
+			t.Fatalf("tool_choice = %#v", got["tool_choice"])
+		}
+		messages := got["messages"].([]any)
+		assistant := messages[1].(map[string]any)
+		blocks := assistant["content"].([]any)
+		if blocks[0].(map[string]any)["name"] != "channel_send" {
+			t.Fatalf("assistant tool_use name = %#v", blocks[0])
+		}
+		return jsonResponse(200, `{
+			"content": [
+				{"type": "tool_use", "id": "toolu_2", "name": "channel_send", "input": {"channel": "telegram", "text": "ok"}}
+			],
+			"usage": {}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{
+			{Role: "user", Content: "send it"},
+			{
+				Role: "assistant",
+				ToolCalls: []message.ToolCall{{
+					ID:        "toolu_1",
+					Name:      "channel.send",
+					Arguments: map[string]any{"channel": "telegram", "text": "previous"},
+				}},
+			},
+			{Role: "tool", ToolCallID: "toolu_1", Name: "channel.send", Content: "sent"},
+		},
+		Tools: []ToolSchema{{
+			Name:        "channel.send",
+			Description: "Send to a channel",
+			Parameters:  map[string]any{"type": "object"},
+		}},
+		ToolChoice: "channel.send",
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("tool calls = %+v", resp.ToolCalls)
+	}
+	if resp.ToolCalls[0].Name != "channel.send" {
+		t.Fatalf("tool name mapped back = %q", resp.ToolCalls[0].Name)
+	}
+	if resp.ToolCalls[0].Arguments["text"] != "ok" {
+		t.Fatalf("tool args = %+v", resp.ToolCalls[0].Arguments)
+	}
+}
+
+func TestAnthropicCompleteRetriesWithoutDeprecatedSamplingParams(t *testing.T) {
+	var calls int
+	provider := NewAnthropicProvider("http://anthropic.test", "sk-ant", "claude-test")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 {
+			if _, ok := got["temperature"]; !ok {
+				t.Fatal("first request should include temperature")
+			}
+			if _, ok := got["top_p"]; ok {
+				t.Fatalf("temperature and top_p must not be sent together: %#v", got)
+			}
+			return jsonResponse(400, `{"type":"error","error":{"type":"invalid_request_error","message":"temperature is deprecated for this model."}}`), nil
+		}
+		if _, ok := got["temperature"]; ok {
+			t.Fatalf("retry should omit deprecated temperature: %#v", got)
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("retry should not restore top_p after preferring temperature: %#v", got)
+		}
+		return jsonResponse(200, `{
+			"content": [{"type": "text", "text": "ok"}],
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.7,
+		TopP:        0.9,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+}
+
+func TestAnthropicCompleteUsesTopPWhenTemperatureUnsetAndRetriesIfDeprecated(t *testing.T) {
+	var calls int
+	provider := NewAnthropicProvider("http://anthropic.test", "sk-ant", "claude-test")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 {
+			if _, ok := got["temperature"]; ok {
+				t.Fatalf("temperature should be omitted when only top_p is tuned: %#v", got)
+			}
+			if _, ok := got["top_p"]; !ok {
+				t.Fatal("first request should include top_p")
+			}
+			return jsonResponse(400, `{"type":"error","error":{"type":"invalid_request_error","message":"top_p is deprecated for this model."}}`), nil
+		}
+		if _, ok := got["temperature"]; ok {
+			t.Fatalf("retry should still omit temperature: %#v", got)
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("retry should omit deprecated top_p: %#v", got)
+		}
+		return jsonResponse(200, `{
+			"content": [{"type": "text", "text": "ok"}],
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		TopP:     0.9,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+}

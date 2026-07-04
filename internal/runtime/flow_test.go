@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -203,6 +204,79 @@ func TestWorkflowExecutor_TypedPortHandoffAndTrace(t *testing.T) {
 	// LatestFlowTrace resolves the same run for the agent.
 	if lt, ok := e.LatestFlowTrace("workflow-agent"); !ok || lt.RunID != "trace-run-1" {
 		t.Errorf("LatestFlowTrace = %+v ok=%v, want run trace-run-1", lt, ok)
+	}
+}
+
+func TestWorkflowExecutor_GraphMode_EmitsNodeStartedEvent(t *testing.T) {
+	store := newTestCheckpointStore(t)
+	sink := &captureSink6{}
+	e := &Engine{sink: sink}
+	e.builtins = []BuiltinTool{{
+		Name: "slow_store",
+		Handler: func(_ context.Context, _ map[string]any) (string, error) {
+			return `{"ok":true}`, nil
+		},
+	}}
+
+	w := NewWorkflowExecutor(agent.WorkflowSpec{
+		Nodes: []sdkr.FlowNode{{ID: "store", Kind: sdkr.FlowNodeTool, Tool: "slow_store"}},
+		Edges: []sdkr.FlowEdge{{From: "store", To: "end"}},
+		Entry: "store",
+	}, e, store, zap.NewNop())
+
+	if _, err := w.Run(context.Background(), workflowTestMessage("go"), "started-run-1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var sawStarted, sawCompleted bool
+	for _, ev := range sink.events {
+		if ev.Type == "flow.node.started" {
+			sawStarted = true
+		}
+		if ev.Type == "flow.node" {
+			sawCompleted = true
+		}
+	}
+	if !sawStarted || !sawCompleted {
+		t.Fatalf("events: sawStarted=%v sawCompleted=%v all=%+v", sawStarted, sawCompleted, sink.events)
+	}
+}
+
+func TestWorkflowExecutor_GraphMode_TrimsLargeTracePayloads(t *testing.T) {
+	store := newTestCheckpointStore(t)
+	sink := &captureSink6{}
+	large := strings.Repeat("x", flowTraceFieldMaxBytes+4096)
+	e := &Engine{sink: sink}
+	e.builtins = []BuiltinTool{{
+		Name: "large_fetch",
+		Handler: func(_ context.Context, _ map[string]any) (string, error) {
+			return large, nil
+		},
+	}}
+
+	w := NewWorkflowExecutor(agent.WorkflowSpec{
+		Nodes: []sdkr.FlowNode{{ID: "fetch", Kind: sdkr.FlowNodeTool, Tool: "large_fetch"}},
+		Edges: []sdkr.FlowEdge{{From: "fetch", To: "end"}},
+		Entry: "fetch",
+	}, e, store, zap.NewNop())
+
+	out, err := w.Run(context.Background(), workflowTestMessage("go"), "large-trace-run-1")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := rawJSONString(t, out); len(got) != len(large) {
+		t.Fatalf("runtime output length = %d, want full %d", len(got), len(large))
+	}
+
+	trace, ok := e.FlowTrace("large-trace-run-1")
+	if !ok || len(trace.Entries) != 1 {
+		t.Fatalf("trace = %+v ok=%v", trace, ok)
+	}
+	var shown string
+	if err := json.Unmarshal(trace.Entries[0].Output, &shown); err != nil {
+		t.Fatalf("trace output is not a JSON string: %v", err)
+	}
+	if len(shown) >= len(large) || !strings.Contains(shown, "[truncated:") {
+		t.Fatalf("trace output was not trimmed, len=%d", len(shown))
 	}
 }
 

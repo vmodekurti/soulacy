@@ -87,3 +87,22 @@ func TestCheckToolArgs_CleanCallNoIssues(t *testing.T) {
 		t.Fatalf("clean call should yield no issues, got %+v", issues)
 	}
 }
+
+func TestCheckToolArgs_BuiltinSignatureUnknownArg(t *testing.T) {
+	d := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{{
+		ID:    "fetch",
+		Kind:  "tool",
+		Tool:  "fetch_url",
+		Input: `{"query":"https://example.com"}`,
+	}}}}
+	var out []PreflightIssue
+	checkToolArgs(d, Catalog{}, func(sev, kind, node, msg, fix string) {
+		out = append(out, PreflightIssue{Severity: sev, Kind: kind, NodeID: node, Message: msg, Fix: fix})
+	})
+	if len(out) == 0 {
+		t.Fatal("expected builtin signature warning")
+	}
+	if !strings.Contains(out[0].Message, `Argument "query"`) || !strings.Contains(out[0].Message, "fetch_url") {
+		t.Fatalf("unexpected warning: %+v", out[0])
+	}
+}

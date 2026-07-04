@@ -445,10 +445,17 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 		sb.WriteString("Available tools: ")
 		sb.WriteString(strings.Join(catalog.Tools, ", "))
 		sb.WriteString("\n")
-		if stringIn(catalog.Tools, "kb_write") {
-			sb.WriteString("- For intents like \"store in Soulacy's Knowledge store\", \"save to KB\", \"ingest documents/URLs into knowledge\", use the `kb_write` tool with an attached `knowledge` base. Do NOT use `write_file` for knowledge ingestion; `write_file` is only for arbitrary host files and requires system authorization.\n")
-		}
 	}
+	sb.WriteString("Built-in tool contracts you MUST obey:\n")
+	for _, name := range sortedBuiltinToolNames() {
+		sb.WriteString("- ")
+		sb.WriteString(name)
+		sb.WriteString("(")
+		sb.WriteString(toolParamPrompt(builtinToolParams()[name]))
+		sb.WriteString(")\n")
+	}
+	sb.WriteString("- For intents like \"store in Soulacy's Knowledge store\", \"save to KB\", \"ingest documents/URLs into knowledge\", use a safe Knowledge Ingestion flow and the `kb_write` tool with an attached `knowledge` base. Do NOT use `write_file`; it is only for arbitrary host files and requires system authorization. The `kb_write` input must be a JSON object with `kb` and `content`. Prefer storing a structured artifact object such as {summary,tags,source,content}; pass it as `\"content\": {{ toJson .tagged_artifact }}` unquoted so markdown, quotes, and newlines stay valid JSON.\n")
+	sb.WriteString("- For temporary state, queues, buffers, or handoffs between interactive workflow steps, use `queue_create`, `queue_put`, and `queue_take` instead of `write_file`. Queue tools are in-memory and safe for non-system agents; they are not durable across gateway restarts. Use an explicit queue name for multi-buffer workflows; otherwise the runtime uses the \"default\" queue.\n")
 	if len(catalog.Providers) > 0 {
 		sb.WriteString("Available providers: ")
 		sb.WriteString(strings.Join(catalog.Providers, ", "))
@@ -502,15 +509,6 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func stringIn(xs []string, want string) bool {
-	for _, x := range xs {
-		if strings.TrimSpace(x) == want {
-			return true
-		}
-	}
-	return false
 }
 
 // ParseDraft tolerantly extracts a Draft from raw model output: it strips

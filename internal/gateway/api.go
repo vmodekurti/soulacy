@@ -698,12 +698,29 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		Text          string   `json:"text"`
 		AttachmentIDs []string `json:"attachment_ids"`
 		Overrides     struct {
-			Provider    string   `json:"provider"`
-			Model       string   `json:"model"`
-			Temperature *float64 `json:"temperature"`
-			MaxTokens   *int     `json:"max_tokens"`
-			MaxTurns    *int     `json:"max_turns"`
-			ToolChoice  string   `json:"tool_choice"`
+			Provider         string   `json:"provider"`
+			Model            string   `json:"model"`
+			Temperature      *float64 `json:"temperature"`
+			TopP             *float64 `json:"top_p"`
+			MaxTokens        *int     `json:"max_tokens"`
+			MaxTurns         *int     `json:"max_turns"`
+			ResponseFormat   string   `json:"response_format"`
+			ReasoningEffort  string   `json:"reasoning_effort"`
+			PresencePenalty  *float64 `json:"presence_penalty"`
+			FrequencyPenalty *float64 `json:"frequency_penalty"`
+			ToolChoice       string   `json:"tool_choice"`
+			LLM              struct {
+				Provider         string   `json:"provider"`
+				Model            string   `json:"model"`
+				Temperature      *float64 `json:"temperature"`
+				TopP             *float64 `json:"top_p"`
+				MaxTokens        *int     `json:"max_tokens"`
+				ResponseFormat   string   `json:"response_format"`
+				ReasoningEffort  string   `json:"reasoning_effort"`
+				PresencePenalty  *float64 `json:"presence_penalty"`
+				FrequencyPenalty *float64 `json:"frequency_penalty"`
+				ToolChoice       string   `json:"tool_choice"`
+			} `json:"llm"`
 		} `json:"overrides"`
 	}
 	if err := c.BodyParser(&req); err != nil {
@@ -732,6 +749,40 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	}
 	def := s.loader.Get(req.AgentID)
 
+	ovProvider, ovModel, ovTemp, ovTopP, ovMaxTokens := req.Overrides.Provider, req.Overrides.Model, req.Overrides.Temperature, req.Overrides.TopP, req.Overrides.MaxTokens
+	ovResponseFormat, ovReasoningEffort := req.Overrides.ResponseFormat, req.Overrides.ReasoningEffort
+	ovPresencePenalty, ovFrequencyPenalty, ovToolChoice := req.Overrides.PresencePenalty, req.Overrides.FrequencyPenalty, req.Overrides.ToolChoice
+	if strings.TrimSpace(req.Overrides.LLM.Provider) != "" {
+		ovProvider = req.Overrides.LLM.Provider
+	}
+	if strings.TrimSpace(req.Overrides.LLM.Model) != "" {
+		ovModel = req.Overrides.LLM.Model
+	}
+	if req.Overrides.LLM.Temperature != nil {
+		ovTemp = req.Overrides.LLM.Temperature
+	}
+	if req.Overrides.LLM.TopP != nil {
+		ovTopP = req.Overrides.LLM.TopP
+	}
+	if req.Overrides.LLM.MaxTokens != nil {
+		ovMaxTokens = req.Overrides.LLM.MaxTokens
+	}
+	if strings.TrimSpace(req.Overrides.LLM.ResponseFormat) != "" {
+		ovResponseFormat = req.Overrides.LLM.ResponseFormat
+	}
+	if strings.TrimSpace(req.Overrides.LLM.ReasoningEffort) != "" {
+		ovReasoningEffort = req.Overrides.LLM.ReasoningEffort
+	}
+	if req.Overrides.LLM.PresencePenalty != nil {
+		ovPresencePenalty = req.Overrides.LLM.PresencePenalty
+	}
+	if req.Overrides.LLM.FrequencyPenalty != nil {
+		ovFrequencyPenalty = req.Overrides.LLM.FrequencyPenalty
+	}
+	if strings.TrimSpace(req.Overrides.LLM.ToolChoice) != "" {
+		ovToolChoice = req.Overrides.LLM.ToolChoice
+	}
+
 	msg := message.Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
@@ -742,7 +793,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		Username:  req.Username,
 		Role:      message.RoleUser,
 		Parts:     message.Text(text),
-		Metadata:  chatOverrideMetadata(req.Overrides.Provider, req.Overrides.Model, req.Overrides.Temperature, req.Overrides.MaxTokens, req.Overrides.MaxTurns, req.Overrides.ToolChoice),
+		Metadata:  chatOverrideMetadata(ovProvider, ovModel, ovTemp, ovTopP, ovMaxTokens, req.Overrides.MaxTurns, ovToolChoice, ovResponseFormat, ovReasoningEffort, ovPresencePenalty, ovFrequencyPenalty),
 		CreatedAt: time.Now().UTC(),
 	}
 
@@ -790,7 +841,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"reply": replyText, "parts": reply.Parts})
 }
 
-func chatOverrideMetadata(provider, model string, temperature *float64, maxTokens, maxTurns *int, toolChoice string) map[string]string {
+func chatOverrideMetadata(provider, model string, temperature, topP *float64, maxTokens, maxTurns *int, toolChoice, responseFormat, reasoningEffort string, presencePenalty, frequencyPenalty *float64) map[string]string {
 	meta := map[string]string{}
 	if provider = strings.TrimSpace(provider); provider != "" {
 		meta["playground.llm.provider"] = provider
@@ -801,6 +852,9 @@ func chatOverrideMetadata(provider, model string, temperature *float64, maxToken
 	if temperature != nil {
 		meta["playground.llm.temperature"] = fmt.Sprintf("%g", *temperature)
 	}
+	if topP != nil && *topP > 0 {
+		meta["playground.llm.top_p"] = fmt.Sprintf("%g", *topP)
+	}
 	if maxTokens != nil && *maxTokens > 0 {
 		meta["playground.llm.max_tokens"] = fmt.Sprintf("%d", *maxTokens)
 	}
@@ -809,6 +863,18 @@ func chatOverrideMetadata(provider, model string, temperature *float64, maxToken
 	}
 	if toolChoice = strings.TrimSpace(toolChoice); toolChoice != "" {
 		meta["playground.llm.tool_choice"] = toolChoice
+	}
+	if responseFormat = strings.TrimSpace(responseFormat); responseFormat != "" {
+		meta["playground.llm.response_format"] = responseFormat
+	}
+	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
+		meta["playground.llm.reasoning_effort"] = reasoningEffort
+	}
+	if presencePenalty != nil {
+		meta["playground.llm.presence_penalty"] = fmt.Sprintf("%g", *presencePenalty)
+	}
+	if frequencyPenalty != nil {
+		meta["playground.llm.frequency_penalty"] = fmt.Sprintf("%g", *frequencyPenalty)
 	}
 	if len(meta) == 0 {
 		return nil
@@ -1037,6 +1103,7 @@ var channelSpecs = []channelSpec{
 		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default chat/channel ID used by scheduled agents when no destination is set"},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default interactive agent ID", Type: "text", Required: false, Help: "Legacy single-bot mode only; prefer Add bot mapping for interactive agents"},
+		{Key: "accept_privileged_exposure", Label: "Allow privileged agent exposure", Type: "checkbox", Required: false, Help: "Required before an interactive bot can expose an agent with system/file/write capabilities. Bot mappings inherit this unless they set their own value."},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore group chats", Type: "text", Required: false, Help: "true by default; set false only for deliberate group usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed chat IDs", Type: "text", Required: false, Help: "Optional comma-separated Telegram chat IDs to allow"},
@@ -1048,6 +1115,7 @@ var channelSpecs = []channelSpec{
 		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "accept_privileged_exposure", Label: "Allow privileged agent exposure", Type: "checkbox", Required: false, Help: "Required before this bot can expose an agent with system/file/write capabilities."},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore servers", Type: "text", Required: false, Help: "true by default; set false only for deliberate server usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed channel IDs", Type: "text", Required: false, Help: "Optional comma-separated Discord channel IDs to allow"},
@@ -1061,6 +1129,7 @@ var channelSpecs = []channelSpec{
 		{Key: "default_output_to", Label: "Default output destination", Type: "text", Required: false, Help: "Optional default channel ID used by scheduled agents when no destination is set"},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional template for scheduled output; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+		{Key: "accept_privileged_exposure", Label: "Allow privileged agent exposure", Type: "checkbox", Required: false, Help: "Required before this bot can expose an agent with system/file/write capabilities."},
 		{Key: "trigger_phrase", Label: "Trigger phrase", Type: "text", Required: false, Help: "Only messages beginning with this phrase will trigger the agent; defaults to !soulacy"},
 		{Key: "ignore_groups", Label: "Ignore channels", Type: "text", Required: false, Help: "true by default; set false only for deliberate channel usage"},
 		{Key: "allowed_chat_ids", Label: "Allowed channel IDs", Type: "text", Required: false, Help: "Optional comma-separated Slack channel IDs to allow"},
@@ -1157,7 +1226,7 @@ func displayChannelValue(v any) any {
 }
 
 func normalizeChannelValue(key, val string) any {
-	if key == "outbound_only" || key == "ignore_groups" {
+	if key == "outbound_only" || key == "ignore_groups" || key == "accept_privileged_exposure" {
 		return strings.EqualFold(strings.TrimSpace(val), "true") || strings.TrimSpace(val) == "1"
 	}
 	if key == "args" {
@@ -1208,7 +1277,7 @@ func normalizeChannelBots(spec channelSpec, bots []map[string]any, existingRaw a
 	return out
 }
 
-func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]channels.AdapterStatus) []fiber.Map {
+func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]channels.AdapterStatus, loader *runtime.Loader) []fiber.Map {
 	botList := rawBotList(cfg["bots"])
 	out := make([]fiber.Map, 0, len(botList))
 	defaultReserved := valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"])
@@ -1229,9 +1298,25 @@ func maskChannelBots(spec channelSpec, cfg map[string]any, statuses map[string]c
 		row["_adapter_id"] = adapterID
 		row["_connected"] = st.Connected
 		row["_detail"] = st.Detail
+		if privilegedBotBlocked(bot, loader) {
+			row["_blocked_reason"] = "privileged agent requires exposure approval"
+		}
 		out = append(out, row)
 	}
 	return out
+}
+
+func privilegedBotBlocked(bot map[string]any, loader *runtime.Loader) bool {
+	if loader == nil || channels.ParseBoolValue(bot["outbound_only"], false) {
+		return false
+	}
+	agentID, _ := bot["agent_id"].(string)
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" || channels.ParseBoolValue(bot["accept_privileged_exposure"], false) {
+		return false
+	}
+	def := loader.Get(agentID)
+	return tier.Compute(def, loader.Get) == tier.Privileged
 }
 
 func channelDiagnostics(spec channelSpec, cfg map[string]any, enabled, registered bool, st channels.AdapterStatus, bots []fiber.Map) []channelDiagnostic {
@@ -1283,7 +1368,11 @@ func channelDiagnostics(spec channelSpec, cfg map[string]any, enabled, registere
 			add("fail", "Bot mapping "+adapterID+" has no agent.", "Select an agent for interactive bot mappings or mark the row send-only.")
 		}
 		if !connected {
-			add("warn", "Bot mapping "+adapterID+" is not connected.", "Restart the gateway or check that the bot token is valid.")
+			if reason, _ := bot["_blocked_reason"].(string); reason != "" {
+				add("fail", "Bot mapping "+adapterID+" is blocked: "+reason+".", "Open the bot mapping, enable privileged exposure, save, then restart the gateway.")
+			} else {
+				add("warn", "Bot mapping "+adapterID+" is not connected.", "Restart the gateway or check that the bot token is valid.")
+			}
 		}
 	}
 	return out
@@ -1363,7 +1452,7 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 				settings[f.Key] = displayChannelValue(raw)
 			}
 		}
-		bots := maskChannelBots(spec, cfg, statuses)
+		bots := maskChannelBots(spec, cfg, statuses, s.loader)
 		if len(bots) > 0 {
 			configured = true
 		}
@@ -1750,7 +1839,7 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	}
 	defer s.scheduler.FinishRun(id)
 
-	sessionID := fmt.Sprintf("manual-%s", id)
+	sessionID := fmt.Sprintf("manual-%s-%d", id, time.Now().UnixNano())
 	msg := message.Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
@@ -2965,6 +3054,9 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 		}
 		events = filtered
 	}
+	for i := range events {
+		events[i].Payload = compactActionPayload(events[i].Payload, 64*1024)
+	}
 
 	return c.JSON(fiber.Map{
 		"agent_id": id,
@@ -2972,6 +3064,45 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 		"events":   events,
 		"count":    len(events),
 	})
+}
+
+func compactActionPayload(payload any, maxBytes int) any {
+	if maxBytes <= 0 {
+		maxBytes = 64 * 1024
+	}
+	b, err := json.Marshal(payload)
+	if err != nil || len(b) <= maxBytes {
+		return payload
+	}
+	return fiber.Map{
+		"truncated": true,
+		"bytes":     len(b),
+		"preview":   compactPayloadPreview(payload, 1200),
+	}
+}
+
+func compactPayloadPreview(payload any, max int) string {
+	if max <= 0 {
+		max = 1200
+	}
+	var s string
+	switch v := payload.(type) {
+	case string:
+		s = v
+	default:
+		b, err := json.Marshal(payload)
+		if err != nil {
+			s = fmt.Sprint(payload)
+		} else {
+			s = string(b)
+		}
+	}
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
 }
 
 // --- Memory ---

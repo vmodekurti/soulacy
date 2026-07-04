@@ -44,6 +44,11 @@ func newSkillsShProvider(cfg map[string]any) (*skillsShProvider, error) {
 			headers[k] = s
 		}
 	}
+	if len(headers) == 0 && strings.Contains(base, "skills.sh") {
+		if token := strings.TrimSpace(os.Getenv("VERCEL_OIDC_TOKEN")); token != "" {
+			headers["Authorization"] = "Bearer " + token
+		}
+	}
 	return &skillsShProvider{
 		id:      cfgmap.Str(cfg, "id", "skillssh"),
 		baseURL: base,
@@ -68,8 +73,26 @@ func (p *skillsShProvider) getJSON(ctx context.Context, rawURL string, out any) 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4096))
-		return resp.StatusCode, nil
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		msg := strings.TrimSpace(string(b))
+		var body struct {
+			Error   string `json:"error"`
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(b, &body) == nil {
+			switch {
+			case body.Error != "" && body.Message != "":
+				msg = body.Error + ": " + body.Message
+			case body.Message != "":
+				msg = body.Message
+			case body.Error != "":
+				msg = body.Error
+			}
+		}
+		if msg == "" {
+			msg = http.StatusText(resp.StatusCode)
+		}
+		return resp.StatusCode, fmt.Errorf("pkgregistry: %s: HTTP %d: %s", p.id, resp.StatusCode, msg)
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<20)).Decode(out); err != nil {
 		return resp.StatusCode, fmt.Errorf("pkgregistry: %s: decode: %w", p.id, err)
@@ -130,11 +153,11 @@ type skillsShDetail struct {
 func (p *skillsShProvider) detail(ctx context.Context, slug string) (skillsShDetail, error) {
 	var d skillsShDetail
 	status, err := p.getJSON(ctx, p.baseURL+"/api/v1/skills/"+slug, &d)
-	if err != nil {
-		return d, err
-	}
 	if status == http.StatusNotFound {
 		return d, fmt.Errorf("pkgregistry: %s: %q: %w", p.id, slug, sdkpkg.ErrNotFound)
+	}
+	if err != nil {
+		return d, err
 	}
 	if status != http.StatusOK {
 		return d, fmt.Errorf("pkgregistry: %s: detail returned HTTP %d", p.id, status)

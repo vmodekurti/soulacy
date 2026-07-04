@@ -17,6 +17,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -130,6 +131,18 @@ func firstNonEmpty(xs ...string) string {
 	return ""
 }
 
+func knowledgeKBParam(c *fiber.Ctx) string {
+	raw := c.Params("kb")
+	if raw == "" {
+		return raw
+	}
+	name, err := url.PathUnescape(raw)
+	if err != nil {
+		return raw
+	}
+	return name
+}
+
 // handleCreateKnowledge creates a new KB. The embedding dim is probed against
 // the chosen embedder, so the user only needs to pick a provider+model.
 func (s *Server) handleCreateKnowledge(c *fiber.Ctx) error {
@@ -204,7 +217,7 @@ func (s *Server) handleDeleteKnowledge(c *fiber.Ctx) error {
 	if svc == nil {
 		return c.SendStatus(fiber.StatusNoContent)
 	}
-	name := c.Params("kb")
+	name := knowledgeKBParam(c)
 	if err := svc.Store.DeleteKB(name); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -218,7 +231,7 @@ func (s *Server) handleListKnowledgeDocuments(c *fiber.Ctx) error {
 	if svc == nil {
 		return c.JSON(fiber.Map{"documents": []any{}})
 	}
-	kb, err := svc.Store.GetKB(c.Params("kb"))
+	kb, err := svc.Store.GetKB(knowledgeKBParam(c))
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -267,7 +280,7 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 	if svc == nil {
 		return s.errMsg(c, fiber.StatusServiceUnavailable, "knowledge store disabled")
 	}
-	kb, err := svc.Store.GetKB(c.Params("kb"))
+	kb, err := svc.Store.GetKB(knowledgeKBParam(c))
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -442,7 +455,7 @@ func (s *Server) handleDeleteKnowledgeDocument(c *fiber.Ctx) error {
 	if svc == nil {
 		return c.SendStatus(fiber.StatusNoContent)
 	}
-	kb, err := svc.Store.GetKB(c.Params("kb"))
+	kb, err := svc.Store.GetKB(knowledgeKBParam(c))
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -471,7 +484,7 @@ func (s *Server) handleSearchKnowledge(c *fiber.Ctx) error {
 	if body.TopK <= 0 {
 		body.TopK = 5
 	}
-	kbName := c.Params("kb")
+	kbName := knowledgeKBParam(c)
 	kb, err := svc.Store.GetKB(kbName)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)

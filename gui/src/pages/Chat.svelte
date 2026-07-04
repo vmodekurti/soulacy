@@ -36,7 +36,19 @@
     chatListHidden = !chatListHidden
     try { localStorage.setItem('soulacy-chatlist-hidden', chatListHidden ? '1' : '0') } catch (_) {}
   }
-  let controls = { provider: '', model: '', temperature: '', maxTokens: '', toolChoice: '' }
+  const controlTips = {
+    provider: 'Override the agent provider for this chat turn. Leave blank to use the agent configuration.',
+    model: 'Override the model for this chat turn. Useful for retrying the same prompt on a stronger, cheaper, or faster model.',
+    temperature: 'Controls randomness. Lower values are more deterministic and better for tool use; higher values are more exploratory.',
+    topP: 'Nucleus sampling. Lower values narrow the token pool for more stable output; higher values allow broader phrasing.',
+    maxTokens: 'Caps the model response length. Raise for reports or long synthesis; lower to reduce cost and rambling.',
+    responseFormat: 'Requests a structured output mode when the provider supports it. JSON is best for extraction and downstream tools.',
+    reasoningEffort: 'Hints how much hidden reasoning budget to spend on models that support it. Higher can improve hard tasks but cost more.',
+    presencePenalty: 'Positive values encourage introducing new topics instead of repeating already-mentioned concepts.',
+    frequencyPenalty: 'Positive values reduce repeated words and phrases. Useful when responses loop or overuse the same wording.',
+    toolChoice: 'Constrains the first tool call. Use auto for normal routing, or a specific tool name to force the opening move.',
+  }
+  let controls = { provider: '', model: '', temperature: '', topP: '', maxTokens: '', responseFormat: '', reasoningEffort: '', presencePenalty: '', frequencyPenalty: '', toolChoice: '' }
   let expanded = {}            // messageKey -> bool (collapse long outputs)
   let editingMsg = -1          // index of a user message being edited
   let editText = ''
@@ -1137,17 +1149,36 @@
   {#if controlsOpen}
     <div class="controls-panel" transition:slide|local={{ duration: 160 }}>
       <div class="cp-row">
-        <label class="cp-field"><span>Provider</span>
-          <input bind:value={controls.provider} placeholder="agent default" /></label>
-        <label class="cp-field"><span>Model</span>
-          <input bind:value={controls.model} placeholder="agent default" /></label>
-        <label class="cp-field"><span>Temperature</span>
-          <input type="number" step="0.1" min="0" max="2" bind:value={controls.temperature} placeholder="—" /></label>
-        <label class="cp-field"><span>Max tokens</span>
-          <input type="number" min="1" bind:value={controls.maxTokens} placeholder="—" /></label>
-        <label class="cp-field"><span>Tool choice</span>
-          <input bind:value={controls.toolChoice} placeholder="auto" /></label>
-        <button class="mini-btn" on:click={() => controls = { provider:'', model:'', temperature:'', maxTokens:'', toolChoice:'' }}>Reset</button>
+        <label class="cp-field" title={controlTips.provider}><span>Provider</span>
+          <input bind:value={controls.provider} placeholder="agent default" title={controlTips.provider} /></label>
+        <label class="cp-field" title={controlTips.model}><span>Model</span>
+          <input bind:value={controls.model} placeholder="agent default" title={controlTips.model} /></label>
+        <label class="cp-field" title={controlTips.temperature}><span>Temperature</span>
+          <input type="number" step="0.1" min="0" max="2" bind:value={controls.temperature} placeholder="—" title={controlTips.temperature} /></label>
+        <label class="cp-field" title={controlTips.topP}><span>Top P</span>
+          <input type="number" step="0.05" min="0" max="1" bind:value={controls.topP} placeholder="—" title={controlTips.topP} /></label>
+        <label class="cp-field" title={controlTips.maxTokens}><span>Max tokens</span>
+          <input type="number" min="1" bind:value={controls.maxTokens} placeholder="—" title={controlTips.maxTokens} /></label>
+        <label class="cp-field" title={controlTips.responseFormat}><span>Format</span>
+          <select bind:value={controls.responseFormat} title={controlTips.responseFormat}>
+            <option value="">default</option>
+            <option value="json">json</option>
+            <option value="json_schema">json_schema</option>
+          </select></label>
+        <label class="cp-field" title={controlTips.reasoningEffort}><span>Reasoning</span>
+          <select bind:value={controls.reasoningEffort} title={controlTips.reasoningEffort}>
+            <option value="">default</option>
+            <option value="low">low</option>
+            <option value="medium">medium</option>
+            <option value="high">high</option>
+          </select></label>
+        <label class="cp-field" title={controlTips.presencePenalty}><span>Presence</span>
+          <input type="number" step="0.1" min="-2" max="2" bind:value={controls.presencePenalty} placeholder="—" title={controlTips.presencePenalty} /></label>
+        <label class="cp-field" title={controlTips.frequencyPenalty}><span>Frequency</span>
+          <input type="number" step="0.1" min="-2" max="2" bind:value={controls.frequencyPenalty} placeholder="—" title={controlTips.frequencyPenalty} /></label>
+        <label class="cp-field" title={controlTips.toolChoice}><span>Tool choice</span>
+          <input bind:value={controls.toolChoice} placeholder="auto" title={controlTips.toolChoice} /></label>
+        <button class="mini-btn" on:click={() => controls = { provider:'', model:'', temperature:'', topP:'', maxTokens:'', responseFormat:'', reasoningEffort:'', presencePenalty:'', frequencyPenalty:'', toolChoice:'' }}>Reset</button>
       </div>
       <p class="cp-hint">Blank fields use the agent's own config. Overrides apply to new messages and per-message “Retry”.</p>
     </div>

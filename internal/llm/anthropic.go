@@ -2,13 +2,13 @@
 //
 // Anthropic's /v1/messages is shaped differently from OpenAI's chat/completions:
 //
-//   * The system prompt is a top-level `system` field, not a message with
+//   - The system prompt is a top-level `system` field, not a message with
 //     role:"system".
-//   * Roles are only "user" and "assistant" — tool results are encoded as a
+//   - Roles are only "user" and "assistant" — tool results are encoded as a
 //     user-role message containing a `tool_result` content block keyed by id.
-//   * Tool calls arrive as `tool_use` content blocks inside an assistant
+//   - Tool calls arrive as `tool_use` content blocks inside an assistant
 //     message (alongside any text blocks).
-//   * Streaming uses the `messages` event stream; we use the non-streaming
+//   - Streaming uses the `messages` event stream; we use the non-streaming
 //     mode here for simplicity (the engine doesn't stream yet).
 //
 // Spec: https://docs.anthropic.com/en/api/messages
@@ -81,6 +81,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	if model == "" {
 		model = p.model
 	}
+	toolWireNames, toolOriginalNames := anthropicToolNameMaps(req.Tools)
 
 	// Translate our flat ChatMessage list into Anthropic's
 	// (system, [user/assistant content-block messages]) shape.
@@ -119,10 +120,14 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 				blocks = append(blocks, map[string]any{"type": "text", "text": m.Content})
 			}
 			for _, tc := range m.ToolCalls {
+				name := tc.Name
+				if wire, ok := toolWireNames[tc.Name]; ok {
+					name = wire
+				}
 				blocks = append(blocks, map[string]any{
 					"type":  "tool_use",
 					"id":    tc.ID,
-					"name":  tc.Name,
+					"name":  name,
 					"input": tc.Arguments,
 				})
 			}
@@ -159,8 +164,11 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 			"type":          "enabled",
 			"budget_tokens": p.thinkingBudget,
 		}
-	} else {
+	} else if req.Temperature > 0 {
 		body["temperature"] = req.Temperature
+	}
+	if req.TopP > 0 && body["temperature"] == nil {
+		body["top_p"] = req.TopP
 	}
 
 	// System prompt — when caching is enabled, send as a content-block array
@@ -186,8 +194,12 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	if len(req.Tools) > 0 {
 		tools := make([]map[string]any, len(req.Tools))
 		for i, t := range req.Tools {
+			name := t.Name
+			if wire, ok := toolWireNames[t.Name]; ok {
+				name = wire
+			}
 			tools[i] = map[string]any{
-				"name":         t.Name,
+				"name":         name,
 				"description":  t.Description,
 				"input_schema": t.Parameters,
 			}
@@ -196,6 +208,21 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 			tools[len(tools)-1]["cache_control"] = map[string]any{"type": "ephemeral"}
 		}
 		body["tools"] = tools
+		switch req.ToolChoice {
+		case "required":
+			body["tool_choice"] = map[string]any{"type": "any"}
+		case "auto":
+			body["tool_choice"] = map[string]any{"type": "auto"}
+		case "none", "":
+			// Omit: Anthropic defaults to auto; older API versions may not
+			// support an explicit "none" tool_choice.
+		default:
+			name := anthropicSafeToolName(req.ToolChoice)
+			if wire, ok := toolWireNames[req.ToolChoice]; ok {
+				name = wire
+			}
+			body["tool_choice"] = map[string]any{"type": "tool", "name": name}
+		}
 	}
 
 	// Structured outputs: Anthropic doesn't have a native response_format, but
@@ -215,15 +242,6 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 		body["tool_choice"] = map[string]any{"type": "tool", "name": "respond"}
 	}
 
-	payload, _ := json.Marshal(body)
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		p.baseURL+"/v1/messages", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", p.apiKey)
-	httpReq.Header.Set("anthropic-version", p.version)
 	// Beta headers: combine as comma-separated list when multiple are needed.
 	var betas []string
 	if p.promptCaching {
@@ -232,21 +250,27 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	if p.extendedThinking {
 		betas = append(betas, "interleaved-thinking-2025-05-14")
 	}
-	if len(betas) > 0 {
-		httpReq.Header.Set("anthropic-beta", strings.Join(betas, ","))
-	}
 
-	// Retry on transient errors (429 / 5xx / network). The request body is a
-	// bytes.Reader so net/http auto-rewinds on retry.
-	resp, err := DoWithRetry(ctx, p.client, httpReq, RetryConfig{})
-	if err != nil {
-		return nil, fmt.Errorf("anthropic: request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
+	strippedDeprecated := map[string]bool{}
+	var resp *http.Response
+	for {
+		var err error
+		resp, err = p.sendMessagesBody(ctx, body, betas)
+		if err != nil {
+			return nil, fmt.Errorf("anthropic: request failed: %w", err)
+		}
+		if resp.StatusCode < 300 {
+			defer resp.Body.Close()
+			break
+		}
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("anthropic: http %d: %s", resp.StatusCode, string(bodyBytes))
+		_ = resp.Body.Close()
+		param := anthropicDeprecatedParam(bodyBytes)
+		if param == "" || strippedDeprecated[param] {
+			return nil, fmt.Errorf("anthropic: http %d: %s", resp.StatusCode, string(bodyBytes))
+		}
+		delete(body, param)
+		strippedDeprecated[param] = true
 	}
 
 	var result struct {
@@ -291,15 +315,49 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 				}
 				continue
 			}
+			name := block.Name
+			if original, ok := toolOriginalNames[block.Name]; ok {
+				name = original
+			}
 			r.ToolCalls = append(r.ToolCalls, message.ToolCall{
 				ID:        block.ID,
-				Name:      block.Name,
+				Name:      name,
 				Arguments: block.Input,
 			})
 		}
 	}
 
 	return r, nil
+}
+
+func (p *AnthropicProvider) sendMessagesBody(ctx context.Context, body map[string]any, betas []string) (*http.Response, error) {
+	payload, _ := json.Marshal(body)
+	httpReq, err := p.newMessagesRequest(ctx, payload, betas)
+	if err != nil {
+		return nil, err
+	}
+	return p.doMessages(ctx, httpReq)
+}
+
+func (p *AnthropicProvider) newMessagesRequest(ctx context.Context, payload []byte, betas []string) (*http.Request, error) {
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		p.baseURL+"/v1/messages", bytes.NewReader(payload))
+	if err != nil {
+		return nil, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", p.apiKey)
+	httpReq.Header.Set("anthropic-version", p.version)
+	if len(betas) > 0 {
+		httpReq.Header.Set("anthropic-beta", strings.Join(betas, ","))
+	}
+	return httpReq, nil
+}
+
+func (p *AnthropicProvider) doMessages(ctx context.Context, req *http.Request) (*http.Response, error) {
+	// Retry on transient errors (429 / 5xx / network). The request body is a
+	// bytes.Reader so net/http auto-rewinds on retry.
+	return DoWithRetry(ctx, p.client, req, RetryConfig{})
 }
 
 // Models queries Anthropic's /v1/models endpoint when an API key is set,
@@ -358,4 +416,77 @@ func defaultIfZero(v, dflt int) int {
 		return dflt
 	}
 	return v
+}
+
+func anthropicToolNameMaps(tools []ToolSchema) (map[string]string, map[string]string) {
+	origToWire := map[string]string{}
+	wireToOrig := map[string]string{}
+	used := map[string]int{}
+	for _, t := range tools {
+		wire := anthropicSafeToolName(t.Name)
+		if n := used[wire]; n > 0 {
+			used[wire] = n + 1
+			suffix := fmt.Sprintf("_%d", n+1)
+			maxBase := 128 - len(suffix)
+			if maxBase < 1 {
+				maxBase = 1
+			}
+			if len(wire) > maxBase {
+				wire = wire[:maxBase]
+			}
+			wire += suffix
+		} else {
+			used[wire] = 1
+		}
+		origToWire[t.Name] = wire
+		wireToOrig[wire] = t.Name
+	}
+	return origToWire, wireToOrig
+}
+
+func anthropicSafeToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "tool"
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			b.WriteRune(r)
+		case r == '_' || r == '-':
+			b.WriteRune(r)
+		default:
+			b.WriteByte('_')
+		}
+		if b.Len() >= 128 {
+			break
+		}
+	}
+	out := strings.Trim(b.String(), "_-")
+	if out == "" {
+		return "tool"
+	}
+	if len(out) > 128 {
+		out = out[:128]
+	}
+	return out
+}
+
+func anthropicDeprecatedParam(body []byte) string {
+	msg := strings.ToLower(string(body))
+	if !strings.Contains(msg, "deprecated") {
+		return ""
+	}
+	for _, name := range []string{"temperature", "top_p"} {
+		if strings.Contains(msg, name) {
+			return name
+		}
+	}
+	return ""
 }

@@ -109,6 +109,58 @@ func TestPreflight_TemplatedArgIsFilled(t *testing.T) {
 	}
 }
 
+func TestPreflight_BuiltinRequiredArgsAndRawInputBlock(t *testing.T) {
+	tests := []struct {
+		name  string
+		tool  string
+		input string
+	}{
+		{name: "fetch url missing url", tool: "fetch_url", input: `{}`},
+		{name: "kb write missing content", tool: "kb_write", input: `{"kb":"AI Docs"}`},
+		{name: "kb write raw freeform", tool: "kb_write", input: `{{ .tagged_data }}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+				{ID: "n", Kind: "tool", Tool: tt.tool, Input: tt.input},
+			}}}
+			r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{tt.tool}}})
+			if r.OK {
+				t.Fatalf("expected builtin contract blocker for %s", tt.tool)
+			}
+			if blockKinds(r)["dependency"] == 0 {
+				t.Fatalf("expected dependency blocker, got %+v", r.Blockers)
+			}
+		})
+	}
+}
+
+func TestPreflight_BuiltinJSONSafeTemplatePasses(t *testing.T) {
+	d := Draft{Flow: Flow{
+		Nodes: []sdkr.FlowNode{
+			{ID: "tag", Kind: "agent", Agent: "tagger", Output: "tagged_data"},
+			{ID: "store", Kind: "tool", Tool: "kb_write", Input: `{"kb":"AI Docs","content":{{ toJson .tagged_data }}}`},
+		},
+		Edges: []sdkr.FlowEdge{{From: "tag", To: "store"}},
+	}}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"kb_write"}}})
+	if !r.OK {
+		t.Fatalf("json-safe builtin template should pass, blockers: %+v", r.Blockers)
+	}
+}
+
+func TestPreflight_BuiltinContractToolNotWarnedWhenCatalogPartial(t *testing.T) {
+	d := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+		{ID: "fetch", Kind: "tool", Tool: "fetch_url", Input: `{"url":"https://example.com"}`},
+	}}}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"web_search"}}})
+	for _, w := range r.Warnings {
+		if w.Kind == "tool" {
+			t.Fatalf("known built-in contract tool should not warn with partial catalog: %+v", r.Warnings)
+		}
+	}
+}
+
 func TestPreflight_InvalidScheduleBlocks(t *testing.T) {
 	d := Draft{
 		Trigger: Trigger{Type: "schedule", Config: map[string]any{"cron": ""}},

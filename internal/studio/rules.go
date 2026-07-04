@@ -26,10 +26,15 @@ under "Tier 2" so the builder knows each tool's real shape.
 - R5. If the workflow needs to parse complex JSON, manipulate lists, format strings, or do math, add a 'python' node. Do NOT try to use template variables like {{ .var }} to do complex data mangling.
 - R6. Do NOT invent tool names. If you need a capability that doesn't exist in the catalog, script it in a 'python' node, or use a web_search tool.
 - R7. When generating 'new_agents' for the overarching workflow to delegate to, ensure their system prompts are fully self-contained and describe exactly the output format they must return.
+- R8. Every tool node input MUST be a JSON object. Never pass raw text or a whole upstream reply directly into a tool node.
+- R9. If a tool expects structured arguments and the upstream node is an agent/LLM/free-form output, insert an LLM Extract or Python Transform node, or pass the upstream text through a JSON-safe field using {{ toJson .var }} unquoted.
+- R10. Prefer typed ports or JSON-safe {{ toJson .var }} handoffs. Never put a free-form or structured upstream value inside quotes like "content": "{{ .agent_reply }}"; quotes/newlines in the reply will break JSON.
+- R11. For "ingest documents/URLs into KB" tasks, build a safe Knowledge Ingestion flow: extract source(s) -> fetch/read content -> classify/tag/summarize -> kb_write -> optional verification search. Store the cleaned artifact record and metadata, not raw HTML dumps, activity traces, or arbitrary host files.
+- R12. For temporary workflow state, queues, buffers, or cross-step handoffs, use queue_create/queue_put/queue_take/queue_list instead of write_file. Queue tools are in-memory and do not require system authorization. Use an explicit queue name when the workflow has multiple buffers; otherwise the runtime uses the "default" queue. Use kb_write only for durable searchable knowledge.
 
 ### Scheduling & Delivery
-- R8. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
-- R9. Every channel the agent delivers to must be configured and enabled.
+- R13. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
+- R14. Every channel the agent delivers to must be configured and enabled.
 
 ## Tier 2 — Tool contracts (input args + output shapes)
 
@@ -39,6 +44,15 @@ builder automatically from the live catalog; add OUTPUT shapes here.)
 
 - web_search — input {query, num_results}; output
   {query, result_count, results:[{title, url, content}]}. Read .results.
+- fetch_url — input {url, max_bytes}; output is fetched page text. Always pass a JSON object such as {"url":"{{ .url }}"}.
+- kb_write — input {kb, content, title, source, mime_type}; requires kb and content. Use it for knowledge ingestion. content may be a string, object, or array; pass structured artifacts unquoted with {"kb":"KB Name","content":{{ toJson .tagged_artifact }},"title":"...","source":"..."}. Do not use write_file for KB ingestion.
+- kb_search — input {kb, query, top_k}; output is search results text.
+- queue_create — input {queue}; output {ok,queue,created}. Creates a named in-memory queue; queue defaults to "default".
+- queue_names — input {}; output {ok,count,queues:[{queue,count}]}. Lists current in-memory queues.
+- queue_put — input {queue, item, ttl_seconds}; output {ok,id,queue,expires_at}. Use for temporary handoffs only; item must be valid JSON. queue defaults to "default".
+- queue_take — input {queue}; output {ok,item,id,queue,created_at,expires_at} or {ok:false, empty:true}. Removes the oldest item. queue defaults to "default".
+- queue_list — input {queue, limit}; output {ok,count,items:[{id,item,created_at,expires_at}]} without removing items. queue defaults to "default".
+- queue_clear — input {queue}; output {ok,cleared}. queue defaults to "default".
 - (add your tools below, e.g.)
 - mcp__notebooklm__notebook_create — output {notebook_id, title}; the notebook id is
   {{ .<output>.notebook_id }}.

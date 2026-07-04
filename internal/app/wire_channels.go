@@ -76,7 +76,7 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 						}
 						outboundOnly, _ := botMap["outbound_only"].(bool)
 						if agentID != "" && !outboundOnly {
-							if !bindingDecision(adapterID, agentID, "telegram", botMap, loader, log) {
+							if !bindingDecision(adapterID, agentID, "telegram", bindingCfgWithInheritedConsent(tgCfg, botMap), loader, log) {
 								continue
 							}
 						}
@@ -113,7 +113,7 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 						if token == "" {
 							continue
 						}
-						if !bindingDecision(adapterIDForLog("discord", i, agentID), agentID, "discord", botMap, loader, log) {
+						if !bindingDecision(adapterIDForLog("discord", i, agentID), agentID, "discord", bindingCfgWithInheritedConsent(dsCfg, botMap), loader, log) {
 							continue
 						}
 						adapterID := "discord"
@@ -166,7 +166,7 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 						if botToken == "" || appToken == "" {
 							continue
 						}
-						if !bindingDecision(adapterIDForLog("slack", i, agentID), agentID, "slack", botMap, loader, log) {
+						if !bindingDecision(adapterIDForLog("slack", i, agentID), agentID, "slack", bindingCfgWithInheritedConsent(slCfg, botMap), loader, log) {
 							continue
 						}
 						adapterID := "slack"
@@ -311,4 +311,22 @@ func (a *App) registerChannels(chanCfg map[string]map[string]any, chanReg *chann
 	}
 
 	return waAdapter
+}
+
+func bindingCfgWithInheritedConsent(parent, child map[string]any) map[string]any {
+	if child == nil {
+		return child
+	}
+	if _, hasOwn := child["accept_privileged_exposure"]; hasOwn || parent == nil {
+		return child
+	}
+	if v, ok := parent["accept_privileged_exposure"]; ok {
+		cp := make(map[string]any, len(child)+1)
+		for k, val := range child {
+			cp[k] = val
+		}
+		cp["accept_privileged_exposure"] = v
+		return cp
+	}
+	return child
 }

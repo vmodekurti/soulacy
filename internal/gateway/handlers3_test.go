@@ -62,7 +62,7 @@ func TestChatOverrideMetadata_AllFields(t *testing.T) {
 	temp := 0.7
 	tokens := 512
 	turns := 5
-	meta := chatOverrideMetadata("anthropic", "claude-3-5-sonnet", &temp, &tokens, &turns, "required")
+	meta := chatOverrideMetadata("anthropic", "claude-3-5-sonnet", &temp, nil, &tokens, &turns, "required", "", "", nil, nil)
 
 	cases := map[string]string{
 		"playground.llm.provider":    "anthropic",
@@ -80,14 +80,14 @@ func TestChatOverrideMetadata_AllFields(t *testing.T) {
 }
 
 func TestChatOverrideMetadata_EmptyFieldsReturnNil(t *testing.T) {
-	meta := chatOverrideMetadata("", "", nil, nil, nil, "")
+	meta := chatOverrideMetadata("", "", nil, nil, nil, nil, "", "", "", nil, nil)
 	if meta != nil {
 		t.Fatalf("expected nil meta for empty overrides, got %v", meta)
 	}
 }
 
 func TestChatOverrideMetadata_PartialFields(t *testing.T) {
-	meta := chatOverrideMetadata("openai", "", nil, nil, nil, "")
+	meta := chatOverrideMetadata("openai", "", nil, nil, nil, nil, "", "", "", nil, nil)
 	if meta == nil {
 		t.Fatal("expected non-nil meta when provider is set")
 	}
@@ -101,7 +101,7 @@ func TestChatOverrideMetadata_PartialFields(t *testing.T) {
 
 func TestChatOverrideMetadata_ZeroMaxTokensNotIncluded(t *testing.T) {
 	zero := 0
-	meta := chatOverrideMetadata("", "", nil, &zero, nil, "")
+	meta := chatOverrideMetadata("", "", nil, nil, &zero, nil, "", "", "", nil, nil)
 	if meta != nil {
 		// max_tokens = 0 should be ignored (not persisted)
 		if _, ok := meta["playground.llm.max_tokens"]; ok {

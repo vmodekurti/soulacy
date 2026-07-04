@@ -9,15 +9,17 @@ import (
 // fakeCompleter returns a canned reply and records the last call, standing in
 // for the gateway's router so RouterBackend can be tested without a real model.
 type fakeCompleter struct {
-	reply     string
-	err       error
-	lastModel string
-	lastSys   string
-	lastUser  string
+	reply      string
+	err        error
+	lastModel  string
+	lastSys    string
+	lastUser   string
+	lastParams PhaseParams
 }
 
-func (f *fakeCompleter) Complete(ctx context.Context, model, system, user string, maxTokens int) (string, error) {
+func (f *fakeCompleter) Complete(ctx context.Context, model, system, user string, params PhaseParams) (string, error) {
 	f.lastModel, f.lastSys, f.lastUser = model, system, user
+	f.lastParams = params
 	return f.reply, f.err
 }
 
@@ -53,6 +55,114 @@ func TestRouterBackend_ThinkHandlesMarkdownFences(t *testing.T) {
 	}
 	if !resp.IsDone || resp.FinalAnswer != "hello" {
 		t.Fatalf("fenced JSON not parsed: %+v", resp)
+	}
+}
+
+func TestRouterBackend_ThinkRecoversInputEqualsTextualAction(t *testing.T) {
+	fc := &fakeCompleter{reply: `Thought: Queue exists. Listing pending resources.
+Action: queue_list(input={"queue":"pending_resources"})`}
+	b := NewRouterBackend(fc, "gemini-2.5-pro")
+
+	resp, err := b.Think(context.Background(), ThinkRequest{
+		TaskInput: "process queue",
+		ToolNames: []string{"queue_list"},
+	})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if resp.IsDone || resp.Action.Tool != "queue_list" {
+		t.Fatalf("recovered response = %+v", resp)
+	}
+	if got := resp.Action.Arguments["queue"]; got != "pending_resources" {
+		t.Fatalf("queue arg = %#v", got)
+	}
+}
+
+func TestRouterBackend_ThinkRecoversLegacyMapCodeAction(t *testing.T) {
+	code := "import json\nprint(json.dumps({'ok': True}))"
+	fc := &fakeCompleter{reply: "Thought: Extract metadata.\nAction: python_eval(map[code:" + code + "])"}
+	b := NewRouterBackend(fc, "gemini-2.5-pro")
+
+	resp, err := b.Think(context.Background(), ThinkRequest{
+		TaskInput: "extract",
+		ToolNames: []string{"python_eval"},
+	})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if resp.Action.Tool != "python_eval" {
+		t.Fatalf("tool = %q", resp.Action.Tool)
+	}
+	if got := resp.Action.Arguments["code"]; got != code {
+		t.Fatalf("code arg = %#v, want %#v", got, code)
+	}
+}
+
+func TestRouterBackend_ThinkRecoversLegacyMapFileWriteAction(t *testing.T) {
+	fc := &fakeCompleter{reply: "Thought: Persist resource.\nAction: write_file(map[path:workspace/resources/AI-ML/cisco.md content:# Cisco AI\nSummary with spaces])"}
+	b := NewRouterBackend(fc, "gemini-2.5-pro")
+
+	resp, err := b.Think(context.Background(), ThinkRequest{
+		TaskInput: "persist",
+		ToolNames: []string{"write_file"},
+	})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if got := resp.Action.Arguments["path"]; got != "workspace/resources/AI-ML/cisco.md" {
+		t.Fatalf("path arg = %#v", got)
+	}
+	if got := resp.Action.Arguments["content"]; got != "# Cisco AI\nSummary with spaces" {
+		t.Fatalf("content arg = %#v", got)
+	}
+}
+
+func TestRouterBackend_ThinkRecoversActionInputStyle(t *testing.T) {
+	fc := &fakeCompleter{reply: "Thought: List queued resources.\nAction: queue_list\nAction Input: {\"queue\":\"pending_resources\"}"}
+	b := NewRouterBackend(fc, "gemini-2.5-pro")
+
+	resp, err := b.Think(context.Background(), ThinkRequest{
+		TaskInput: "process",
+		ToolNames: []string{"queue_list"},
+	})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if resp.Action.Tool != "queue_list" || resp.Action.Input["queue"] != "pending_resources" {
+		t.Fatalf("unexpected recovered action: %+v", resp.Action)
+	}
+}
+
+func TestRouterBackend_ThinkRecoversJSONActionEnvelope(t *testing.T) {
+	fc := &fakeCompleter{reply: `{"thought":"queue it","action":"queue_put","action_input":{"queue":"pending_resources","item":{"id":"abc","content":"https://example.com"}}}`}
+	b := NewRouterBackend(fc, "gemini-2.5-pro")
+
+	resp, err := b.Think(context.Background(), ThinkRequest{
+		TaskInput: "capture url",
+		ToolNames: []string{"queue_put"},
+	})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if resp.Action.Tool != "queue_put" || resp.Action.Input["queue"] != "pending_resources" {
+		t.Fatalf("unexpected recovered action: %+v", resp.Action)
+	}
+	item, ok := resp.Action.Arguments["item"].(map[string]any)
+	if !ok || item["content"] != "https://example.com" {
+		t.Fatalf("nested action_input not preserved: %#v", resp.Action.Arguments["item"])
+	}
+}
+
+func TestRouterBackend_UsesPhaseParams(t *testing.T) {
+	fc := &fakeCompleter{reply: `{"thought":"done","is_done":true,"final_answer":"ok"}`}
+	b := NewRouterBackend(fc, "glm-5.2")
+	b.ThinkParams = PhaseParams{Temperature: 0.2, TopP: 0.7, MaxTokens: 333, ResponseFormat: "json"}
+
+	if _, err := b.Think(context.Background(), ThinkRequest{TaskInput: "x"}); err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if fc.lastParams.MaxTokens != 333 || fc.lastParams.Temperature != 0.2 || fc.lastParams.TopP != 0.7 {
+		t.Fatalf("phase params not forwarded: %+v", fc.lastParams)
 	}
 }
 

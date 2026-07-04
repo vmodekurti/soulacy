@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/reasoning"
@@ -26,6 +27,8 @@ import (
 
 // runFlow executes the spec's graph form for one trigger message.
 type triggerInput map[string]any
+
+const flowTraceFieldMaxBytes = 32 * 1024
 
 func (t triggerInput) String() string {
 	if text, ok := t["text"].(string); ok {
@@ -72,7 +75,8 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	// input/output/duration/error and stream it as a flow.node event so the GUI
 	// can render a legible run trace. Independent of the checkpoint store.
 	hooks.Observe = func(rec reasoning.FlowNodeRun) {
-		w.engine.recordFlowNode(agentID, runID, rec)
+		displayRec := trimFlowNodeRun(rec)
+		w.engine.recordFlowNode(agentID, runID, displayRec)
 		if w.engine.sink == nil {
 			return
 		}
@@ -83,14 +87,14 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 			Timestamp: time.Now().UTC(),
 			Payload: map[string]any{
 				"runId":      runID,
-				"visitKey":   rec.VisitKey,
-				"nodeId":     rec.NodeID,
-				"kind":       rec.Kind,
-				"input":      rec.Input,
-				"output":     rec.Output,
-				"error":      rec.Error,
-				"durationMs": rec.DurationMS,
-				"wiredPorts": rec.WiredPorts,
+				"visitKey":   displayRec.VisitKey,
+				"nodeId":     displayRec.NodeID,
+				"kind":       displayRec.Kind,
+				"input":      displayRec.Input,
+				"output":     displayRec.Output,
+				"error":      displayRec.Error,
+				"durationMs": displayRec.DurationMS,
+				"wiredPorts": displayRec.WiredPorts,
 			},
 		})
 	}
@@ -109,6 +113,21 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 				AgentID: agentID, RunID: runID, StepID: visitKey,
 				Status: CheckpointInProgress, UpdatedAt: time.Now().UTC(),
 			})
+			if w.engine.sink != nil {
+				w.engine.sink.Emit(message.Event{
+					Type:      "flow.node.started",
+					AgentID:   agentID,
+					SessionID: msg.SessionID,
+					Timestamp: time.Now().UTC(),
+					Payload: map[string]any{
+						"runId":    runID,
+						"visitKey": visitKey,
+						"nodeId":   node.ID,
+						"kind":     node.Kind,
+						"status":   "running",
+					},
+				})
+			}
 		}
 		hooks.Completed = func(visitKey string, state json.RawMessage) {
 			_ = w.store.Upsert(ctx, Checkpoint{
@@ -269,6 +288,45 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	return out, nil
 }
 
+func trimFlowNodeRun(rec reasoning.FlowNodeRun) reasoning.FlowNodeRun {
+	rec.Input = trimTraceString(rec.Input)
+	rec.Error = trimTraceString(rec.Error)
+	rec.Output = trimTraceJSON(rec.Output)
+	return rec
+}
+
+func trimTraceString(s string) string {
+	if len(s) <= flowTraceFieldMaxBytes {
+		return s
+	}
+	prefix := s[:flowTraceFieldMaxBytes]
+	for !utf8.ValidString(prefix) && len(prefix) > 0 {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return prefix + fmt.Sprintf("\n\n[truncated: %d bytes omitted from workflow trace]", len(s)-len(prefix))
+}
+
+func trimTraceJSON(raw json.RawMessage) json.RawMessage {
+	if len(raw) <= flowTraceFieldMaxBytes {
+		return raw
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		b, _ := json.Marshal(trimTraceString(s))
+		return b
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err == nil {
+		b, _ := json.Marshal(map[string]any{
+			"truncated": true,
+			"summary":   fmt.Sprintf("Workflow trace output omitted because it was %d bytes. The full value remains available to downstream nodes during the run.", len(raw)),
+		})
+		return b
+	}
+	b, _ := json.Marshal(trimTraceString(string(raw)))
+	return b
+}
+
 // parseToolArgs unmarshals a flow node's rendered input into a tool-args map.
 // Node inputs are produced by text/template substitution (e.g. {{.search_query}}
 // inside a JSON template), so an upstream agent's output containing a raw newline
@@ -305,9 +363,13 @@ func (e *Engine) runFlowLLMNode(ctx context.Context, def *agent.Definition, msg 
 	}
 	responseFormat := strings.ToLower(strings.TrimSpace(flowParamString(node.Params, "response_format")))
 	req := llm.CompletionRequest{
-		Model:       def.LLM.Model,
-		Temperature: def.LLM.Temperature,
-		MaxTokens:   def.LLM.MaxTokens,
+		Model:            def.LLM.Model,
+		Temperature:      def.LLM.Temperature,
+		TopP:             def.LLM.TopP,
+		MaxTokens:        def.LLM.MaxTokens,
+		ReasoningEffort:  def.LLM.ReasoningEffort,
+		PresencePenalty:  def.LLM.PresencePenalty,
+		FrequencyPenalty: def.LLM.FrequencyPenalty,
 		Messages: []llm.ChatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},

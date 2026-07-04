@@ -20,6 +20,8 @@ package reasoning
 import (
 	"context"
 	"fmt"
+	htmlpkg "html"
+	"regexp"
 	"strings"
 	"time"
 
@@ -57,6 +59,7 @@ type (
 	PlannedStep     = sdkreasoning.PlannedStep
 	Plan            = sdkreasoning.Plan
 	LoopConfig      = sdkreasoning.Config
+	PhaseParams     = sdkreasoning.PhaseParams
 	ThinkRequest    = sdkreasoning.ThinkRequest
 	ThinkResponse   = sdkreasoning.ThinkResponse
 	ReflectRequest  = sdkreasoning.ReflectRequest
@@ -179,15 +182,55 @@ func detectStrategy(taskInput string) LoopStrategy {
 	return StrategyReAct
 }
 
+var (
+	htmlScriptRE = regexp.MustCompile(`(?is)<script\b[^>]*>.*?</script>|<style\b[^>]*>.*?</style>|<noscript\b[^>]*>.*?</noscript>|<svg\b[^>]*>.*?</svg>|<iframe\b[^>]*>.*?</iframe>`)
+	htmlTagRE    = regexp.MustCompile(`(?s)<[^>]+>`)
+	spaceRE      = regexp.MustCompile(`[ \t\r\n]+`)
+)
+
 // boundObservation enforces the 8192-byte cap and wraps tool errors as content.
 func boundObservation(obs Observation) Observation {
 	if obs.Error != nil {
 		obs.Content = fmt.Sprintf("tool error: %s", obs.Error.Error())
 	}
+	obs.Content = compactObservation(obs.Content)
 	if len(obs.Content) > 8192 {
 		obs.Content = obs.Content[:8192]
 	}
 	return obs
+}
+
+func compactObservation(content string) string {
+	if !looksLikeHTMLObservation(content) {
+		return content
+	}
+	header, body, ok := strings.Cut(content, "\n\n")
+	if !ok {
+		body = content
+		header = ""
+	}
+	text := htmlScriptRE.ReplaceAllString(body, " ")
+	text = htmlTagRE.ReplaceAllString(text, " ")
+	text = htmlpkg.UnescapeString(text)
+	text = strings.TrimSpace(spaceRE.ReplaceAllString(text, " "))
+	if header != "" {
+		header = strings.TrimSpace(header)
+	}
+	if text == "" {
+		return content
+	}
+	if header == "" {
+		return "HTML fetched; readable text excerpt:\n" + text
+	}
+	return header + "\n\nHTML fetched; readable text excerpt:\n" + text
+}
+
+func looksLikeHTMLObservation(content string) bool {
+	s := strings.ToLower(content)
+	if strings.Contains(s, "content-type: text/html") {
+		return true
+	}
+	return strings.Contains(s, "<html") || strings.Contains(s, "<!doctype html")
 }
 
 func containsToolErrors(steps []Step) bool {

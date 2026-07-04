@@ -36,8 +36,11 @@ type AnthropicBackend struct {
 	// PlanModel is used for Plan() — default claude-sonnet-4-6.
 	PlanModel string
 	// ReflectModel is used for Reflect() — default claude-sonnet-4-6.
-	ReflectModel string
-	client       *http.Client
+	ReflectModel  string
+	client        *http.Client
+	ThinkParams   PhaseParams
+	PlanParams    PhaseParams
+	ReflectParams PhaseParams
 }
 
 // NewAnthropicBackend creates an AnthropicBackend.
@@ -76,13 +79,16 @@ func (b *AnthropicBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRe
 		formatStepHistory(req.StepHistory),
 	)
 
-	body, err := b.complete(ctx, b.ThinkModel, systemPrompt, userContent, 512)
+	body, err := b.complete(ctx, b.ThinkModel, systemPrompt, userContent, phaseParamsWithDefaults(b.ThinkParams, 1024, 0.1, "json"))
 	if err != nil {
 		return ThinkResponse{}, err
 	}
 
 	var resp ThinkResponse
 	if err := unmarshalJSON(body, &resp); err != nil {
+		if recovered, ok := recoverThinkResponseFromRaw(body, req.ToolNames); ok {
+			return recovered, nil
+		}
 		return ThinkResponse{}, fmt.Errorf("reasoning: Think: parse response: %w (raw: %s)", err, truncate(body, 200))
 	}
 	return resp, nil
@@ -97,7 +103,10 @@ Respond ONLY with a JSON object in this exact schema — no markdown fences, no 
   "action":       { "tool": "<tool_name>", "input": { "<key>": "<value>" } },
   "final_answer": ""
 }
-When the task is complete set "is_done": true, put your answer in "final_answer", and omit "action".`
+Keep "thought" under 25 words. Keep tool arguments concise; do not paste fetched documents, HTML, or long code into thought.
+When the next step requires a tool, set "is_done": false and put the tool in "action"; never write tool_name({...}) as prose.
+Only set "is_done": true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
+When the task is complete set "is_done": true, put your completed answer in "final_answer", and omit "action".`
 
 // ─── Plan ─────────────────────────────────────────────────────────────────────
 
@@ -105,7 +114,7 @@ When the task is complete set "is_done": true, put your answer in "final_answer"
 // Only called by StrategyPlanExecute agents.
 func (b *AnthropicBackend) Plan(ctx context.Context, systemPrompt, taskInput string, maxSteps int) (Plan, error) {
 	sp := systemPrompt + fmt.Sprintf(planInstructions, maxSteps)
-	body, err := b.complete(ctx, b.PlanModel, sp, "Task: "+taskInput, 1024)
+	body, err := b.complete(ctx, b.PlanModel, sp, "Task: "+taskInput, phaseParamsWithDefaults(b.PlanParams, 1024, 0.1, "json"))
 	if err != nil {
 		return Plan{}, err
 	}
@@ -146,7 +155,7 @@ func (b *AnthropicBackend) Reflect(ctx context.Context, req ReflectRequest) (Ref
 		formatStepHistory(req.Steps),
 	)
 
-	body, err := b.complete(ctx, b.ReflectModel, sp, userContent, 2048)
+	body, err := b.complete(ctx, b.ReflectModel, sp, userContent, phaseParamsWithDefaults(b.ReflectParams, 2048, 0.1, "json"))
 	if err != nil {
 		return ReflectResponse{}, err
 	}
@@ -171,10 +180,12 @@ No markdown fences around the JSON itself. The "output" field may contain Markdo
 // ─── HTTP ─────────────────────────────────────────────────────────────────────
 
 type anthropicRequest struct {
-	Model     string             `json:"model"`
-	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system"`
-	Messages  []anthropicMessage `json:"messages"`
+	Model       string             `json:"model"`
+	MaxTokens   int                `json:"max_tokens"`
+	System      string             `json:"system"`
+	Messages    []anthropicMessage `json:"messages"`
+	Temperature float64            `json:"temperature,omitempty"`
+	TopP        float64            `json:"top_p,omitempty"`
 }
 
 type anthropicMessage struct {
@@ -194,48 +205,51 @@ type anthropicResponse struct {
 }
 
 // complete makes one POST /v1/messages call and returns the text content.
-func (b *AnthropicBackend) complete(ctx context.Context, model, system, userMsg string, maxTokens int) (string, error) {
+func (b *AnthropicBackend) complete(ctx context.Context, model, system, userMsg string, params PhaseParams) (string, error) {
 	payload := anthropicRequest{
 		Model:     model,
-		MaxTokens: maxTokens,
+		MaxTokens: params.MaxTokens,
 		System:    system,
 		Messages:  []anthropicMessage{{Role: "user", Content: userMsg}},
 	}
-
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", fmt.Errorf("reasoning: anthropic: marshal: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		b.baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("reasoning: anthropic: new request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", b.apiKey)
-	req.Header.Set("anthropic-version", defaultAnthropicVersion)
-
-	resp, err := b.client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("reasoning: anthropic: http: %w", err)
-	}
-	defer resp.Body.Close()
-
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("reasoning: anthropic: read body: %w", err)
+	if params.Temperature > 0 {
+		payload.Temperature = params.Temperature
+	} else if params.TopP > 0 {
+		payload.TopP = params.TopP
 	}
 
 	var ar anthropicResponse
-	if err := json.Unmarshal(raw, &ar); err != nil {
-		return "", fmt.Errorf("reasoning: anthropic: decode: %w (status %d)", err, resp.StatusCode)
+	var raw []byte
+	var status int
+	strippedDeprecated := map[string]bool{}
+	for {
+		var err error
+		raw, status, err = b.doComplete(ctx, payload)
+		if err != nil {
+			return "", err
+		}
+
+		ar = anthropicResponse{}
+		if err := json.Unmarshal(raw, &ar); err != nil {
+			return "", fmt.Errorf("reasoning: anthropic: decode: %w (status %d)", err, status)
+		}
+		if ar.Error == nil {
+			break
+		}
+		param := anthropicDeprecatedParam(ar.Error.Message)
+		if param == "" || strippedDeprecated[param] {
+			return "", fmt.Errorf("reasoning: anthropic: API error %s: %s", ar.Error.Type, ar.Error.Message)
+		}
+		switch param {
+		case "temperature":
+			payload.Temperature = 0
+		case "top_p":
+			payload.TopP = 0
+		}
+		strippedDeprecated[param] = true
 	}
-	if ar.Error != nil {
-		return "", fmt.Errorf("reasoning: anthropic: API error %s: %s", ar.Error.Type, ar.Error.Message)
-	}
-	if resp.StatusCode >= 300 {
-		return "", fmt.Errorf("reasoning: anthropic: HTTP %d: %s", resp.StatusCode, truncate(string(raw), 200))
+	if status >= 300 {
+		return "", fmt.Errorf("reasoning: anthropic: HTTP %d: %s", status, truncate(string(raw), 200))
 	}
 	for _, block := range ar.Content {
 		if block.Type == "text" {
@@ -243,6 +257,33 @@ func (b *AnthropicBackend) complete(ctx context.Context, model, system, userMsg 
 		}
 	}
 	return "", fmt.Errorf("reasoning: anthropic: no text block in response")
+}
+
+func (b *AnthropicBackend) doComplete(ctx context.Context, payload anthropicRequest) ([]byte, int, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reasoning: anthropic: marshal: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		b.baseURL+"/v1/messages", bytes.NewReader(body))
+	if err != nil {
+		return nil, 0, fmt.Errorf("reasoning: anthropic: new request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-api-key", b.apiKey)
+	req.Header.Set("anthropic-version", defaultAnthropicVersion)
+
+	resp, err := b.client.Do(req)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reasoning: anthropic: http: %w", err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, resp.StatusCode, fmt.Errorf("reasoning: anthropic: read body: %w", err)
+	}
+	return raw, resp.StatusCode, nil
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -284,4 +325,17 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return s[:max] + "…"
+}
+
+func anthropicDeprecatedParam(message string) string {
+	msg := strings.ToLower(message)
+	if !strings.Contains(msg, "deprecated") {
+		return ""
+	}
+	for _, name := range []string{"temperature", "top_p"} {
+		if strings.Contains(msg, name) {
+			return name
+		}
+	}
+	return ""
 }

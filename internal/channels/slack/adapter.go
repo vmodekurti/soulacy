@@ -16,8 +16,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -28,7 +30,7 @@ import (
 	"github.com/soulacy/soulacy/pkg/message"
 )
 
-const slackAPI = "https://slack.com/api"
+var slackAPI = "https://slack.com/api"
 
 // Adapter implements the Slack Socket Mode protocol.
 type Adapter struct {
@@ -166,18 +168,28 @@ func (a *Adapter) run(ctx context.Context, wsURL string) error {
 		if envelope.Type == "events_api" {
 			var ep struct {
 				Event struct {
-					Type    string `json:"type"`
-					Text    string `json:"text"`
-					User    string `json:"user"`
-					Channel string `json:"channel"`
-					TS      string `json:"ts"`
-					BotID   string `json:"bot_id"`
+					Type        string `json:"type"`
+					Text        string `json:"text"`
+					User        string `json:"user"`
+					Channel     string `json:"channel"`
+					ChannelType string `json:"channel_type"`
+					TS          string `json:"ts"`
+					BotID       string `json:"bot_id"`
 				} `json:"event"`
 			}
 			_ = json.Unmarshal(envelope.Payload, &ep)
 
-			if ep.Event.Type == "message" && ep.Event.BotID == "" {
-				text, ok := a.activation.Apply(ep.Event.Text, ep.Event.Channel, ep.Event.User, true)
+			if (ep.Event.Type == "message" || ep.Event.Type == "app_mention") && ep.Event.BotID == "" {
+				text := ep.Event.Text
+				isGroup := slackEventIsGroup(ep.Event.Type, ep.Event.ChannelType)
+				if ep.Event.Type == "app_mention" {
+					// Slack delivers explicit bot mentions as app_mention events
+					// with text like "<@U123> weather?". Treat the mention itself
+					// as the activation signal and strip it before handing text to
+					// the agent, otherwise channel bots look connected but never run.
+					text = stripLeadingSlackMention(text)
+				}
+				text, ok := a.activation.Apply(text, ep.Event.Channel, ep.Event.User, isGroup)
 				if !ok {
 					continue
 				}
@@ -238,8 +250,64 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode >= 400 {
+		return fmt.Errorf("slack: send: API returned status %d: %s", resp.StatusCode, slackErrorDetail(bodyBytes))
+	}
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if len(bodyBytes) > 0 && json.Unmarshal(bodyBytes, &result) == nil && !result.OK {
+		if result.Error == "" {
+			result.Error = "unknown_error"
+		}
+		return fmt.Errorf("slack: send: %s", result.Error)
+	}
 	return nil
+}
+
+func stripLeadingSlackMention(text string) string {
+	text = strings.TrimSpace(text)
+	for strings.HasPrefix(text, "<@") {
+		end := strings.Index(text, ">")
+		if end < 0 {
+			break
+		}
+		text = strings.TrimSpace(text[end+1:])
+	}
+	return text
+}
+
+func slackEventIsGroup(eventType, channelType string) bool {
+	if eventType == "app_mention" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(channelType)) {
+	case "im":
+		return false
+	case "channel", "group", "mpim":
+		return true
+	default:
+		// Be conservative for older/partial payloads: require the trigger phrase
+		// unless Slack explicitly says this is a direct message.
+		return true
+	}
+}
+
+func slackErrorDetail(body []byte) string {
+	var result struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+	}
+	if len(body) > 0 && json.Unmarshal(body, &result) == nil && result.Error != "" {
+		return result.Error
+	}
+	if s := strings.TrimSpace(string(body)); s != "" {
+		return s
+	}
+	return "unknown_error"
 }
 
 func (a *Adapter) Stop() error {

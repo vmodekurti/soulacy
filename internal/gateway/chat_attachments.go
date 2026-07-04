@@ -18,6 +18,14 @@ import (
 	"github.com/soulacy/soulacy/internal/session"
 )
 
+const (
+	chatAttachmentStoredTextMaxRunes  = 16_000
+	chatAttachmentPromptPreviewRunes  = 1_200
+	chatAttachmentPromptTotalRunes    = 4_000
+	chatAttachmentMessageMaxRunes     = 8_000
+	chatAttachmentExtractWarnMinRunes = 2_000
+)
+
 type attachmentStore interface {
 	session.ResourceStore
 	PutAttachment(ctx context.Context, att session.Attachment, data []byte, ttl time.Duration) error
@@ -104,19 +112,21 @@ func (s *Server) handleChatAttachmentUpload(c *fiber.Ctx) error {
 	if extractErr != nil {
 		text = ""
 	}
+	text, textTruncated := truncateRunes(strings.TrimSpace(text), chatAttachmentStoredTextMaxRunes)
 	att := session.Attachment{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
 		AgentID:   agentID,
 		Filename:  filename,
 		MIMEType:  mimeType,
-		Text:      strings.TrimSpace(text),
+		Text:      text,
 	}
 	if err := st.PutAttachment(c.UserContext(), att, data, session.DefaultAttachmentTTL); err != nil {
 		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	s.log.Info("chat attachment uploaded",
-		zap.String("agent", agentID), zap.String("session", sessionID), zap.String("filename", filename))
+		zap.String("agent", agentID), zap.String("session", sessionID), zap.String("filename", filename),
+		zap.Bool("text_truncated", textTruncated))
 	created, _, err := st.GetAttachment(c.UserContext(), att.ID)
 	if err != nil {
 		created = att
@@ -186,9 +196,14 @@ func (s *Server) expandChatAttachments(ctx context.Context, agentID, sessionID, 
 		return "", fmt.Errorf("session resource store not configured")
 	}
 	var b strings.Builder
-	b.WriteString(strings.TrimSpace(text))
+	base, baseTruncated := truncateRunes(strings.TrimSpace(text), chatAttachmentMessageMaxRunes)
+	b.WriteString(base)
+	if baseTruncated {
+		b.WriteString("\n\n[user message truncated before attachment context]")
+	}
 	b.WriteString("\n\n<attachments>\n")
-	remaining := 20000
+	b.WriteString("Attachment bodies are intentionally summarized here to keep chat and workflow execution bounded. Use the attachment id/file record for full ingestion.\n")
+	remaining := chatAttachmentPromptTotalRunes
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {
@@ -205,20 +220,30 @@ func (s *Server) expandChatAttachments(ctx context.Context, agentID, sessionID, 
 		if excerpt == "" {
 			excerpt = "(no extractable text; use the filename and MIME type as context)"
 		}
-		runes := []rune(excerpt)
-		truncated := false
-		if len(runes) > remaining {
-			excerpt = string(runes[:remaining])
-			truncated = true
+		perAttachmentMax := chatAttachmentPromptPreviewRunes
+		if remaining < perAttachmentMax {
+			perAttachmentMax = remaining
 		}
+		if perAttachmentMax <= 0 {
+			break
+		}
+		excerpt, truncated := truncateRunes(excerpt, perAttachmentMax)
 		b.WriteString("\n<attachment filename=\"")
 		b.WriteString(strings.ReplaceAll(att.Filename, `"`, `'`))
 		b.WriteString("\" mime_type=\"")
 		b.WriteString(strings.ReplaceAll(att.MIMEType, `"`, `'`))
+		b.WriteString("\" id=\"")
+		b.WriteString(strings.ReplaceAll(att.ID, `"`, `'`))
+		b.WriteString("\" size_bytes=\"")
+		b.WriteString(fmt.Sprint(att.SizeBytes))
 		b.WriteString("\">\n")
+		b.WriteString("preview:\n")
 		b.WriteString(excerpt)
 		if truncated {
-			b.WriteString("\n[truncated]")
+			b.WriteString("\n[preview truncated]")
+		}
+		if len([]rune(att.Text)) >= chatAttachmentExtractWarnMinRunes {
+			b.WriteString("\n[note: full extracted text is stored with the attachment metadata; do not ask the LLM to process the full body inline]")
 		}
 		b.WriteString("\n</attachment>\n")
 		remaining -= len([]rune(excerpt))
@@ -228,4 +253,16 @@ func (s *Server) expandChatAttachments(ctx context.Context, agentID, sessionID, 
 	}
 	b.WriteString("</attachments>")
 	return b.String(), nil
+}
+
+func truncateRunes(s string, max int) (string, bool) {
+	s = strings.TrimSpace(s)
+	if max <= 0 {
+		return "", s != ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s, false
+	}
+	return strings.TrimSpace(string(r[:max])) + "...", true
 }

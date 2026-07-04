@@ -87,6 +87,9 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	}
 	options := cloneOptions(o.options)
 	options["temperature"] = req.Temperature
+	if req.TopP > 0 {
+		options["top_p"] = req.TopP
+	}
 	if req.MaxTokens > 0 {
 		options["num_predict"] = req.MaxTokens
 	}

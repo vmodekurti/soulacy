@@ -49,7 +49,7 @@ func TestStudioCompile_RoutesReasoningTaskToAgent(t *testing.T) {
 // (possibly empty) tool-call trace — without persisting the agent.
 func TestStudioTryAgent_RunsAndReturnsReply(t *testing.T) {
 	s, fake := studioFake(t)
-	fake.content = "AAPL is up about 5% this quarter."
+	fake.content = `{"thought":"answer directly","is_done":true,"final_answer":"AAPL is up about 5% this quarter."}`
 
 	body := `{"workflow":{"name":"QA","strategy":"react","system_prompt":"answer stock questions",` +
 		`"trigger":{"type":"channel"},"channels":["http"],"tools":["web_search"]},"question":"how is AAPL doing?"}`

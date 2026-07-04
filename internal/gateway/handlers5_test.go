@@ -115,7 +115,7 @@ func TestPreserveHiddenAgentUpdateFields_NilSafety(t *testing.T) {
 
 func TestChatOverrideMetadata_OnlyMaxTokens(t *testing.T) {
 	tokens := 128
-	meta := chatOverrideMetadata("", "", nil, &tokens, nil, "")
+	meta := chatOverrideMetadata("", "", nil, nil, &tokens, nil, "", "", "", nil, nil)
 	if meta == nil {
 		t.Fatal("expected non-nil meta when max_tokens is set")
 	}
@@ -125,7 +125,7 @@ func TestChatOverrideMetadata_OnlyMaxTokens(t *testing.T) {
 }
 
 func TestChatOverrideMetadata_ToolChoiceOnly(t *testing.T) {
-	meta := chatOverrideMetadata("", "", nil, nil, nil, "none")
+	meta := chatOverrideMetadata("", "", nil, nil, nil, nil, "none", "", "", nil, nil)
 	if meta == nil {
 		t.Fatal("expected non-nil meta when tool_choice is set")
 	}
@@ -223,6 +223,9 @@ func TestNormalizeChannelValue_BoolFields(t *testing.T) {
 	if got := normalizeChannelValue("ignore_groups", "false"); got != false {
 		t.Fatalf("ignore_groups false normalized to %#v", got)
 	}
+	if got := normalizeChannelValue("accept_privileged_exposure", "1"); got != true {
+		t.Fatalf("accept_privileged_exposure normalized to %#v", got)
+	}
 }
 
 // ── channelAdapterID: index 0 with agentID still returns channelID ────────────
@@ -260,7 +263,7 @@ func TestMaskChannelBots_ConnectedStatusReflected(t *testing.T) {
 	statuses := map[string]channels.AdapterStatus{
 		"telegram": {Connected: true, Detail: "running"},
 	}
-	result := maskChannelBots(spec, map[string]any{"bots": raw}, statuses)
+	result := maskChannelBots(spec, map[string]any{"bots": raw}, statuses, nil)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 bot, got %d", len(result))
 	}
@@ -315,6 +318,24 @@ func TestChannelDiagnosticsAllowsDedicatedBotMappingsWithoutDefaultBot(t *testin
 			t.Fatalf("unexpected failure for dedicated mapping: %#v", got)
 		}
 	}
+}
+
+func TestChannelDiagnosticsReportsPrivilegedBlockedBot(t *testing.T) {
+	spec := *channelSpecByID("telegram")
+	bots := []fiber.Map{{
+		"_adapter_id":     "telegram-librarian",
+		"agent_id":        "librarian",
+		"_connected":      false,
+		"outbound_only":   false,
+		"_blocked_reason": "privileged agent requires exposure approval",
+	}}
+	got := channelDiagnostics(spec, map[string]any{"enabled": true}, true, true, channels.AdapterStatus{Connected: true}, bots)
+	for _, d := range got {
+		if d.Severity == "fail" && strings.Contains(d.Message, "telegram-librarian") && strings.Contains(d.Remedy, "privileged exposure") {
+			return
+		}
+	}
+	t.Fatalf("diagnostics did not explain privileged block: %#v", got)
 }
 
 // ── handleUpdateChannel: enabled flag toggled with bots ──────────────────────

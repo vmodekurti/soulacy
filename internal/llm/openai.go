@@ -89,6 +89,18 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	if req.MaxTokens > 0 {
 		body["max_tokens"] = req.MaxTokens
 	}
+	if req.TopP > 0 {
+		body["top_p"] = req.TopP
+	}
+	if req.PresencePenalty != 0 {
+		body["presence_penalty"] = req.PresencePenalty
+	}
+	if req.FrequencyPenalty != 0 {
+		body["frequency_penalty"] = req.FrequencyPenalty
+	}
+	if strings.TrimSpace(req.ReasoningEffort) != "" {
+		body["reasoning_effort"] = strings.TrimSpace(req.ReasoningEffort)
+	}
 
 	if len(req.Tools) > 0 {
 		body["tools"] = openAIStyleTools(req.Tools)
