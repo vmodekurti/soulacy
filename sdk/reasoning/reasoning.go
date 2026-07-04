@@ -136,6 +136,19 @@ type Config struct {
 	// Flow carries the compiled graph for the "flow" strategy (Story E25).
 	// nil for every other strategy. Appended field — zero-value compatible.
 	Flow *FlowSpec
+	// PhaseParams optionally tunes the LLM calls made by built-in reasoning
+	// phases. Zero values keep the strategy defaults.
+	ThinkParams   PhaseParams
+	PlanParams    PhaseParams
+	ReflectParams PhaseParams
+}
+
+// PhaseParams tunes one internal reasoning LLM phase.
+type PhaseParams struct {
+	Temperature    float64
+	TopP           float64
+	MaxTokens      int
+	ResponseFormat string
 }
 
 // ThinkRequest is the input to LLMBackend.Think().

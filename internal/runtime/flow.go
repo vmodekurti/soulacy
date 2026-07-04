@@ -363,9 +363,13 @@ func (e *Engine) runFlowLLMNode(ctx context.Context, def *agent.Definition, msg 
 	}
 	responseFormat := strings.ToLower(strings.TrimSpace(flowParamString(node.Params, "response_format")))
 	req := llm.CompletionRequest{
-		Model:       def.LLM.Model,
-		Temperature: def.LLM.Temperature,
-		MaxTokens:   def.LLM.MaxTokens,
+		Model:            def.LLM.Model,
+		Temperature:      def.LLM.Temperature,
+		TopP:             def.LLM.TopP,
+		MaxTokens:        def.LLM.MaxTokens,
+		ReasoningEffort:  def.LLM.ReasoningEffort,
+		PresencePenalty:  def.LLM.PresencePenalty,
+		FrequencyPenalty: def.LLM.FrequencyPenalty,
 		Messages: []llm.ChatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},

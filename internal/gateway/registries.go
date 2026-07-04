@@ -56,9 +56,12 @@ func (s *Server) configuredOrDefaultRegistries() []config.RegistryConfig {
 		if raw, err := s.rawRegistries(); err == nil {
 			for _, m := range raw {
 				regs = append(regs, config.RegistryConfig{
-					ID:      strAt(m, "id"),
-					Type:    strAt(m, "type"),
-					BaseURL: strAt(m, "base_url"),
+					ID:          strAt(m, "id"),
+					Type:        strAt(m, "type"),
+					BaseURL:     strAt(m, "base_url"),
+					Priority:    intAt(m, "priority"),
+					AuthHeaders: stringMapAt(m, "auth_headers"),
+					SigningKey:  strAt(m, "signing_key"),
 				})
 			}
 		}
@@ -79,8 +82,14 @@ func (s *Server) handleSearchRegistries(c *fiber.Ctx) error {
 	eng, _ := pkgregistry.FromConfig(s.configuredOrDefaultRegistries(), s.log)
 	ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
 	defer cancel()
-	pkgs := eng.Search(ctx, query)
-	return c.JSON(fiber.Map{"packages": pkgs, "count": len(pkgs)})
+	pkgs, warnings := eng.SearchDetailed(ctx, query)
+	warnText := make([]string, 0, len(warnings))
+	for _, w := range warnings {
+		if w != nil {
+			warnText = append(warnText, w.Error())
+		}
+	}
+	return c.JSON(fiber.Map{"packages": pkgs, "count": len(pkgs), "warnings": warnText})
 }
 
 func (s *Server) handleListRegistries(c *fiber.Ctx) error {
@@ -224,4 +233,28 @@ func intAt(m map[string]any, k string) int {
 		return int(v)
 	}
 	return 0
+}
+
+func stringMapAt(m map[string]any, k string) map[string]string {
+	raw, ok := m[k]
+	if !ok {
+		return nil
+	}
+	out := map[string]string{}
+	switch v := raw.(type) {
+	case map[string]string:
+		for kk, vv := range v {
+			out[kk] = vv
+		}
+	case map[string]any:
+		for kk, vv := range v {
+			if s, ok := vv.(string); ok {
+				out[kk] = s
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

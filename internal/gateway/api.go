@@ -698,12 +698,29 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		Text          string   `json:"text"`
 		AttachmentIDs []string `json:"attachment_ids"`
 		Overrides     struct {
-			Provider    string   `json:"provider"`
-			Model       string   `json:"model"`
-			Temperature *float64 `json:"temperature"`
-			MaxTokens   *int     `json:"max_tokens"`
-			MaxTurns    *int     `json:"max_turns"`
-			ToolChoice  string   `json:"tool_choice"`
+			Provider         string   `json:"provider"`
+			Model            string   `json:"model"`
+			Temperature      *float64 `json:"temperature"`
+			TopP             *float64 `json:"top_p"`
+			MaxTokens        *int     `json:"max_tokens"`
+			MaxTurns         *int     `json:"max_turns"`
+			ResponseFormat   string   `json:"response_format"`
+			ReasoningEffort  string   `json:"reasoning_effort"`
+			PresencePenalty  *float64 `json:"presence_penalty"`
+			FrequencyPenalty *float64 `json:"frequency_penalty"`
+			ToolChoice       string   `json:"tool_choice"`
+			LLM              struct {
+				Provider         string   `json:"provider"`
+				Model            string   `json:"model"`
+				Temperature      *float64 `json:"temperature"`
+				TopP             *float64 `json:"top_p"`
+				MaxTokens        *int     `json:"max_tokens"`
+				ResponseFormat   string   `json:"response_format"`
+				ReasoningEffort  string   `json:"reasoning_effort"`
+				PresencePenalty  *float64 `json:"presence_penalty"`
+				FrequencyPenalty *float64 `json:"frequency_penalty"`
+				ToolChoice       string   `json:"tool_choice"`
+			} `json:"llm"`
 		} `json:"overrides"`
 	}
 	if err := c.BodyParser(&req); err != nil {
@@ -732,6 +749,40 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	}
 	def := s.loader.Get(req.AgentID)
 
+	ovProvider, ovModel, ovTemp, ovTopP, ovMaxTokens := req.Overrides.Provider, req.Overrides.Model, req.Overrides.Temperature, req.Overrides.TopP, req.Overrides.MaxTokens
+	ovResponseFormat, ovReasoningEffort := req.Overrides.ResponseFormat, req.Overrides.ReasoningEffort
+	ovPresencePenalty, ovFrequencyPenalty, ovToolChoice := req.Overrides.PresencePenalty, req.Overrides.FrequencyPenalty, req.Overrides.ToolChoice
+	if strings.TrimSpace(req.Overrides.LLM.Provider) != "" {
+		ovProvider = req.Overrides.LLM.Provider
+	}
+	if strings.TrimSpace(req.Overrides.LLM.Model) != "" {
+		ovModel = req.Overrides.LLM.Model
+	}
+	if req.Overrides.LLM.Temperature != nil {
+		ovTemp = req.Overrides.LLM.Temperature
+	}
+	if req.Overrides.LLM.TopP != nil {
+		ovTopP = req.Overrides.LLM.TopP
+	}
+	if req.Overrides.LLM.MaxTokens != nil {
+		ovMaxTokens = req.Overrides.LLM.MaxTokens
+	}
+	if strings.TrimSpace(req.Overrides.LLM.ResponseFormat) != "" {
+		ovResponseFormat = req.Overrides.LLM.ResponseFormat
+	}
+	if strings.TrimSpace(req.Overrides.LLM.ReasoningEffort) != "" {
+		ovReasoningEffort = req.Overrides.LLM.ReasoningEffort
+	}
+	if req.Overrides.LLM.PresencePenalty != nil {
+		ovPresencePenalty = req.Overrides.LLM.PresencePenalty
+	}
+	if req.Overrides.LLM.FrequencyPenalty != nil {
+		ovFrequencyPenalty = req.Overrides.LLM.FrequencyPenalty
+	}
+	if strings.TrimSpace(req.Overrides.LLM.ToolChoice) != "" {
+		ovToolChoice = req.Overrides.LLM.ToolChoice
+	}
+
 	msg := message.Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,
@@ -742,7 +793,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		Username:  req.Username,
 		Role:      message.RoleUser,
 		Parts:     message.Text(text),
-		Metadata:  chatOverrideMetadata(req.Overrides.Provider, req.Overrides.Model, req.Overrides.Temperature, req.Overrides.MaxTokens, req.Overrides.MaxTurns, req.Overrides.ToolChoice),
+		Metadata:  chatOverrideMetadata(ovProvider, ovModel, ovTemp, ovTopP, ovMaxTokens, req.Overrides.MaxTurns, ovToolChoice, ovResponseFormat, ovReasoningEffort, ovPresencePenalty, ovFrequencyPenalty),
 		CreatedAt: time.Now().UTC(),
 	}
 
@@ -790,7 +841,7 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"reply": replyText, "parts": reply.Parts})
 }
 
-func chatOverrideMetadata(provider, model string, temperature *float64, maxTokens, maxTurns *int, toolChoice string) map[string]string {
+func chatOverrideMetadata(provider, model string, temperature, topP *float64, maxTokens, maxTurns *int, toolChoice, responseFormat, reasoningEffort string, presencePenalty, frequencyPenalty *float64) map[string]string {
 	meta := map[string]string{}
 	if provider = strings.TrimSpace(provider); provider != "" {
 		meta["playground.llm.provider"] = provider
@@ -801,6 +852,9 @@ func chatOverrideMetadata(provider, model string, temperature *float64, maxToken
 	if temperature != nil {
 		meta["playground.llm.temperature"] = fmt.Sprintf("%g", *temperature)
 	}
+	if topP != nil && *topP > 0 {
+		meta["playground.llm.top_p"] = fmt.Sprintf("%g", *topP)
+	}
 	if maxTokens != nil && *maxTokens > 0 {
 		meta["playground.llm.max_tokens"] = fmt.Sprintf("%d", *maxTokens)
 	}
@@ -809,6 +863,18 @@ func chatOverrideMetadata(provider, model string, temperature *float64, maxToken
 	}
 	if toolChoice = strings.TrimSpace(toolChoice); toolChoice != "" {
 		meta["playground.llm.tool_choice"] = toolChoice
+	}
+	if responseFormat = strings.TrimSpace(responseFormat); responseFormat != "" {
+		meta["playground.llm.response_format"] = responseFormat
+	}
+	if reasoningEffort = strings.TrimSpace(reasoningEffort); reasoningEffort != "" {
+		meta["playground.llm.reasoning_effort"] = reasoningEffort
+	}
+	if presencePenalty != nil {
+		meta["playground.llm.presence_penalty"] = fmt.Sprintf("%g", *presencePenalty)
+	}
+	if frequencyPenalty != nil {
+		meta["playground.llm.frequency_penalty"] = fmt.Sprintf("%g", *frequencyPenalty)
 	}
 	if len(meta) == 0 {
 		return nil
@@ -1773,7 +1839,7 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	}
 	defer s.scheduler.FinishRun(id)
 
-	sessionID := fmt.Sprintf("manual-%s", id)
+	sessionID := fmt.Sprintf("manual-%s-%d", id, time.Now().UnixNano())
 	msg := message.Message{
 		ID:        uuid.New().String(),
 		SessionID: sessionID,

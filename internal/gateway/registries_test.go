@@ -84,6 +84,86 @@ func TestProbeRegistry_EndToEnd(t *testing.T) {
 	}
 }
 
+func TestSearchRegistries_ReturnsProviderWarnings(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"authentication_required","message":"token required"}`))
+	})
+	dir := httptest.NewServer(mux)
+	defer dir.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	seed := `
+server:
+  port: 18789
+registries:
+  - id: test-skills
+    type: skillssh
+    base_url: ` + dir.URL + `
+    priority: 10
+`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/registries/search?q=audit", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d %v", status, body)
+	}
+	if body["count"].(float64) != 0 {
+		t.Fatalf("count = %v, want 0", body["count"])
+	}
+	warnings, ok := body["warnings"].([]any)
+	if !ok || len(warnings) != 1 {
+		t.Fatalf("warnings = %#v", body["warnings"])
+	}
+	if !strings.Contains(warnings[0].(string), "authentication_required: token required") {
+		t.Fatalf("warning = %q", warnings[0])
+	}
+}
+
+func TestSearchRegistries_UsesConfiguredAuthHeaders(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer sk_secret" {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"authentication_required","message":"bad token"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"data":[{"id":"acme/options/strategy-advisor","slug":"options-strategy-advisor","name":"Options Strategy Advisor","description":"Options strategy guidance","source":"acme/options"}]}`))
+	})
+	dir := httptest.NewServer(mux)
+	defer dir.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	seed := `
+server:
+  port: 18789
+registries:
+  - id: authed-skills
+    type: skillssh
+    base_url: ` + dir.URL + `
+    priority: 10
+    auth_headers:
+      Authorization: "Bearer sk_secret"
+`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/registries/search?q=options-strategy-advisor", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d %v", status, body)
+	}
+	if body["count"].(float64) != 1 {
+		t.Fatalf("count = %v, body = %v", body["count"], body)
+	}
+	if warnings, ok := body["warnings"].([]any); !ok || len(warnings) != 0 {
+		t.Fatalf("warnings = %#v", body["warnings"])
+	}
+}
+
 func TestAddRegistry_AppendsAndValidates(t *testing.T) {
 	cfgPath, s := seedRegistriesConfig(t)
 

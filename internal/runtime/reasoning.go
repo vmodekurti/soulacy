@@ -43,18 +43,26 @@ type routerCompleter struct {
 	provider string
 }
 
-func (rc routerCompleter) Complete(ctx context.Context, model, system, user string, maxTokens int) (string, error) {
+func (rc routerCompleter) Complete(ctx context.Context, model, system, user string, params reasoning.PhaseParams) (string, error) {
+	if params.MaxTokens <= 0 {
+		params.MaxTokens = 1024
+	}
+	responseFormat := strings.TrimSpace(params.ResponseFormat)
+	if responseFormat == "" {
+		responseFormat = "json"
+	}
 	resp, err := rc.router.Complete(ctx, rc.provider, llm.CompletionRequest{
 		Model: model,
 		Messages: []llm.ChatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		MaxTokens:   maxTokens,
-		Temperature: 0.1,
+		MaxTokens:   params.MaxTokens,
+		Temperature: phaseTemperature(params, 0.1),
+		TopP:        params.TopP,
 		// Best-effort structured output: providers that support it return JSON;
 		// the rest ignore the hint and the strict prompt + lenient parse cover it.
-		ResponseFormat: "json",
+		ResponseFormat: responseFormat,
 	})
 	if err != nil {
 		return "", err
@@ -63,6 +71,13 @@ func (rc routerCompleter) Complete(ctx context.Context, model, system, user stri
 		return "", fmt.Errorf("reasoning: router returned a nil response for provider %q", rc.provider)
 	}
 	return resp.Content, nil
+}
+
+func phaseTemperature(params reasoning.PhaseParams, fallback float64) float64 {
+	if params.Temperature > 0 {
+		return params.Temperature
+	}
+	return fallback
 }
 
 // captureBackend wraps an LLMBackend to remember the most recent error from any
@@ -138,14 +153,14 @@ func (e *Engine) reasoningBackendFor(def *agent.Definition) reasoning.LLMBackend
 		prov = strings.ToLower(strings.TrimSpace(e.llmRouter.DefaultProvider()))
 	}
 	if reasoning.BackendAvailable(prov, e.reasoningKeys) {
-		return reasoning.DefaultBackendFor(rdef, e.reasoningKeys)
+		return reasoning.ApplyTuning(reasoning.DefaultBackendFor(rdef, e.reasoningKeys), rdef)
 	}
 	if e.llmRouter != nil && e.llmRouter.Provider(prov) != nil {
-		return reasoning.NewRouterBackend(routerCompleter{router: e.llmRouter, provider: prov}, rdef.LLM.Model)
+		return reasoning.ApplyTuning(reasoning.NewRouterBackend(routerCompleter{router: e.llmRouter, provider: prov}, rdef.LLM.Model), rdef)
 	}
 	// No native backend and the router doesn't know this provider — keep the
 	// historic local-Ollama fallback so behaviour is unchanged in that corner.
-	return reasoning.DefaultBackendFor(rdef, e.reasoningKeys)
+	return reasoning.ApplyTuning(reasoning.DefaultBackendFor(rdef, e.reasoningKeys), rdef)
 }
 
 // SetReasoningKeys wires cloud-provider API keys for reasoning LLM backends.

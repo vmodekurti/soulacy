@@ -37,6 +37,9 @@ type OpenAIBackend struct {
 	// for better reasoning on complex tasks.
 	PlanReflectModel string
 	client           *http.Client
+	ThinkParams      PhaseParams
+	PlanParams       PhaseParams
+	ReflectParams    PhaseParams
 }
 
 // NewOpenAIBackend creates a backend for the OpenAI API.
@@ -78,7 +81,7 @@ func (b *OpenAIBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.chat(ctx, b.ThinkModel, system, user, 1024)
+	raw, err := b.chat(ctx, b.ThinkModel, system, user, phaseParamsWithDefaults(b.ThinkParams, 1024, 0.1, "json"))
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/openai: Think: %w", err)
 	}
@@ -105,7 +108,7 @@ When done: set "is_done":true, put the completed answer in "final_answer", omit 
 
 func (b *OpenAIBackend) Plan(ctx context.Context, systemPrompt, taskInput string, maxSteps int) (Plan, error) {
 	system := systemPrompt + fmt.Sprintf(openaiPlanInstructions, maxSteps)
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, "Task: "+taskInput, 1024)
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, "Task: "+taskInput, phaseParamsWithDefaults(b.PlanParams, 1024, 0.1, "json"))
 	if err != nil {
 		return Plan{}, fmt.Errorf("reasoning/openai: Plan: %w", err)
 	}
@@ -133,7 +136,7 @@ func (b *OpenAIBackend) Reflect(ctx context.Context, req ReflectRequest) (Reflec
 	user := fmt.Sprintf("Task: %s\n\nStep trace:\n%s\n\nProduce the final answer.",
 		req.TaskInput, formatStepHistory(req.Steps))
 
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, 2048)
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, phaseParamsWithDefaults(b.ReflectParams, 2048, 0.1, "json"))
 	if err != nil {
 		return ReflectResponse{}, fmt.Errorf("reasoning/openai: Reflect: %w", err)
 	}
@@ -156,6 +159,7 @@ type openaiChatRequest struct {
 	Messages       []openaiChatMessage `json:"messages"`
 	MaxTokens      int                 `json:"max_tokens,omitempty"`
 	Temperature    float64             `json:"temperature"`
+	TopP           float64             `json:"top_p,omitempty"`
 	Stream         bool                `json:"stream"`
 	ResponseFormat map[string]string   `json:"response_format"`
 }
@@ -177,17 +181,24 @@ type openaiChatResponse struct {
 	} `json:"error,omitempty"`
 }
 
-func (b *OpenAIBackend) chat(ctx context.Context, model, system, user string, maxTokens int) (string, error) {
+func (b *OpenAIBackend) chat(ctx context.Context, model, system, user string, params PhaseParams) (string, error) {
 	payload := openaiChatRequest{
 		Model: model,
 		Messages: []openaiChatMessage{
 			{Role: "system", Content: system},
 			{Role: "user", Content: user},
 		},
-		MaxTokens:      maxTokens,
-		Temperature:    0.1,
+		MaxTokens:      params.MaxTokens,
+		Temperature:    params.Temperature,
+		TopP:           params.TopP,
 		Stream:         false,
 		ResponseFormat: map[string]string{"type": "json_object"},
+	}
+	if strings.TrimSpace(params.ResponseFormat) == "" {
+		params.ResponseFormat = "json"
+	}
+	if params.ResponseFormat != "json" && params.ResponseFormat != "json_schema" {
+		payload.ResponseFormat = nil
 	}
 
 	body, err := json.Marshal(payload)

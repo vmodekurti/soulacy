@@ -16,8 +16,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -147,7 +149,7 @@ func (a *Adapter) run(ctx context.Context) error {
 			identify := map[string]any{
 				"op": opIdentify,
 				"d": map[string]any{
-					"token":   a.token,
+					"token":   discordGatewayToken(a.token),
 					"intents": 1 << 9, // GUILD_MESSAGES + MESSAGE_CONTENT
 					"properties": map[string]string{
 						"os": "linux", "browser": "soulacy", "device": "soulacy",
@@ -252,16 +254,51 @@ func (a *Adapter) sendChunk(ctx context.Context, channelID, text string) error {
 	url := fmt.Sprintf("%s/channels/%s/messages", discordAPI, channelID)
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", a.token)
+	req.Header.Set("Authorization", discordRESTAuth(a.token))
 	resp, err := a.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("discord: send: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("discord: send: API returned status %d", resp.StatusCode)
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("discord: send: API returned status %d: %s", resp.StatusCode, discordErrorDetail(bodyBytes))
 	}
 	return nil
+}
+
+func discordGatewayToken(token string) string {
+	token = strings.TrimSpace(token)
+	if strings.HasPrefix(strings.ToLower(token), "bot ") {
+		return strings.TrimSpace(token[4:])
+	}
+	return token
+}
+
+func discordRESTAuth(token string) string {
+	token = strings.TrimSpace(token)
+	if strings.HasPrefix(strings.ToLower(token), "bot ") {
+		return "Bot " + strings.TrimSpace(token[4:])
+	}
+	return "Bot " + token
+}
+
+func discordErrorDetail(body []byte) string {
+	body = bytes.TrimSpace(body)
+	if len(body) == 0 {
+		return "empty response"
+	}
+	var parsed struct {
+		Message string `json:"message"`
+		Code    int    `json:"code"`
+	}
+	if json.Unmarshal(body, &parsed) == nil && parsed.Message != "" {
+		if parsed.Code != 0 {
+			return fmt.Sprintf("%s (code %d)", parsed.Message, parsed.Code)
+		}
+		return parsed.Message
+	}
+	return string(body)
 }
 
 func (a *Adapter) Stop() error {

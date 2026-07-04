@@ -9,7 +9,7 @@ Connect agents to Discord using the Discord Gateway (WebSocket).
 1. Go to [discord.com/developers/applications](https://discord.com/developers/applications)
 2. Click **New Application**, give it a name
 3. Navigate to **Bot** → **Add Bot**
-4. Copy the **Token**
+4. Copy the **Token**. Soulacy accepts either the raw token or `Bot <token>`.
 
 ### 2. Set bot permissions
 
@@ -34,7 +34,7 @@ Use the generated OAuth2 URL to add the bot to your server.
 channels:
   discord:
     enabled: true
-    token: "MTI3..."    # Bot token
+    token: "MTI3..."    # raw bot token; "Bot MTI3..." also works
     agent_id: assistant
     guild_id: ""        # optional: restrict to one guild/server
 ```

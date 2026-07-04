@@ -188,6 +188,32 @@ func (a *alwaysBadThinkLLM) Reflect(_ context.Context, _ reasoning.ReflectReques
 	return reasoning.ReflectResponse{Output: "should not need reflect"}, nil
 }
 
+type fallbackPlanLLM struct {
+	thinkCalls int
+}
+
+func (f *fallbackPlanLLM) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	f.thinkCalls++
+	if f.thinkCalls == 1 {
+		return reasoning.ThinkResponse{
+			Thought: "use available tool",
+			IsDone:  false,
+			Action:  reasoning.ToolCall{Tool: "queue_list", Input: map[string]string{"queue": "pending_resources"}},
+		}, nil
+	}
+	return reasoning.ThinkResponse{IsDone: true, FinalAnswer: "done"}, nil
+}
+
+func (f *fallbackPlanLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{Goal: "bad plan", Steps: []reasoning.PlannedStep{
+		{ID: "step-1", Description: "run a tool that is not installed", Tool: "missing_tool"},
+	}}, nil
+}
+
+func (f *fallbackPlanLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	return reasoning.ReflectResponse{Output: "done"}, nil
+}
+
 // ─── Scenario A — ReAct loop ─────────────────────────────────────────────────
 
 // Scenario A: stub LLM returns IsDone=true on step 2.
@@ -443,6 +469,28 @@ func TestScenarioB_PlanExecute(t *testing.T) {
 	}
 	if ids["step-2"] >= ids["step-3"] {
 		t.Error("step-2 must complete before step-3")
+	}
+}
+
+func TestPlanExecuteFallsBackToReActForUnavailablePlanTool(t *testing.T) {
+	llm := &fallbackPlanLLM{}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxSteps:     3,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_list"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "any-agent", "process queue")
+
+	if len(exec.calls) != 1 || exec.calls[0].Tool != "queue_list" {
+		t.Fatalf("expected fallback ReAct queue_list call, calls=%#v", exec.calls)
+	}
+	if len(result.Steps) != 1 {
+		t.Fatalf("steps = %d, want one ReAct step", len(result.Steps))
 	}
 }
 

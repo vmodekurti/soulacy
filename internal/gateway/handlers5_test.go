@@ -115,7 +115,7 @@ func TestPreserveHiddenAgentUpdateFields_NilSafety(t *testing.T) {
 
 func TestChatOverrideMetadata_OnlyMaxTokens(t *testing.T) {
 	tokens := 128
-	meta := chatOverrideMetadata("", "", nil, &tokens, nil, "")
+	meta := chatOverrideMetadata("", "", nil, nil, &tokens, nil, "", "", "", nil, nil)
 	if meta == nil {
 		t.Fatal("expected non-nil meta when max_tokens is set")
 	}
@@ -125,7 +125,7 @@ func TestChatOverrideMetadata_OnlyMaxTokens(t *testing.T) {
 }
 
 func TestChatOverrideMetadata_ToolChoiceOnly(t *testing.T) {
-	meta := chatOverrideMetadata("", "", nil, nil, nil, "none")
+	meta := chatOverrideMetadata("", "", nil, nil, nil, nil, "none", "", "", nil, nil)
 	if meta == nil {
 		t.Fatal("expected non-nil meta when tool_choice is set")
 	}

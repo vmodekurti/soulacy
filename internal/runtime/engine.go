@@ -1986,12 +1986,17 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		}
 
 		req := llm.CompletionRequest{
-			Model:       def.LLM.Model,
-			Messages:    chatMsgs,
-			Tools:       tools,
-			Temperature: def.LLM.Temperature,
-			MaxTokens:   def.LLM.MaxTokens,
-			Stream:      wantStream,
+			Model:            def.LLM.Model,
+			Messages:         chatMsgs,
+			Tools:            tools,
+			Temperature:      def.LLM.Temperature,
+			TopP:             def.LLM.TopP,
+			MaxTokens:        def.LLM.MaxTokens,
+			Stream:           wantStream,
+			ResponseFormat:   def.LLM.ResponseFormat,
+			ReasoningEffort:  def.LLM.ReasoningEffort,
+			PresencePenalty:  def.LLM.PresencePenalty,
+			FrequencyPenalty: def.LLM.FrequencyPenalty,
 		}
 		// Tool-choice constraint applies ONLY on turn 1 AND only if we didn't
 		// already auto-delegate above (otherwise we'd force the same tool a
@@ -2476,10 +2481,14 @@ func (e *Engine) finalSynthesis(ctx context.Context, def *agent.Definition, agen
 	})
 	start := time.Now()
 	resp, err := e.llmRouter.Complete(ctx, def.LLM.Provider, llm.CompletionRequest{
-		Model:       def.LLM.Model,
-		Messages:    msgs,
-		Temperature: def.LLM.Temperature,
-		MaxTokens:   def.LLM.MaxTokens,
+		Model:            def.LLM.Model,
+		Messages:         msgs,
+		Temperature:      def.LLM.Temperature,
+		TopP:             def.LLM.TopP,
+		MaxTokens:        def.LLM.MaxTokens,
+		ReasoningEffort:  def.LLM.ReasoningEffort,
+		PresencePenalty:  def.LLM.PresencePenalty,
+		FrequencyPenalty: def.LLM.FrequencyPenalty,
 		// Tools intentionally omitted so the model must answer in text.
 	})
 	if err != nil {
@@ -2518,10 +2527,14 @@ func (e *Engine) finalSynthesis(ctx context.Context, def *agent.Definition, agen
 				"Do not include any <think> blocks or analysis — write the user-facing answer now.",
 		})
 		retryResp, retryErr := e.llmRouter.Complete(ctx, def.LLM.Provider, llm.CompletionRequest{
-			Model:       def.LLM.Model,
-			Messages:    retryMsgs,
-			Temperature: def.LLM.Temperature,
-			MaxTokens:   def.LLM.MaxTokens,
+			Model:            def.LLM.Model,
+			Messages:         retryMsgs,
+			Temperature:      def.LLM.Temperature,
+			TopP:             def.LLM.TopP,
+			MaxTokens:        def.LLM.MaxTokens,
+			ReasoningEffort:  def.LLM.ReasoningEffort,
+			PresencePenalty:  def.LLM.PresencePenalty,
+			FrequencyPenalty: def.LLM.FrequencyPenalty,
 			// Tools still omitted so the model must answer in text.
 		})
 		if retryErr == nil && strings.TrimSpace(retryResp.Content) != "" {
@@ -2556,12 +2569,16 @@ func (e *Engine) finalSynthesisStructured(ctx context.Context, def *agent.Defini
 		Timestamp: time.Now().UTC(),
 	})
 	resp, err := e.llmRouter.Complete(ctx, def.LLM.Provider, llm.CompletionRequest{
-		Model:          def.LLM.Model,
-		Messages:       msgs,
-		Temperature:    def.LLM.Temperature,
-		MaxTokens:      def.LLM.MaxTokens,
-		ResponseFormat: "json_schema",
-		JSONSchema:     def.LLM.OutputSchema,
+		Model:            def.LLM.Model,
+		Messages:         msgs,
+		Temperature:      def.LLM.Temperature,
+		TopP:             def.LLM.TopP,
+		MaxTokens:        def.LLM.MaxTokens,
+		ResponseFormat:   "json_schema",
+		JSONSchema:       def.LLM.OutputSchema,
+		ReasoningEffort:  def.LLM.ReasoningEffort,
+		PresencePenalty:  def.LLM.PresencePenalty,
+		FrequencyPenalty: def.LLM.FrequencyPenalty,
 	})
 	if err != nil {
 		e.sink.Emit(message.Event{
@@ -4330,6 +4347,27 @@ func applyPlaygroundOverrides(def *agent.Definition, meta map[string]string) {
 	if v := strings.TrimSpace(meta["playground.llm.max_tokens"]); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			def.LLM.MaxTokens = n
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.llm.top_p"]); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			def.LLM.TopP = f
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.llm.response_format"]); v != "" {
+		def.LLM.ResponseFormat = v
+	}
+	if v := strings.TrimSpace(meta["playground.llm.reasoning_effort"]); v != "" {
+		def.LLM.ReasoningEffort = v
+	}
+	if v := strings.TrimSpace(meta["playground.llm.presence_penalty"]); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			def.LLM.PresencePenalty = f
+		}
+	}
+	if v := strings.TrimSpace(meta["playground.llm.frequency_penalty"]); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil {
+			def.LLM.FrequencyPenalty = f
 		}
 	}
 	if v := strings.TrimSpace(meta["playground.max_turns"]); v != "" {

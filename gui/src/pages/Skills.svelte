@@ -26,6 +26,7 @@
   let findQ      = ''
   let findBusy   = false
   let findResults = null  // packages from /registries/search
+  let findWarnings = []
 
   async function load() {
     loading = true
@@ -130,10 +131,11 @@
 
   async function findSkills() {
     if (!findQ.trim()) return
-    findBusy = true; srcError = ''; findResults = null
+    findBusy = true; srcError = ''; findResults = null; findWarnings = []
     try {
       const res = await api.registries.search(findQ.trim())
       findResults = res.packages || []
+      findWarnings = res.warnings || []
     } catch (e) {
       srcError = e.message
     } finally {
@@ -208,8 +210,15 @@
         </div>
         {#if findResults}
           <div class="src-report">
+            {#if findWarnings.length > 0}
+              <div class="src-warnings">
+                {#each findWarnings as warning}
+                  <p>{warning}</p>
+                {/each}
+              </div>
+            {/if}
             {#if findResults.length === 0}
-              <p>No skills matched.</p>
+              <p>{findWarnings.length > 0 ? 'No installable results were returned by the available sources.' : 'No skills matched.'}</p>
             {:else}
               {#each findResults.slice(0, 10) as pkg}
                 <div class="find-row">
@@ -579,6 +588,13 @@
   .src-kind { font-weight: 600; margin-bottom: .3rem; }
   .src-audits { color: #4caf82; font-size: .78rem; }
   .src-samples { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+  .src-warnings {
+    margin-bottom: .6rem; padding: .55rem .65rem; border-radius: 7px;
+    border: 1px solid rgba(240,160,96,.35); background: rgba(240,160,96,.1);
+    color: #f0a060; font-size: .78rem; line-height: 1.45;
+  }
+  .src-warnings p { margin: 0 0 .35rem; }
+  .src-warnings p:last-child { margin-bottom: 0; }
   .find-row {
     display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem;
     padding: .3rem 0; border-bottom: 1px solid #1c2038; font-size: .8rem;

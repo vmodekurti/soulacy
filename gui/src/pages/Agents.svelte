@@ -239,12 +239,96 @@
     { value: 'agent',   label: 'agent',   description: 'Shared across all sessions of this agent' },
   ]
 
+  const llmTips = {
+    executionProfile: 'Applies a tested bundle of model and reasoning settings. Use it as a starting point, then edit individual fields.',
+    provider: 'Which configured LLM provider this agent uses by default.',
+    model: 'Which model this agent calls. The list is loaded from the selected provider when possible.',
+    maxTokens: 'Caps each model response. Raise for long reports or synthesis; lower to reduce cost, latency, and rambling.',
+    temperature: 'Controls randomness. Use lower values for reliable tool use and extraction; higher values for creative or exploratory answers.',
+    topP: 'Nucleus sampling. Lower values restrict the token pool for stability; higher values allow more varied phrasing.',
+    maxTurns: 'Maximum LLM/tool turns before the agent stops. Raise for complex tool workflows; lower to prevent runaway loops.',
+    responseFormat: 'Requests structured output when supported. JSON helps extraction, routing, and downstream tool inputs.',
+    reasoningEffort: 'Hints how much hidden reasoning budget to spend on supported models. Higher can improve hard tasks but increases cost/latency.',
+    presencePenalty: 'Positive values encourage new ideas instead of reusing already-mentioned concepts.',
+    frequencyPenalty: 'Positive values reduce repeated words and phrases. Useful when responses loop or sound repetitive.',
+    toolChoice: 'Controls the first tool call. Use auto for normal routing, none to answer directly, required to force a tool, or a specific tool name.',
+    maxSteps: 'Maximum ReAct loop steps. Raise for multi-tool research; lower to prevent long or stuck runs.',
+    maxPlanSteps: 'Maximum plan items in Plan-Execute mode. Lower keeps plans compact; higher allows more detailed decomposition.',
+    stepTimeout: 'Per-step wall-clock timeout. Use shorter values for interactive agents and longer values for slow tools.',
+    totalTimeout: 'Whole-run timeout across all reasoning and tool steps.',
+    phaseTemperature: 'Phase-specific randomness. Keep Think/Plan low for reliable tool decisions; Reflect can be slightly higher for polished synthesis.',
+    phaseTopP: 'Phase-specific nucleus sampling. Lower for deterministic routing; higher for more flexible final wording.',
+    phaseMaxTokens: 'Phase-specific response cap. Think/Plan need concise JSON; Reflect often needs more room for the final answer.',
+    phaseFormat: 'Phase-specific output format. JSON is safest for internal reasoning phases that the engine must parse.',
+    playgroundProvider: 'Temporarily override the provider for this playground run only.',
+    playgroundModel: 'Temporarily override the model for this playground run only.',
+  }
+
+  const executionProfiles = {
+    balanced: {
+      label: 'Balanced agent',
+      llm: { temperature: 0.7, top_p: 0.9, max_tokens: 1024, response_format: '' },
+      reasoning: {
+        think: { temperature: 0.1, top_p: 0.9, max_tokens: 1024, response_format: 'json' },
+        plan: { temperature: 0.1, top_p: 0.9, max_tokens: 1024, response_format: 'json' },
+        reflect: { temperature: 0.2, top_p: 0.9, max_tokens: 2048, response_format: 'json' },
+      },
+    },
+    tool_loop: {
+      label: 'Reliable tool loop',
+      llm: { temperature: 0.2, top_p: 0.8, max_tokens: 1024, response_format: '' },
+      reasoning: {
+        think: { temperature: 0.1, top_p: 0.7, max_tokens: 1024, response_format: 'json' },
+        plan: { temperature: 0.1, top_p: 0.7, max_tokens: 1024, response_format: 'json' },
+        reflect: { temperature: 0.15, top_p: 0.8, max_tokens: 2048, response_format: 'json' },
+      },
+    },
+    research: {
+      label: 'Deep research',
+      llm: { temperature: 0.35, top_p: 0.9, max_tokens: 4096, response_format: '' },
+      reasoning: {
+        think: { temperature: 0.15, top_p: 0.85, max_tokens: 1536, response_format: 'json' },
+        plan: { temperature: 0.2, top_p: 0.9, max_tokens: 1536, response_format: 'json' },
+        reflect: { temperature: 0.25, top_p: 0.9, max_tokens: 4096, response_format: 'json' },
+      },
+    },
+    extractor: {
+      label: 'JSON extractor',
+      llm: { temperature: 0.05, top_p: 0.5, max_tokens: 2048, response_format: 'json' },
+      reasoning: {
+        think: { temperature: 0.05, top_p: 0.5, max_tokens: 1024, response_format: 'json' },
+        plan: { temperature: 0.05, top_p: 0.5, max_tokens: 1024, response_format: 'json' },
+        reflect: { temperature: 0.05, top_p: 0.5, max_tokens: 2048, response_format: 'json' },
+      },
+    },
+    creative: {
+      label: 'Creative writer',
+      llm: { temperature: 0.9, top_p: 0.95, max_tokens: 2048, response_format: '' },
+      reasoning: {
+        think: { temperature: 0.2, top_p: 0.85, max_tokens: 1024, response_format: 'json' },
+        plan: { temperature: 0.4, top_p: 0.9, max_tokens: 1024, response_format: 'json' },
+        reflect: { temperature: 0.75, top_p: 0.95, max_tokens: 3072, response_format: 'json' },
+      },
+    },
+  }
+
+  function applyExecutionProfile(key) {
+    if (!editing || !executionProfiles[key]) return
+    const profile = executionProfiles[key]
+    editing.llm = { ...(editing.llm || {}), ...profile.llm }
+    editing.reasoning = { ...(editing.reasoning || {}) }
+    for (const phase of ['think', 'plan', 'reflect']) {
+      editing.reasoning[phase] = { ...(editing.reasoning[phase] || {}), ...profile.reasoning[phase] }
+    }
+    editing = editing
+  }
+
   const BLANK = () => ({
     id: '', name: '', description: '', version: '1.0',
     trigger: 'channel', channels: ['http'], schedule: { cron: '' },
     webhook: { text_path: '', user_id_path: '', username_path: '', session_id_path: '', thread_id_path: '', include_raw: false },
     system_prompt: '',
-    llm: { provider: 'ollama', model: '', temperature: 0.7, max_tokens: 512 },
+    llm: { provider: 'ollama', model: '', temperature: 0.7, top_p: 0.9, max_tokens: 512 },
     memory: { read_scopes: ['session'], write_scopes: ['session'], max_tokens: 20 },
     learning: { enabled: false, min_chars: 160, max_proposals: 3 },
     tools: [], skills: [], knowledge: [], agents: [], max_turns: 5, stream_reply: false, enabled: true,
@@ -591,8 +675,13 @@
   let playProvider = ''
   let playModel = ''
   let playTemperature = ''
+  let playTopP = ''
   let playMaxTokens = ''
   let playMaxTurns = ''
+  let playResponseFormat = ''
+  let playReasoningEffort = ''
+  let playPresencePenalty = ''
+  let playFrequencyPenalty = ''
   let playToolChoice = ''
 
   // Derived: the current agent's transcript. We assign through the map so
@@ -641,8 +730,13 @@
     if (playProvider.trim()) overrides.provider = playProvider.trim()
     if (playModel.trim()) overrides.model = playModel.trim()
     if (playTemperature !== '' && !Number.isNaN(Number(playTemperature))) overrides.temperature = Number(playTemperature)
+    if (playTopP !== '' && Number(playTopP) > 0) overrides.top_p = Number(playTopP)
     if (playMaxTokens !== '' && Number(playMaxTokens) > 0) overrides.max_tokens = Number(playMaxTokens)
     if (playMaxTurns !== '' && Number(playMaxTurns) > 0) overrides.max_turns = Number(playMaxTurns)
+    if (playResponseFormat.trim()) overrides.response_format = playResponseFormat.trim()
+    if (playReasoningEffort.trim()) overrides.reasoning_effort = playReasoningEffort.trim()
+    if (playPresencePenalty !== '' && !Number.isNaN(Number(playPresencePenalty))) overrides.presence_penalty = Number(playPresencePenalty)
+    if (playFrequencyPenalty !== '' && !Number.isNaN(Number(playFrequencyPenalty))) overrides.frequency_penalty = Number(playFrequencyPenalty)
     if (playToolChoice.trim()) overrides.tool_choice = playToolChoice.trim()
     return Object.keys(overrides).length ? overrides : null
   }
@@ -652,8 +746,13 @@
     playProvider = selected.llm?.provider || ''
     playModel = selected.llm?.model || ''
     playTemperature = selected.llm?.temperature ?? ''
+    playTopP = selected.llm?.top_p ?? ''
     playMaxTokens = selected.llm?.max_tokens || ''
     playMaxTurns = selected.max_turns || ''
+    playResponseFormat = selected.llm?.response_format || ''
+    playReasoningEffort = selected.llm?.reasoning_effort || ''
+    playPresencePenalty = selected.llm?.presence_penalty ?? ''
+    playFrequencyPenalty = selected.llm?.frequency_penalty ?? ''
     playToolChoice = selected.llm?.tool_choice || ''
   }
 
@@ -1165,10 +1264,20 @@ console.log(reply);` : ''
 
             <div class="sep">LLM</div>
 
+            <div class="field">
+              <span class="field-label" title={llmTips.executionProfile}>Execution profile <span class="optional">(applies a tuned starting point; fields remain editable)</span></span>
+              <select title={llmTips.executionProfile} on:change={(e) => { if (e.target.value) { applyExecutionProfile(e.target.value); e.target.value = '' } }}>
+                <option value="">Choose a profile…</option>
+                {#each Object.entries(executionProfiles) as [key, profile]}
+                  <option value={key}>{profile.label}</option>
+                {/each}
+              </select>
+            </div>
+
             <div class="row-3">
               <div class="field">
-                <span class="field-label">Provider</span>
-                <select bind:value={editing.llm.provider} on:change={onProviderChange}>
+                <span class="field-label" title={llmTips.provider}>Provider</span>
+                <select bind:value={editing.llm.provider} on:change={onProviderChange} title={llmTips.provider}>
                   {#if enabledProviders.length === 0}
                     <option value={editing.llm.provider}>{editing.llm.provider || 'ollama'}</option>
                   {:else}
@@ -1184,7 +1293,7 @@ console.log(reply);` : ''
                 </select>
               </div>
               <div class="field">
-                <span class="field-label">
+                <span class="field-label" title={llmTips.model}>
                   Model
                   {#if modelsLoading[editing.llm.provider]}
                     <span class="mloading">loading…</span>
@@ -1198,7 +1307,7 @@ console.log(reply);` : ''
                      in-place during list updates. Current model is always at [0]
                      (from modelOptions), so bind:value always has a match and the
                      browser never resets to the first option. -->
-                <select bind:value={editing.llm.model}>
+                <select bind:value={editing.llm.model} title={llmTips.model}>
                   {#if !editing.llm.model}
                     <option value="">— pick a model —</option>
                   {/if}
@@ -1214,25 +1323,65 @@ console.log(reply);` : ''
                 {/if}
               </div>
               <div class="field">
-                <span class="field-label">Max tokens</span>
-                <input type="number" bind:value={editing.llm.max_tokens} min="64" max="8192" />
+                <span class="field-label" title={llmTips.maxTokens}>Max tokens</span>
+                <input type="number" bind:value={editing.llm.max_tokens} min="64" max="8192" title={llmTips.maxTokens} />
               </div>
             </div>
 
-            <div class="row-2">
+            <div class="row-3">
               <div class="field">
-                <span class="field-label">Temperature</span>
+                <span class="field-label" title={llmTips.temperature}>Temperature</span>
                 <input type="number" bind:value={editing.llm.temperature}
-                       min="0" max="2" step="0.05" />
+                       min="0" max="2" step="0.05" title={llmTips.temperature} />
               </div>
               <div class="field">
-                <span class="field-label">Max turns</span>
-                <input type="number" bind:value={editing.max_turns} min="1" max="50" />
+                <span class="field-label" title={llmTips.topP}>Top P</span>
+                <input type="number" bind:value={editing.llm.top_p}
+                       min="0" max="1" step="0.05" placeholder="provider default" title={llmTips.topP} />
+              </div>
+              <div class="field">
+                <span class="field-label" title={llmTips.maxTurns}>Max turns</span>
+                <input type="number" bind:value={editing.max_turns} min="1" max="50" title={llmTips.maxTurns} />
               </div>
             </div>
+
+            <details class="persona-box">
+              <summary>Advanced LLM tuning</summary>
+              <div class="persona-inner">
+                <div class="field-row3">
+                  <div class="field">
+                    <span class="field-label" title={llmTips.responseFormat}>Response format</span>
+                    <select bind:value={editing.llm.response_format} title={llmTips.responseFormat}>
+                      <option value="">provider default</option>
+                      <option value="json">json</option>
+                      <option value="json_schema">json_schema</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <span class="field-label" title={llmTips.reasoningEffort}>Reasoning effort</span>
+                    <select bind:value={editing.llm.reasoning_effort} title={llmTips.reasoningEffort}>
+                      <option value="">provider default</option>
+                      <option value="low">low</option>
+                      <option value="medium">medium</option>
+                      <option value="high">high</option>
+                    </select>
+                  </div>
+                  <div class="field">
+                    <span class="field-label" title={llmTips.presencePenalty}>Presence penalty</span>
+                    <input type="number" bind:value={editing.llm.presence_penalty} min="-2" max="2" step="0.1" placeholder="0" title={llmTips.presencePenalty} />
+                  </div>
+                </div>
+                <div class="field-row3">
+                  <div class="field">
+                    <span class="field-label" title={llmTips.frequencyPenalty}>Frequency penalty</span>
+                    <input type="number" bind:value={editing.llm.frequency_penalty} min="-2" max="2" step="0.1" placeholder="0" title={llmTips.frequencyPenalty} />
+                  </div>
+                </div>
+              </div>
+            </details>
 
             <div class="field">
-              <span class="field-label">Tool choice <span class="optional">(controls turn-1 tool selection — agent__&lt;peer&gt; triggers the engine's auto-delegate path)</span></span>
+              <span class="field-label" title={llmTips.toolChoice}>Tool choice <span class="optional">(controls turn-1 tool selection — agent__&lt;peer&gt; triggers the engine's auto-delegate path)</span></span>
               <ChipPicker
                 value={editing.llm.tool_choice ? [editing.llm.tool_choice] : []}
                 options={toolChoiceOptions}
@@ -1272,7 +1421,7 @@ console.log(reply);` : ''
             <!-- ── Reasoning loop ── -->
             <div class="sep">Execution strategy <span class="optional">(how the agent runs its tools)</span></div>
             <div class="field">
-              <span class="field-label">Strategy</span>
+              <span class="field-label" title="Controls whether the agent uses native tool-calling, an explicit ReAct loop, or a plan-then-execute loop.">Strategy</span>
               <div class="strategy-cards">
                 {#each [
                   { val: '',             icon: '✨', title: 'Auto',          desc: 'Recommended — native tool-calling; engine picks the loop' },
@@ -1281,6 +1430,7 @@ console.log(reply);` : ''
                 ] as s}
                   <button
                     class="strategy-card {(editing.reasoning?.strategy||'') === s.val ? 'active' : ''}"
+                    title={s.desc}
                     on:click={() => { editing.reasoning = editing.reasoning || {}; editing.reasoning.strategy = s.val; editing = editing }}
                   >
                     <span class="sc-icon">{s.icon}</span>
@@ -1294,32 +1444,111 @@ console.log(reply);` : ''
             {#if editing.reasoning?.strategy}
               <div class="field-row">
                 <div class="field">
-                  <span class="field-label">Max steps <span class="optional">(default 8)</span></span>
+                  <span class="field-label" title={llmTips.maxSteps}>Max steps <span class="optional">(default 8)</span></span>
                   <input type="number" min="1" max="50"
                     value={editing.reasoning?.max_steps || ''}
+                    title={llmTips.maxSteps}
                     on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.max_steps = Number(e.target.value)||0 }} />
                 </div>
                 {#if editing.reasoning?.strategy === 'plan_execute'}
                   <div class="field">
-                    <span class="field-label">Max plan steps <span class="optional">(default 6)</span></span>
+                    <span class="field-label" title={llmTips.maxPlanSteps}>Max plan steps <span class="optional">(default 6)</span></span>
                     <input type="number" min="1" max="20"
                       value={editing.reasoning?.max_plan_steps || ''}
+                      title={llmTips.maxPlanSteps}
                       on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.max_plan_steps = Number(e.target.value)||0 }} />
                   </div>
                 {/if}
                 <div class="field">
-                  <span class="field-label">Step timeout <span class="optional">(e.g. 30s)</span></span>
+                  <span class="field-label" title={llmTips.stepTimeout}>Step timeout <span class="optional">(e.g. 30s)</span></span>
                   <input type="text" placeholder="30s"
                     value={editing.reasoning?.step_timeout || ''}
+                    title={llmTips.stepTimeout}
                     on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.step_timeout = e.target.value }} />
                 </div>
                 <div class="field">
-                  <span class="field-label">Total timeout <span class="optional">(e.g. 180s)</span></span>
+                  <span class="field-label" title={llmTips.totalTimeout}>Total timeout <span class="optional">(e.g. 180s)</span></span>
                   <input type="text" placeholder="180s"
                     value={editing.reasoning?.total_timeout || ''}
+                    title={llmTips.totalTimeout}
                     on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.total_timeout = e.target.value }} />
                 </div>
               </div>
+
+              <details class="persona-box">
+                <summary>Reasoning phase tuning</summary>
+                <div class="persona-inner">
+                  {#each [
+                    { key: 'think', label: 'Think', hint: 'tool-selection step' },
+                    { key: 'plan', label: 'Plan', hint: 'plan_execute decomposition' },
+                    { key: 'reflect', label: 'Reflect', hint: 'final synthesis' },
+                  ] as phase}
+                    {@const cfg = editing.reasoning?.[phase.key] || {}}
+                    <div class="sep mini-sep">{phase.label} <span class="optional">({phase.hint})</span></div>
+                    <div class="field-row3">
+                      <div class="field">
+                        <span class="field-label" title={llmTips.phaseTemperature}>Temperature</span>
+                        <input type="number" min="0" max="2" step="0.05"
+                          value={cfg.temperature ?? ''}
+                          title={llmTips.phaseTemperature}
+                          on:input={e => {
+                            editing.reasoning = editing.reasoning || {}
+                            editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
+                            editing.reasoning[phase.key].temperature = Number(e.target.value) || 0
+                          }} />
+                      </div>
+                      <div class="field">
+                        <span class="field-label" title={llmTips.phaseTopP}>Top P</span>
+                        <input type="number" min="0" max="1" step="0.05"
+                          value={cfg.top_p ?? ''}
+                          title={llmTips.phaseTopP}
+                          on:input={e => {
+                            editing.reasoning = editing.reasoning || {}
+                            editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
+                            editing.reasoning[phase.key].top_p = Number(e.target.value) || 0
+                          }} />
+                      </div>
+                      <div class="field">
+                        <span class="field-label" title={llmTips.phaseMaxTokens}>Max tokens</span>
+                        <input type="number" min="64" max="8192"
+                          value={cfg.max_tokens || ''}
+                          title={llmTips.phaseMaxTokens}
+                          on:input={e => {
+                            editing.reasoning = editing.reasoning || {}
+                            editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
+                            editing.reasoning[phase.key].max_tokens = Number(e.target.value) || 0
+                          }} />
+                      </div>
+                    </div>
+                  {/each}
+                  <div class="sep mini-sep">Format <span class="optional">(internal response shape)</span></div>
+                  <div class="field-row3">
+                    {#each [
+                      { key: 'think', label: 'Think' },
+                      { key: 'plan', label: 'Plan' },
+                      { key: 'reflect', label: 'Reflect' },
+                    ] as phase}
+                      {@const cfg = editing.reasoning?.[phase.key] || {}}
+                      <div class="field">
+                        <span class="field-label" title={llmTips.phaseFormat}>{phase.label} format</span>
+                        <select
+                          value={cfg.response_format || ''}
+                          title={llmTips.phaseFormat}
+                          on:change={e => {
+                            editing.reasoning = editing.reasoning || {}
+                            editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
+                            editing.reasoning[phase.key].response_format = e.target.value
+                            editing = editing
+                          }}>
+                          <option value="">provider default</option>
+                          <option value="json">json</option>
+                          <option value="json_schema">json_schema</option>
+                        </select>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              </details>
             {/if}
 
             <!-- ── Brain memory ── -->
@@ -1598,9 +1827,9 @@ console.log(reply);` : ''
               <button class="btn-secondary small" type="button" on:click={useSelectedLLMForPlayground}>Use agent defaults</button>
             </div>
             <div class="param-grid">
-              <label>
+              <label title={llmTips.playgroundProvider}>
                 <span>Provider</span>
-                <select bind:value={playProvider} disabled={!playUseOverrides}>
+                <select bind:value={playProvider} disabled={!playUseOverrides} title={llmTips.playgroundProvider}>
                   <option value="">unchanged</option>
                   {#if playProvider && !enabledProviders.some(p => p.id === playProvider)}
                     <option value={playProvider}>{playProvider} (disabled/unregistered)</option>
@@ -1610,25 +1839,54 @@ console.log(reply);` : ''
                   {/each}
                 </select>
               </label>
-              <label>
+              <label title={llmTips.playgroundModel}>
                 <span>Model</span>
-                <input bind:value={playModel} placeholder="unchanged" disabled={!playUseOverrides} />
+                <input bind:value={playModel} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.playgroundModel} />
               </label>
-              <label>
+              <label title={llmTips.temperature}>
                 <span>Temperature</span>
-                <input type="number" step="0.1" min="0" max="2" bind:value={playTemperature} placeholder="unchanged" disabled={!playUseOverrides} />
+                <input type="number" step="0.1" min="0" max="2" bind:value={playTemperature} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.temperature} />
               </label>
-              <label>
+              <label title={llmTips.topP}>
+                <span>Top P</span>
+                <input type="number" step="0.05" min="0" max="1" bind:value={playTopP} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.topP} />
+              </label>
+              <label title={llmTips.maxTokens}>
                 <span>Max tokens</span>
-                <input type="number" min="1" bind:value={playMaxTokens} placeholder="unchanged" disabled={!playUseOverrides} />
+                <input type="number" min="1" bind:value={playMaxTokens} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.maxTokens} />
               </label>
-              <label>
+              <label title={llmTips.maxTurns}>
                 <span>Max turns</span>
-                <input type="number" min="1" max="100" bind:value={playMaxTurns} placeholder="unchanged" disabled={!playUseOverrides} />
+                <input type="number" min="1" max="100" bind:value={playMaxTurns} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.maxTurns} />
               </label>
-              <label>
+              <label title={llmTips.responseFormat}>
+                <span>Format</span>
+                <select bind:value={playResponseFormat} disabled={!playUseOverrides} title={llmTips.responseFormat}>
+                  <option value="">unchanged</option>
+                  <option value="json">json</option>
+                  <option value="json_schema">json_schema</option>
+                </select>
+              </label>
+              <label title={llmTips.reasoningEffort}>
+                <span>Reasoning</span>
+                <select bind:value={playReasoningEffort} disabled={!playUseOverrides} title={llmTips.reasoningEffort}>
+                  <option value="">unchanged</option>
+                  <option value="low">low</option>
+                  <option value="medium">medium</option>
+                  <option value="high">high</option>
+                </select>
+              </label>
+              <label title={llmTips.presencePenalty}>
+                <span>Presence</span>
+                <input type="number" step="0.1" min="-2" max="2" bind:value={playPresencePenalty} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.presencePenalty} />
+              </label>
+              <label title={llmTips.frequencyPenalty}>
+                <span>Frequency</span>
+                <input type="number" step="0.1" min="-2" max="2" bind:value={playFrequencyPenalty} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.frequencyPenalty} />
+              </label>
+              <label title={llmTips.toolChoice}>
                 <span>Tool choice</span>
-                <input bind:value={playToolChoice} placeholder="auto, none, required, tool name" disabled={!playUseOverrides} />
+                <input bind:value={playToolChoice} placeholder="auto, none, required, tool name" disabled={!playUseOverrides} title={llmTips.toolChoice} />
               </label>
             </div>
           </div>

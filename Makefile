@@ -68,8 +68,16 @@ BINDIR ?= $(shell d=$$(command -v $(BINARY_GATEWAY) 2>/dev/null); if [ -n "$$d" 
 install: all
 	@echo "→ Installing to $(BINDIR)..."
 	@mkdir -p "$(BINDIR)"
-	@cp bin/$(BINARY_GATEWAY) "$(BINDIR)/$(BINARY_GATEWAY)"
-	@cp bin/$(BINARY_CLI) "$(BINDIR)/$(BINARY_CLI)"
+	@if cmp -s bin/$(BINARY_GATEWAY) "$(BINDIR)/$(BINARY_GATEWAY)" 2>/dev/null; then \
+	  echo "• $(BINARY_GATEWAY) already current in $(BINDIR)"; \
+	else \
+	  cp bin/$(BINARY_GATEWAY) "$(BINDIR)/$(BINARY_GATEWAY)"; \
+	fi
+	@if cmp -s bin/$(BINARY_CLI) "$(BINDIR)/$(BINARY_CLI)" 2>/dev/null; then \
+	  echo "• $(BINARY_CLI) already current in $(BINDIR)"; \
+	else \
+	  cp bin/$(BINARY_CLI) "$(BINDIR)/$(BINARY_CLI)"; \
+	fi
 	@echo "✓ Installed soulacy and sy to $(BINDIR)"
 	@# Shadow check: confirm the copy we just wrote is the one PATH resolves.
 	@resolved=$$(command -v $(BINARY_GATEWAY) 2>/dev/null); \

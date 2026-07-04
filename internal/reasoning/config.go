@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/soulacy/soulacy/pkg/agent"
+	sdkreasoning "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
 // ProviderKeys carries API keys for cloud providers. Pass to DefaultBackendFor.
@@ -166,6 +167,37 @@ func DefaultBackendFor(def *agent.Definition, keys ProviderKeys) LLMBackend {
 	}
 }
 
+// ApplyTuning copies optional SOUL.yaml reasoning phase settings onto built-in
+// backends. Unknown/custom backends keep their own defaults.
+func ApplyTuning(backend LLMBackend, def *agent.Definition) LLMBackend {
+	if backend == nil || def == nil {
+		return backend
+	}
+	think := phaseFromAgent(def.Reasoning.Think)
+	plan := phaseFromAgent(def.Reasoning.Plan)
+	reflect := phaseFromAgent(def.Reasoning.Reflect)
+	switch b := backend.(type) {
+	case *RouterBackend:
+		b.ThinkParams, b.PlanParams, b.ReflectParams = think, plan, reflect
+	case *OpenAIBackend:
+		b.ThinkParams, b.PlanParams, b.ReflectParams = think, plan, reflect
+	case *OllamaBackend:
+		b.ThinkParams, b.PlanParams, b.ReflectParams = think, plan, reflect
+	case *AnthropicBackend:
+		b.ThinkParams, b.PlanParams, b.ReflectParams = think, plan, reflect
+	}
+	return backend
+}
+
+func phaseFromAgent(in agent.ReasoningPhaseConfig) sdkreasoning.PhaseParams {
+	return sdkreasoning.PhaseParams{
+		Temperature:    in.Temperature,
+		TopP:           in.TopP,
+		MaxTokens:      in.MaxTokens,
+		ResponseFormat: in.ResponseFormat,
+	}
+}
+
 // ollamaHasModel queries Ollama's local tags API to verify if targetModel is installed.
 func ollamaHasModel(baseURL, targetModel string) bool {
 	if baseURL == "" {
@@ -256,8 +288,11 @@ func LoopConfigFromDefinition(def *agent.Definition, systemPrompt string, suppor
 	}
 
 	cfg := LoopConfig{
-		Strategy:     LoopStrategy(strat),
-		SystemPrompt: systemPrompt,
+		Strategy:      LoopStrategy(strat),
+		SystemPrompt:  systemPrompt,
+		ThinkParams:   phaseFromAgent(rc.Think),
+		PlanParams:    phaseFromAgent(rc.Plan),
+		ReflectParams: phaseFromAgent(rc.Reflect),
 	}
 
 	// SEC-3: System tools (shell_exec, write_file, etc.) are highly parameterized

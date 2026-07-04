@@ -43,6 +43,9 @@ type OllamaBackend struct {
 	// reasoning and JSON structure adherence on complex tasks.
 	PlanReflectModel string
 	client           *http.Client
+	ThinkParams      PhaseParams
+	PlanParams       PhaseParams
+	ReflectParams    PhaseParams
 }
 
 // NewOllamaBackend creates an OllamaBackend pointed at baseURL.
@@ -84,7 +87,7 @@ func (b *OllamaBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.chat(ctx, b.ThinkModel, system, user, 1024)
+	raw, err := b.chat(ctx, b.ThinkModel, system, user, phaseParamsWithDefaults(b.ThinkParams, 1024, 0.1, "json"))
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/ollama: Think: %w", err)
 	}
@@ -114,7 +117,7 @@ When the task is complete: set "is_done":true, put your completed answer in "fin
 // Plan decomposes the task into an ordered list of PlannedStep objects.
 func (b *OllamaBackend) Plan(ctx context.Context, systemPrompt, taskInput string, maxSteps int) (Plan, error) {
 	system := systemPrompt + fmt.Sprintf(ollamaPlanInstructions, maxSteps)
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, "Task: "+taskInput, 1024)
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, "Task: "+taskInput, phaseParamsWithDefaults(b.PlanParams, 1024, 0.1, "json"))
 	if err != nil {
 		return Plan{}, fmt.Errorf("reasoning/ollama: Plan: %w", err)
 	}
@@ -146,7 +149,7 @@ func (b *OllamaBackend) Reflect(ctx context.Context, req ReflectRequest) (Reflec
 	user := fmt.Sprintf("Task: %s\n\nStep trace:\n%s\n\nProduce the final answer.",
 		req.TaskInput, formatStepHistory(req.Steps))
 
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, 2048)
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, phaseParamsWithDefaults(b.ReflectParams, 2048, 0.1, "json"))
 	if err != nil {
 		return ReflectResponse{}, fmt.Errorf("reasoning/ollama: Reflect: %w", err)
 	}
@@ -182,6 +185,7 @@ type ollamaChatMessage struct {
 
 type ollamaOptions struct {
 	Temperature float64 `json:"temperature"`
+	TopP        float64 `json:"top_p,omitempty"`
 	NumPredict  int     `json:"num_predict"`
 }
 
@@ -193,7 +197,11 @@ type ollamaChatResponse struct {
 }
 
 // chat makes one POST /api/chat call with format:"json" and returns the content string.
-func (b *OllamaBackend) chat(ctx context.Context, model, system, user string, maxTokens int) (string, error) {
+func (b *OllamaBackend) chat(ctx context.Context, model, system, user string, params PhaseParams) (string, error) {
+	format := strings.TrimSpace(params.ResponseFormat)
+	if format == "" || format == "json_schema" {
+		format = "json"
+	}
 	payload := ollamaChatRequest{
 		Model: model,
 		Messages: []ollamaChatMessage{
@@ -201,10 +209,11 @@ func (b *OllamaBackend) chat(ctx context.Context, model, system, user string, ma
 			{Role: "user", Content: user},
 		},
 		Stream: false,
-		Format: "json", // forces valid JSON output regardless of prose tendencies
+		Format: format, // forces valid JSON output regardless of prose tendencies
 		Options: ollamaOptions{
-			Temperature: 0.1, // low temperature for reliable JSON structure
-			NumPredict:  maxTokens,
+			Temperature: params.Temperature, // low temperature for reliable JSON structure
+			TopP:        params.TopP,
+			NumPredict:  params.MaxTokens,
 		},
 	}
 

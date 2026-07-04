@@ -59,6 +59,7 @@ type (
 	PlannedStep     = sdkreasoning.PlannedStep
 	Plan            = sdkreasoning.Plan
 	LoopConfig      = sdkreasoning.Config
+	PhaseParams     = sdkreasoning.PhaseParams
 	ThinkRequest    = sdkreasoning.ThinkRequest
 	ThinkResponse   = sdkreasoning.ThinkResponse
 	ReflectRequest  = sdkreasoning.ReflectRequest

@@ -112,6 +112,56 @@ func TestAnthropicBackend_Think_Success(t *testing.T) {
 	}
 }
 
+func TestAnthropicBackend_Think_RetriesWithoutDeprecatedSamplingParams(t *testing.T) {
+	thinkJSON := `{"thought":"done","is_done":true,"final_answer":"ok"}`
+	var calls int
+	ft := &fakeTransport{fn: func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 {
+			if _, ok := got["temperature"]; !ok {
+				t.Fatal("first request should include temperature")
+			}
+			if _, ok := got["top_p"]; ok {
+				t.Fatalf("temperature and top_p must not be sent together: %#v", got)
+			}
+			return jsonResponse(400, map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "invalid_request_error",
+					"message": "temperature is deprecated for this model.",
+				},
+			}), nil
+		}
+		if _, ok := got["temperature"]; ok {
+			t.Fatalf("retry should omit deprecated temperature: %#v", got)
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("retry should not restore top_p after preferring temperature: %#v", got)
+		}
+		return jsonResponse(200, anthropicOKBody(thinkJSON)), nil
+	}}
+	b := newAnthropicWithTransport(ft)
+	b.ThinkParams.TopP = 0.8
+
+	resp, err := b.Think(context.Background(), reasoning.ThinkRequest{
+		TaskInput:    "hi",
+		SystemPrompt: "system",
+	})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if !resp.IsDone || resp.FinalAnswer != "ok" {
+		t.Fatalf("resp = %+v", resp)
+	}
+}
+
 func TestAnthropicBackend_Think_Done(t *testing.T) {
 	thinkJSON := `{"thought":"done","is_done":true,"final_answer":"42"}`
 

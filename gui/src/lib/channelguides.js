@@ -27,13 +27,13 @@ export const channelGuides = {
     intro: 'Create a Discord application with a bot user, invite it to your server, and paste its token here.',
     steps: [
       'Go to **discord.com/developers/applications** → **New Application**.',
-      'Open the **Bot** tab → **Reset Token** → copy the token into **Bot token** below.',
+      'Open the **Bot** tab → **Reset Token** → copy the token into **Bot token** below. Soulacy accepts either the raw token or `Bot <token>`.',
       'Still on the Bot tab, enable **MESSAGE CONTENT INTENT** (required — without it the bot receives empty messages).',
-      'Open **OAuth2 → URL Generator**: scope `bot`; permissions **Send Messages** and **Read Message History**. Open the generated URL and invite the bot to your server.',
+      'Open **OAuth2 → URL Generator**: scope `bot`; permissions **View Channels**, **Send Messages**, and **Read Message History**. Open the generated URL and invite the bot to your server.',
       'Set **Default agent ID**, save, restart the gateway.',
     ],
     fields: {
-      token: 'Developer Portal → your app → Bot → Reset Token.',
+      token: 'Developer Portal → your app → Bot → Reset Token. Pasting the raw token is recommended; Soulacy adds the REST Bot prefix automatically.',
       allowed_chat_ids: 'Enable Developer Mode (User Settings → Advanced), then right-click a channel → Copy Channel ID.',
       guild_id: 'Right-click your server icon → Copy Server ID (needs Developer Mode).',
     },

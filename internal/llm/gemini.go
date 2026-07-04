@@ -248,6 +248,9 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	genCfg := map[string]any{
 		"temperature": req.Temperature,
 	}
+	if req.TopP > 0 {
+		genCfg["topP"] = req.TopP
+	}
 	if req.MaxTokens > 0 {
 		genCfg["maxOutputTokens"] = req.MaxTokens
 	}

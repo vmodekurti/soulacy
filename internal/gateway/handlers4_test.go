@@ -405,7 +405,7 @@ func TestGatewayHandleHistory_WithLimitParam(t *testing.T) {
 
 func TestChatOverrideMetadata_WhitespaceOnlyStrings(t *testing.T) {
 	// Whitespace-only provider / model / toolChoice should be trimmed → not included.
-	meta := chatOverrideMetadata("  ", "  ", nil, nil, nil, "  ")
+	meta := chatOverrideMetadata("  ", "  ", nil, nil, nil, nil, "  ", "", "", nil, nil)
 	if meta != nil {
 		t.Fatalf("expected nil for whitespace-only strings, got %v", meta)
 	}
@@ -413,7 +413,7 @@ func TestChatOverrideMetadata_WhitespaceOnlyStrings(t *testing.T) {
 
 func TestChatOverrideMetadata_ZeroMaxTurns(t *testing.T) {
 	zero := 0
-	meta := chatOverrideMetadata("", "", nil, nil, &zero, "")
+	meta := chatOverrideMetadata("", "", nil, nil, nil, &zero, "", "", "", nil, nil)
 	if meta != nil {
 		if _, ok := meta["playground.max_turns"]; ok {
 			t.Error("max_turns=0 should not appear in metadata")
@@ -423,7 +423,7 @@ func TestChatOverrideMetadata_ZeroMaxTurns(t *testing.T) {
 
 func TestChatOverrideMetadata_NegativeTemperature(t *testing.T) {
 	temp := -1.0
-	meta := chatOverrideMetadata("", "", &temp, nil, nil, "")
+	meta := chatOverrideMetadata("", "", &temp, nil, nil, nil, "", "", "", nil, nil)
 	if meta == nil {
 		t.Fatal("expected non-nil meta for negative temperature pointer")
 	}

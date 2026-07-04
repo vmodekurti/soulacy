@@ -44,8 +44,8 @@ describe('buildOverrides', () => {
     expect(buildOverrides({ provider: '  ', model: '' })).toBeNull()
   })
   it('builds an llm override with only set fields and numeric coercion', () => {
-    expect(buildOverrides({ provider: 'ollama', model: 'qwen3:32b', temperature: '0.4', maxTokens: '2048' }))
-      .toEqual({ llm: { provider: 'ollama', model: 'qwen3:32b', temperature: 0.4, max_tokens: 2048 } })
+    expect(buildOverrides({ provider: 'ollama', model: 'qwen3:32b', temperature: '0.4', topP: '0.8', maxTokens: '2048', responseFormat: 'json', reasoningEffort: 'high' }))
+      .toEqual({ llm: { provider: 'ollama', model: 'qwen3:32b', temperature: 0.4, top_p: 0.8, max_tokens: 2048, response_format: 'json', reasoning_effort: 'high' } })
   })
   it('ignores zero/blank max_tokens and NaN temperature', () => {
     expect(buildOverrides({ model: 'x', maxTokens: '0', temperature: 'abc' })).toEqual({ llm: { model: 'x' } })

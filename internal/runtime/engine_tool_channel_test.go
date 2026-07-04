@@ -42,6 +42,35 @@ func TestChannelSendBuiltinRoutesThroughRegistry(t *testing.T) {
 	}
 }
 
+func TestChannelSendBuiltinUsesInboundContextAndMessageAlias(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	adp := &channelSendCaptureAdapter{id: "telegram-research-librarian"}
+	reg.Register(adp)
+	e.SetChannelRegistry(reg)
+
+	ctx := context.WithValue(context.Background(), inboundMsgKey{}, message.Message{
+		Channel:  "telegram-research-librarian",
+		ThreadID: "8546291328",
+	})
+	tool := builtinByName(t, e.buildBuiltins(), "channel.send")
+	out, err := tool.Handler(ctx, map[string]any{
+		"message": "queued",
+	})
+	if err != nil {
+		t.Fatalf("channel.send returned error: %v", err)
+	}
+	if !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("channel.send result should confirm success, got %s", out)
+	}
+	if adp.sent.Channel != "telegram-research-librarian" {
+		t.Fatalf("sent channel = %q, want inbound adapter", adp.sent.Channel)
+	}
+	if adp.sent.ThreadID != "8546291328" || firstText(adp.sent) != "queued" {
+		t.Fatalf("sent message mismatch: %+v", adp.sent)
+	}
+}
+
 func TestChannelSendBuiltinRequiresRegistryAndFields(t *testing.T) {
 	e := newMinimalEngine(t)
 	tool := builtinByName(t, e.buildBuiltins(), "channel.send")

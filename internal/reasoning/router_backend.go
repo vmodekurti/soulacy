@@ -19,7 +19,7 @@ import (
 // into one text completion. The provider is bound by the adapter that supplies
 // this (so the reasoning loop need not know provider specifics).
 type Completer interface {
-	Complete(ctx context.Context, model, system, user string, maxTokens int) (string, error)
+	Complete(ctx context.Context, model, system, user string, params PhaseParams) (string, error)
 }
 
 // RouterBackend implements LLMBackend by delegating to a Completer.
@@ -29,6 +29,9 @@ type RouterBackend struct {
 	// Both default to the agent's configured model.
 	ThinkModel       string
 	PlanReflectModel string
+	ThinkParams      PhaseParams
+	PlanParams       PhaseParams
+	ReflectParams    PhaseParams
 }
 
 // NewRouterBackend builds a RouterBackend that uses model for every phase.
@@ -47,7 +50,11 @@ func (b *RouterBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.comp.Complete(ctx, b.ThinkModel, system, user, 1024)
+	params := b.ThinkParams
+	if params.MaxTokens <= 0 {
+		params.MaxTokens = 1024
+	}
+	raw, err := b.comp.Complete(ctx, b.ThinkModel, system, user, params)
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/router: Think: %w", err)
 	}
@@ -65,7 +72,11 @@ func (b *RouterBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 func (b *RouterBackend) Plan(ctx context.Context, systemPrompt, taskInput string, maxSteps int) (Plan, error) {
 	system := systemPrompt + fmt.Sprintf(openaiPlanInstructions, maxSteps)
-	raw, err := b.comp.Complete(ctx, b.PlanReflectModel, system, "Task: "+taskInput, 1024)
+	params := b.PlanParams
+	if params.MaxTokens <= 0 {
+		params.MaxTokens = 1024
+	}
+	raw, err := b.comp.Complete(ctx, b.PlanReflectModel, system, "Task: "+taskInput, params)
 	if err != nil {
 		return Plan{}, fmt.Errorf("reasoning/router: Plan: %w", err)
 	}
@@ -88,7 +99,11 @@ func (b *RouterBackend) Reflect(ctx context.Context, req ReflectRequest) (Reflec
 	user := fmt.Sprintf("Task: %s\n\nStep trace:\n%s\n\nProduce the final answer.",
 		req.TaskInput, formatStepHistory(req.Steps))
 
-	raw, err := b.comp.Complete(ctx, b.PlanReflectModel, system, user, 2048)
+	params := b.ReflectParams
+	if params.MaxTokens <= 0 {
+		params.MaxTokens = 2048
+	}
+	raw, err := b.comp.Complete(ctx, b.PlanReflectModel, system, user, params)
 	if err != nil {
 		return ReflectResponse{}, fmt.Errorf("reasoning/router: Reflect: %w", err)
 	}
