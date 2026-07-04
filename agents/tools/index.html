@@ -1215,6 +1215,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Built-ins">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ephemeral-queues" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ephemeral Queues
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3199,6 +3216,23 @@
     </span>
   </a>
   
+    <nav class="md-nav" aria-label="Built-ins">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#ephemeral-queues" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Ephemeral Queues
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
 </li>
       
         <li class="md-nav__item">
@@ -3495,6 +3529,18 @@ may point at — a crafted SOUL.yaml cannot execute arbitrary host files.</p>
 <td>Agent declares <code>knowledge:</code>.</td>
 </tr>
 <tr>
+<td><code>kb_write</code></td>
+<td>Agent declares <code>knowledge:</code>.</td>
+</tr>
+<tr>
+<td><code>queue_create</code>, <code>queue_names</code>, <code>queue_put</code>, <code>queue_take</code>, <code>queue_list</code>, <code>queue_clear</code></td>
+<td>Always available unless <code>builtins</code> restricts them.</td>
+</tr>
+<tr>
+<td><code>channel.send</code></td>
+<td>Channel registry configured.</td>
+</tr>
+<tr>
 <td><code>read_skill</code>, <code>read_skill_file</code></td>
 <td>Agent declares <code>skills:</code>.</td>
 </tr>
@@ -3504,6 +3550,38 @@ may point at — a crafted SOUL.yaml cannot execute arbitrary host files.</p>
 </tr>
 </tbody>
 </table>
+<h3 id="ephemeral-queues">Ephemeral Queues<a class="headerlink" href="#ephemeral-queues" title="Permanent link">&para;</a></h3>
+<p>Use the queue built-ins when an agent or Studio workflow needs temporary
+handoff state but should not receive filesystem access:</p>
+<ul>
+<li><code>queue_create</code> creates a named queue.</li>
+<li><code>queue_names</code> lists current queues and item counts.</li>
+<li><code>queue_put</code> stores a JSON value in memory.</li>
+<li><code>queue_take</code> returns and removes the oldest item.</li>
+<li><code>queue_list</code> inspects queued items without removing them.</li>
+<li><code>queue_clear</code> deletes all items in a queue.</li>
+</ul>
+<p>Queues are created automatically by <code>queue_put</code>, so <code>queue_create</code> is optional.
+If a queue name is omitted, Soulacy uses the <code>default</code> queue. Queues are
+process-local, bounded, and expire items automatically. They are not persisted
+across gateway restarts. For durable searchable content, use <code>kb_write</code>; for
+generated files, use a deliberately scoped filesystem or artifact tool rather
+than broad <code>write_file</code> access.</p>
+<p>Example restricted agent:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">builtins</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">queue_create</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">queue_names</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">queue_put</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">queue_take</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">queue_list</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">queue_clear</span>
+</span></code></pre></div>
+<p>Typical handoff:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span><span class="nt">&quot;queue&quot;</span><span class="p">:</span><span class="s2">&quot;pending_docs&quot;</span><span class="p">,</span><span class="nt">&quot;item&quot;</span><span class="p">:{</span><span class="nt">&quot;url&quot;</span><span class="p">:</span><span class="s2">&quot;https://example.com/doc&quot;</span><span class="p">,</span><span class="nt">&quot;tags&quot;</span><span class="p">:[</span><span class="s2">&quot;governance&quot;</span><span class="p">]}}</span>
+</span></code></pre></div>
+<p>Then a downstream step calls <code>queue_take</code> with <code>{"queue":"pending_docs"}</code>.
+For a simple one-buffer workflow, both calls may omit <code>queue</code> and use the
+default queue.</p>
 <h2 id="system-tools">System Tools<a class="headerlink" href="#system-tools" title="Permanent link">&para;</a></h2>
 <p>OS-level tools require <strong>both</strong> sides to opt in:</p>
 <ol>
@@ -3519,9 +3597,9 @@ MCP tools instead.</p>
 <h2 id="confirmation-gates">Confirmation Gates<a class="headerlink" href="#confirmation-gates" title="Permanent link">&para;</a></h2>
 <p><code>confirm_tools</code> lists built-in tools that must pause for explicit approval
 before executing:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">confirm_tools</span><span class="p">:</span>
-</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shell_exec</span>
-</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">write_file</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">confirm_tools</span><span class="p">:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">shell_exec</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">write_file</span>
 </span></code></pre></div>
 <p>When the model calls a gated tool, the engine emits a <code>tool_confirm</code> event,
 shows an approval card in the Chat page, and waits for your decision before
@@ -3533,8 +3611,8 @@ those via allowlists instead).</p>
 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code> — e.g. <code>mcp__github__search_repositories</code>. With no
 allowlist configured, agents see every connected MCP tool. Once either field
 below is present, MCP becomes deny-by-default:</p>
-<div class="language-yaml highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="nt">mcp_servers</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">github</span><span class="p p-Indicator">]</span><span class="w">                           </span><span class="c1"># allow whole servers…</span>
-</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="nt">mcp_tools</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">mcp__github__search_repositories</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># …or individual tools</span>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="nt">mcp_servers</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">github</span><span class="p p-Indicator">]</span><span class="w">                           </span><span class="c1"># allow whole servers…</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="nt">mcp_tools</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="nv">mcp__github__search_repositories</span><span class="p p-Indicator">]</span><span class="w">   </span><span class="c1"># …or individual tools</span>
 </span></code></pre></div>
 <p>A tool is allowed when <strong>either</strong> list admits it. Use <code>mcp_servers: []</code> to
 expose none, or <code>["*"]</code> / <code>["all"]</code> to allow everything explicitly.</p>
