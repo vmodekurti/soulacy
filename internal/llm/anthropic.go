@@ -217,11 +217,9 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 			// Omit: Anthropic defaults to auto; older API versions may not
 			// support an explicit "none" tool_choice.
 		default:
-			name := req.ToolChoice
+			name := anthropicSafeToolName(req.ToolChoice)
 			if wire, ok := toolWireNames[req.ToolChoice]; ok {
 				name = wire
-			} else {
-				name = anthropicSafeToolName(req.ToolChoice)
 			}
 			body["tool_choice"] = map[string]any{"type": "tool", "name": name}
 		}

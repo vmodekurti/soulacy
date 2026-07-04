@@ -511,15 +511,6 @@ func sortedKeys(m map[string]string) []string {
 	return keys
 }
 
-func stringIn(xs []string, want string) bool {
-	for _, x := range xs {
-		if strings.TrimSpace(x) == want {
-			return true
-		}
-	}
-	return false
-}
-
 // ParseDraft tolerantly extracts a Draft from raw model output: it strips
 // ```/```json code fences and any leading/trailing prose around the first
 // JSON object, then strictly unmarshals. A malformed payload yields a clear
