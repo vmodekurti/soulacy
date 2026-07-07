@@ -42,7 +42,7 @@ func TestApprovalsEndpoints(t *testing.T) {
 	}
 
 	// Now empty; a second resolve is a 404.
-	status, body = gatewayJSON(t, srv, http.MethodGet, "/api/v1/approvals", "secret", "")
+	_, body = gatewayJSON(t, srv, http.MethodGet, "/api/v1/approvals", "secret", "")
 	if list, _ := body["approvals"].([]any); len(list) != 0 {
 		t.Fatalf("approvals should be empty after resolve")
 	}
