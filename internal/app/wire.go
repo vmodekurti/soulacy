@@ -22,6 +22,7 @@ import (
 	"github.com/soulacy/soulacy/internal/events"
 	"github.com/soulacy/soulacy/internal/gateway"
 	"github.com/soulacy/soulacy/internal/hooks"
+	"github.com/soulacy/soulacy/internal/learning"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/scheduler"
@@ -180,8 +181,9 @@ func (a *App) Run(parent context.Context) error {
 	// ── Python Executor Backend ───────────────────────────────────────────────
 	// "process" (default): one python3 subprocess per call, simple + compatible.
 	// "pool": N pre-forked persistent workers, eliminates interpreter cold-start.
-	pyExecutor := a.wirePythonExecutor(stack)
-	_ = pyExecutor // wired into engine via SetExecutor below
+	pyExecutor := a.wirePythonExecutor(stack, credVault)
+	// Named backends agents can opt into via `execution.backend` (local/docker/ssh).
+	namedExecutors := a.wireNamedExecutors(credVault)
 
 	// ── Queue Backend ─────────────────────────────────────────────────────────
 	// Resolved through the SDK factory registry (Story E10).
@@ -223,6 +225,7 @@ func (a *App) Run(parent context.Context) error {
 		loader:         loader,
 		llmRouter:      llmRouter,
 		fileStore:      fileStore,
+		actionBackend:  actionBackend,
 		memBackend:     memBackend,
 		hub:            hub,
 		skillLoader:    skillLoader,
@@ -231,6 +234,7 @@ func (a *App) Run(parent context.Context) error {
 		vectorStore:    vectorStore,
 		pluginProvider: pluginProvider,
 		pyExecutor:     pyExecutor,
+		namedExecutors: namedExecutors,
 		brainStore:     brainStore,
 		learningStore:  learningStore,
 		ollamaAPIKey:   ollamaAPIKey,
@@ -244,6 +248,14 @@ func (a *App) Run(parent context.Context) error {
 	// cancellation) cancels them all in unison.
 	ctx, cancel := context.WithCancel(parent)
 	stack.push("app-context-cancel", func() error { cancel(); return nil })
+
+	learningSweeper := learning.NewSweeper(learning.SweeperConfig{
+		Store:   learningStore,
+		Actions: actionBackend,
+		Agents:  loader,
+		Logger:  log.Named("learning-sweeper"),
+	})
+	learningSweeper.Start(ctx)
 
 	// ── Scheduler ────────────────────────────────────────────────────────────
 	sched := scheduler.New(engine, loader, log, ctx)
@@ -262,7 +274,9 @@ func (a *App) Run(parent context.Context) error {
 	chanReg.SetLogger(log)
 	engine.SetChannelRegistry(chanReg)
 	sched.SetChannelRegistry(chanReg)
-	sched.SetDefaultOutputs(scheduler.DefaultOutputsFromChannelConfig(cfg.Channels))
+	channelDefaults := scheduler.DefaultOutputsFromChannelConfig(cfg.Channels)
+	engine.SetChannelDefaultOutputs(channelDefaults)
+	sched.SetDefaultOutputs(channelDefaults)
 	httpAdapter := httpchan.New()
 	chanReg.Register(httpAdapter)
 

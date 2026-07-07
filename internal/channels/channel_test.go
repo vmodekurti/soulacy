@@ -37,10 +37,11 @@ func TestRegistrySendRoutesByChannel(t *testing.T) {
 	}
 }
 
-func TestRegistrySendUnknownChannelDropsWithoutError(t *testing.T) {
+func TestRegistrySendUnknownChannelReturnsError(t *testing.T) {
 	reg := NewRegistry(1)
-	if err := reg.Send(context.Background(), message.Message{Channel: "missing"}); err != nil {
-		t.Fatalf("unknown channel Send error = %v, want nil", err)
+	err := reg.Send(context.Background(), message.Message{Channel: "missing"})
+	if err == nil || err.Error() != `channel adapter "missing" is not registered` {
+		t.Fatalf("unknown channel Send error = %v, want registered error", err)
 	}
 }
 

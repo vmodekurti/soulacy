@@ -19,6 +19,8 @@ import (
 
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/pkgregistry"
+	"github.com/soulacy/soulacy/pkg/skill"
+	sdkpkg "github.com/soulacy/soulacy/sdk/pkgregistry"
 	"github.com/soulacy/soulacy/sdk/registry"
 )
 
@@ -83,13 +85,98 @@ func (s *Server) handleSearchRegistries(c *fiber.Ctx) error {
 	ctx, cancel := context.WithTimeout(c.Context(), 20*time.Second)
 	defer cancel()
 	pkgs, warnings := eng.SearchDetailed(ctx, query)
+	pkgs = appendLocalSkillMatches(pkgs, s.localSkillMatches(query))
 	warnText := make([]string, 0, len(warnings))
+	authRequired := false
 	for _, w := range warnings {
 		if w != nil {
-			warnText = append(warnText, w.Error())
+			msg := w.Error()
+			warnText = append(warnText, msg)
+			low := strings.ToLower(msg)
+			if strings.Contains(low, "401") || strings.Contains(low, "authentication") || strings.Contains(low, "unauthorized") {
+				authRequired = true
+			}
 		}
 	}
-	return c.JSON(fiber.Map{"packages": pkgs, "count": len(pkgs), "warnings": warnText})
+	suggestions := []string{}
+	if authRequired {
+		suggestions = append(suggestions,
+			"One or more skill sources require authentication. Add auth_headers for that registry or set the required environment token before restarting Soulacy.",
+			"If you already know the skill repository, install it directly with `sy skill install <github-url-or-slug>`.",
+		)
+	}
+	status := "ok"
+	if len(warnText) > 0 {
+		status = "degraded"
+	}
+	return c.JSON(fiber.Map{
+		"packages":      pkgs,
+		"count":         len(pkgs),
+		"warnings":      warnText,
+		"status":        status,
+		"checked":       eng.Providers(),
+		"auth_required": authRequired,
+		"suggestions":   suggestions,
+	})
+}
+
+func (s *Server) localSkillMatches(query string) []sdkpkg.Package {
+	if s.skillLoader == nil {
+		return nil
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	if q == "" {
+		return nil
+	}
+	var skills []*skill.Skill
+	if l, ok := s.skillLoader.(interface{ All() []*skill.Skill }); ok {
+		skills = l.All()
+	}
+	out := make([]sdkpkg.Package, 0)
+	for _, sk := range skills {
+		if sk == nil {
+			continue
+		}
+		haystack := strings.ToLower(strings.Join([]string{sk.Name, sk.Description}, " "))
+		if !strings.Contains(haystack, q) && !strings.Contains(normalizeSearchText(haystack), normalizeSearchText(q)) {
+			continue
+		}
+		out = append(out, sdkpkg.Package{
+			Slug:        sk.Name,
+			Version:     "installed",
+			Description: sk.Description,
+			Provider:    "local",
+			Manifest: map[string]any{
+				"installed": true,
+				"path":      sk.Path,
+			},
+		})
+	}
+	return out
+}
+
+func appendLocalSkillMatches(remote, local []sdkpkg.Package) []sdkpkg.Package {
+	if len(local) == 0 {
+		return remote
+	}
+	seen := map[string]bool{}
+	out := make([]sdkpkg.Package, 0, len(remote)+len(local))
+	for _, pkg := range remote {
+		seen[strings.ToLower(pkg.Slug)] = true
+		out = append(out, pkg)
+	}
+	for _, pkg := range local {
+		if seen[strings.ToLower(pkg.Slug)] {
+			continue
+		}
+		out = append(out, pkg)
+	}
+	return out
+}
+
+func normalizeSearchText(s string) string {
+	replacer := strings.NewReplacer("-", "", "_", "", " ", "", ".", "")
+	return replacer.Replace(strings.ToLower(s))
 }
 
 func (s *Server) handleListRegistries(c *fiber.Ctx) error {

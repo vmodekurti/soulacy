@@ -977,6 +977,37 @@ func (s *Server) handleStudioRunTrace(c *fiber.Ctx) error {
 	return c.JSON(tr)
 }
 
+// handleStudioRunDiagnosis implements GET /api/v1/studio/run-diagnosis. It
+// returns a deterministic diagnosis for a retained run trace: the failing node,
+// likely root cause, evidence, and next action. This gives Studio and Activity a
+// shared troubleshooting vocabulary without requiring an LLM just to classify
+// common platform failures.
+func (s *Server) handleStudioRunDiagnosis(c *fiber.Ctx) error {
+	if s.engine == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "engine unavailable")
+	}
+	agentID := strings.TrimSpace(c.Query("agentId"))
+	runID := strings.TrimSpace(c.Query("runId"))
+	if agentID == "" && runID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "agentId or runId is required")
+	}
+	d, ok := s.engine.FlowRunDiagnosis(agentID, runID)
+	if !ok {
+		return c.JSON(fiber.Map{
+			"agentId": agentID,
+			"runId":   runID,
+			"status":  "empty",
+			"summary": "No retained run trace was found.",
+			"suggestions": []string{
+				"Run the agent once and refresh this panel.",
+				"Check Activity if the failure happened before the workflow emitted a trace.",
+			},
+			"retryable": true,
+		})
+	}
+	return c.JSON(d)
+}
+
 // handleStudioRunHistory implements GET /api/v1/studio/run-history. It returns a
 // summary of EVERY retained run for an agent — scheduled and on-demand alike,
 // newest first, each with its trigger source and verdict — so the GUI can show a

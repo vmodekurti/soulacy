@@ -1,13 +1,19 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/mcpserver"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -104,7 +110,212 @@ Examples:
 	addCmd.Flags().StringVar(&pipSpec, "pip", "", "Optional pip package/spec to install into a persistent venv before registering")
 
 	cmd.AddCommand(addCmd)
+	cmd.AddCommand(buildMCPServeCmd())
 	return cmd
+}
+
+func buildMCPServeCmd() *cobra.Command {
+	var exposeDisabled bool
+	var agentIDs []string
+	var toolPrefix, userID, sessionPrefix string
+
+	serveCmd := &cobra.Command{
+		Use:   "serve",
+		Short: "Expose Soulacy agents as an MCP stdio server",
+		Long: `Expose the running Soulacy gateway as a Model Context Protocol server.
+
+Each enabled Soulacy agent is listed as a tool, plus a generic soulacy_chat
+tool that accepts agent_id explicitly. Configure this command in Claude,
+Codex, or any MCP client using stdio transport.
+
+Example MCP command:
+  sy --gateway http://localhost:18789 mcp serve`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			allowed := map[string]bool{}
+			for _, id := range agentIDs {
+				id = strings.TrimSpace(id)
+				if id != "" {
+					allowed[id] = true
+				}
+			}
+			if len(allowed) == 0 {
+				allowed = nil
+			}
+			srv := &mcpserver.Server{
+				Client:          &mcpGatewayClient{},
+				Name:            "soulacy",
+				Version:         "dev",
+				ToolPrefix:      toolPrefix,
+				UserID:          userID,
+				SessionPrefix:   sessionPrefix,
+				ExposeDisabled:  exposeDisabled,
+				AllowedAgentIDs: allowed,
+			}
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			return srv.Serve(ctx, os.Stdin, os.Stdout)
+		},
+	}
+	serveCmd.Flags().BoolVar(&exposeDisabled, "include-disabled", false, "Expose disabled Soulacy agents as MCP tools")
+	serveCmd.Flags().StringSliceVar(&agentIDs, "agent", nil, "Restrict exposed tools to one or more agent IDs")
+	serveCmd.Flags().StringVar(&toolPrefix, "tool-prefix", "soulacy_agent_", "Prefix for generated per-agent MCP tool names")
+	serveCmd.Flags().StringVar(&userID, "user-id", "mcp-user", "User id sent to Soulacy chat runs")
+	serveCmd.Flags().StringVar(&sessionPrefix, "session-prefix", "mcp", "Session id prefix used when the MCP caller does not provide session_id")
+	return serveCmd
+}
+
+type mcpGatewayClient struct{}
+
+func (m *mcpGatewayClient) ListAgents(ctx context.Context) ([]mcpserver.Agent, error) {
+	data, err := apiCallWithTimeout(http.MethodGet, "/agents", nil, 10*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Agents []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			Description string `json:"description"`
+			Enabled     bool   `json:"enabled"`
+		} `json:"agents"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, fmt.Errorf("decode agents: %w", err)
+	}
+	agents := make([]mcpserver.Agent, 0, len(resp.Agents))
+	for _, ag := range resp.Agents {
+		agents = append(agents, mcpserver.Agent{
+			ID:          ag.ID,
+			Name:        ag.Name,
+			Description: ag.Description,
+			Enabled:     ag.Enabled,
+		})
+	}
+	return agents, nil
+}
+
+func (m *mcpGatewayClient) Chat(ctx context.Context, req mcpserver.ChatRequest) (mcpserver.ChatResponse, error) {
+	body, err := json.Marshal(map[string]any{
+		"agent_id":   req.AgentID,
+		"session_id": req.SessionID,
+		"user_id":    req.UserID,
+		"username":   req.UserID,
+		"text":       req.Text,
+	})
+	if err != nil {
+		return mcpserver.ChatResponse{}, err
+	}
+	data, err := apiCallWithTimeout(http.MethodPost, "/chat", body, 10*time.Minute)
+	if err != nil {
+		return mcpserver.ChatResponse{}, err
+	}
+	var resp struct {
+		Reply string `json:"reply"`
+	}
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return mcpserver.ChatResponse{}, fmt.Errorf("decode chat: %w", err)
+	}
+	return mcpserver.ChatResponse{Reply: resp.Reply}, nil
+}
+
+func (m *mcpGatewayClient) ListSchedule(ctx context.Context) (json.RawMessage, error) {
+	return apiCallWithTimeout(http.MethodGet, "/schedule", nil, 15*time.Second)
+}
+
+func (m *mcpGatewayClient) ScheduleStatus(ctx context.Context) (json.RawMessage, error) {
+	return apiCallWithTimeout(http.MethodGet, "/schedule/status", nil, 15*time.Second)
+}
+
+func (m *mcpGatewayClient) ListWorkboardTasks(ctx context.Context, status, agentID string) (json.RawMessage, error) {
+	q := url.Values{}
+	if status = strings.TrimSpace(status); status != "" {
+		q.Set("status", status)
+	}
+	if agentID = strings.TrimSpace(agentID); agentID != "" {
+		q.Set("agent_id", agentID)
+	}
+	path := "/workboard/tasks"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return apiCallWithTimeout(http.MethodGet, path, nil, 20*time.Second)
+}
+
+func (m *mcpGatewayClient) RunWorkboardTask(ctx context.Context, id string) (json.RawMessage, error) {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return nil, fmt.Errorf("task id is required")
+	}
+	return apiCallWithTimeout(http.MethodPost, "/workboard/tasks/"+url.PathEscape(id)+"/run", nil, 30*time.Second)
+}
+
+func (m *mcpGatewayClient) ListKnowledgeBases(ctx context.Context) (json.RawMessage, error) {
+	return apiCallWithTimeout(http.MethodGet, "/knowledge", nil, 20*time.Second)
+}
+
+func (m *mcpGatewayClient) SearchKnowledge(ctx context.Context, kb, query string, topK int) (json.RawMessage, error) {
+	body, err := json.Marshal(map[string]any{"query": query, "top_k": topK})
+	if err != nil {
+		return nil, err
+	}
+	return apiCallWithTimeout(http.MethodPost, "/knowledge/"+url.PathEscape(kb)+"/search", body, 60*time.Second)
+}
+
+func (m *mcpGatewayClient) ListQueues(ctx context.Context) (json.RawMessage, error) {
+	return apiCallWithTimeout(http.MethodGet, "/queues", nil, 15*time.Second)
+}
+
+func (m *mcpGatewayClient) CreateQueue(ctx context.Context, queue string) (json.RawMessage, error) {
+	body, err := json.Marshal(map[string]any{"queue": queue})
+	if err != nil {
+		return nil, err
+	}
+	return apiCallWithTimeout(http.MethodPost, "/queues", body, 15*time.Second)
+}
+
+func (m *mcpGatewayClient) ListQueueItems(ctx context.Context, queue string, limit int) (json.RawMessage, error) {
+	q := url.Values{}
+	if queue = strings.TrimSpace(queue); queue != "" {
+		q.Set("queue", queue)
+	}
+	if limit > 0 {
+		q.Set("limit", fmt.Sprint(limit))
+	}
+	path := "/queues/items"
+	if encoded := q.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return apiCallWithTimeout(http.MethodGet, path, nil, 15*time.Second)
+}
+
+func (m *mcpGatewayClient) PutQueueItem(ctx context.Context, queue string, item json.RawMessage, ttlSeconds int) (json.RawMessage, error) {
+	body, err := json.Marshal(map[string]any{
+		"queue":       queue,
+		"item":        json.RawMessage(item),
+		"ttl_seconds": ttlSeconds,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return apiCallWithTimeout(http.MethodPost, "/queues/items", body, 15*time.Second)
+}
+
+func (m *mcpGatewayClient) TakeQueueItem(ctx context.Context, queue string) (json.RawMessage, error) {
+	path := "/queues/take"
+	if queue = strings.TrimSpace(queue); queue != "" {
+		path += "?queue=" + url.QueryEscape(queue)
+	}
+	return apiCallWithTimeout(http.MethodPost, path, nil, 15*time.Second)
+}
+
+func (m *mcpGatewayClient) ClearQueue(ctx context.Context, queue string) (json.RawMessage, error) {
+	path := "/queues/items"
+	if queue = strings.TrimSpace(queue); queue != "" {
+		path += "?queue=" + url.QueryEscape(queue)
+	}
+	return apiCallWithTimeout(http.MethodDelete, path, nil, 15*time.Second)
 }
 
 // setSequence sets m[key] to a flow-style YAML sequence of strings, creating or

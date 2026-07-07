@@ -12,7 +12,7 @@ import (
 // fails before any user notices a silently absent channel.
 func TestAllBuiltinsRegistered(t *testing.T) {
 	want := map[string][]string{
-		"channels":      {"discord", "slack", "telegram", "whatsapp"},
+		"channels":      {"discord", "slack", "telegram", "webhook", "whatsapp"},
 		"providers":     {"anthropic", "gemini", "google", "ollama", "openai"},
 		"queues":        {"external", "memory", "nats"},
 		"vectors":       {"external", "qdrant", "sqlite-vec"},

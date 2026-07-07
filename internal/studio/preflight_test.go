@@ -1,6 +1,7 @@
 package studio
 
 import (
+	"strings"
 	"testing"
 
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
@@ -158,6 +159,69 @@ func TestPreflight_BuiltinContractToolNotWarnedWhenCatalogPartial(t *testing.T) 
 		if w.Kind == "tool" {
 			t.Fatalf("known built-in contract tool should not warn with partial catalog: %+v", r.Warnings)
 		}
+	}
+}
+
+func TestPreflight_BlocksWriteFileForKnowledgeIngestion(t *testing.T) {
+	d := Draft{
+		Name:   "AI Docs ingestion",
+		Intent: "Pass documents or URLs, tag them, and store them in the Soulacy KB store AI Docs.",
+		Flow: Flow{Nodes: []sdkr.FlowNode{
+			{ID: "store", Kind: "tool", Tool: "write_file", Input: `{"path":"index.json","content":"{{ .tagged }}"}`},
+		}},
+	}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"write_file", "kb_write"}}})
+	if r.OK {
+		t.Fatal("expected policy blocker for write_file KB ingestion")
+	}
+	if blockKinds(r)["policy"] == 0 {
+		t.Fatalf("expected policy blocker, got %+v", r.Blockers)
+	}
+}
+
+func TestRepairWiring_RewritesWriteFileKnowledgeIngestionToKBWrite(t *testing.T) {
+	d := Draft{
+		Name:      "AI Docs ingestion",
+		Intent:    "Tag documents and store them in the knowledge base.",
+		Knowledge: []string{"AI Docs"},
+		Flow: Flow{Nodes: []sdkr.FlowNode{
+			{ID: "tag", Kind: "agent", Agent: "tagger", Output: "tagged"},
+			{ID: "store", Kind: "tool", Tool: "write_file", Input: `{"path":"index.json","content":"{{ .tagged }}"}`},
+		}},
+	}
+	if n := RepairWiring(&d, Catalog{}); n == 0 {
+		t.Fatal("expected RepairWiring to rewrite write_file")
+	}
+	store := d.Flow.Nodes[1]
+	if store.Tool != "kb_write" {
+		t.Fatalf("tool = %q, want kb_write", store.Tool)
+	}
+	if !strings.Contains(store.Input, `"kb":"AI Docs"`) || !strings.Contains(store.Input, `toJson .tagged`) {
+		t.Fatalf("kb_write input not normalized: %s", store.Input)
+	}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"kb_write"}}})
+	if !r.OK {
+		t.Fatalf("rewritten workflow should pass preflight, blockers: %+v", r.Blockers)
+	}
+}
+
+func TestRepairWiring_RewritesWriteFileTemporaryStateToQueuePut(t *testing.T) {
+	d := Draft{
+		Name:   "Research Librarian",
+		Intent: "Capture URLs into the pending_resources queue for next daily processing.",
+		Flow: Flow{Nodes: []sdkr.FlowNode{
+			{ID: "capture", Kind: "tool", Tool: "write_file", Input: `{"path":"pending.json","content":"{{ .trigger.text }}"}`},
+		}},
+	}
+	if n := RepairWiring(&d, Catalog{}); n == 0 {
+		t.Fatal("expected RepairWiring to rewrite write_file")
+	}
+	capture := d.Flow.Nodes[0]
+	if capture.Tool != "queue_put" {
+		t.Fatalf("tool = %q, want queue_put", capture.Tool)
+	}
+	if !strings.Contains(capture.Input, `"queue":"pending_resources"`) || !strings.Contains(capture.Input, `toJson .trigger.text`) {
+		t.Fatalf("queue_put input not normalized: %s", capture.Input)
 	}
 }
 

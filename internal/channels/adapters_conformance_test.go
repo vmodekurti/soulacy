@@ -15,6 +15,7 @@ import (
 	httpchan "github.com/soulacy/soulacy/internal/channels/http"
 	_ "github.com/soulacy/soulacy/internal/channels/slack"
 	_ "github.com/soulacy/soulacy/internal/channels/telegram"
+	_ "github.com/soulacy/soulacy/internal/channels/webhook"
 	_ "github.com/soulacy/soulacy/internal/channels/whatsapp"
 	"github.com/soulacy/soulacy/sdk/channel"
 	"github.com/soulacy/soulacy/sdk/channel/channeltest"
@@ -58,4 +59,9 @@ func TestConformance_WhatsApp(t *testing.T) {
 
 func TestConformance_HTTP(t *testing.T) {
 	channeltest.RunAdapterSuite(t, func() channel.Adapter { return httpchan.New() })
+}
+
+func TestConformance_Webhook(t *testing.T) {
+	channeltest.RunAdapterSuite(t, registryAdapter(t, "webhook",
+		map[string]any{"url": "https://example.invalid/soulacy"}))
 }

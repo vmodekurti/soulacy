@@ -297,6 +297,56 @@
   let input     = ''
   let error     = null
   let msgListEl
+
+  // Command palette + saved prompts.
+  let paletteOpen = false
+  let paletteQuery = ''
+  let paletteIndex = 0
+  let savedPrompts = []
+  let promptsOpen = false
+  try { savedPrompts = JSON.parse(localStorage.getItem('soulacy-saved-prompts') || '[]') } catch (_) { savedPrompts = [] }
+
+  function persistPrompts() {
+    try { localStorage.setItem('soulacy-saved-prompts', JSON.stringify(savedPrompts)) } catch (_) {}
+  }
+  function saveCurrentPrompt() {
+    const text = (input || '').trim()
+    if (!text) return
+    const title = text.slice(0, 48) + (text.length > 48 ? '…' : '')
+    savedPrompts = [{ title, text }, ...savedPrompts.filter(p => p.text !== text)].slice(0, 30)
+    persistPrompts()
+  }
+  function usePrompt(p) { input = p.text; promptsOpen = false }
+  function deletePrompt(p) { savedPrompts = savedPrompts.filter(x => x !== p); persistPrompts() }
+
+  $: paletteCommands = [
+    { id: 'new', label: 'New chat', run: () => startThread() },
+    { id: 'clear', label: 'Clear this chat', run: () => clearChat() },
+    { id: 'export-md', label: 'Export chat as Markdown', run: () => exportThreadMarkdown() },
+    { id: 'export-json', label: 'Export chat as JSON', run: () => exportThreadJSON() },
+    { id: 'search', label: 'Search chat history', run: () => historySearchOpen = true },
+    { id: 'save-prompt', label: 'Save current input as a prompt', run: () => saveCurrentPrompt() },
+    { id: 'prompts', label: 'Open saved prompts', run: () => promptsOpen = true },
+    ...savedPrompts.map((p, i) => ({ id: 'sp' + i, label: 'Prompt: ' + p.title, run: () => usePrompt(p) })),
+  ]
+  $: paletteFiltered = paletteCommands.filter(c => c.label.toLowerCase().includes(paletteQuery.toLowerCase()))
+
+  // Focus an element when it mounts (a11y-friendly replacement for autofocus).
+  function focusOnMount(node) { node.focus() }
+  function openPalette() { paletteOpen = true; paletteQuery = ''; paletteIndex = 0 }
+  function runPaletteItem(c) { paletteOpen = false; if (c && c.run) c.run() }
+  function paletteKeydown(e) {
+    if (e.key === 'Escape') { paletteOpen = false; return }
+    if (e.key === 'ArrowDown') { e.preventDefault(); paletteIndex = Math.min(paletteIndex + 1, paletteFiltered.length - 1) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); paletteIndex = Math.max(paletteIndex - 1, 0) }
+    else if (e.key === 'Enter') { e.preventDefault(); runPaletteItem(paletteFiltered[paletteIndex]) }
+  }
+  function globalKeydown(e) {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault()
+      paletteOpen ? (paletteOpen = false) : openPalette()
+    }
+  }
   let ws        = null
   let stopEvents = false
   let confirmRequest = null
@@ -492,6 +542,60 @@
       .replace(/[^a-z0-9._-]+/g, '-')
       .replace(/^-+|-+$/g, '')
       .slice(0, 80) || 'chat'
+  }
+
+  // extractSources pulls unique http(s) URLs out of an assistant message so the
+  // UI can show a compact citation row. Models are prompted (see templates) to
+  // cite with Markdown links; this surfaces those as numbered source chips.
+  function extractSources(text) {
+    if (!text) return []
+    const out = []
+    const seen = new Set()
+    const re = /https?:\/\/[^\s)\]<>"']+/g
+    let m
+    while ((m = re.exec(text)) !== null) {
+      let url = m[0].replace(/[.,;:]+$/, '')
+      if (seen.has(url)) continue
+      seen.add(url)
+      let host = url
+      try { host = new URL(url).hostname.replace(/^www\./, '') } catch (_) {}
+      out.push({ url, host })
+      if (out.length >= 8) break
+    }
+    return out
+  }
+
+  // exportThreadJSON downloads the full conversation as structured JSON — useful
+  // for sharing a transcript, archiving, or piping into another tool.
+  function exportThreadJSON() {
+    if (!activeThread) return
+    const title = activeThread.title || agentName(activeThread.agentId) || 'Chat'
+    const payload = {
+      title,
+      agent_id: activeThread.agentId || null,
+      agent_name: agentName(activeThread.agentId),
+      session_id: activeThread.sessionId || null,
+      exported_at: new Date().toISOString(),
+      messages: (activeThread.messages || [])
+        .filter(m => ['user', 'assistant', 'system'].includes(m.role))
+        .map(m => ({
+          role: m.role,
+          text: m.text || '',
+          via: m.via || '',
+          ts: m.ts ? new Date(m.ts).toISOString() : null,
+          sources: m.role === 'assistant' ? extractSources(m.text).map(s => s.url) : undefined,
+          attachments: (m.attachments || []).map(a => a.filename || a.id),
+        })),
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json;charset=utf-8' })
+    const href = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = href
+    link.download = `${safeFilename(title)}-${safeFilename(activeThread.sessionId)}.json`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    setTimeout(() => URL.revokeObjectURL(href), 1000)
   }
 
   function exportThreadMarkdown() {
@@ -1060,6 +1164,51 @@
   })
 </script>
 
+<svelte:window on:keydown={globalKeydown} />
+
+{#if paletteOpen}
+  <div class="palette-backdrop" role="button" tabindex="0"
+       on:click|self={() => paletteOpen = false}
+       on:keydown={(e) => e.key === 'Escape' && (paletteOpen = false)}>
+    <div class="palette">
+      <input class="palette-input" placeholder="Type a command…" use:focusOnMount
+             bind:value={paletteQuery} on:keydown={paletteKeydown} on:input={() => paletteIndex = 0} />
+      <div class="palette-list">
+        {#each paletteFiltered as c, i}
+          <button class="palette-item" class:active={i === paletteIndex}
+                  on:mouseenter={() => paletteIndex = i} on:click={() => runPaletteItem(c)}>{c.label}</button>
+        {:else}
+          <div class="palette-empty">No matching commands</div>
+        {/each}
+      </div>
+      <div class="palette-hint">↑↓ to move · Enter to run · Esc to close</div>
+    </div>
+  </div>
+{/if}
+
+{#if promptsOpen}
+  <div class="palette-backdrop" role="button" tabindex="0"
+       on:click|self={() => promptsOpen = false}
+       on:keydown={(e) => e.key === 'Escape' && (promptsOpen = false)}>
+    <div class="palette">
+      <div class="prompts-head">
+        <span>Saved prompts</span>
+        <button class="prompts-save" on:click={saveCurrentPrompt} disabled={!input.trim()}>Save current input</button>
+      </div>
+      <div class="palette-list">
+        {#each savedPrompts as p}
+          <div class="prompt-row">
+            <button class="prompt-use" on:click={() => usePrompt(p)} title="Insert">{p.title}</button>
+            <button class="prompt-del" on:click={() => deletePrompt(p)} title="Delete">×</button>
+          </div>
+        {:else}
+          <div class="palette-empty">No saved prompts yet. Type something, then “Save current input”.</div>
+        {/each}
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if confirmRequest}
   <div class="confirm-modal-backdrop">
     <div class="confirm-modal">
@@ -1126,6 +1275,7 @@
       </button>
       <button class="btn-secondary" class:on={historySearchOpen} on:click={() => historySearchOpen = !historySearchOpen} title="Search persisted chat history">Search</button>
       <button class="btn-secondary" on:click={exportThreadMarkdown} disabled={!activeThread?.messages?.length} title="Download this chat as Markdown">Export</button>
+      <button class="btn-secondary" on:click={exportThreadJSON} disabled={!activeThread?.messages?.length} title="Download this chat as JSON (share/archive)">JSON</button>
       <button class="btn-secondary" on:click={clearChat}>Clear</button>
       <button class="voice-btn {voiceState}"
               on:click={voiceClick}
@@ -1291,6 +1441,17 @@
                   {#if msg.role === 'assistant' && isLongOutput(msg.text)}
                     <button class="show-more" on:click={() => toggleExpand(mi)}>{expanded[k] ? 'Show less ▲' : 'Show more ▼'}</button>
                   {/if}
+                  {#if msg.role === 'assistant'}
+                    {@const cites = extractSources(msg.text)}
+                    {#if cites.length}
+                      <div class="citations" aria-label="Sources">
+                        <span class="cite-label">Sources</span>
+                        {#each cites as c, ci}
+                          <a class="cite-chip" href={c.url} target="_blank" rel="noopener noreferrer" title={c.url}>{ci + 1}. {c.host}</a>
+                        {/each}
+                      </div>
+                    {/if}
+                  {/if}
                 {/if}
               {/if}
               {#if msg.parts && msg.parts.length}
@@ -1445,6 +1606,7 @@
       <button class="attach-btn" on:click={() => fileInputEl?.click()} disabled={isSending || uploadingAttachment || !activeThread?.agentId} title="Attach files">
         {uploadingAttachment ? '…' : '+'}
       </button>
+      <button class="attach-btn" on:click={() => promptsOpen = !promptsOpen} title="Saved prompts (⌘K for commands)">≣</button>
       <textarea
         bind:this={composerEl}
         bind:value={input}
@@ -1833,6 +1995,26 @@
 
   .btext { font-size: .88rem; white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
   .msg-parts { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
+  .palette-backdrop { position: fixed; inset: 0; background: rgba(8,10,20,.6); display: flex; align-items: flex-start; justify-content: center; padding-top: 12vh; z-index: 200; }
+  .palette { width: min(560px, 92vw); background: #141626; border: 1px solid #2a2f52; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,.5); overflow: hidden; }
+  .palette-input { width: 100%; box-sizing: border-box; background: #0e1020; color: #e6e9ff; border: 0; border-bottom: 1px solid #1a1e36; padding: .8rem 1rem; font-size: .95rem; outline: none; }
+  .palette-list { max-height: 46vh; overflow: auto; padding: .3rem; }
+  .palette-item { display: block; width: 100%; text-align: left; background: transparent; color: #c5c9e8; border: 0; border-radius: 7px; padding: .5rem .7rem; font-size: .84rem; cursor: pointer; }
+  .palette-item.active { background: #1e2340; color: #fff; }
+  .palette-empty { color: #6b7294; font-size: .82rem; padding: .8rem 1rem; }
+  .palette-hint { border-top: 1px solid #1a1e36; padding: .45rem 1rem; font-size: .68rem; color: #6b7294; }
+  .prompts-head { display: flex; align-items: center; justify-content: space-between; padding: .7rem 1rem; border-bottom: 1px solid #1a1e36; font-size: .85rem; font-weight: 650; color: #c5c9e8; }
+  .prompts-save { background: #1e2340; color: #b9bcf0; border: 1px solid #2a2f52; border-radius: 7px; padding: .3rem .6rem; font-size: .74rem; cursor: pointer; }
+  .prompts-save:disabled { opacity: .5; cursor: default; }
+  .prompt-row { display: flex; align-items: center; gap: .4rem; }
+  .prompt-use { flex: 1; text-align: left; background: transparent; color: #c5c9e8; border: 0; border-radius: 7px; padding: .5rem .7rem; font-size: .82rem; cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .prompt-use:hover { background: #1e2340; }
+  .prompt-del { background: transparent; border: 0; color: #6b7294; font-size: 1rem; cursor: pointer; padding: 0 .5rem; }
+  .prompt-del:hover { color: #f06060; }
+  .citations { margin-top: 8px; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+  .cite-label { font-size: .64rem; text-transform: uppercase; letter-spacing: .05em; color: #6b7294; font-weight: 700; }
+  .cite-chip { font-size: .7rem; color: #9aa0c8; background: #171a2e; border: 1px solid #232847; border-radius: 999px; padding: .1rem .5rem; text-decoration: none; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cite-chip:hover { color: #c5c9e8; border-color: #3a406a; }
   .part-image { max-width: 100%; max-height: 360px; border-radius: 8px; align-self: flex-start; }
   .part-audio { width: 100%; max-width: 420px; }
   .part-file { font-size: .85rem; color: var(--accent, #6c8cff); text-decoration: none; }

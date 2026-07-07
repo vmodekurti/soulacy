@@ -23,6 +23,7 @@ func RepairWiring(draft *Draft, cat Catalog) int {
 	// dropped (applyFlowResult skips Output=="") and downstream wires/templates
 	// read null. The other passes rely on these names, so assign before them.
 	n := ensureOutputVars(&draft.Flow)
+	n += normalizePlatformToolChoices(draft, cat)
 	n += normalizeKBWriteInputs(draft, cat)
 	n += AutoWire(draft, cat) + ReconcileVars(draft) + reconcileFieldRefs(draft) +
 		fixDoubledSegmentPaths(draft) + fixWholeValueInterpolations(draft) + fixTemplateTypos(draft)

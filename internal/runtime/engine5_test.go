@@ -29,11 +29,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/soulacy/soulacy/internal/learning"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/memory"
 	"github.com/soulacy/soulacy/internal/session"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
+	"github.com/soulacy/soulacy/pkg/skill"
 	"go.uber.org/zap"
 )
 
@@ -934,6 +936,59 @@ func TestBuildContextInjectsPastConversationRecallForLearningAgent(t *testing.T)
 		if strings.Contains(msg.Content, "Relevant Past Conversations") {
 			t.Fatalf("learning-disabled agent should not receive recall: %+v", msgs)
 		}
+	}
+}
+
+func TestAcceptedLearningSkillIsInjectedAndUnlocksReadSkill(t *testing.T) {
+	e := newMinimalEngine(t)
+	e.skillLoader = populatedSkillLoader{skills: []*skill.Skill{
+		{Name: "research-playbook", Description: "Reusable research workflow.", Body: "Use citations.", Dir: t.TempDir()},
+	}}
+	store, err := learning.NewStore(t.TempDir() + "/learning.jsonl")
+	if err != nil {
+		t.Fatalf("learning store: %v", err)
+	}
+	p, err := store.Add(learning.Proposal{
+		AgentID: "learner",
+		Kind:    "skill",
+		Title:   "Research playbook",
+		Content: "skill body",
+		Status:  learning.StatusPending,
+		Meta: map[string]string{
+			"skill_name":     "research-playbook",
+			"installed_path": "/tmp/research-playbook/SKILL.md",
+		},
+	})
+	if err != nil {
+		t.Fatalf("add proposal: %v", err)
+	}
+	if _, err := store.UpdateStatusMeta(p.ID, learning.StatusAccepted, nil); err != nil {
+		t.Fatalf("accept proposal: %v", err)
+	}
+	e.SetLearningStore(store)
+	e.builtins = e.buildBuiltins()
+
+	def := &agent.Definition{
+		ID:           "learner",
+		SystemPrompt: "Help.",
+		Learning:     agent.LearningConfig{Enabled: true},
+	}
+	prefix := e.buildSystemPrefix(def)
+	if !strings.Contains(prefix, "research-playbook") {
+		t.Fatalf("learned skill missing from prompt:\n%s", prefix)
+	}
+	names := toolSchemaNameSet(e.allToolSchemas(def, "http"))
+	if !names["read_skill"] {
+		t.Fatalf("read_skill should be offered for accepted learned skills; got %v", sortedSchemaNames(names))
+	}
+
+	def.Learning.Enabled = false
+	if strings.Contains(e.buildSystemPrefix(def), "research-playbook") {
+		t.Fatalf("learned skill should not inject when learning is disabled")
+	}
+	names = toolSchemaNameSet(e.allToolSchemas(def, "http"))
+	if names["read_skill"] {
+		t.Fatalf("read_skill should stay gated when learning is disabled; got %v", sortedSchemaNames(names))
 	}
 }
 

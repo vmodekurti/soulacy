@@ -53,8 +53,11 @@ type Summary struct {
 	Procedures        int            `json:"procedures"`
 	Skills            int            `json:"skills"`
 	InstalledSkills   int            `json:"installed_skills"`
+	BackgroundRuns    int            `json:"background_runs"`
+	ManualReviews     int            `json:"manual_reviews"`
 	AverageConfidence float64        `json:"average_confidence"`
 	LatestAt          *time.Time     `json:"latest_at,omitempty"`
+	LatestBackground  *time.Time     `json:"latest_background,omitempty"`
 	BySource          map[string]int `json:"by_source,omitempty"`
 	ByTool            map[string]int `json:"by_tool,omitempty"`
 }
@@ -200,6 +203,23 @@ func (s *Store) Summary(agentID string) (Summary, error) {
 		}
 		if src := strings.TrimSpace(p.Source); src != "" {
 			out.BySource[src]++
+			switch src {
+			case "background_reflection":
+				out.BackgroundRuns++
+				if out.LatestBackground == nil || p.CreatedAt.After(*out.LatestBackground) {
+					t := p.CreatedAt
+					out.LatestBackground = &t
+				}
+			case "manual_run_review", "reflection_sweep":
+				out.ManualReviews++
+			}
+		}
+		if p.Meta["background_reflection"] == "true" && strings.TrimSpace(p.Source) != "background_reflection" {
+			out.BackgroundRuns++
+			if out.LatestBackground == nil || p.CreatedAt.After(*out.LatestBackground) {
+				t := p.CreatedAt
+				out.LatestBackground = &t
+			}
 		}
 		for _, tool := range strings.Split(p.Meta["tools_used"], ",") {
 			if tool = strings.TrimSpace(tool); tool != "" {

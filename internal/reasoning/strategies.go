@@ -31,9 +31,15 @@ func init() {
 // reflects on whatever trace exists.
 type reactStrategy struct{}
 
+const (
+	maxConsecutiveThinkErrors = 4
+	maxTotalThinkErrors       = 8
+)
+
 func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step, ReflectResponse) {
 	var steps []Step
 	consecutiveThinkErrors := 0
+	totalThinkErrors := 0
 
 	for i := 0; i < env.Config.MaxSteps; i++ {
 		if ctx.Err() != nil {
@@ -51,18 +57,24 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 		})
 		if err != nil {
 			consecutiveThinkErrors++
+			totalThinkErrors++
 			steps = append(steps, Step{
 				ID:      fmt.Sprintf("step-%d", i+1),
 				Thought: "The model returned an invalid reasoning step.",
 				Obs: Observation{
-					Content: fmt.Sprintf("controller: Think failed (%s). Return one short valid JSON object only. Keep thought under 25 words. If a tool is needed, use action with concise arguments.", err.Error()),
+					Content: thinkErrorInstruction(err, consecutiveThinkErrors, totalThinkErrors),
 					Source:  "controller",
 				},
 				Duration: time.Since(stepStart),
 			})
 			cancel()
-			if consecutiveThinkErrors >= 4 {
-				return steps, ReflectResponse{Output: "The run stopped because the model returned invalid ReAct JSON repeatedly. The last successful tool observation is preserved in the trace; retry with a smaller input or switch this workflow step to a deterministic tool/flow node."}
+			if consecutiveThinkErrors >= 3 && lastUsefulObservation(steps) != "" {
+				if resp, ok := reflectAfterRepeatedThinkErrors(ctx, env, taskInput, steps); ok {
+					return steps, resp
+				}
+			}
+			if consecutiveThinkErrors >= maxConsecutiveThinkErrors || totalThinkErrors >= maxTotalThinkErrors {
+				return steps, ReflectResponse{Output: thinkErrorStopMessage(steps)}
 			}
 			continue
 		}
@@ -175,6 +187,60 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 		})
 	}
 	return steps, resp
+}
+
+func thinkErrorInstruction(err error, consecutive, total int) string {
+	return fmt.Sprintf("controller: Think failed (%s). Return one short valid JSON object only. Keep thought under 25 words. If a tool is needed, use action with concise arguments. Invalid response %d in a row, %d total this run.", err.Error(), consecutive, total)
+}
+
+func thinkErrorStopMessage(steps []Step) string {
+	last := lastUsefulObservation(steps)
+	if last != "" {
+		return "The run stopped because the model returned invalid ReAct JSON too many times. The last useful observation was: " + last
+	}
+	return "The run stopped because the model returned invalid ReAct JSON too many times before producing a usable tool result. Retry with a smaller input, choose a more reliable model, or switch this workflow step to a deterministic tool/flow node."
+}
+
+func reflectAfterRepeatedThinkErrors(ctx context.Context, env Env, taskInput string, steps []Step) (ReflectResponse, bool) {
+	resp, err := env.LLM.Reflect(ctx, ReflectRequest{
+		TaskInput:    taskInput,
+		Steps:        steps,
+		SystemPrompt: env.Config.SystemPrompt,
+		OutputFormat: env.Config.OutputFormat,
+	})
+	if err != nil || strings.TrimSpace(resp.Output) == "" {
+		return ReflectResponse{}, false
+	}
+	if isPrematureFinalAnswer(resp.Output) {
+		return ReflectResponse{}, false
+	}
+	return resp, true
+}
+
+func lastUsefulObservation(steps []Step) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		s := steps[i]
+		if s.Obs.Source == "controller" {
+			continue
+		}
+		if strings.TrimSpace(s.Obs.Content) != "" {
+			return truncateForPrompt(strings.TrimSpace(s.Obs.Content), 420)
+		}
+		if s.Obs.Error != nil {
+			return truncateForPrompt(s.Obs.Error.Error(), 420)
+		}
+	}
+	return ""
+}
+
+func truncateForPrompt(s string, max int) string {
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return s[:max-1] + "…"
 }
 
 func recoverTextualToolCall(text string, toolNames []string) (ToolCall, bool) {

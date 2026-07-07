@@ -3,7 +3,7 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui up install which test regression lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install which test regression uat release-smoke lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 \
@@ -100,6 +100,36 @@ which:
 	oldIFS=$$IFS; IFS=:; for d in $$PATH; do [ -x "$$d/$(BINARY_GATEWAY)" ] && echo "  $$d/$(BINARY_GATEWAY)"; done; IFS=$$oldIFS; \
 	echo "fresh build in repo: ./bin/$(BINARY_GATEWAY)"
 
+## Upgrade in place: back up the currently installed binaries to *.prev, then
+## build + install the fresh ones. Config and the workspace are untouched, so an
+## upgrade is non-destructive and reversible via `make rollback`.
+upgrade: all
+	@echo "→ Upgrading soulacy in $(BINDIR) (backing up current build)..."
+	@mkdir -p "$(BINDIR)"
+	@[ -f "$(BINDIR)/$(BINARY_GATEWAY)" ] && cp "$(BINDIR)/$(BINARY_GATEWAY)" "$(BINDIR)/$(BINARY_GATEWAY).prev" || true
+	@[ -f "$(BINDIR)/$(BINARY_CLI)" ] && cp "$(BINDIR)/$(BINARY_CLI)" "$(BINDIR)/$(BINARY_CLI).prev" || true
+	@cp bin/$(BINARY_GATEWAY) "$(BINDIR)/$(BINARY_GATEWAY)"
+	@cp bin/$(BINARY_CLI) "$(BINDIR)/$(BINARY_CLI)"
+	@echo "✓ Upgraded. Previous build saved as *.prev — run 'make rollback' to revert."
+
+## Rollback: restore the previous binaries saved by `make upgrade`.
+rollback:
+	@if [ ! -f "$(BINDIR)/$(BINARY_GATEWAY).prev" ]; then \
+	  echo "✗ No previous build found in $(BINDIR). Nothing to roll back."; exit 1; \
+	fi
+	@echo "→ Rolling back soulacy in $(BINDIR)..."
+	@cp "$(BINDIR)/$(BINARY_GATEWAY).prev" "$(BINDIR)/$(BINARY_GATEWAY)"
+	@cp "$(BINDIR)/$(BINARY_CLI).prev" "$(BINDIR)/$(BINARY_CLI)"
+	@echo "✓ Rolled back to the previous build."
+
+## Health check the running install (provider/vault/channel diagnostics).
+health:
+	@$(BINARY_CLI) doctor || sy doctor
+
+## Collect a redacted support/log bundle for troubleshooting or a bug report.
+logs-bundle:
+	@$(BINARY_CLI) support bundle || sy support bundle
+
 ## Install Python SDK in editable mode (development)
 sdk-install:
 	pip3 install -e sdk/python
@@ -137,6 +167,14 @@ test:
 ## Focused production smoke regression: core Go paths, GUI tests, GUI build.
 regression:
 	bash scripts/regression-smoke.sh
+
+## Clean-workspace UAT: boots a separate runtime, exercises core APIs, then exits.
+uat: build
+	bash scripts/uat-clean-runtime.sh
+
+## Install-like release smoke: copies built binaries to a temp PATH and runs clean-runtime UAT.
+release-smoke: build
+	bash scripts/release-smoke.sh
 
 ## Lint
 lint:
@@ -319,3 +357,7 @@ help:
 	@echo "  make docker-up        Start full stack in Docker"
 	@echo "  make docker-up-lite   Start SQLite-only stack in Docker"
 	@echo "  make service-install  Register as OS service (auto-start)"
+	@echo "  make upgrade          Rebuild + install, backing up the prior build"
+	@echo "  make rollback         Restore the previous build after an upgrade"
+	@echo "  make health           Run diagnostics (sy doctor)"
+	@echo "  make logs-bundle      Collect a redacted support bundle"

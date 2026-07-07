@@ -253,6 +253,12 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 	// time and fed to the repair loop.
 	checkToolArgs(draft, in.Catalog, add)
 
+	// Platform workflow policies: steer generated workflows toward safe Soulacy
+	// primitives when the intent is KB ingestion or transient state. This catches
+	// the common brittle pattern of using write_file where kb_write or queue_*
+	// should be used, before a live run hits system authorization.
+	checkPlatformWorkflowPolicies(draft, add)
+
 	// Unattended-execution / confirmation tradeoff (Story #14): a scheduled agent
 	// runs with no human present, so any step that acts on the system or network
 	// executes WITHOUT approval. Warn and explain the tradeoff.

@@ -665,6 +665,7 @@ func (s *Server) buildApp() *fiber.App {
 	// Channels
 	api.Get("/channels", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleListChannels)
 	api.Patch("/channels/:id", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleUpdateChannel)
+	api.Post("/channels/:id/test", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleTestChannelDelivery)
 	api.Post("/channels/whatsapp_web/pair", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleStartWhatsAppWebPairing)
 	api.Post("/channels/:id/enable", s.rbacMW(rbac.ResourceChannels, rbac.ActionEnable), s.handleEnableChannel)
 	api.Post("/channels/:id/disable", s.rbacMW(rbac.ResourceChannels, rbac.ActionEnable), s.handleDisableChannel)
@@ -697,11 +698,35 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/brain-memory/:agentID/rulebook/rollback", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookRollback)
 	api.Post("/brain-memory/:agentID/rulebook/lock", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRulebookLock)
 	api.Get("/learning/summary", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleLearningSummary)
+	api.Get("/learning/evidence", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleLearningEvidence)
+	api.Get("/proactive/suggestions", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleProactiveSuggestions)
+	api.Get("/browser/trace", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleBrowserTrace)
+	api.Post("/pairing/tokens", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleCreatePairingToken)
+	api.Post("/pairing/redeem", s.handleRedeemPairingToken)
+	api.Get("/approvals", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleListApprovals)
+	api.Post("/approvals/:id/approve", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleResolveApproval(true))
+	api.Post("/approvals/:id/deny", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleResolveApproval(false))
+	api.Get("/push/public-key", s.handlePushPublicKey)
+	api.Post("/push/subscribe", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handlePushSubscribe)
+	api.Post("/push/unsubscribe", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handlePushUnsubscribe)
+	api.Post("/push/test", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handlePushTest)
+	s.wirePushNotifications()
 	api.Get("/learning/proposals", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleListLearningProposals)
 	api.Post("/learning/propose-from-run", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleProposeLearningFromRun)
+	api.Post("/learning/reflect-recent-runs", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleReflectLearningFromRecentRuns)
 	api.Patch("/learning/proposals/:id", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleUpdateLearningProposal)
 	api.Post("/learning/proposals/:id/accept", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleAcceptLearningProposal)
 	api.Post("/learning/proposals/:id/reject", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRejectLearningProposal)
+
+	// Ephemeral queues — live workflow handoff buffers shared by ReAct agents,
+	// Studio workflows, MCP clients, and admin tooling. They are in-memory and
+	// reset on gateway restart, by design.
+	api.Get("/queues", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleQueueNames)
+	api.Post("/queues", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleQueueCreate)
+	api.Get("/queues/items", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleQueueList)
+	api.Post("/queues/items", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleQueuePut)
+	api.Post("/queues/take", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleQueueTake)
+	api.Delete("/queues/items", s.rbacMW(rbac.ResourceAgents, rbac.ActionDelete), s.handleQueueClear)
 
 	// Providers
 	api.Get("/doctor", s.rbacMW(rbac.ResourceProviders, rbac.ActionRead), s.handleDoctor)
@@ -771,6 +796,7 @@ func (s *Server) buildApp() *fiber.App {
 	// Studio Architect: list/diagnose failed runs and self-heal the saved agent.
 	api.Get("/studio/failed-runs", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioFailedRuns)
 	api.Get("/studio/run-trace", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRunTrace)
+	api.Get("/studio/run-diagnosis", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRunDiagnosis)
 	api.Get("/studio/run-history", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRunHistory)
 	api.Get("/studio/build-trace", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioBuildTrace)
 	api.Get("/studio/build-traces", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioBuildTraces)
@@ -844,6 +870,7 @@ func (s *Server) buildApp() *fiber.App {
 
 	// Logs (tail gateway log file)
 	api.Get("/logs", s.rbacMW(rbac.ResourceLogs, rbac.ActionRead), s.handleGetLogs)
+	api.Get("/support/bundle", s.rbacMW(rbac.ResourceLogs, rbac.ActionRead), s.handleSupportBundle)
 
 	// RBAC management (admin only — enforced by static policy)
 	if s.rbacManager != nil {

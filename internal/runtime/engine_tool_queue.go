@@ -31,6 +31,11 @@ type agentQueueItem struct {
 	ExpiresAt time.Time       `json:"expires_at"`
 }
 
+// QueueItem is the public view of an item held in Soulacy's ephemeral
+// in-memory queue store. The queue store is intentionally process-local and
+// reset on restart; it is for live workflow handoffs, not durable storage.
+type QueueItem = agentQueueItem
+
 type agentQueueStore struct {
 	mu     sync.Mutex
 	queues map[string][]agentQueueItem
@@ -179,6 +184,58 @@ func (s *agentQueueStore) clear(queue string) (int, error) {
 	n := len(s.queues[queue])
 	delete(s.queues, queue)
 	return n, nil
+}
+
+// QueueCreate creates a named ephemeral queue. queue_put auto-creates queues,
+// but the API form is useful for preflight, MCP clients, and GUI inspection.
+func (e *Engine) QueueCreate(queue string) (bool, error) {
+	if e.queueStore == nil {
+		e.queueStore = newAgentQueueStore()
+	}
+	if queue == "" {
+		queue = agentQueueDefaultName
+	}
+	return e.queueStore.create(queue)
+}
+
+// QueueNames returns all known ephemeral queue names and item counts.
+func (e *Engine) QueueNames() []map[string]any {
+	if e.queueStore == nil {
+		e.queueStore = newAgentQueueStore()
+	}
+	return e.queueStore.names()
+}
+
+// QueuePut stores a JSON value in an ephemeral queue.
+func (e *Engine) QueuePut(queue string, raw json.RawMessage, ttl time.Duration) (QueueItem, error) {
+	if e.queueStore == nil {
+		e.queueStore = newAgentQueueStore()
+	}
+	return e.queueStore.put(queue, raw, ttl)
+}
+
+// QueueList lists recent queue items without removing them.
+func (e *Engine) QueueList(queue string, limit int) ([]QueueItem, error) {
+	if e.queueStore == nil {
+		e.queueStore = newAgentQueueStore()
+	}
+	return e.queueStore.list(queue, limit)
+}
+
+// QueueTake removes and returns the oldest queue item.
+func (e *Engine) QueueTake(queue string) (QueueItem, bool, error) {
+	if e.queueStore == nil {
+		e.queueStore = newAgentQueueStore()
+	}
+	return e.queueStore.take(queue)
+}
+
+// QueueClear deletes all items from a queue.
+func (e *Engine) QueueClear(queue string) (int, error) {
+	if e.queueStore == nil {
+		e.queueStore = newAgentQueueStore()
+	}
+	return e.queueStore.clear(queue)
 }
 
 func (s *agentQueueStore) sweepLocked(now time.Time) {

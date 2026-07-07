@@ -155,6 +155,7 @@ export const bridge = {
   // Per-block run trace of a live flow run (input/output/duration/error),
   // by runId or the agent's most recent run.
   runTrace: (agentId, runId) => api.studio.runTrace(agentId, runId),
+  runDiagnosis: (agentId, runId) => api.studio.runDiagnosis(agentId, runId),
 
   // Complete run history for an agent (every run, scheduled or on-demand).
   runHistory: (agentId) => api.studio.runHistory(agentId),

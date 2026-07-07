@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,6 +19,8 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/credentials"
+	"github.com/soulacy/soulacy/internal/secrets"
 )
 
 type doctorStatus string
@@ -49,7 +52,7 @@ type doctorReport struct {
 }
 
 func buildDoctorCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Run local diagnostics for Soulacy",
 		Long: `Run local diagnostics for a Soulacy installation.
@@ -60,9 +63,25 @@ Ollama reachability, knowledge storage, and MCP server status.`,
 			return runDoctor()
 		},
 	}
+	cmd.AddCommand(buildDoctorBundleCmd())
+	return cmd
 }
 
 func runDoctor() error {
+	report := collectDoctorReport()
+	if outputJSON {
+		data, _ := json.MarshalIndent(report, "", "  ")
+		fmt.Println(string(data))
+	} else {
+		printDoctorReport(report)
+	}
+	if report.Summary.Fail > 0 {
+		return fmt.Errorf("doctor found %d failing check(s)", report.Summary.Fail)
+	}
+	return nil
+}
+
+func collectDoctorReport() doctorReport {
 	report := doctorReport{
 		GatewayURL: gatewayURL,
 		ConfigPath: viper.ConfigFileUsed(),
@@ -95,22 +114,122 @@ func runDoctor() error {
 	add(checkOllama())
 	add(checkProviderReachability())
 	add(checkProviderAuth())
+	add(checkVaultConsistency())
 	add(checkSandboxState())
 	add(checkKnowledgeDB(runtimeDir))
 	add(checkGatewayHealth())
 	add(checkRecentErrors())
 	add(checkMCPStatus())
 
-	if outputJSON {
-		data, _ := json.MarshalIndent(report, "", "  ")
-		fmt.Println(string(data))
-	} else {
-		printDoctorReport(report)
+	return report
+}
+
+// loadDoctorConfig unmarshals the viper-loaded configuration into a typed
+// config.Config for local (non-gateway) inspection. Returns nil on failure.
+func loadDoctorConfig() (*config.Config, error) {
+	var cfg config.Config
+	if err := viper.Unmarshal(&cfg); err != nil {
+		return nil, err
 	}
-	if report.Summary.Fail > 0 {
-		return fmt.Errorf("doctor found %d failing check(s)", report.Summary.Fail)
+	return &cfg, nil
+}
+
+// checkVaultConsistency opens the encrypted credential vault the same way the
+// gateway does (LocalKMS + SQLite) and verifies it actually decrypts, then
+// cross-checks configured non-local providers: each should have a usable API
+// key either in config or in the vault. This catches the common "provider
+// configured but its key silently missing" failure before a run hits an auth
+// error. (sy doctor v2)
+func checkVaultConsistency() doctorCheck {
+	ws, err := config.ResolveWorkspace()
+	if err != nil {
+		return doctorCheck{Name: "vault", Status: doctorWarn, Detail: "cannot resolve workspace: " + err.Error()}
 	}
-	return nil
+	vaultPath := ws.CredentialsDB()
+	if _, statErr := os.Stat(vaultPath); statErr != nil {
+		return doctorCheck{
+			Name:   "vault",
+			Status: doctorOK,
+			Detail: "no vault yet; secrets resolve from config/env",
+		}
+	}
+
+	kms, kerr := credentials.NewLocalKMSWithStore(filepath.Dir(vaultPath))
+	if kerr != nil {
+		return doctorCheck{
+			Name:   "vault",
+			Status: doctorFail,
+			Detail: "KMS init failed: " + kerr.Error(),
+			Remedy: "ensure the vault master-secret file next to " + vaultPath + " is readable and unmodified",
+		}
+	}
+	vault, verr := credentials.NewSQLiteVault(vaultPath, kms)
+	if verr != nil {
+		return doctorCheck{
+			Name:   "vault",
+			Status: doctorFail,
+			Detail: "vault open failed: " + verr.Error(),
+			Remedy: "the vault DB may be corrupt or encrypted with a different master secret",
+		}
+	}
+	defer vault.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	keys, lerr := vault.List(ctx, secrets.GlobalScope)
+	if lerr != nil {
+		return doctorCheck{
+			Name:   "vault",
+			Status: doctorFail,
+			Detail: "vault list failed: " + lerr.Error(),
+			Remedy: "the vault may be unreadable with the current master secret",
+		}
+	}
+	// Prove decryption end-to-end on the first key (List returns names only).
+	if len(keys) > 0 {
+		if _, gerr := vault.Get(ctx, secrets.GlobalScope, keys[0]); gerr != nil {
+			return doctorCheck{
+				Name:   "vault",
+				Status: doctorFail,
+				Detail: fmt.Sprintf("decrypt check failed for %q: %v", keys[0], gerr),
+				Remedy: "vault entries cannot be decrypted with the current master secret",
+			}
+		}
+	}
+	stored := map[string]bool{}
+	for _, k := range keys {
+		stored[strings.ToLower(strings.TrimSpace(k))] = true
+	}
+
+	// Cross-check configured non-local providers for a usable key.
+	cfg, _ := loadDoctorConfig()
+	var missing []string
+	if cfg != nil {
+		for id, p := range cfg.LLM.Providers {
+			if isLocalProvider(id, p.BaseURL) {
+				continue
+			}
+			if strings.TrimSpace(p.APIKey) != "" {
+				continue
+			}
+			if stored[strings.ToLower(id+".api_key")] || stored[strings.ToLower(id)] {
+				continue
+			}
+			missing = append(missing, id)
+		}
+	}
+
+	detail := fmt.Sprintf("vault OK — %d secret(s) stored, decryption verified", len(keys))
+	if len(missing) > 0 {
+		return doctorCheck{
+			Name:   "vault",
+			Status: doctorWarn,
+			Detail: detail + "; providers without a key in config or vault: " + strings.Join(missing, ", "),
+			Remedy: "add the missing API key(s) via the Secrets page or `sy secrets set <provider>.api_key`",
+		}
+	}
+	return doctorCheck{Name: "vault", Status: doctorOK, Detail: detail}
 }
 
 func checkConfig() doctorCheck {

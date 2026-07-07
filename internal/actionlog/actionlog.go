@@ -375,6 +375,73 @@ func (l *Logger) TailFiltered(agentID string, limit int, allowed map[string]bool
 	return l.tailFilter(agentID, limit, allowed)
 }
 
+// QueryFiltered returns recent events for an agent from the durable SQLite
+// history instead of the rolling JSONL file. It is intentionally not part of
+// the public storage.ActionLogBackend interface so non-SQL backends remain
+// compatible; callers can type-assert when they want full history.
+func (l *Logger) QueryFiltered(agentID string, limit int, allowed map[string]bool) ([]message.Event, error) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return []message.Event{}, nil
+	}
+	if limit <= 0 || limit > 10000 {
+		limit = 1000
+	}
+	args := []any{agentID}
+	where := "agent_id = ?"
+	if len(allowed) > 0 {
+		placeholders := make([]string, 0, len(allowed))
+		for typ := range allowed {
+			typ = strings.TrimSpace(typ)
+			if typ == "" {
+				continue
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, typ)
+		}
+		if len(placeholders) > 0 {
+			where += " AND type IN (" + strings.Join(placeholders, ",") + ")"
+		}
+	}
+	args = append(args, limit)
+	rows, err := l.db.Query(`
+		SELECT agent_id, session_id, type, COALESCE(payload, ''), created_at
+		FROM (
+			SELECT agent_id, session_id, type, payload, created_at, id
+			FROM agent_events
+			WHERE `+where+`
+			ORDER BY created_at DESC, id DESC
+			LIMIT ?
+		)
+		ORDER BY created_at ASC, id ASC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	events := make([]message.Event, 0, limit)
+	for rows.Next() {
+		var ev message.Event
+		var payload string
+		if err := rows.Scan(&ev.AgentID, &ev.SessionID, &ev.Type, &payload, &ev.Timestamp); err != nil {
+			return nil, err
+		}
+		if payload != "" {
+			var decoded any
+			if err := json.Unmarshal([]byte(payload), &decoded); err == nil {
+				ev.Payload = decoded
+			} else {
+				ev.Payload = payload
+			}
+		}
+		events = append(events, ev)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 func (l *Logger) tailFilter(agentID string, limit int, allowed map[string]bool) ([]message.Event, error) {
 	if limit <= 0 || limit > 5000 {
 		limit = 500

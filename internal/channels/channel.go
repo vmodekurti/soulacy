@@ -10,6 +10,7 @@ package channels
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"go.uber.org/zap"
@@ -167,8 +168,7 @@ func (r *Registry) Send(ctx context.Context, msg message.Message) error {
 	a, ok := r.adapters[msg.Channel]
 	r.mu.RUnlock()
 	if !ok {
-		// Fallback: if no matching adapter, silently drop (or log in production)
-		return nil
+		return fmt.Errorf("channel adapter %q is not registered", msg.Channel)
 	}
 	return a.Send(ctx, msg)
 }

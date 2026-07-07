@@ -95,11 +95,17 @@ func TestLearningSummaryEndpoint(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	srv.engine.SetLearningStore(store)
-	pending, err := store.Add(learning.Proposal{AgentID: "agent-a", Kind: "memory", Content: "draft"})
+	pending, err := store.Add(learning.Proposal{AgentID: "agent-a", Kind: "memory", Content: "draft", Source: "manual_run_review"})
 	if err != nil {
 		t.Fatalf("Add pending: %v", err)
 	}
-	accepted, err := store.Add(learning.Proposal{AgentID: "agent-a", Kind: "skill", Content: "skill draft"})
+	accepted, err := store.Add(learning.Proposal{
+		AgentID: "agent-a",
+		Kind:    "skill",
+		Content: "skill draft",
+		Source:  "background_reflection",
+		Meta:    map[string]string{"background_reflection": "true"},
+	})
 	if err != nil {
 		t.Fatalf("Add accepted: %v", err)
 	}
@@ -121,7 +127,81 @@ func TestLearningSummaryEndpoint(t *testing.T) {
 	if summary["installed_skills"].(float64) != 1 {
 		t.Fatalf("installed_skills = %v", summary["installed_skills"])
 	}
+	if summary["manual_reviews"].(float64) != 1 || summary["background_runs"].(float64) != 1 {
+		t.Fatalf("learning provenance counts = %v", summary)
+	}
 	if pending.ID == "" {
 		t.Fatal("pending proposal was not created")
+	}
+}
+
+func TestReflectLearningFromRecentRunsCreatesReviewableProposals(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("SOULACY_WORKSPACE", workspace)
+
+	srv := newTestGateway(t, "secret")
+	store, err := learning.NewStore(filepath.Join(workspace, "data", "learning.db"))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	srv.engine.SetLearningStore(store)
+	srv.loader.Register(&agent.Definition{
+		ID:      "reflect-agent",
+		Name:    "Reflect Agent",
+		Enabled: true,
+		Learning: agent.LearningConfig{
+			MinChars:     20,
+			MaxProposals: 2,
+		},
+	})
+
+	in := message.Message{
+		ID:        "msg-in",
+		AgentID:   "reflect-agent",
+		SessionID: "sess-reflect",
+		Channel:   "slack",
+		Role:      message.RoleUser,
+		Parts:     message.Text("Create a reusable process for notebook ingestion"),
+		CreatedAt: time.Now().UTC(),
+	}
+	out := message.Message{
+		ID:        "msg-out",
+		AgentID:   "reflect-agent",
+		SessionID: "sess-reflect",
+		Channel:   "slack",
+		Role:      message.RoleAssistant,
+		Parts:     message.Text("1. Capture the URL.\n2. Queue it.\n3. Process the queue during the scheduled run."),
+		CreatedAt: time.Now().UTC(),
+	}
+	srv.actions = &fakeTailBackend{events: []message.Event{
+		{Type: "message.in", AgentID: "reflect-agent", SessionID: "sess-reflect", Payload: in, Timestamp: time.Now().UTC()},
+		{Type: "tool.call", AgentID: "reflect-agent", SessionID: "sess-reflect", Payload: message.ToolCall{Name: "queue_put"}, Timestamp: time.Now().UTC()},
+		{Type: "message.out", AgentID: "reflect-agent", SessionID: "sess-reflect", Payload: out, Timestamp: time.Now().UTC()},
+	}}
+
+	status, body := gatewayJSON(t, srv, http.MethodPost, "/api/v1/learning/reflect-recent-runs", "secret", `{"agent_id":"reflect-agent","max_runs":5}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	if int(body["reviewed"].(float64)) != 1 {
+		t.Fatalf("reviewed = %v, want 1; body=%v", body["reviewed"], body)
+	}
+	if int(body["created"].(float64)) != 2 {
+		t.Fatalf("created = %v, want 2; body=%v", body["created"], body)
+	}
+	props, err := store.List("reflect-agent", learning.StatusPending, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(props) != 2 {
+		t.Fatalf("stored proposals = %d, want 2", len(props))
+	}
+	for _, p := range props {
+		if p.Source != "reflection_sweep" {
+			t.Fatalf("source = %q, want reflection_sweep", p.Source)
+		}
+		if p.Meta["reflection_sweep"] != "true" {
+			t.Fatalf("reflection metadata missing: %#v", p.Meta)
+		}
 	}
 }

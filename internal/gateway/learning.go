@@ -1,7 +1,6 @@
 package gateway
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -49,6 +48,41 @@ func (s *Server) handleLearningSummary(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"enabled": true, "summary": summary})
 }
 
+// handleLearningEvidence returns longitudinal proof that accepted learnings are
+// paying off: how often each accepted learned skill was reused in real runs, and
+// whether recurring errors happen less after learning was switched on. This is
+// pure aggregation over the action log plus accepted proposals, so it is safe to
+// call on demand from the Brain Memory UI.
+func (s *Server) handleLearningEvidence(c *fiber.Ctx) error {
+	store := s.engine.LearningStore()
+	if store == nil {
+		return c.JSON(fiber.Map{
+			"enabled":  false,
+			"evidence": learning.Evidence{AgentID: c.Query("agent_id"), SkillReuse: []learning.SkillReuse{}, RepeatedErrors: []learning.ErrorTrend{}},
+		})
+	}
+	agentID := strings.TrimSpace(c.Query("agent_id"))
+	accepted, err := store.List(agentID, learning.StatusAccepted, 0)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
+	}
+	var events []message.Event
+	if s.actions != nil {
+		limit, _ := strconv.Atoi(c.Query("limit", "5000"))
+		if limit <= 0 {
+			limit = 5000
+		}
+		// Tail scoped to the agent when one is given; otherwise pull a broad
+		// recent slice and let BuildEvidence filter.
+		events, err = s.actions.Tail(agentID, limit)
+		if err != nil {
+			return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
+		}
+	}
+	evidence := learning.BuildEvidence(agentID, events, accepted)
+	return c.JSON(fiber.Map{"enabled": true, "evidence": evidence})
+}
+
 func (s *Server) handleProposeLearningFromRun(c *fiber.Ctx) error {
 	store := s.engine.LearningStore()
 	if store == nil {
@@ -91,18 +125,18 @@ func (s *Server) handleProposeLearningFromRun(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
 	}
-	run := learningRunFromEvents(events, body.AgentID, body.SessionID)
-	if !run.foundIn || !run.foundOut {
+	run := learning.RunFromEvents(events, body.AgentID, body.SessionID)
+	if !run.FoundIn || !run.FoundOut {
 		return s.errMsg(c, fiber.StatusBadRequest, "that session does not have both message.in and message.out events")
 	}
 	proposals := learning.BuildProposals(learning.BuildInput{
 		AgentID:      body.AgentID,
 		AgentName:    agentName,
 		SessionID:    body.SessionID,
-		Channel:      run.channel,
-		UserText:     run.userText,
-		ReplyText:    run.replyText,
-		ToolsUsed:    run.tools,
+		Channel:      run.Channel,
+		UserText:     run.UserText,
+		ReplyText:    run.ReplyText,
+		ToolsUsed:    run.Tools,
 		Source:       "manual_run_review",
 		MinChars:     minChars,
 		MaxProposals: maxProposals,
@@ -120,6 +154,93 @@ func (s *Server) handleProposeLearningFromRun(c *fiber.Ctx) error {
 		created = append(created, added)
 	}
 	return c.JSON(fiber.Map{"proposals": created, "created": len(created)})
+}
+
+func (s *Server) handleReflectLearningFromRecentRuns(c *fiber.Ctx) error {
+	store := s.engine.LearningStore()
+	if store == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "learning proposal store not configured")
+	}
+	if s.actions == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "action logging disabled")
+	}
+	var body struct {
+		AgentID      string `json:"agent_id"`
+		Limit        int    `json:"limit"`
+		MaxRuns      int    `json:"max_runs"`
+		MaxProposals int    `json:"max_proposals"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid JSON body")
+	}
+	body.AgentID = strings.TrimSpace(body.AgentID)
+	if body.AgentID == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "agent_id is required")
+	}
+	if body.Limit <= 0 {
+		body.Limit = 5000
+	}
+	if body.MaxRuns <= 0 {
+		body.MaxRuns = 20
+	}
+
+	def := s.loader.Get(body.AgentID)
+	agentName := body.AgentID
+	minChars := 80
+	maxProposals := body.MaxProposals
+	if def != nil {
+		agentName = def.Name
+		if def.Learning.MinChars > 0 {
+			minChars = def.Learning.MinChars
+		}
+		if maxProposals <= 0 {
+			maxProposals = def.Learning.MaxProposals
+		}
+	}
+	if maxProposals <= 0 {
+		maxProposals = 3
+	}
+
+	events, err := s.actions.Tail(body.AgentID, body.Limit)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
+	}
+	runs := learning.RunsFromRecentEvents(events, body.AgentID, body.MaxRuns)
+	created := make([]learning.Proposal, 0)
+	reviewed := 0
+	for _, run := range runs {
+		if !run.FoundIn || !run.FoundOut {
+			continue
+		}
+		reviewed++
+		proposals := learning.BuildProposals(learning.BuildInput{
+			AgentID:      body.AgentID,
+			AgentName:    agentName,
+			SessionID:    run.SessionID,
+			Channel:      run.Channel,
+			UserText:     run.UserText,
+			ReplyText:    run.ReplyText,
+			ToolsUsed:    run.Tools,
+			Source:       "reflection_sweep",
+			MinChars:     minChars,
+			MaxProposals: maxProposals,
+		})
+		for _, p := range proposals {
+			p.Meta["reviewed_from_activity"] = "true"
+			p.Meta["reflection_sweep"] = "true"
+			added, err := store.Add(p)
+			if err != nil {
+				return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
+			}
+			created = append(created, added)
+		}
+	}
+	return c.JSON(fiber.Map{
+		"proposals": created,
+		"created":   len(created),
+		"reviewed":  reviewed,
+		"runs":      len(runs),
+	})
 }
 
 func (s *Server) handleAcceptLearningProposal(c *fiber.Ctx) error {
@@ -324,112 +445,4 @@ func uniqueLearningSkillDir(root, name string) string {
 		}
 	}
 	return filepath.Join(root, fmt.Sprintf("%s-%d", name, time.Now().UnixNano()))
-}
-
-type learningRunEvidence struct {
-	userText  string
-	replyText string
-	channel   string
-	tools     []string
-	foundIn   bool
-	foundOut  bool
-}
-
-func learningRunFromEvents(events []message.Event, agentID, sessionID string) learningRunEvidence {
-	var out learningRunEvidence
-	for _, ev := range events {
-		if ev.AgentID != agentID || ev.SessionID != sessionID {
-			continue
-		}
-		switch ev.Type {
-		case "message.in":
-			if text := learningMessageText(ev.Payload); strings.TrimSpace(text) != "" {
-				out.userText = text
-				out.foundIn = true
-			}
-			if ch := learningPayloadString(ev.Payload, "channel"); ch != "" {
-				out.channel = ch
-			}
-		case "message.out":
-			if text := learningMessageText(ev.Payload); strings.TrimSpace(text) != "" {
-				out.replyText = text
-				out.foundOut = true
-			}
-		case "tool.call", "tool.result":
-			if name := learningPayloadString(ev.Payload, "name"); name != "" {
-				out.tools = append(out.tools, name)
-			}
-		}
-	}
-	return out
-}
-
-func learningMessageText(payload any) string {
-	if msg, ok := payload.(message.Message); ok {
-		return learningPartsText(msg.Parts)
-	}
-	var m map[string]any
-	if !learningPayloadMap(payload, &m) {
-		return ""
-	}
-	if text := learningPayloadString(m, "text"); text != "" {
-		return text
-	}
-	if parts, ok := m["parts"].([]any); ok {
-		var b strings.Builder
-		for _, part := range parts {
-			pm, ok := part.(map[string]any)
-			if !ok {
-				continue
-			}
-			if t, _ := pm["text"].(string); strings.TrimSpace(t) != "" {
-				if b.Len() > 0 {
-					b.WriteString(" ")
-				}
-				b.WriteString(t)
-			}
-		}
-		return b.String()
-	}
-	return ""
-}
-
-func learningPartsText(parts []message.Part) string {
-	var b strings.Builder
-	for _, p := range parts {
-		if p.Text == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString(" ")
-		}
-		b.WriteString(p.Text)
-	}
-	return b.String()
-}
-
-func learningPayloadString(payload any, key string) string {
-	var m map[string]any
-	if !learningPayloadMap(payload, &m) {
-		return ""
-	}
-	if v, ok := m[key].(string); ok {
-		return strings.TrimSpace(v)
-	}
-	return ""
-}
-
-func learningPayloadMap(payload any, out *map[string]any) bool {
-	if m, ok := payload.(map[string]any); ok {
-		*out = m
-		return true
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return false
-	}
-	if err := json.Unmarshal(b, out); err != nil {
-		return false
-	}
-	return true
 }

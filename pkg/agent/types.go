@@ -79,6 +79,31 @@ type LearningConfig struct {
 	MaxProposals int  `yaml:"max_proposals,omitempty" json:"max_proposals,omitempty"`
 }
 
+// ToolPolicyConfig gates high-risk tool actions (shell, filesystem, network)
+// with allow/prompt/deny decisions. When Enabled is false the agent behaves
+// exactly as before. Values for Shell/File/Network are "allow", "prompt", or
+// "deny"; empty falls back to a safe default (prompt for shell/file, allow for
+// network subject to the domain lists). Enforced in the runtime before any tool
+// handler runs, on top of the existing per-path guardrail and confirm gates.
+type ToolPolicyConfig struct {
+	Enabled bool   `yaml:"enabled,omitempty" json:"enabled,omitempty"`
+	Shell   string `yaml:"shell,omitempty"   json:"shell,omitempty"`
+	File    string `yaml:"file,omitempty"    json:"file,omitempty"`
+	Network string `yaml:"network,omitempty" json:"network,omitempty"`
+
+	AllowDomains []string `yaml:"allow_domains,omitempty" json:"allow_domains,omitempty"`
+	DenyDomains  []string `yaml:"deny_domains,omitempty"  json:"deny_domains,omitempty"`
+	DenyPaths    []string `yaml:"deny_paths,omitempty"    json:"deny_paths,omitempty"`
+}
+
+// ExecutionConfig selects the backend that runs this agent's Python tool code.
+// Empty Backend uses the server default. "local", "docker", and "ssh" require
+// the corresponding backend to be configured at server startup; an unknown or
+// unconfigured value falls back to the default with a warning.
+type ExecutionConfig struct {
+	Backend string `yaml:"backend,omitempty" json:"backend,omitempty"`
+}
+
 // EpisodicMemoryConfig controls episodic task history injection.
 type EpisodicMemoryConfig struct {
 	Enabled   bool `yaml:"enabled,omitempty"    json:"enabled,omitempty"`
@@ -453,6 +478,23 @@ type Definition struct {
 	// and API; accepting one writes it into the relevant memory/rule layer.
 	Learning LearningConfig `yaml:"learning,omitempty" json:"learning,omitempty"`
 
+	// --- Tool policy ---
+	// Gates high-risk shell/file/network tool actions with allow/prompt/deny
+	// decisions before any handler runs. Absent = no policy (unchanged behavior).
+	Policy ToolPolicyConfig `yaml:"policy,omitempty" json:"policy,omitempty"`
+
+	// --- Execution backend ---
+	// Selects where this agent's Python tool code runs (local/docker/ssh).
+	// Absent = server default backend.
+	Execution ExecutionConfig `yaml:"execution,omitempty" json:"execution,omitempty"`
+
+	// --- Dry run ---
+	// When true, side-effecting tool calls (shell, file writes, network POSTs,
+	// MCP/plugin tools) are simulated rather than executed: the agent still plans
+	// and reasons, but no real action is taken. Useful for previewing an agent
+	// safely. Can also be toggled per-request. Absent = normal execution.
+	DryRun bool `yaml:"dry_run,omitempty" json:"dry_run,omitempty"`
+
 	// --- Hooks ---
 	Hooks []ContextHook `yaml:"hooks,omitempty" json:"hooks,omitempty"`
 
@@ -613,6 +655,11 @@ func (d *Definition) Clone() *Definition {
 	cp.ConfirmTools = cloneStrSlice(d.ConfirmTools)
 	cp.Capabilities = cloneStrSlice(d.Capabilities)
 	cp.Env = cloneStrSlice(d.Env)
+
+	// Tool policy — slices get their own backing arrays.
+	cp.Policy.AllowDomains = cloneStrSlice(d.Policy.AllowDomains)
+	cp.Policy.DenyDomains = cloneStrSlice(d.Policy.DenyDomains)
+	cp.Policy.DenyPaths = cloneStrSlice(d.Policy.DenyPaths)
 
 	// Memory slices.
 	cp.Memory = MemoryPolicy{

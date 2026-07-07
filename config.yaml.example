@@ -172,6 +172,48 @@ runtime:
     # is the SQLite action log (always on). See docs/security/audit.md.
     # audit_dir: /Users/yourname/.soulacy/audit
 
+# ── Execution backends ──────────────────────────────────────────────────────────
+# Where an agent's Python tool code runs. The server-wide default is set here;
+# individual agents can opt into any *registered* backend via `execution.backend`
+# in their SOUL.yaml (values: local, docker, ssh, or a cloud preset name).
+# executor:
+#     backend: process                   # process (default) | pool | docker | ssh
+#     workers: 4                          # pool only: pre-forked worker count
+#
+#     # docker backend
+#     docker_image: python:3.12-slim
+#     docker_network: none               # none (default) | bridge | host | <name>
+#     docker_volumes:                    # explicit mount allowlist; nothing else is mounted
+#       - /data/in:/data/in:ro
+#
+#     # ssh backend
+#     ssh_host: user@remote-host         # or just the host if ssh_user is set
+#     ssh_user: ""
+#     ssh_python_bin: python3
+#     ssh_identity: /path/to/id_ed25519  # private key file, OR:
+#     ssh_identity_credential: ""        # name of a vault secret holding the key
+#                                        # (resolved to a 0600 temp file at startup)
+#
+#     # cloud preset — registers a backend named after the preset (modal/runpod/
+#     # daytona) that agents can select. The provider CLI must be installed and
+#     # authenticated on this host.
+#     cloud_preset: ""                   # modal | runpod | daytona
+#     cloud_target: ""                   # pod id / workspace / app handle
+#     cloud_cli: ""                      # optional override of the provider CLI binary
+
+# ── Per-agent options (set in each agent's SOUL.yaml, shown here for reference) ──
+# policy:                                # gate high-risk tool actions
+#     enabled: true
+#     shell: prompt                      # allow | prompt | deny
+#     file: prompt
+#     network: allow
+#     allow_domains: [example.com]       # network limited to these hosts
+#     deny_domains: []
+#     deny_paths: ["*.env", "/etc/*"]
+# dry_run: true                          # simulate side-effecting tools; no real actions
+# execution:
+#     backend: docker                    # pick a registered backend for this agent
+
 # ── Server ────────────────────────────────────────────────────────────────────
 server:
     api_key: "sy_..."                      # Generate: openssl rand -hex 32 | sed 's/^/sy_/'

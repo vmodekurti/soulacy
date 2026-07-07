@@ -26,3 +26,32 @@ self.addEventListener('fetch', (event) => {
     }).catch(() => caches.match(req).then((hit) => hit || caches.match('/'))),
   )
 })
+
+// Web Push: render notifications sent by the gateway (e.g. "a tool needs
+// approval"). The payload is JSON produced by internal/webpush.Notification.
+self.addEventListener('push', (event) => {
+  let data = { title: 'Soulacy', body: 'You have a new notification', url: '/mobile' }
+  try { if (event.data) data = Object.assign(data, event.data.json()) } catch (_) {}
+  event.waitUntil(
+    self.registration.showNotification(data.title, {
+      body: data.body,
+      tag: data.tag || undefined,
+      data: { url: data.url || '/mobile' },
+      badge: '/manifest.webmanifest',
+    }),
+  )
+})
+
+// Focus (or open) the app on the target page when a notification is tapped.
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close()
+  const target = (event.notification.data && event.notification.data.url) || '/mobile'
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((clients) => {
+      for (const client of clients) {
+        if ('focus' in client) { client.focus(); client.navigate && client.navigate(target); return }
+      }
+      if (self.clients.openWindow) return self.clients.openWindow(target)
+    }),
+  )
+})

@@ -117,7 +117,9 @@ Quick start:
 		buildServerCmd(),
 		buildDoctorCmd(),
 		buildDaemonCmd(),    // sy daemon — install/uninstall/status/logs as a background service
-		buildWorkspaceCmd(), // sy workspace — soulspace info + migration
+		buildWorkspaceCmd(),    // sy workspace — soulspace info + migration
+		buildSeedExamplesCmd(), // sy seed-examples — copy example agents + scaffold tool files
+		buildSupportCmd(),      // sy support — redacted support bundles
 		buildPullCmd(),      // sy pull — agent marketplace
 		buildEvalCmd(),      // sy eval — evaluation framework
 		buildRegistryCmd(),  // sy registry — review + manage skill sources (E26)

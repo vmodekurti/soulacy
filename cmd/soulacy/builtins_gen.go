@@ -8,6 +8,7 @@ import (
 	_ "github.com/soulacy/soulacy/internal/channels/discord"
 	_ "github.com/soulacy/soulacy/internal/channels/slack"
 	_ "github.com/soulacy/soulacy/internal/channels/telegram"
+	_ "github.com/soulacy/soulacy/internal/channels/webhook"
 	_ "github.com/soulacy/soulacy/internal/channels/whatsapp"
 	_ "github.com/soulacy/soulacy/internal/extstorage"
 	_ "github.com/soulacy/soulacy/internal/llm"

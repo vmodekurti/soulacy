@@ -26,6 +26,8 @@ import (
 	"github.com/soulacy/soulacy/internal/costs"
 	"github.com/soulacy/soulacy/internal/credentials"
 	"github.com/soulacy/soulacy/internal/executor"
+	"github.com/soulacy/soulacy/internal/executor/cloud"
+	executorcommand "github.com/soulacy/soulacy/internal/executor/command"
 	executordocker "github.com/soulacy/soulacy/internal/executor/docker"
 	"github.com/soulacy/soulacy/internal/executor/pool"
 	"github.com/soulacy/soulacy/internal/executor/process"
@@ -546,7 +548,7 @@ func (a *App) wireVector(archive *memory.SQLiteArchive) (*memory.VectorStore, ve
 
 // wirePythonExecutor selects the Python executor backend (process-per-call or
 // pre-forked pool). A failed pool degrades to the process executor.
-func (a *App) wirePythonExecutor(stack *closerStack) executor.Backend {
+func (a *App) wirePythonExecutor(stack *closerStack, vault credentials.Vault) executor.Backend {
 	cfg, log := a.cfg, a.log
 	switch cfg.Executor.Backend {
 	case "pool":
@@ -567,34 +569,118 @@ func (a *App) wirePythonExecutor(stack *closerStack) executor.Backend {
 		)
 		return pb
 	case "docker":
-		image := cfg.Executor.DockerImage
-		if image == "" {
-			image = "python:3.12-slim"
-		}
-		network := cfg.Executor.DockerNetwork
-		if network == "" {
-			network = "none"
-		}
-		log.Info("python executor: docker",
-			zap.String("image", image),
-			zap.String("network", network),
-			zap.String("python_bin", cfg.Runtime.PythonBin))
-		return executordocker.New(image, cfg.Runtime.PythonBin, network)
+		return a.buildDockerExecutor()
 	case "ssh":
-		pythonBin := cfg.Executor.SSHPythonBin
-		if pythonBin == "" {
-			pythonBin = "python3"
-		}
-		log.Info("python executor: ssh",
-			zap.String("host", cfg.Executor.SSHHost),
-			zap.String("user", cfg.Executor.SSHUser),
-			zap.String("python_bin", pythonBin))
-		return executorssh.New(cfg.Executor.SSHHost, cfg.Executor.SSHUser, pythonBin, cfg.Executor.SSHIdentity)
+		return a.buildSSHExecutor(vault)
 	default: // "process" or empty
 		log.Info("python executor: process-per-call",
 			zap.String("python_bin", cfg.Runtime.PythonBin))
 		return process.New(cfg.Runtime.PythonBin)
 	}
+}
+
+// buildDockerExecutor constructs the docker backend from config, honoring the
+// explicit volume allowlist (executor.docker_volumes).
+func (a *App) buildDockerExecutor() executor.Backend {
+	cfg, log := a.cfg, a.log
+	image := cfg.Executor.DockerImage
+	if image == "" {
+		image = "python:3.12-slim"
+	}
+	network := cfg.Executor.DockerNetwork
+	if network == "" {
+		network = "none"
+	}
+	log.Info("python executor: docker",
+		zap.String("image", image),
+		zap.String("network", network),
+		zap.Int("volumes", len(cfg.Executor.DockerVolumes)),
+		zap.String("python_bin", cfg.Runtime.PythonBin))
+	return executordocker.NewWithVolumes(image, cfg.Runtime.PythonBin, network, cfg.Executor.DockerVolumes)
+}
+
+// buildSSHExecutor constructs the ssh backend. When executor.ssh_identity_credential
+// is set it resolves the private key from the encrypted vault and materializes
+// it into a 0600 temp file, keeping the key out of config and the environment.
+func (a *App) buildSSHExecutor(vault credentials.Vault) executor.Backend {
+	cfg, log := a.cfg, a.log
+	pythonBin := cfg.Executor.SSHPythonBin
+	if pythonBin == "" {
+		pythonBin = "python3"
+	}
+	identity := cfg.Executor.SSHIdentity
+	if cred := strings.TrimSpace(cfg.Executor.SSHIdentityCredential); cred != "" && vault != nil {
+		mgr := secrets.New(vault)
+		if key, ok := mgr.Get(context.Background(), cred); ok && strings.TrimSpace(key) != "" {
+			if path, err := writeTempIdentity(key); err == nil {
+				identity = path
+				log.Info("ssh executor: identity resolved from vault", zap.String("credential", cred))
+			} else {
+				log.Warn("ssh executor: could not materialize vault identity; falling back to ssh_identity",
+					zap.Error(err))
+			}
+		} else {
+			log.Warn("ssh executor: identity credential not found in vault; falling back to ssh_identity",
+				zap.String("credential", cred))
+		}
+	}
+	log.Info("python executor: ssh",
+		zap.String("host", cfg.Executor.SSHHost),
+		zap.String("user", cfg.Executor.SSHUser),
+		zap.String("python_bin", pythonBin))
+	return executorssh.New(cfg.Executor.SSHHost, cfg.Executor.SSHUser, pythonBin, identity)
+}
+
+// writeTempIdentity writes an SSH private key to a 0600-mode temp file and
+// returns its path. Caller-owned; cleaned up on process exit.
+func writeTempIdentity(key string) (string, error) {
+	f, err := os.CreateTemp("", "soulacy-ssh-*.key")
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if err := f.Chmod(0o600); err != nil {
+		return "", err
+	}
+	if !strings.HasSuffix(key, "\n") {
+		key += "\n"
+	}
+	if _, err := f.WriteString(key); err != nil {
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+// wireNamedExecutors builds the set of execution backends agents can select via
+// `execution.backend` in SOUL.yaml. "local" is always available; "docker" and
+// "ssh" are registered when their config is present (or when they are the server
+// default), so an agent can opt into container/remote execution even when the
+// global default is local, and vice versa.
+func (a *App) wireNamedExecutors(vault credentials.Vault) map[string]executor.Backend {
+	cfg := a.cfg
+	out := map[string]executor.Backend{
+		"local": process.New(cfg.Runtime.PythonBin),
+	}
+	if cfg.Executor.Backend == "docker" || strings.TrimSpace(cfg.Executor.DockerImage) != "" {
+		out["docker"] = a.buildDockerExecutor()
+	}
+	if cfg.Executor.Backend == "ssh" || strings.TrimSpace(cfg.Executor.SSHHost) != "" {
+		out["ssh"] = a.buildSSHExecutor(vault)
+	}
+	if preset := strings.ToLower(strings.TrimSpace(cfg.Executor.CloudPreset)); preset != "" {
+		if runner, ok := cloud.Preset(preset, cfg.Executor.CloudTarget, cfg.Executor.CloudCLI); ok {
+			pythonBin := cfg.Executor.SSHPythonBin
+			if pythonBin == "" {
+				pythonBin = "python3"
+			}
+			out[preset] = executorcommand.New(preset, runner, pythonBin)
+			a.log.Info("cloud execution preset registered",
+				zap.String("preset", preset), zap.String("target", cfg.Executor.CloudTarget))
+		} else {
+			a.log.Warn("unknown cloud execution preset; ignoring", zap.String("preset", preset))
+		}
+	}
+	return out
 }
 
 // wireQueue resolves the queue backend through the SDK factory registry.
@@ -826,6 +912,7 @@ type engineDeps struct {
 	loader         *runtime.Loader
 	llmRouter      *llm.Router
 	fileStore      *memory.FileStore
+	actionBackend  storage.ActionLogBackend
 	memBackend     storage.MemoryBackend
 	hub            *gateway.EventHub
 	skillLoader    *skills.Loader
@@ -834,6 +921,7 @@ type engineDeps struct {
 	vectorStore    *memory.VectorStore
 	pluginProvider runtime.PluginToolProvider
 	pyExecutor     executor.Backend
+	namedExecutors map[string]executor.Backend
 	brainStore     *agentmemory.CompositeStore
 	learningStore  *learning.Store
 	ollamaAPIKey   string
@@ -854,7 +942,11 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 		cfg.Runtime.AllowSystemAgents, d.vectorStore, d.pluginProvider,
 	)
 	engine.SetSearchConfig(d.searchProvider, d.searchAPIKey)
+	engine.SetActionLogBackend(d.actionBackend)
 	engine.SetExecutor(d.pyExecutor)
+	for name, be := range d.namedExecutors {
+		engine.SetNamedExecutor(name, be)
+	}
 
 	// Story 16 — reasoning loop backends: cloud-provider keys come from the
 	// same llm.providers config the router uses (env var fallback matches the
