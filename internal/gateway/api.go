@@ -809,10 +809,16 @@ func (s *Server) handleChat(c *fiber.Ctx) error {
 		defer s.runReg.Done(sessionID)
 	}
 
+	// Per-request dry-run: header lets a client preview an agent without side
+	// effects even if the agent isn't configured for dry-run.
+	if isTruthy(c.Get("X-Soulacy-Dry-Run")) {
+		ctx = runtime.WithDryRun(ctx, true)
+	}
+
 	// Inject confirm sender so synchronous GUI chats can still receive tool confirmation
 	// requests over the global WebSocket event stream.
 	ctx = runtime.WithConfirmSender(ctx, func(req runtime.ConfirmRequest) <-chan bool {
-		resultCh := s.engine.Broker().Register(req.CallID)
+		resultCh := s.engine.Broker().RegisterRequest(req, msg.AgentID, msg.SessionID)
 		s.hub.Emit(message.Event{
 			Type:      "tool_confirm",
 			AgentID:   msg.AgentID,
@@ -973,7 +979,7 @@ func (s *Server) handleChatStream(c *fiber.Ctx) error {
 	// in the broker. The engine blocks on the result channel until the user
 	// approves or denies via POST /api/v1/chat/confirm.
 	streamCtx = runtime.WithConfirmSender(streamCtx, func(req runtime.ConfirmRequest) <-chan bool {
-		resultCh := s.engine.Broker().Register(req.CallID)
+		resultCh := s.engine.Broker().RegisterRequest(req, msg.AgentID, msg.SessionID)
 		data, _ := json.Marshal(req)
 		select {
 		case events <- sseEvent{Event: "tool_confirm", Data: string(data)}:
@@ -1160,6 +1166,15 @@ var channelSpecs = []channelSpec{
 		{Key: "session_dir", Label: "Session directory", Type: "text", Required: false, Help: "Where QR-linked auth state is stored"},
 		{Key: "account_id", Label: "Account ID", Type: "text", Required: false, Help: "Session subdirectory for this linked account"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
+	}},
+	{ID: "webhook", Name: "Webhook", Fields: []channelField{
+		{Key: "url", Label: "Webhook URL", Type: "password", Required: true, Secret: true, Help: "Absolute http(s) endpoint that receives outbound JSON messages from agents and schedules"},
+		{Key: "method", Label: "HTTP method", Type: "text", Required: false, Help: "Defaults to POST"},
+		{Key: "headers", Label: "Headers", Type: "text", Required: false, Secret: true, Help: "Optional request headers as Key: value lines; useful for Authorization or shared secrets"},
+		{Key: "template", Label: "Body template", Type: "text", Required: false, Help: "Optional plain-text body template. Use {text}, {agent_id}, {session_id}, {to}, {timestamp}. Leave empty for structured JSON."},
+		{Key: "timeout_seconds", Label: "Timeout seconds", Type: "text", Required: false, Help: "Request timeout; defaults to 10"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "password", Required: false, Secret: true, Help: "Optional override URL used by scheduled agents. Leave empty to use Webhook URL."},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional scheduled-output wrapper; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 	}},
 }
 
@@ -1480,6 +1495,107 @@ func (s *Server) handleListChannels(c *fiber.Ctx) error {
 		})
 	}
 	return c.JSON(fiber.Map{"channels": out})
+}
+
+// handleTestChannelDelivery sends a real outbound message through the live
+// channel registry. It exists so operators can verify a channel destination
+// from the same screen where they configure it, instead of guessing from logs.
+func (s *Server) handleTestChannelDelivery(c *fiber.Ctx) error {
+	id := strings.TrimSpace(c.Params("id"))
+	if channelSpecByID(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "unknown channel: "+id)
+	}
+	if s.channels == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "channel registry is unavailable")
+	}
+	statuses := s.channels.Statuses()
+
+	var req struct {
+		AdapterID   string `json:"adapter_id"`
+		To          string `json:"to"`
+		Destination string `json:"destination"`
+		ChatID      string `json:"chat_id"`
+		ChannelID   string `json:"channel_id"`
+		Text        string `json:"text"`
+		Message     string `json:"message"`
+	}
+	if len(c.Body()) > 0 {
+		if err := c.BodyParser(&req); err != nil {
+			return s.errJSON(c, fiber.StatusBadRequest, err)
+		}
+	}
+
+	adapterID := strings.TrimSpace(req.AdapterID)
+	if adapterID == "" {
+		adapterID = id
+	}
+	cfg := s.cfg.Channels[id]
+	to := firstNonBlank(req.To, req.Destination, req.ChatID, req.ChannelID)
+	if to == "" {
+		to = channelDefaultDestination(cfg, id, adapterID)
+	}
+	if to == "" && adapterID != "webhook" {
+		return s.errMsg(c, fiber.StatusBadRequest, "destination is required; provide to or configure default_output_to")
+	}
+
+	text := firstNonBlank(req.Text, req.Message)
+	if text == "" {
+		text = "Soulacy channel delivery test from " + adapterID + " at " + time.Now().Format(time.RFC3339)
+	}
+	if _, ok := statuses[adapterID]; !ok {
+		return s.errMsg(c, fiber.StatusBadRequest, "channel "+adapterID+" is not registered; save settings and restart the gateway")
+	}
+	out := message.Message{
+		ID:        uuid.New().String(),
+		SessionID: "channel-test-" + uuid.New().String(),
+		AgentID:   "channel-test",
+		Channel:   adapterID,
+		ThreadID:  to,
+		UserID:    "operator",
+		Username:  "operator",
+		Role:      message.RoleAssistant,
+		Parts:     message.Text(text),
+		Metadata:  map[string]string{"source": "channels.test"},
+		CreatedAt: time.Now().UTC(),
+	}
+	if err := s.channels.Send(c.UserContext(), out); err != nil {
+		return s.errMsg(c, fiber.StatusBadGateway, "channel delivery test failed: "+err.Error())
+	}
+	return c.JSON(fiber.Map{"ok": true, "channel": adapterID, "channel_family": id, "to": to})
+}
+
+func channelDefaultDestination(cfg map[string]any, channelID, adapterID string) string {
+	if valuePresent(cfg["default_output_to"]) && (adapterID == "" || adapterID == channelID) {
+		return strings.TrimSpace(fmt.Sprint(cfg["default_output_to"]))
+	}
+	hasDefaultBot := valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"])
+	for i, bot := range rawBotList(cfg["bots"]) {
+		botAdapterID := channelAdapterID(channelID, cfgStringFromMap(bot, "agent_id"), cfgStringFromMap(bot, "bot_name"), i, hasDefaultBot)
+		if botAdapterID == adapterID && valuePresent(bot["default_output_to"]) {
+			return strings.TrimSpace(fmt.Sprint(bot["default_output_to"]))
+		}
+	}
+	return ""
+}
+
+func cfgStringFromMap(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(v))
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if s := strings.TrimSpace(value); s != "" {
+			return s
+		}
+	}
+	return ""
 }
 
 // handleUpdateChannel merges channel settings (and optional enabled flag) into
@@ -3032,12 +3148,21 @@ func (s *Server) handleAgentActions(c *fiber.Ctx) error {
 
 	var events []message.Event
 	var err error
-	if tf, ok := s.actions.(interface {
-		TailFiltered(string, int, map[string]bool) ([]message.Event, error)
-	}); ok && len(allowed) > 0 {
-		events, err = tf.TailFiltered(id, limit, allowed)
-	} else {
-		events, err = s.actions.Tail(id, limit)
+	if c.QueryBool("durable", false) {
+		if qf, ok := s.actions.(interface {
+			QueryFiltered(string, int, map[string]bool) ([]message.Event, error)
+		}); ok {
+			events, err = qf.QueryFiltered(id, limit, allowed)
+		}
+	}
+	if events == nil && err == nil {
+		if tf, ok := s.actions.(interface {
+			TailFiltered(string, int, map[string]bool) ([]message.Event, error)
+		}); ok && len(allowed) > 0 {
+			events, err = tf.TailFiltered(id, limit, allowed)
+		} else {
+			events, err = s.actions.Tail(id, limit)
+		}
 	}
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)

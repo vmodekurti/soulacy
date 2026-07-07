@@ -17,7 +17,7 @@ Soulacy has moved from "powerful runtime with promising pieces" to a credible lo
 The competitive center of gravity has changed:
 
 - Against OpenClaw, Soulacy is now much stronger in inspectable workflows, scheduled agents, Studio repair, observability, provider control, and safety-oriented local operation. OpenClaw still wins on native companion polish, very broad channel coverage, onboarding, voice, and the simple "assistant that follows me everywhere" story.
-- Against Hermes, Soulacy now has enough learning infrastructure to contest the self-improvement story, especially because proposals are visible and reviewable. Hermes still wins on the crispness of its learning narrative, automatic memory/skill compounding, session search as a core tool, and remote-agent positioning.
+- Against Hermes, Soulacy now has enough learning infrastructure to contest the self-improvement story, especially because proposals are visible, reviewable, backed by recurring reflection, and available to agents through safe session search. Hermes still wins on the crispness of its learning narrative, automatic memory/skill compounding, and remote-agent positioning.
 - Soulacy's strongest wedge is not "another chatbot" or "another automation canvas." It is a local-first command center where scheduled, interactive, multi-channel, tool-using agents can be built, tested, repaired, audited, and delivered to real channels.
 
 Go-to-market readiness is now less about inventing core architecture and more about productization: first-run setup, excellent templates, safer defaults, regression suites around real workflows, a mobile/PWA companion, public docs, and a tighter story.
@@ -217,7 +217,7 @@ Representative files:
 
 Gap:
 
-Soulacy now has the first visible layer of a Hermes-style learning loop: agents can enable learning, successful or manually selected runs can generate proposals, and the Brain Memory UI supports review/edit/accept/reject. The remaining gap is deeper compounding: automatic skill usage after approval, richer session search during planning, recurring reflection jobs, and user-facing evidence that the product is getting better over time.
+Soulacy now has the first visible layer of a Hermes-style learning loop: agents can enable learning, successful or manually selected runs can generate proposals, recurring background reflection can discover proposals from action logs, agents can search relevant past sessions during planning, accepted learned skills are injected into future planning, and the Brain Memory UI supports review/edit/accept/reject. The remaining gap is stronger user-facing evidence that the product is getting better over time.
 
 ### MCP, Skills, Plugins, Sidecars
 
@@ -350,7 +350,7 @@ Competitive implication:
 | Channel breadth | Medium | Very strong | Medium | OpenClaw still wins reach with many messaging/native surfaces. Soulacy should compete through generic adapters, sidecars, and excellent Telegram/Slack/Discord/WhatsApp reliability first. |
 | Scheduled agents | Strong | Strong | Strong | Soulacy is competitive because schedules, Activity, watch/history, and channel output are first-class. |
 | Workflow builder | Strong but complex | Medium | Low/medium | Studio is a differentiator if it becomes intent-first. The compiler/repair machinery is already deeper than a simple canvas. |
-| Self-improvement | Medium/strong | Medium | Very strong | Soulacy has visible proposals and review. Hermes still owns the narrative around automatic memory/skill compounding. |
+| Self-improvement | Strong foundation | Medium | Very strong | Soulacy has visible proposals, review, background reflection, and session search. Hermes still owns the narrative around automatic memory/skill compounding. |
 | Remote execution | Medium | Strong | Strong | Soulacy has Docker/SSH/local executor foundations; needs productized selection, vault helpers, and cloud presets. |
 | Browser/computer automation | Medium | Strong | Strong | Soulacy has MCP/Playwright quick-start and process cleanup; needs viewer, trace, and domain policy UX. |
 | Observability/debugging | Strong | Medium | Medium | Soulacy's Activity logs, Studio repair, run replay, and Workboard are a real advantage. |
@@ -362,7 +362,7 @@ Competitive implication:
 1. Product narrative is fragmented: runtime, Studio, Workboard, chat, schedules, plugins, memory all exist, but do not yet feel like one assistant.
 2. Studio is too graph-centric for non-expert users.
 3. Chat is improving but still behind ChatGPT/Claude polish: artifacts, files, search, project context, rich editing, citations, share/export, inline tool previews, and keyboard ergonomics need work.
-4. Learning proposals exist, but the system does not yet consistently auto-apply approved learnings as reusable skills/procedures during future planning.
+4. Learning proposals, background reflection, session search, accepted procedures, and accepted learned-skill injection exist; longitudinal evidence is now surfaced through the learning Evidence panel (skill reuse counts and repeated-error reduction over time). Remaining work is broadening the evidence to cross-agent and multi-week trend views.
 5. Channel breadth is narrower than OpenClaw.
 6. Native/mobile companion story is absent or not productized.
 7. Voice exists as spike/MVP infrastructure but is not a differentiating user experience.
@@ -384,8 +384,8 @@ Build a closed loop around every completed task. The first proposal/review layer
 - Extract reusable facts, preferences, procedures, and tool recipes.
 - Propose memory writes with provenance and confidence.
 - Auto-create or update `SKILL.md` files after repeated successful workflows.
-- Run periodic reflection jobs.
-- Search past sessions and memories during planning.
+- Run periodic reflection jobs. *(implemented)*
+- Search past sessions and memories during planning. *(session search implemented; memory search already available through KB/vector tools)*
 - Show "what I learned" in the GUI.
 
 MVP stories:
@@ -396,9 +396,10 @@ MVP stories:
 - Add memory proposals UI: accept/reject/edit. *(implemented)*
 - Add skill proposal UI: generated `SKILL.md`, tests/checklist, install button. *(implemented)*
 - Add "why I remembered this" provenance on memory entries. *(partially implemented through learning summary source/tool metrics)*
-- Inject accepted procedures/skills into future planning with clear attribution.
-- Add recurring reflection jobs with approval gates.
-- Add learning quality metrics: accepted/rejected proposal rate, confidence, installed skills, source/tool provenance. *(implemented; repeated-error reduction and skill reuse counts still future)*
+- Inject accepted procedures/skills into future planning with clear attribution. *(implemented for procedural memory and accepted installed skills)*
+- Add recurring reflection jobs with approval gates. *(implemented)*
+- Add learning quality metrics: accepted/rejected proposal rate, confidence, installed skills, source/tool provenance. *(implemented)*
+- Add longitudinal learning evidence: skill reuse counts (per accepted skill) and repeated-error reduction before/after learning. *(implemented via `GET /api/v1/learning/evidence` and the Brain Memory "Is it working?" panel)*
 
 ### 2. Intent-First Studio
 
@@ -457,7 +458,7 @@ Build:
 
 - Generic webhook inbound channel.
 - Generic outgoing webhook/channel adapter.
-- MCP server mode exposing Soulacy agents as tools.
+- MCP server mode exposing Soulacy agents and platform operations as tools. *(implemented via `sy mcp serve`)*
 - Official channel sidecar templates for Signal, Matrix, iMessage, Google Chat.
 - Channel marketplace via plugin/sidecar registry.
 - Guided default outbound bot setup for Telegram/Slack/Discord/WhatsApp.
@@ -468,7 +469,7 @@ MVP stories:
 
 - `webhook` channel with request mapping templates.
 - `channel.send` generic HTTP adapter.
-- `soulacy mcp serve` exposing agents, Workboard, schedules, and KB.
+- `sy mcp serve` exposing enabled agents as MCP tools, plus generic `soulacy_chat`, schedule status/list, Workboard task list/run, KB list/search, and ephemeral queue inspect/put/take/clear tools. *(implemented)*
 - Sidecar starter kit for a new channel.
 - Default Telegram outbound bot. *(implemented)*
 - Agent-specific Telegram bot mappings. *(implemented)*
@@ -641,7 +642,7 @@ MVP stories:
 
 1. Generic webhook channel.
 2. Mobile PWA pairing and approvals.
-3. MCP server mode.
+3. MCP server mode. *(implemented for agent, schedule, Workboard, KB, and queue tools via `sy mcp serve`)*
 4. Browser automation sidecar. *(MCP quick-start implemented)*
 5. SSH/Docker execution backends. *(implemented)*
 

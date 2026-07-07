@@ -8,6 +8,7 @@
   import Chat       from './pages/Chat.svelte'
   import Memory     from './pages/Memory.svelte'
   import Knowledge  from './pages/Knowledge.svelte'
+  import Queues     from './pages/Queues.svelte'
   import Channels   from './pages/Channels.svelte'
   import Workboard  from './pages/Workboard.svelte'
   import Templates  from './pages/Templates.svelte'
@@ -17,6 +18,7 @@
   import Secrets    from './pages/Secrets.svelte'
   import MCP        from './pages/MCP.svelte'
   import Activity   from './pages/Activity.svelte'
+  import BrowserTrace from './pages/BrowserTrace.svelte'
   import Config     from './pages/Config.svelte'
   import Logs       from './pages/Logs.svelte'
   import Mobile     from './pages/Mobile.svelte'
@@ -53,6 +55,7 @@
     { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'         },
     { id: 'memory',    icon: '🧠', label: 'Brain Mem',   group: 'capabilities' },
     { id: 'knowledge', icon: '📚', label: 'Knowledge',   group: 'capabilities' },
+    { id: 'queues',    icon: '☷', label: 'Queues',      group: 'capabilities' },
     { id: 'workboard', icon: '▦', label: 'Workboard',  group: 'capabilities' },
     { id: 'channels',  icon: '📡', label: 'Channels',   group: 'integrations' },
     { id: 'schedule',  icon: '⏱', label: 'Schedule',   group: 'integrations' },
@@ -62,6 +65,7 @@
     { id: 'providers', icon: '⚙', label: 'Providers',  group: 'integrations' },
     { id: 'secrets',   icon: '🔑', label: 'Secrets',    group: 'integrations' },
     { id: 'activity',  icon: '📈', label: 'Activity',   group: 'system'       },
+    { id: 'browser',   icon: '🕸', label: 'Browser',    group: 'system'       },
     { id: 'config',    icon: '≡', label: 'Config',      group: 'system'       },
     { id: 'mobile',    icon: '▣', label: 'Mobile',      group: 'system'       },
     { id: 'logs',      icon: '📋', label: 'Logs',       group: 'system'       },
@@ -403,6 +407,8 @@
       <Memory />
     {:else if page === 'knowledge'}
       <Knowledge />
+    {:else if page === 'queues'}
+      <Queues />
     {:else if page === 'workboard'}
       <Workboard />
     {:else if page === 'channels'}
@@ -421,6 +427,8 @@
       <PluginManager />
     {:else if page === 'activity'}
       <Activity />
+    {:else if page === 'browser'}
+      <BrowserTrace />
     {:else if page === 'config'}
       <Config />
     {:else if page === 'mobile'}

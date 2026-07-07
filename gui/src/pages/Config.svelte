@@ -10,6 +10,7 @@
   let saved    = false
   let writable = false
   let restarting = false
+  let downloadingSupport = false
 
   // Editable fields
   let logLevel  = 'info'
@@ -156,6 +157,26 @@
       error = e.message
     } finally {
       setTimeout(() => { restarting = false }, 5000)
+    }
+  }
+
+  async function downloadSupportBundle() {
+    downloadingSupport = true
+    error = ''
+    try {
+      const { blob, filename } = await api.support.bundle()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename || `soulacy-support-${new Date().toISOString().slice(0, 19).replaceAll(':', '')}.zip`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      error = e.message
+    } finally {
+      downloadingSupport = false
     }
   }
 
@@ -390,6 +411,17 @@
         </div>
 
         <div class="section">
+          <h2 class="section-title">Support</h2>
+          <p class="hint">
+            Download a redacted diagnostic bundle with doctor output, masked configuration,
+            masked agent manifests, and recent log tails.
+          </p>
+          <button class="btn-secondary support-download" on:click={downloadSupportBundle} disabled={downloadingSupport}>
+            {downloadingSupport ? 'Preparing bundle...' : 'Download support bundle'}
+          </button>
+        </div>
+
+        <div class="section">
           <h2 class="section-title">Directories</h2>
           <div class="field">
             <label for="agent-dirs">Agent directories (one per line)</label>
@@ -477,6 +509,7 @@
   .plugin-settings { display: flex; flex-direction: column; gap: .35rem; padding: .5rem .65rem;
                      background: #10121f; border: 1px solid #1a1e36; border-radius: 8px;
                      margin-bottom: .5rem; }
+  .support-download { align-self: flex-start; }
   .kv-row { display: flex; gap: .4rem; align-items: center; }
   .kv-key { flex: 0 0 32%; }
   .kv-val { flex: 1; font-family: monospace; font-size: .78rem; }

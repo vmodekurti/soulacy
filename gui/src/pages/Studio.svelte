@@ -1069,6 +1069,7 @@ Use null for fields that are not present.`
   function resetTransientDraftState() {
     loadedAgentId = null
     runTrace = null
+    runDiagnosis = null
     runHistory = []
     selectedRunId = null
     runTraceErr = ''
@@ -1344,6 +1345,7 @@ Use null for fields that are not present.`
   // per-block run trace — what really happened on its last real run.
   let loadedAgentId = ''
   let runTrace = null         // { agentId, runId, startedAt, entries:[...] }
+  let runDiagnosis = null     // { status, summary, rootCause, nextAction, suggestions, evidence }
   let runTraceErr = ''
   let runTraceLoading = false
   let runHistory = []         // [{runId, trigger, startedAt, ok, error, steps}] — every run
@@ -2117,11 +2119,13 @@ Use null for fields that are not present.`
     try {
       // Fetch the chosen run's trace AND refresh the full run history (every run,
       // scheduled or on-demand) so the picker stays current.
-      const [res, hist] = await Promise.all([
+      const [res, hist, diagnosis] = await Promise.all([
         bridge.runTrace(loadedAgentId, runId || undefined),
         bridge.runHistory(loadedAgentId).catch(() => ({ runs: [] })),
+        bridge.runDiagnosis(loadedAgentId, runId || undefined).catch(() => null),
       ])
       runTrace = res || null
+      runDiagnosis = diagnosis || null
       runHistory = (hist && hist.runs) || []
       if (!selectedRunId && runTrace && runTrace.runId) selectedRunId = runTrace.runId
       if (!res || !res.entries || !res.entries.length) {
@@ -2130,6 +2134,7 @@ Use null for fields that are not present.`
           : 'No runs yet — enable the agent and let it run once (on schedule or on demand).'
       }
     } catch (e) {
+      runDiagnosis = null
       runTraceErr = e.message || 'could not load run trace'
     } finally {
       runTraceLoading = false
@@ -2454,6 +2459,7 @@ Use null for fields that are not present.`
       setWorkflow(wf, { name: wf.name })
       loadedAgentId = id
       runTrace = null
+      runDiagnosis = null
       toast('Loaded workflow — edit and Save to update the agent.')
     } catch (e) {
       toast(e.message || 'Could not load agent workflow')
@@ -2488,6 +2494,7 @@ Use null for fields that are not present.`
       setWorkflow(wf, { name: wf.name || a.name })
       loadedAgentId = a.id
       runTrace = null
+      runDiagnosis = null
       closeLibrary()
     } catch (e) {
       library = { ...library, busyId: '', error: e.message || 'could not load agent' }
@@ -3847,6 +3854,50 @@ Use null for fields that are not present.`
             {#if runTraceErr}
               <p class="muted">{runTraceErr}</p>
             {/if}
+            {#if runDiagnosis}
+              <div class="diagnosis-card {runDiagnosis.status || 'empty'}">
+                <div class="diagnosis-head">
+                  <span class="diagnosis-badge">{runDiagnosis.status || 'unknown'}</span>
+                  <strong>{runDiagnosis.summary}</strong>
+                </div>
+                {#if runDiagnosis.rootCause}
+                  <div class="diagnosis-row">
+                    <span>Likely cause</span>
+                    <p>{runDiagnosis.rootCause}</p>
+                  </div>
+                {/if}
+                {#if runDiagnosis.nextAction}
+                  <div class="diagnosis-row">
+                    <span>Next action</span>
+                    <p>{runDiagnosis.nextAction}</p>
+                  </div>
+                {/if}
+                {#if runDiagnosis.failedNode || runDiagnosis.failedKind}
+                  <div class="diagnosis-meta">
+                    {#if runDiagnosis.failedNode}<span>Node <code>{runDiagnosis.failedNode}</code></span>{/if}
+                    {#if runDiagnosis.failedKind}<span>Kind <code>{runDiagnosis.failedKind}</code></span>{/if}
+                    {#if runDiagnosis.retryable}<span>Retry may help</span>{:else if runDiagnosis.status === 'failed'}<span>Needs a workflow/config fix</span>{/if}
+                  </div>
+                {/if}
+                {#if runDiagnosis.suggestions && runDiagnosis.suggestions.length}
+                  <ul class="diagnosis-list">
+                    {#each runDiagnosis.suggestions as s}
+                      <li>{s}</li>
+                    {/each}
+                  </ul>
+                {/if}
+                {#if runDiagnosis.evidence && runDiagnosis.evidence.length}
+                  <details class="diagnosis-evidence">
+                    <summary>Evidence</summary>
+                    <ul>
+                      {#each runDiagnosis.evidence as e}
+                        <li>{e}</li>
+                      {/each}
+                    </ul>
+                  </details>
+                {/if}
+              </div>
+            {/if}
             {#if runTrace && runTrace.entries && runTrace.entries.length}
               <ol class="trace">
                 {#each runTrace.entries as step, i}
@@ -5194,6 +5245,74 @@ Use null for fields that are not present.`
   }
   .run-steps { flex: none; color: var(--text-muted); }
   .run-err { flex: 1; min-width: 0; color: var(--error, #ff6b81); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .diagnosis-card {
+    margin: 0 0 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-elev-2);
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+  .diagnosis-card.failed {
+    border-color: color-mix(in srgb, var(--error, #ff6b81) 55%, var(--border));
+    background: color-mix(in srgb, var(--error, #ff6b81) 9%, var(--bg-elev-2));
+  }
+  .diagnosis-card.success {
+    border-color: color-mix(in srgb, var(--ok, #38c172) 45%, var(--border));
+    background: color-mix(in srgb, var(--ok, #38c172) 7%, var(--bg-elev-2));
+  }
+  .diagnosis-card.empty {
+    border-color: color-mix(in srgb, var(--warn, #f6c343) 45%, var(--border));
+    background: color-mix(in srgb, var(--warn, #f6c343) 7%, var(--bg-elev-2));
+  }
+  .diagnosis-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+  }
+  .diagnosis-badge {
+    flex: none;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 7px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+  .diagnosis-row {
+    display: grid;
+    grid-template-columns: 94px 1fr;
+    gap: 10px;
+    margin: 5px 0;
+  }
+  .diagnosis-row span {
+    color: var(--text-muted);
+    text-transform: uppercase;
+    font-size: 10px;
+    letter-spacing: 0.04em;
+  }
+  .diagnosis-row p { margin: 0; color: var(--text); line-height: 1.45; }
+  .diagnosis-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0 0;
+  }
+  .diagnosis-meta span {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 2px 7px;
+    color: var(--text-muted);
+    background: var(--bg);
+  }
+  .diagnosis-list { margin: 8px 0 0 18px; padding: 0; color: var(--text-muted); }
+  .diagnosis-list li { margin: 3px 0; line-height: 1.4; }
+  .diagnosis-evidence { margin-top: 8px; color: var(--text-muted); }
+  .diagnosis-evidence > summary { cursor: pointer; font-size: 11px; }
+  .diagnosis-evidence ul { margin: 5px 0 0 18px; padding: 0; }
 
   .result { margin-top: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; }
   .muted { color: var(--text-muted); font-size: 12px; }

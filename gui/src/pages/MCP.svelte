@@ -227,7 +227,20 @@
     { id: 'slack',      label: 'Slack',       command: 'npx', args: ['-y', '@modelcontextprotocol/server-slack'],      env: { SLACK_BOT_TOKEN: '', SLACK_TEAM_ID: '' } },
     { id: 'postgres',   label: 'Postgres',    command: 'npx', args: ['-y', '@modelcontextprotocol/server-postgres', 'postgresql://localhost/dbname'] },
     { id: 'puppeteer',  label: 'Puppeteer',   command: 'npx', args: ['-y', '@modelcontextprotocol/server-puppeteer'] },
-    { id: 'browser',    label: 'Browser',     command: 'npx', args: ['-y', '@playwright/mcp@latest', '--browser', 'chromium'] },
+    {
+      id: 'browser',
+      label: 'Browser headless',
+      command: 'npx',
+      args: ['-y', '@playwright/mcp@latest', '--browser', 'chromium', '--headless'],
+      note: 'Runs Chromium without opening windows. Use this for scheduled agents and normal background work.',
+    },
+    {
+      id: 'browser_visible',
+      label: 'Browser visible',
+      command: 'npx',
+      args: ['-y', '@playwright/mcp@latest', '--browser', 'chromium'],
+      note: 'Opens a visible Chromium window. Use only when you need to watch or debug browser automation.',
+    },
     { id: 'fetch',      label: 'Web Fetch',   command: 'uvx', args: ['mcp-server-fetch'] },
   ]
   function applyTemplate(tpl) {
@@ -332,6 +345,11 @@
       Tools from connected servers are <strong>auto-injected into every agent</strong> with namespaced names
       (<code>mcp__&lt;server&gt;__&lt;tool&gt;</code>) and routed transparently by the engine.
     </p>
+    <p>
+      Browser automation should usually use the <strong>Browser headless</strong> quick-start. Soulacy also runs
+      a process janitor around MCP tool calls so short-lived browser children are cleaned up after the call returns.
+      Use <strong>Browser visible</strong> only for live debugging.
+    </p>
     <p>Changes here are written to <code>config.yaml</code>; the gateway must be restarted to pick them up.</p>
   </div>
 </div>
@@ -352,7 +370,7 @@
         <div class="templates">
           <span class="templates-label">Quick start:</span>
           {#each TEMPLATES as tpl}
-            <button class="template-chip" on:click={() => applyTemplate(tpl)}>{tpl.label}</button>
+            <button class="template-chip" title={tpl.note || ''} on:click={() => applyTemplate(tpl)}>{tpl.label}</button>
           {/each}
         </div>
       {/if}

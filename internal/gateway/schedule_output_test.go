@@ -16,6 +16,34 @@ type scheduleOutputTestAdapter struct {
 	sent []message.Message
 }
 
+type channelDeliveryTestAdapter struct {
+	id   string
+	mu   sync.Mutex
+	sent []message.Message
+}
+
+func (a *channelDeliveryTestAdapter) ID() string                                          { return a.id }
+func (a *channelDeliveryTestAdapter) Name() string                                        { return "Channel Delivery Test" }
+func (a *channelDeliveryTestAdapter) Start(context.Context, chan<- message.Message) error { return nil }
+func (a *channelDeliveryTestAdapter) Send(_ context.Context, msg message.Message) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sent = append(a.sent, msg)
+	return nil
+}
+func (a *channelDeliveryTestAdapter) Stop() error { return nil }
+func (a *channelDeliveryTestAdapter) Status() channels.AdapterStatus {
+	return channels.AdapterStatus{Connected: true, Detail: "test"}
+}
+func (a *channelDeliveryTestAdapter) last() (message.Message, bool) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.sent) == 0 {
+		return message.Message{}, false
+	}
+	return a.sent[len(a.sent)-1], true
+}
+
 func (a *scheduleOutputTestAdapter) ID() string   { return "test-output" }
 func (a *scheduleOutputTestAdapter) Name() string { return "Test Output" }
 func (a *scheduleOutputTestAdapter) Start(context.Context, chan<- message.Message) error {
@@ -118,6 +146,86 @@ func TestGatewayHandleTestScheduledOutput_RejectsUnregisteredChannel(t *testing.
 		t.Fatalf("test output status = %d body=%v", status, res)
 	}
 	if !strings.Contains(res["error"].(string), "not registered") {
+		t.Fatalf("unexpected error: %v", res)
+	}
+}
+
+func TestGatewayHandleTestChannelDelivery_UsesConfiguredDefaultDestination(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	adp := &channelDeliveryTestAdapter{id: "telegram"}
+	s.channels.Register(adp)
+	s.cfg.Channels = map[string]map[string]any{}
+	s.cfg.Channels["telegram"] = map[string]any{
+		"enabled":           true,
+		"token":             "test-token",
+		"default_output_to": "chat-123",
+	}
+
+	status, res := gatewayJSON(t, s, http.MethodPost, "/api/v1/channels/telegram/test", "secret", `{"text":"hello channel"}`)
+	if status != http.StatusOK {
+		t.Fatalf("channel test status = %d body=%v", status, res)
+	}
+	msg, ok := adp.last()
+	if !ok {
+		t.Fatal("adapter did not receive a test message")
+	}
+	if msg.Channel != "telegram" || msg.ThreadID != "chat-123" {
+		t.Fatalf("unexpected message destination: %+v", msg)
+	}
+	if len(msg.Parts) == 0 || msg.Parts[0].Text != "hello channel" {
+		t.Fatalf("unexpected message body: %+v", msg.Parts)
+	}
+}
+
+func TestGatewayHandleTestChannelDelivery_UsesBotMappingAdapterAndDefaultDestination(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	adp := &channelDeliveryTestAdapter{id: "slack-research-librarian"}
+	s.channels.Register(adp)
+	s.cfg.Channels = map[string]map[string]any{}
+	s.cfg.Channels["slack"] = map[string]any{
+		"enabled":   true,
+		"bot_token": "xoxb-default",
+		"app_token": "xapp-default",
+		"bots": []any{
+			map[string]any{
+				"bot_token":         "xoxb-test",
+				"app_token":         "xapp-test",
+				"agent_id":          "research-librarian",
+				"default_output_to": "C123",
+			},
+		},
+	}
+
+	status, res := gatewayJSON(t, s, http.MethodPost, "/api/v1/channels/slack/test", "secret", `{"adapter_id":"slack-research-librarian","message":"hello bot mapping"}`)
+	if status != http.StatusOK {
+		t.Fatalf("channel test status = %d body=%v", status, res)
+	}
+	if res["channel"] != "slack-research-librarian" || res["channel_family"] != "slack" {
+		t.Fatalf("unexpected response: %v", res)
+	}
+	msg, ok := adp.last()
+	if !ok {
+		t.Fatal("adapter did not receive a test message")
+	}
+	if msg.Channel != "slack-research-librarian" || msg.ThreadID != "C123" {
+		t.Fatalf("unexpected message destination: %+v", msg)
+	}
+	if len(msg.Parts) == 0 || msg.Parts[0].Text != "hello bot mapping" {
+		t.Fatalf("unexpected message body: %+v", msg.Parts)
+	}
+}
+
+func TestGatewayHandleTestChannelDelivery_RejectsMissingDestination(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	s.channels.Register(&channelDeliveryTestAdapter{id: "telegram"})
+	s.cfg.Channels = map[string]map[string]any{}
+	s.cfg.Channels["telegram"] = map[string]any{"enabled": true, "token": "test-token"}
+
+	status, res := gatewayJSON(t, s, http.MethodPost, "/api/v1/channels/telegram/test", "secret", `{}`)
+	if status != http.StatusBadRequest {
+		t.Fatalf("channel test status = %d body=%v", status, res)
+	}
+	if !strings.Contains(res["error"].(string), "destination is required") {
 		t.Fatalf("unexpected error: %v", res)
 	}
 }

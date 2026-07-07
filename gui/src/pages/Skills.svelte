@@ -27,6 +27,9 @@
   let findBusy   = false
   let findResults = null  // packages from /registries/search
   let findWarnings = []
+  let findChecked = []
+  let findSuggestions = []
+  let findStatus = ''
 
   async function load() {
     loading = true
@@ -131,11 +134,14 @@
 
   async function findSkills() {
     if (!findQ.trim()) return
-    findBusy = true; srcError = ''; findResults = null; findWarnings = []
+    findBusy = true; srcError = ''; findResults = null; findWarnings = []; findChecked = []; findSuggestions = []; findStatus = ''
     try {
       const res = await api.registries.search(findQ.trim())
       findResults = res.packages || []
       findWarnings = res.warnings || []
+      findChecked = res.checked || []
+      findSuggestions = res.suggestions || []
+      findStatus = res.status || ''
     } catch (e) {
       srcError = e.message
     } finally {
@@ -210,10 +216,22 @@
         </div>
         {#if findResults}
           <div class="src-report">
+            {#if findChecked.length > 0}
+              <p class:src-degraded={findStatus === 'degraded'}>
+                Checked {findChecked.join(', ')}{findStatus === 'degraded' ? ' — at least one source needs attention.' : '.'}
+              </p>
+            {/if}
             {#if findWarnings.length > 0}
               <div class="src-warnings">
                 {#each findWarnings as warning}
                   <p>{warning}</p>
+                {/each}
+              </div>
+            {/if}
+            {#if findSuggestions.length > 0}
+              <div class="src-suggestions">
+                {#each findSuggestions as suggestion}
+                  <p>{suggestion}</p>
                 {/each}
               </div>
             {/if}
@@ -224,7 +242,11 @@
                 <div class="find-row">
                   <code>{pkg.slug}</code>
                   {#if pkg.description}<span class="find-desc">{pkg.description}</span>{/if}
-                  <span class="find-install">install: <code>sy skill install {pkg.slug}</code></span>
+                  {#if pkg.provider === 'local' || pkg.manifest?.installed}
+                    <span class="find-install installed">already installed</span>
+                  {:else}
+                    <span class="find-install">install: <code>sy skill install {pkg.slug}</code></span>
+                  {/if}
                 </div>
               {/each}
             {/if}
@@ -588,6 +610,7 @@
   .src-kind { font-weight: 600; margin-bottom: .3rem; }
   .src-audits { color: #4caf82; font-size: .78rem; }
   .src-samples { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .4rem; }
+  .src-degraded { color: #f0a060; font-weight: 650; }
   .src-warnings {
     margin-bottom: .6rem; padding: .55rem .65rem; border-radius: 7px;
     border: 1px solid rgba(240,160,96,.35); background: rgba(240,160,96,.1);
@@ -595,6 +618,13 @@
   }
   .src-warnings p { margin: 0 0 .35rem; }
   .src-warnings p:last-child { margin-bottom: 0; }
+  .src-suggestions {
+    margin-bottom: .6rem; padding: .55rem .65rem; border-radius: 7px;
+    border: 1px solid rgba(108,99,255,.35); background: rgba(108,99,255,.1);
+    color: #ada8ff; font-size: .78rem; line-height: 1.45;
+  }
+  .src-suggestions p { margin: 0 0 .35rem; }
+  .src-suggestions p:last-child { margin-bottom: 0; }
   .find-row {
     display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem;
     padding: .3rem 0; border-bottom: 1px solid #1c2038; font-size: .8rem;
@@ -602,6 +632,7 @@
   .find-row > code { color: #8b85ff; }
   .find-desc { color: #9aa0c0; flex: 1; min-width: 12rem; }
   .find-install { color: #6b7294; font-size: .72rem; }
+  .find-install.installed { color: #4caf82; font-weight: 650; }
   .find-install code { color: #4caf82; }
   .src-samples code {
     background: rgba(108,99,255,.12); border-radius: 4px;

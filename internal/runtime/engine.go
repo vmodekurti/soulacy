@@ -38,6 +38,7 @@ import (
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
+	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/metrics"
 	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/sandbox"
@@ -100,10 +101,12 @@ type Engine struct {
 	flowTraces    *flowTraceStore
 
 	// Skills support
-	skillLoader     SkillLoader
-	builtins        []BuiltinTool
-	channelRegistry *channels.Registry
-	queueStore      *agentQueueStore
+	skillLoader      SkillLoader
+	builtins         []BuiltinTool
+	channelRegistry  *channels.Registry
+	channelDefaultMu sync.RWMutex
+	channelDefaults  map[string]agent.ScheduleOutput
+	queueStore       *agentQueueStore
 
 	// ollamaAPIKey is used by the built-in web_search tool (Ollama Web Search API).
 	// Falls back to the OLLAMA_API_KEY env var at call time.
@@ -160,6 +163,10 @@ type Engine struct {
 	// proposals for agents that declare learning.enabled in SOUL.yaml.
 	learningStore *learning.Store
 
+	// actionLog, when non-nil, backs the session_search built-in so agents can
+	// retrieve useful past run context without direct filesystem access.
+	actionLog storage.ActionLogBackend
+
 	// pluginProvider, when non-nil, provides plugin-contributed tools.
 	// Satisfied by *plugins.Loader via an adapter in main.go.
 	pluginProvider PluginToolProvider
@@ -185,6 +192,12 @@ type Engine struct {
 	// the engine falls back to the original exec-per-call subprocess path.
 	// Set via SetExecutor after construction.
 	pyExecutor executor.Backend
+
+	// namedExecutors holds additional execution backends an agent can opt into
+	// via its `execution.backend` (e.g. "local", "docker", "ssh"). Registered at
+	// startup via SetNamedExecutor. An agent whose chosen backend is not present
+	// falls back to pyExecutor.
+	namedExecutors map[string]executor.Backend
 
 	// resources is the optional session resource store used for typed media
 	// attachments (E1 — Typed Media Attachments).  nil by default; set via
@@ -450,6 +463,21 @@ func (e *Engine) SetChannelRegistry(reg *channels.Registry) {
 	e.channelRegistry = reg
 }
 
+// SetChannelDefaultOutputs wires shared outbound destinations used by
+// channel.send when an agent omits "to" or targets a logical base channel.
+func (e *Engine) SetChannelDefaultOutputs(outputs map[string]agent.ScheduleOutput) {
+	e.channelDefaultMu.Lock()
+	defer e.channelDefaultMu.Unlock()
+	e.channelDefaults = make(map[string]agent.ScheduleOutput, len(outputs))
+	for k, v := range outputs {
+		k = strings.TrimSpace(k)
+		if k == "" {
+			continue
+		}
+		e.channelDefaults[k] = v
+	}
+}
+
 // SetSSRF configures SSRF protection for the HTTP-fetching built-in tools.
 func (e *Engine) SetSSRF(enabled bool, allowedHosts []string) {
 	e.ssrfProtection = enabled
@@ -479,12 +507,49 @@ func (e *Engine) SetLearningStore(store *learning.Store) { e.learningStore = sto
 // LearningStore returns the proposal store, or nil when learning is disabled.
 func (e *Engine) LearningStore() *learning.Store { return e.learningStore }
 
+// SetActionLogBackend wires recent run history for safe session_search.
+func (e *Engine) SetActionLogBackend(store storage.ActionLogBackend) {
+	e.actionLog = store
+	e.builtins = e.buildBuiltins()
+}
+
 // SetExecutor installs an executor.Backend for Python tool dispatch.
 // When set to a pool backend, Python tool cold-start latency is eliminated by
 // reusing pre-forked interpreter processes. When nil (or never called), the
 // engine uses the original per-call subprocess path.
 // Safe to call once at startup before any traffic.
 func (e *Engine) SetExecutor(ex executor.Backend) { e.pyExecutor = ex }
+
+// SetNamedExecutor registers an execution backend under a name that agents can
+// select via `execution.backend` in SOUL.yaml. Call once per backend at startup.
+func (e *Engine) SetNamedExecutor(name string, ex executor.Backend) {
+	if name == "" || ex == nil {
+		return
+	}
+	if e.namedExecutors == nil {
+		e.namedExecutors = map[string]executor.Backend{}
+	}
+	e.namedExecutors[strings.ToLower(strings.TrimSpace(name))] = ex
+}
+
+// selectedNamedBackend returns a registered execution backend ONLY when the
+// agent explicitly selected one by name (and it maps to a non-"local" registered
+// backend). It returns nil for the default/unset case and for "local"/"process"
+// so those keep the local sandboxed subprocess path. This is the routing hook
+// for per-agent docker/ssh tool execution.
+func (e *Engine) selectedNamedBackend(def *agent.Definition) executor.Backend {
+	if def == nil {
+		return nil
+	}
+	name := strings.ToLower(strings.TrimSpace(def.Execution.Backend))
+	if name == "" || name == "local" || name == "process" {
+		return nil
+	}
+	if ex, ok := e.namedExecutors[name]; ok && ex != nil {
+		return ex
+	}
+	return nil
+}
 
 // progressPublisher is satisfied by *gateway.EventHub (and any test double).
 // Defined locally to avoid importing gateway from runtime.
@@ -792,6 +857,47 @@ func (e *Engine) dynamicConfirm(ctx context.Context, def *agent.Definition, call
 	}
 }
 
+// sideEffectingTools are the built-ins whose execution changes external state.
+// Dry-run simulates exactly these (plus MCP/plugin tools) and lets read-only
+// tools run normally.
+var sideEffectingTools = map[string]bool{
+	"shell_exec":      true,
+	"run_script":      true,
+	"install_library": true,
+	"python_eval":     true,
+	"write_file":      true,
+	"download_file":   true,
+	"http_request":    true,
+}
+
+func isSideEffectingTool(name string) bool {
+	if sideEffectingTools[name] {
+		return true
+	}
+	return strings.HasPrefix(name, "mcp__") || strings.HasPrefix(name, "plugin__")
+}
+
+// dryRunResult returns a human- and model-readable simulated result describing
+// what the tool would have done, so the reasoning loop can continue.
+func dryRunResult(call message.ToolCall) string {
+	argsJSON, _ := json.Marshal(call.Arguments)
+	return fmt.Sprintf("[DRY RUN] Skipped %q — no action taken. Would have executed with args: %s", call.Name, string(argsJSON))
+}
+
+// policyConfigFor adapts the agent's declarative policy block into the pure
+// policy.Config the evaluator consumes.
+func policyConfigFor(def *agent.Definition) policy.Config {
+	return policy.Config{
+		Enabled:      def.Policy.Enabled,
+		Shell:        def.Policy.Shell,
+		File:         def.Policy.File,
+		Network:      def.Policy.Network,
+		AllowDomains: def.Policy.AllowDomains,
+		DenyDomains:  def.Policy.DenyDomains,
+		DenyPaths:    def.Policy.DenyPaths,
+	}
+}
+
 // logAudit records a tool call to the audit logger (no-op when auditLog is nil).
 func (e *Engine) logAudit(ctx context.Context, def *agent.Definition, call message.ToolCall, result string, start time.Time, denied bool, err error) {
 	if e.auditLog == nil {
@@ -900,6 +1006,10 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// workflows. These tools avoid write_file/system access for ephemeral
 	// intermediate state.
 	tools = append(tools, e.buildQueueBuiltins()...)
+
+	if e.actionLog != nil {
+		tools = append(tools, e.buildSessionSearchBuiltin())
+	}
 
 	// Skill built-ins are only added when a skill loader is configured;
 	// other built-ins (kb_search, …) are appended below regardless.
@@ -2953,8 +3063,8 @@ func (e *Engine) buildSystemPrefix(def *agent.Definition) string {
 			}
 		}
 	}
-	if e.skillLoader != nil && len(def.Skills) > 0 {
-		if catalog := e.skillCatalogFor(def.Skills); catalog != "" {
+	if e.skillLoader != nil {
+		if catalog := e.skillCatalogFor(e.effectiveSkillNames(def)); catalog != "" {
 			systemPrompt += "\n\n" +
 				"## Available Skills\n" +
 				"The following skills provide specialized instructions for specific tasks.\n" +
@@ -3324,6 +3434,35 @@ func (e *Engine) runTool(ctx context.Context, def *agent.Definition, sessionID s
 }
 
 func (e *Engine) runToolDispatch(ctx context.Context, def *agent.Definition, sessionID string, call message.ToolCall) (string, error) {
+	// Tool policy runs first so a denied high-risk action (shell/file/network)
+	// never reaches any handler, regardless of tool category. Prompt decisions
+	// reuse the same confirm channel as the deterministic guardrail.
+	if def != nil && def.Policy.Enabled {
+		action, reason := policy.Evaluate(policyConfigFor(def), call.Name, call.Arguments)
+		switch action {
+		case policy.ActionDeny:
+			e.log.Warn("policy denied tool execution",
+				zap.String("agent", def.ID), zap.String("tool", call.Name), zap.String("reason", reason))
+			e.logAudit(ctx, def, call, "", time.Now(), true, nil)
+			return "", fmt.Errorf("policy denied execution: %s", reason)
+		case policy.ActionPrompt:
+			if err := e.dynamicConfirm(ctx, def, call, reason); err != nil {
+				return "", err
+			}
+		}
+	}
+
+	// Dry-run: simulate side-effecting tool calls (shell/file-write/network/
+	// MCP/plugin) instead of executing them. Read-only tools still run so the
+	// agent can gather context. Applies when the agent opts in OR the request does.
+	if (def != nil && def.DryRun) || dryRunFrom(ctx) {
+		if isSideEffectingTool(call.Name) {
+			result := dryRunResult(call)
+			e.logAudit(ctx, def, call, result, time.Now(), false, nil)
+			return result, nil
+		}
+	}
+
 	// MCP tools — namespaced as mcp__<server>__<tool>. Route to the MCP client.
 	if e.mcpClient != nil && strings.HasPrefix(call.Name, mcp.FullNamePrefix) {
 		if !mcpToolAllowed(def, call.Name) {
@@ -3562,6 +3701,23 @@ print(result if isinstance(result, str) else json.dumps(result))
 	tctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
+	// Per-agent execution backend: when the agent explicitly selected a
+	// registered non-default backend (docker/ssh/…), run the tool's python
+	// through it instead of the local sandboxed subprocess. `script` is already
+	// a complete, self-contained program (import bootstrap for file tools, or
+	// the inline source) that reads JSON args from stdin and prints its result,
+	// so it maps directly onto the backend's inline entrypoint. Agents that
+	// leave `execution.backend` unset keep the byte-for-byte local path below.
+	if be := e.selectedNamedBackend(def); be != nil {
+		tstart := time.Now()
+		out, rerr := be.Run(tctx, "", "", script, argsJSON)
+		e.logAudit(ctx, def, call, out, tstart, false, rerr)
+		if rerr != nil {
+			return "", fmt.Errorf("tool %q (%s backend): %w", call.Name, def.Execution.Backend, rerr)
+		}
+		return strings.TrimSpace(out), nil
+	}
+
 	// PRODUCTION_AUDIT → F1 (2026-05-27): wrap the python invocation in
 	// the soulacy __exec-sandbox subcommand to apply CPU/memory/FD/file
 	// caps before execve. When sandboxing is disabled OR we couldn't
@@ -3715,7 +3871,7 @@ func (e *Engine) allToolSchemas(def *agent.Definition, channel string) []llm.Too
 		}
 		switch b.Gate {
 		case "skills":
-			if len(def.Skills) == 0 {
+			if len(e.effectiveSkillNames(def)) == 0 {
 				continue
 			}
 		case "knowledge":
@@ -4416,6 +4572,51 @@ func (e *Engine) skillCatalogFor(names []string) string {
 	}
 	sb.WriteString("</available_skills>")
 	return sb.String()
+}
+
+// effectiveSkillNames returns the manually configured skills plus any accepted
+// learning-generated skills that were installed for this agent. This closes the
+// learning loop without mutating SOUL.yaml: accepted skills become available in
+// future planning with normal read_skill/read_skill_file attribution.
+func (e *Engine) effectiveSkillNames(def *agent.Definition) []string {
+	if def == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(def.Skills))
+	for _, name := range def.Skills {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	if e.learningStore == nil || !def.Learning.Enabled {
+		return out
+	}
+	props, err := e.learningStore.List(def.ID, learning.StatusAccepted, 50)
+	if err != nil {
+		return out
+	}
+	for _, p := range props {
+		if !strings.EqualFold(strings.TrimSpace(p.Kind), "skill") {
+			continue
+		}
+		name := ""
+		if p.Meta != nil {
+			name = strings.TrimSpace(p.Meta["skill_name"])
+		}
+		if name == "" || seen[name] {
+			continue
+		}
+		if e.skillLoader != nil && e.skillLoader.Get(name) == nil {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 // knowledgeCatalogFor builds an XML-ish catalog of the named knowledge bases

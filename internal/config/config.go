@@ -370,6 +370,26 @@ type ExecutorConfig struct {
 	SSHUser       string `mapstructure:"ssh_user"`       // ssh only: optional user
 	SSHPythonBin  string `mapstructure:"ssh_python_bin"` // ssh only: remote python binary
 	SSHIdentity   string `mapstructure:"ssh_identity"`   // ssh only: private key path
+
+	// DockerVolumes is the explicit mount allowlist for the docker backend
+	// (each entry "host:container[:ro]"). No host paths are mounted unless
+	// listed here, so the operator fully controls container disk access.
+	DockerVolumes []string `mapstructure:"docker_volumes"`
+
+	// SSHIdentityCredential, when set, names a secret in the encrypted vault
+	// holding the SSH private key. It is resolved at startup and written to a
+	// 0600 temp file used as the ssh identity — keeping the key out of config
+	// files and the process environment. Takes precedence over SSHIdentity.
+	SSHIdentityCredential string `mapstructure:"ssh_identity_credential"`
+
+	// CloudPreset registers a cloud-sandbox execution backend under its own name
+	// (one of: modal, runpod, daytona) that agents can select via
+	// execution.backend. CloudTarget is the provider handle (pod id / workspace /
+	// app); CloudCLI optionally overrides the provider CLI binary. The chosen
+	// provider CLI must be installed and authenticated on the host.
+	CloudPreset string `mapstructure:"cloud_preset"`
+	CloudTarget string `mapstructure:"cloud_target"`
+	CloudCLI    string `mapstructure:"cloud_cli"`
 }
 
 // AuthConfig controls API request authentication.

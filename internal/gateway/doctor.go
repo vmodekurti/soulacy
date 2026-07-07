@@ -38,7 +38,52 @@ func (s *Server) handleDoctor(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"providers": s.providerDoctorChecks(c),
 		"channels":  s.channelDoctorChecks(),
+		"vault":     s.vaultDoctorCheck(c),
 	})
+}
+
+type doctorVaultCheck struct {
+	Status  string `json:"status"`
+	Detail  string `json:"detail"`
+	Remedy  string `json:"remedy,omitempty"`
+	Secrets int    `json:"secrets"`
+}
+
+// vaultDoctorCheck verifies the encrypted credential vault is present and
+// actually decrypts (sy doctor v2 parity, surfaced in the GUI Doctor).
+func (s *Server) vaultDoctorCheck(c *fiber.Ctx) doctorVaultCheck {
+	mgr := secrets.New(s.CredentialVault())
+	if !mgr.Enabled() {
+		return doctorVaultCheck{
+			Status: "warn",
+			Detail: "no encrypted vault; secrets resolve from config/env only",
+			Remedy: "run `sy setup` or save a secret to initialize the vault",
+		}
+	}
+	names, err := mgr.List(c.Context())
+	if err != nil {
+		return doctorVaultCheck{
+			Status: "fail",
+			Detail: "vault is present but could not be listed: " + err.Error(),
+			Remedy: "the vault may be unreadable with the current master secret",
+		}
+	}
+	// Prove decryption end-to-end on the first stored secret.
+	if len(names) > 0 {
+		if _, ok := mgr.Get(c.Context(), names[0]); !ok {
+			return doctorVaultCheck{
+				Status:  "fail",
+				Detail:  "vault entries cannot be decrypted with the current master secret",
+				Remedy:  "restore the vault master-secret file or re-enter the affected secrets",
+				Secrets: len(names),
+			}
+		}
+	}
+	return doctorVaultCheck{
+		Status:  "ok",
+		Detail:  "vault decrypts and is consistent",
+		Secrets: len(names),
+	}
 }
 
 func (s *Server) providerDoctorChecks(c *fiber.Ctx) []doctorProviderCheck {

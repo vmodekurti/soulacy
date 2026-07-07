@@ -70,7 +70,9 @@
   // Learning proposals
   let proposals      = []
   let learningSummary = null
+  let learningEvidence = null
   let learningBusy   = false
+  let reflectingRuns = false
   let proposalStatus = 'pending'
   let editingProposalID = ''
   let proposalEdit = { title: '', content: '', skill_name: '' }
@@ -194,14 +196,34 @@
   async function loadLearning() {
     learningBusy = true
     try {
-      const [res, summaryRes] = await Promise.all([
+      const [res, summaryRes, evidenceRes] = await Promise.all([
         api.brainMemory.learningProposals(selectedID, proposalStatus),
         api.brainMemory.learningSummary(selectedID),
+        api.brainMemory.learningEvidence(selectedID),
       ])
       proposals = res.proposals || []
       learningSummary = summaryRes.summary || null
+      learningEvidence = evidenceRes.evidence || null
     } catch (e) { error = e.message }
     learningBusy = false
+  }
+
+  async function reflectRecentRuns() {
+    if (!selectedID) return
+    reflectingRuns = true
+    error = null
+    notice = null
+    try {
+      const res = await api.brainMemory.reflectRecentRuns(selectedID)
+      const created = res.created || 0
+      const reviewed = res.reviewed || 0
+      notice = created
+        ? `Created ${created} learning proposal${created === 1 ? '' : 's'} from ${reviewed} recent run${reviewed === 1 ? '' : 's'}.`
+        : `Reviewed ${reviewed} recent run${reviewed === 1 ? '' : 's'}; no new proposals were needed.`
+      proposalStatus = 'pending'
+      await loadLearning()
+    } catch (e) { error = e.message }
+    reflectingRuns = false
   }
 
   async function acceptProposal(p) {
@@ -561,6 +583,9 @@
         <option value="rejected">Rejected</option>
         <option value="">All</option>
       </select>
+      <button class="btn-secondary" on:click={reflectRecentRuns} disabled={learningBusy || reflectingRuns || !selectedID}>
+        {reflectingRuns ? 'Reflecting…' : 'Reflect recent runs'}
+      </button>
       <button class="btn-secondary" on:click={loadLearning} disabled={learningBusy}>{learningBusy?'Refreshing…':'Refresh'}</button>
     </div>
     {#if learningSummary}
@@ -581,6 +606,13 @@
           <div class="lh-val">{pct(learningSummary.average_confidence)}</div>
           <div class="lh-label">Avg confidence</div>
         </div>
+        <div class="lh-card">
+          <div class="lh-val green">{learningSummary.background_runs || 0}</div>
+          <div class="lh-label">Auto-reflections</div>
+          {#if learningSummary.latest_background}
+            <div class="lh-sub">{relTime(learningSummary.latest_background)}</div>
+          {/if}
+        </div>
         <div class="lh-card wide">
           <div class="lh-provenance">
             <span>Sources</span>
@@ -599,6 +631,51 @@
             {/each}
           </div>
         </div>
+      </div>
+    {/if}
+    {#if learningEvidence && (learningEvidence.accepted_skills > 0 || (learningEvidence.repeated_errors && learningEvidence.repeated_errors.length))}
+      <div class="learning-evidence">
+        <div class="le-head">
+          <span class="le-title">Is it working?</span>
+          <span class="le-sub">Evidence that accepted learnings reduce repeat work and repeat failures.</span>
+        </div>
+        <div class="le-grid">
+          <div class="le-metric">
+            <div class="le-val green">{learningEvidence.reused_skills || 0}<span class="le-of">/{learningEvidence.accepted_skills || 0}</span></div>
+            <div class="le-label">Accepted skills reused</div>
+          </div>
+          <div class="le-metric">
+            <div class="le-val">{learningEvidence.total_skill_uses || 0}</div>
+            <div class="le-label">Total skill reuses</div>
+          </div>
+          <div class="le-metric">
+            <div class="le-val" class:green={(learningEvidence.error_reduction || 0) > 0}>{pct(learningEvidence.error_reduction)}</div>
+            <div class="le-label">Repeat-error reduction</div>
+            <div class="le-sub2">{learningEvidence.errors_before || 0} → {learningEvidence.errors_after || 0} after learning</div>
+          </div>
+        </div>
+        {#if learningEvidence.skill_reuse && learningEvidence.skill_reuse.filter(s => s.uses > 0).length}
+          <div class="le-list">
+            <span class="le-list-title">Reused skills</span>
+            {#each learningEvidence.skill_reuse.filter(s => s.uses > 0) as s}
+              <div class="le-row">
+                <code>{s.skill_name}</code>
+                <span class="le-row-meta">{s.uses} use{s.uses === 1 ? '' : 's'} · {s.sessions} session{s.sessions === 1 ? '' : 's'}{#if s.last_used_at} · {relTime(s.last_used_at)}{/if}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
+        {#if learningEvidence.repeated_errors && learningEvidence.repeated_errors.length}
+          <div class="le-list">
+            <span class="le-list-title">Recurring failures</span>
+            {#each learningEvidence.repeated_errors.slice(0, 5) as e}
+              <div class="le-row">
+                <code class="le-err" title={e.sample || e.signature}>{e.sample || e.signature}</code>
+                <span class="le-row-meta" class:green={e.after < e.before}>{e.before} → {e.after}{#if e.before > 0} ({pct(e.reduction)} fewer){/if}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
       </div>
     {/if}
     {#if learningBusy}
@@ -821,15 +898,34 @@
   .dl.del { color: #f08080; }
   .dl.same { color: #9aa0c3; }
   .proposal-list{flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:.7rem;padding:.2rem 0}
-  .learning-health{display:grid;grid-template-columns:repeat(4,minmax(110px,1fr)) minmax(260px,2fr);gap:.65rem;flex-shrink:0}
+  .learning-health{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:.65rem;flex-shrink:0}
   .lh-card{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.65rem .8rem;min-height:70px;display:flex;flex-direction:column;justify-content:center}
   .lh-card.urgent{border-color:rgba(240,160,96,.45);background:rgba(240,160,96,.05)}
-  .lh-card.wide{gap:.42rem;align-items:stretch}
+  .lh-card.wide{gap:.42rem;align-items:stretch;grid-column:span 2}
   .lh-val{font-size:1.25rem;font-weight:750;color:#c5c9e8;line-height:1}
   .lh-val.green{color:#5fce9a}
   .lh-label{font-size:.66rem;color:#6b7294;text-transform:uppercase;letter-spacing:.05em;margin-top:.35rem}
+  .lh-sub{font-size:.68rem;color:#8a91b8;margin-top:.25rem}
   .lh-provenance{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap;font-size:.7rem;color:#6b7294}
   .lh-provenance span{font-weight:700;text-transform:uppercase;letter-spacing:.05em}
+  .learning-evidence{background:#12142250;border:1px solid #1a1e36;border-radius:10px;padding:.8rem .9rem;margin-top:.65rem;display:flex;flex-direction:column;gap:.7rem;flex-shrink:0}
+  .le-head{display:flex;flex-direction:column;gap:.15rem}
+  .le-title{font-size:.82rem;font-weight:750;color:#c5c9e8}
+  .le-sub{font-size:.7rem;color:#6b7294}
+  .le-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.6rem}
+  .le-metric{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.55rem .7rem}
+  .le-val{font-size:1.2rem;font-weight:750;color:#c5c9e8;line-height:1}
+  .le-val.green{color:#5fce9a}
+  .le-of{font-size:.8rem;color:#6b7294;font-weight:600}
+  .le-label{font-size:.64rem;color:#6b7294;text-transform:uppercase;letter-spacing:.05em;margin-top:.3rem}
+  .le-sub2{font-size:.66rem;color:#8a91b8;margin-top:.2rem}
+  .le-list{display:flex;flex-direction:column;gap:.3rem}
+  .le-list-title{font-size:.64rem;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:#6b7294}
+  .le-row{display:flex;align-items:center;justify-content:space-between;gap:.6rem;font-size:.72rem}
+  .le-row code{color:#c5c9e8;background:#141626;padding:.12rem .4rem;border-radius:5px;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .le-row code.le-err{color:#e6b17a}
+  .le-row-meta{color:#8a91b8;white-space:nowrap}
+  .le-row-meta.green{color:#5fce9a}
   .proposal-card{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.8rem .95rem;display:flex;flex-direction:column;gap:.55rem}
   .proposal-head{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
   .proposal-head strong{font-size:.86rem;color:#c5c9e8}

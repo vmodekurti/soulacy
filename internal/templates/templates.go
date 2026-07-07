@@ -295,6 +295,24 @@ func deriveSetup(def *agent.Definition) ([]SetupItem, []RequiredSecret, string, 
 		setup = append(setup, SetupItem{Key: "system", Label: "System access", Status: "needs_setup", Detail: "Requires runtime.allow_system_tools and explicit operator review."})
 	}
 
+	// web_search needs a search provider credential regardless of provider — the
+	// default (Ollama) hits ollama.com and needs an OLLAMA_API_KEY, and
+	// Tavily/Serper need their own keys. Flag it so the user configures a search
+	// provider before the agent runs, instead of hitting a runtime error.
+	if usesWebSearch(def) {
+		setup = append(setup, SetupItem{
+			Key:    "search",
+			Label:  "Web search",
+			Status: "needs_setup",
+			Detail: "This agent uses web_search — configure a search provider (Ollama, Tavily, or Serper) key.",
+		})
+		secrets = append(secrets, RequiredSecret{
+			Key:    "search.api_key",
+			Label:  "Web search provider key",
+			Reason: "Required for the web_search tool. Default provider is Ollama (needs an ollama.com API key at https://ollama.com/settings/keys); Tavily and Serper are also supported.",
+		})
+	}
+
 	scheduleHint := ""
 	outputHint := ""
 	if def.Trigger == agent.TriggerCron {
@@ -302,6 +320,22 @@ func deriveSetup(def *agent.Definition) ([]SetupItem, []RequiredSecret, string, 
 		outputHint = "Pick a Telegram, Slack, WhatsApp, or sidecar channel destination before enabling production delivery."
 	}
 	return setup, secrets, scheduleHint, outputHint
+}
+
+// usesWebSearch reports whether the agent relies on the web_search built-in,
+// either by declaring it in builtins or referencing it in the system prompt.
+func usesWebSearch(def *agent.Definition) bool {
+	if def == nil {
+		return false
+	}
+	if def.Builtins != nil {
+		for _, b := range *def.Builtins {
+			if strings.EqualFold(strings.TrimSpace(b), "web_search") {
+				return true
+			}
+		}
+	}
+	return strings.Contains(strings.ToLower(def.SystemPrompt), "web_search")
 }
 
 func providerDisplayName(provider string) string {

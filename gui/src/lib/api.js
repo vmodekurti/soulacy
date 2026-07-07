@@ -31,6 +31,28 @@ export async function apiFetch(path, opts = {}) {
   return text ? JSON.parse(text) : null
 }
 
+async function apiBlob(path, opts = {}) {
+  const res = await fetch('/api/v1' + path, {
+    ...opts,
+    headers: { ...authHeaders(), ...(opts.headers || {}) },
+  })
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}))
+    if (res.status === 401 || res.status === 403) authRequired.set(true)
+    throw Object.assign(new Error(body.error || res.statusText), { status: res.status, body })
+  }
+  authRequired.set(false)
+  return {
+    blob: await res.blob(),
+    filename: filenameFromDisposition(res.headers.get('content-disposition')),
+  }
+}
+
+function filenameFromDisposition(disposition) {
+  const m = /filename="?([^";]+)"?/i.exec(disposition || '')
+  return m?.[1] || ''
+}
+
 // streamSSE POSTs a body and parses a text/event-stream response, invoking
 // onEvent({event, data}) for each frame. Resolves when the stream closes.
 // Used by the Studio Architect's "Build until it works" so progress shows live.
@@ -91,7 +113,13 @@ export const api = {
     replay:  (id, sessionId) => apiFetch(`/agents/${id}/replay`, { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
     testScheduleOutput: (id) => apiFetch(`/agents/${id}/schedule-output/test`, { method: 'POST' }),
     clone:   (id)      => apiFetch(`/agents/${id}/clone`,   { method: 'POST' }),
-    actions: (id, limit = 500, types = '') => apiFetch(`/agents/${id}/actions?limit=${limit}${types ? '&types=' + encodeURIComponent(types) : ''}`),
+    actions: (id, limit = 500, types = '', opts = {}) => {
+      const q = new URLSearchParams()
+      q.set('limit', String(limit))
+      if (types) q.set('types', types)
+      if (opts.durable) q.set('durable', '1')
+      return apiFetch(`/agents/${id}/actions?${q.toString()}`)
+    },
   },
 
   templates: {
@@ -189,6 +217,34 @@ export const api = {
     list: (agentId) => apiFetch(`/memory/${agentId}`),
   },
 
+  proactive: {
+    suggestions: (max = 6) => apiFetch(`/proactive/suggestions?max=${max}`),
+  },
+
+  pairing: {
+    createToken: () => apiFetch('/pairing/tokens', { method: 'POST' }),
+    redeem: (code) => apiFetch('/pairing/redeem', { method: 'POST', body: JSON.stringify({ code }) }),
+  },
+
+  approvals: {
+    list: () => apiFetch('/approvals'),
+    approve: (id) => apiFetch(`/approvals/${encodeURIComponent(id)}/approve`, { method: 'POST' }),
+    deny: (id) => apiFetch(`/approvals/${encodeURIComponent(id)}/deny`, { method: 'POST' }),
+  },
+
+  push: {
+    publicKey: () => apiFetch('/push/public-key'),
+    subscribe: (subscription) => apiFetch('/push/subscribe', { method: 'POST', body: JSON.stringify(subscription) }),
+    unsubscribe: (endpoint) => apiFetch('/push/unsubscribe', { method: 'POST', body: JSON.stringify({ endpoint }) }),
+    test: () => apiFetch('/push/test', { method: 'POST' }),
+  },
+
+  browserTrace: (agentId, sessionId = '') => {
+    const p = new URLSearchParams({ agent_id: agentId })
+    if (sessionId) p.set('session_id', sessionId)
+    return apiFetch('/browser/trace?' + p.toString())
+  },
+
   brainMemory: {
     stats: () => apiFetch('/brain-memory'),
     episodic: (agentId, limit = 100) =>
@@ -236,10 +292,20 @@ export const api = {
       if (agentId) params.set('agent_id', agentId)
       return apiFetch('/learning/summary?' + params.toString())
     },
+    learningEvidence: (agentId = '') => {
+      const params = new URLSearchParams()
+      if (agentId) params.set('agent_id', agentId)
+      return apiFetch('/learning/evidence?' + params.toString())
+    },
     proposeFromRun: (agentId, sessionId, maxProposals = 3) =>
       apiFetch('/learning/propose-from-run', {
         method: 'POST',
         body: JSON.stringify({ agent_id: agentId, session_id: sessionId, max_proposals: maxProposals }),
+      }),
+    reflectRecentRuns: (agentId, limit = 5000, maxRuns = 20, maxProposals = 3) =>
+      apiFetch('/learning/reflect-recent-runs', {
+        method: 'POST',
+        body: JSON.stringify({ agent_id: agentId, limit, max_runs: maxRuns, max_proposals: maxProposals }),
       }),
     updateLearning: (id, patch) =>
       apiFetch(`/learning/proposals/${encodeURIComponent(id)}`, {
@@ -254,6 +320,7 @@ export const api = {
   channels: {
     list:    ()          => apiFetch('/channels'),
     update:  (id, patch) => apiFetch(`/channels/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
+    test:    (id, body = {}) => apiFetch(`/channels/${id}/test`, { method: 'POST', body: JSON.stringify(body) }),
     enable:  (id)        => apiFetch(`/channels/${id}/enable`,  { method: 'POST' }),
     disable: (id)        => apiFetch(`/channels/${id}/disable`, { method: 'POST' }),
     pairWhatsAppWeb: (body) => apiFetch('/channels/whatsapp_web/pair', {
@@ -264,6 +331,23 @@ export const api = {
   schedule: {
     list:   () => apiFetch('/schedule'),
     status: () => apiFetch('/schedule/status'),
+  },
+
+  queues: {
+    names:  () => apiFetch('/queues'),
+    create: (queue = 'default') => apiFetch('/queues', { method: 'POST', body: JSON.stringify({ queue }) }),
+    list:   (queue = 'default', limit = 25) => {
+      const q = new URLSearchParams()
+      if (queue) q.set('queue', queue)
+      if (limit) q.set('limit', String(limit))
+      return apiFetch('/queues/items?' + q.toString())
+    },
+    put:    (queue, item, ttlSeconds = 0) =>
+      apiFetch('/queues/items', { method: 'POST', body: JSON.stringify({ queue, item, ttl_seconds: ttlSeconds }) }),
+    take:   (queue = 'default') =>
+      apiFetch('/queues/take?queue=' + encodeURIComponent(queue), { method: 'POST' }),
+    clear:  (queue = 'default') =>
+      apiFetch('/queues/items?queue=' + encodeURIComponent(queue), { method: 'DELETE' }),
   },
 
   tools: {
@@ -300,6 +384,10 @@ export const api = {
       const qs = params.toString()
       return apiFetch('/logs' + (qs ? '?' + qs : ''))
     },
+  },
+
+  support: {
+    bundle: () => apiBlob('/support/bundle'),
   },
 
   skills: {
@@ -492,6 +580,17 @@ export const api = {
       if (agentId) q.set('agentId', agentId)
       if (runId) q.set('runId', runId)
       return apiFetch('/studio/run-trace?' + q.toString())
+    },
+    /**
+     * Deterministic diagnosis for a retained run trace: failed node, likely root
+     * cause, evidence, next action, and retry guidance.
+     * @returns {Promise<{agentId,runId,status,summary,failedNode,failedKind,error,rootCause,nextAction,suggestions,evidence,retryable,steps}>}
+     */
+    runDiagnosis: (agentId, runId) => {
+      const q = new URLSearchParams()
+      if (agentId) q.set('agentId', agentId)
+      if (runId) q.set('runId', runId)
+      return apiFetch('/studio/run-diagnosis?' + q.toString())
     },
     /**
      * Complete run history for an agent — EVERY retained run (scheduled and

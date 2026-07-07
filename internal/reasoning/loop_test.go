@@ -188,6 +188,39 @@ func (a *alwaysBadThinkLLM) Reflect(_ context.Context, _ reasoning.ReflectReques
 	return reasoning.ReflectResponse{Output: "should not need reflect"}, nil
 }
 
+type interleavedBadThinkLLM struct {
+	thinkCalls   int
+	reflectCalls int
+}
+
+func (i *interleavedBadThinkLLM) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	i.thinkCalls++
+	if i.thinkCalls == 1 {
+		return reasoning.ThinkResponse{
+			Thought: "get queue",
+			IsDone:  false,
+			Action:  reasoning.ToolCall{Tool: "queue_list", Input: map[string]string{"queue": "pending_resources"}},
+		}, nil
+	}
+	if i.thinkCalls == 5 || i.thinkCalls == 9 {
+		return reasoning.ThinkResponse{
+			Thought: "refresh",
+			IsDone:  false,
+			Action:  reasoning.ToolCall{Tool: "queue_list", Input: map[string]string{"queue": "pending_resources"}},
+		}, nil
+	}
+	return reasoning.ThinkResponse{}, errors.New("invalid reasoning JSON")
+}
+
+func (i *interleavedBadThinkLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{}, errors.New("plan not scripted")
+}
+
+func (i *interleavedBadThinkLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	i.reflectCalls++
+	return reasoning.ReflectResponse{Output: "Recovered from the last useful queue observation."}, nil
+}
+
 type fallbackPlanLLM struct {
 	thinkCalls int
 }
@@ -428,7 +461,34 @@ func TestReActStopsAfterRepeatedThinkErrors(t *testing.T) {
 	if len(result.Steps) != 4 {
 		t.Fatalf("steps = %d, want 4 controller error steps", len(result.Steps))
 	}
-	if !strings.Contains(result.Output, "invalid ReAct JSON repeatedly") {
+	if !strings.Contains(result.Output, "invalid ReAct JSON too many times") {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+}
+
+func TestReActReflectsAfterRepeatedThinkErrorsWithUsefulObservation(t *testing.T) {
+	llm := &interleavedBadThinkLLM{}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     30,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_list"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
+
+	if llm.thinkCalls != 4 {
+		t.Fatalf("think calls = %d, want 4 before reflective recovery", llm.thinkCalls)
+	}
+	if llm.reflectCalls != 1 {
+		t.Fatalf("reflect calls = %d, want 1 recovery reflection", llm.reflectCalls)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("tool calls = %d, want the initial valid call only", len(exec.calls))
+	}
+	if !strings.Contains(result.Output, "Recovered from the last useful queue observation") {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 }

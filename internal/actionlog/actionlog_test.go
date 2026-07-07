@@ -226,6 +226,63 @@ func TestTailFilteredRecoversOldRuns(t *testing.T) {
 	}
 }
 
+func TestQueryFilteredReadsDurableHistory(t *testing.T) {
+	dir := t.TempDir()
+	l, err := New(filepath.Join(dir, "logs"), filepath.Join(dir, "actions.db"), zap.NewNop())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer l.Close()
+
+	for i := 0; i < 3; i++ {
+		sid := "shared-thread"
+		l.Append(message.Event{
+			Type:      "message.in",
+			AgentID:   "durable-agent",
+			SessionID: sid,
+			Payload:   map[string]any{"channel": "telegram", "i": i},
+			Timestamp: time.Now().Add(time.Duration(i) * time.Second),
+		})
+		l.Append(message.Event{
+			Type:      "message.out",
+			AgentID:   "durable-agent",
+			SessionID: sid,
+			Payload:   map[string]any{"parts": []any{map[string]any{"type": "text", "text": "ok"}}},
+			Timestamp: time.Now().Add(time.Duration(i)*time.Second + time.Millisecond),
+		})
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		evs, err := l.Tail("durable-agent", 10)
+		if err != nil {
+			t.Fatalf("Tail: %v", err)
+		}
+		if len(evs) >= 6 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for actionlog flush, saw %d events", len(evs))
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	got, err := l.QueryFiltered("durable-agent", 10, map[string]bool{"message.in": true})
+	if err != nil {
+		t.Fatalf("QueryFiltered: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("events = %d, want 3", len(got))
+	}
+	for _, ev := range got {
+		if ev.Type != "message.in" {
+			t.Fatalf("event type = %q, want message.in", ev.Type)
+		}
+		if ev.Payload == nil {
+			t.Fatalf("payload was not decoded: %+v", ev)
+		}
+	}
+}
+
 func TestTailRespectsLimit(t *testing.T) {
 	l := newLogger(t)
 	for i := 0; i < 10; i++ {

@@ -25,6 +25,51 @@
   let yamlSaving  = false
   let yamlError   = ''      // parse/validation error from the server
   let yamlMsg     = ''      // success note
+  let execBackendChoice = ''
+
+  // Advanced config snippets appended into the SOUL.yaml editor.
+  const POLICY_SNIPPET = `policy:
+  enabled: true
+  shell: prompt          # allow | prompt | deny
+  file: prompt
+  network: allow
+  allow_domains: []      # e.g. [example.com] — network limited to these
+  deny_domains: []
+  deny_paths: []         # e.g. ["*.env", "/etc/*"]`
+
+  const DRYRUN_SNIPPET = `dry_run: true            # simulate side-effecting tools; no real actions`
+
+  // appendYamlBlock adds a block to the editor buffer if that top-level key
+  // isn't already present, keeping the insert idempotent.
+  function appendYamlBlock(block) {
+    const topKey = block.split(':')[0].trim()
+    const keyRe = new RegExp('^' + topKey + ':', 'm')
+    if (keyRe.test(yamlText)) {
+      yamlMsg = `"${topKey}" is already in this agent — edit it inline.`
+      return
+    }
+    yamlText = yamlText.replace(/\s*$/, '') + '\n\n' + block + '\n'
+    yamlError = ''
+    yamlMsg = `Added ${topKey} block — review and Save.`
+  }
+
+  // applyExecBackend sets or replaces the execution.backend value.
+  function applyExecBackend() {
+    if (!execBackendChoice) return
+    const block = `execution:\n  backend: ${execBackendChoice}`
+    if (/^execution:/m.test(yamlText)) {
+      // Replace an existing backend line, or append one under execution:.
+      if (/^\s+backend:.*$/m.test(yamlText)) {
+        yamlText = yamlText.replace(/^(\s+)backend:.*$/m, `$1backend: ${execBackendChoice}`)
+      } else {
+        yamlText = yamlText.replace(/^execution:.*$/m, `execution:\n  backend: ${execBackendChoice}`)
+      }
+    } else {
+      yamlText = yamlText.replace(/\s*$/, '') + '\n\n' + block + '\n'
+    }
+    yamlError = ''
+    yamlMsg = `Execution backend set to "${execBackendChoice}" — review and Save.`
+  }
 
   // ── Agent version history / rollback modal ───────────────────────────────
   let showHistory = false
@@ -2063,6 +2108,21 @@ console.log(reply);` : ''
       {#if yamlLoading}
         <div class="tpl-empty">Loading…</div>
       {:else}
+        <div class="yaml-tools">
+          <span class="yaml-tools-label">Insert:</span>
+          <select bind:value={execBackendChoice} class="yaml-select" title="Execution backend">
+            <option value="">execution backend…</option>
+            <option value="local">local</option>
+            <option value="docker">docker</option>
+            <option value="ssh">ssh</option>
+            <option value="modal">modal</option>
+            <option value="runpod">runpod</option>
+            <option value="daytona">daytona</option>
+          </select>
+          <button class="yaml-chip" type="button" on:click={applyExecBackend} disabled={!execBackendChoice}>Set backend</button>
+          <button class="yaml-chip" type="button" on:click={() => appendYamlBlock(POLICY_SNIPPET)}>+ policy</button>
+          <button class="yaml-chip" type="button" on:click={() => appendYamlBlock(DRYRUN_SNIPPET)}>+ dry-run</button>
+        </div>
         <textarea
           class="yaml-area"
           spellcheck="false"
@@ -2149,6 +2209,12 @@ console.log(reply);` : ''
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
   .ok-banner { background: rgba(76,175,130,.12); border: 1px solid rgba(76,175,130,.35); color: #4caf82; }
 
+  .yaml-tools { display: flex; align-items: center; flex-wrap: wrap; gap: .4rem; margin-bottom: .5rem; }
+  .yaml-tools-label { font-size: .72rem; color: #6b7294; font-weight: 600; }
+  .yaml-select { background: #0e1020; color: #d7dcf5; border: 1px solid #1a1e36; border-radius: 6px; padding: .25rem .4rem; font-size: .74rem; }
+  .yaml-chip { background: #171a2e; color: #9aa0c8; border: 1px solid #232847; border-radius: 6px; padding: .25rem .55rem; font-size: .74rem; cursor: pointer; }
+  .yaml-chip:hover:not(:disabled) { color: #c5c9e8; border-color: #3a406a; }
+  .yaml-chip:disabled { opacity: .5; cursor: default; }
   .yaml-area {
     width: 100%; min-height: 420px; resize: vertical;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;

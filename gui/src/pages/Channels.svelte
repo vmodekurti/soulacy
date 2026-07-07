@@ -73,6 +73,21 @@
     }
   }
 
+  async function testChannel(ch, row = null) {
+    const adapterId = row?.adapter_id || ch.id
+    actionLoading = { ...actionLoading, [`test:${adapterId}`]: true }
+    error = ''
+    notice = ''
+    try {
+      const res = await api.channels.test(ch.id, row ? { adapter_id: adapterId } : {})
+      notice = `Delivery test sent through ${res.channel}${res.to ? ` to ${res.to}` : ''}.`
+    } catch (e) {
+      error = e.message
+    } finally {
+      actionLoading = { ...actionLoading, [`test:${adapterId}`]: false }
+    }
+  }
+
   function openEdit(ch) {
     editing = ch
     form = {}
@@ -217,6 +232,14 @@
 
   function hasDefaultSender(ch) {
     return !!(ch.settings?.token || ch.settings?.default_output_to || ch.settings?.bot_name)
+  }
+
+  function canTestChannel(ch) {
+    return ch.id !== 'http' && ch.enabled && ch.registered
+  }
+
+  function canTestMapping(ch, row) {
+    return ch.id !== 'http' && ch.enabled && row?.connected
   }
 
   function interactiveBots(ch) {
@@ -440,7 +463,18 @@
                       {#if row.bot_name}<em>{row.adapter_id}</em>{/if}
                       <span>{row.connected ? 'connected' : (row.detail || 'pending restart')}</span>
                     </div>
-                    <strong class:send-only={row.outbound_only}>{row.agent_id}</strong>
+                    <div class="mapping-actions">
+                      <strong class:send-only={row.outbound_only}>{row.agent_id}</strong>
+                      {#if ch.id !== 'http'}
+                        <button
+                          class="btn-secondary tiny"
+                          disabled={!canTestMapping(ch, row) || actionLoading[`test:${row.adapter_id}`]}
+                          title={!row.connected ? 'Restart or reconnect this bot mapping before testing' : 'Send a real test message through this bot mapping'}
+                          on:click={() => testChannel(ch, row)}>
+                          {actionLoading[`test:${row.adapter_id}`] ? '…' : 'Test'}
+                        </button>
+                      {/if}
+                    </div>
                   </div>
                 {/each}
               </div>
@@ -465,6 +499,15 @@
             {#if ch.schema?.length}
               <button class="btn-secondary small-btn" on:click={() => openEdit(ch)}>
                 {ch.id === 'whatsapp_web' ? 'Connect' : 'Edit'}
+              </button>
+            {/if}
+            {#if ch.id !== 'http'}
+              <button
+                class="btn-secondary small-btn"
+                disabled={!canTestChannel(ch) || actionLoading[`test:${ch.id}`]}
+                title={!ch.registered ? 'Save settings and restart the gateway before testing' : !ch.enabled ? 'Enable this channel before testing' : 'Send a real test message through this channel'}
+                on:click={() => testChannel(ch)}>
+                {actionLoading[`test:${ch.id}`] ? 'Testing…' : 'Test'}
               </button>
             {/if}
             {#if !ch.always}
@@ -723,14 +766,16 @@
   .ch-card.enabled { border-color: rgba(108,99,255,.3); }
 
   .ch-header {
-    display: flex; align-items: center; gap: .75rem;
+    display: flex; align-items: flex-start; gap: .75rem;
     padding: .9rem 1rem; border-bottom: 1px solid #1a1e36;
   }
-  .ch-icon   { font-size: 1.4rem; }
-  .ch-identity { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-  .ch-name   { font-weight: 600; font-size: .9rem; }
-  .ch-id     { font-size: .72rem; color: #555a7a; font-family: monospace; }
-  .ch-badge  { font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; text-align: right; }
+  .ch-icon   { font-size: 1.4rem; line-height: 1.2; flex: 0 0 auto; }
+  .ch-identity { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+  .ch-name   { font-weight: 600; font-size: .9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ch-id     { font-size: .72rem; color: #555a7a; font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A long status detail (e.g. the WhatsApp "scan QR" hint) must stay in its own
+     column on the right and wrap within itself instead of overlapping the name. */
+  .ch-badge  { flex: 0 1 auto; max-width: 45%; font-size: .7rem; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; text-align: right; line-height: 1.25; overflow-wrap: anywhere; }
 
   .ch-body   { flex: 1; padding: .75rem 1rem; display: flex; flex-direction: column; gap: .45rem; }
   .ch-row    { display: flex; justify-content: space-between; font-size: .82rem; gap: .5rem; }
@@ -751,6 +796,8 @@
   .mapping-row span { color: #555a7a; font-size: .68rem; }
   .mapping-row strong { color: #c8cadf; font-size: .78rem; text-align: right; word-break: break-word; }
   .mapping-row strong.send-only { color: #4caf82; }
+  .mapping-actions { display: flex; align-items: center; justify-content: flex-end; gap: .35rem; min-width: 7rem; }
+  .mapping-actions strong { max-width: 9rem; }
   .diagnostics { margin-top: .35rem; padding-top: .5rem; border-top: 1px solid #1a1e36; display: flex; flex-direction: column; gap: .4rem; }
   .diag-row {
     display: grid; grid-template-columns: 3.8rem minmax(0,1fr); gap: .25rem .45rem;

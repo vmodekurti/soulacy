@@ -11,6 +11,8 @@
   let authError = false
   let eventsEl
   let eventFilter = 'all'
+  let suggestions = []
+  let dismissed = new Set()
 
   const EVENT_FILTERS = [
     { id: 'all', label: 'All' },
@@ -37,6 +39,17 @@
       error     = e.message
       authError = e.status === 401 || e.status === 403
     }
+    try {
+      const res = await api.proactive.suggestions()
+      suggestions = (res.suggestions || []).filter(s => !dismissed.has(s.kind + ':' + s.agent_id))
+    } catch {
+      suggestions = []
+    }
+  }
+
+  function dismiss(s) {
+    dismissed.add(s.kind + ':' + s.agent_id)
+    suggestions = suggestions.filter(x => x !== s)
   }
 
   function connectWS() {
@@ -132,6 +145,28 @@
     </div>
   </div>
 
+  <!-- Proactive suggestions -->
+  {#if suggestions.length}
+    <div class="section suggest-section">
+      <div class="section-hdr">
+        <span>Suggested for you</span>
+        <span class="pill">{suggestions.length}</span>
+      </div>
+      <div class="suggest-list">
+        {#each suggestions as s}
+          <div class="suggest-card" class:review={s.kind === 'review'}>
+            <div class="suggest-body">
+              <div class="suggest-title">{s.title}</div>
+              <div class="suggest-detail">{s.detail}</div>
+              <div class="suggest-action">→ {s.action}</div>
+            </div>
+            <button class="suggest-dismiss" title="Dismiss" on:click={() => dismiss(s)}>×</button>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
   <!-- Live event log -->
   <div class="section">
     <div class="section-hdr">
@@ -196,6 +231,17 @@
     font-size: .875rem; font-weight: 600; flex-shrink: 0;
   }
   .pill      { font-size: .7rem; padding: .15rem .5rem; border-radius: 999px; background: #1c1f35; color: #6b7294; }
+  /* Suggestions sit above the live log and must size to their content — reset
+     the .section flex-grow/clip so cards aren't cut off. */
+  .suggest-section { margin-bottom: 1rem; flex: 0 0 auto; overflow: visible; }
+  .suggest-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: .6rem; padding: .8rem 1rem; }
+  .suggest-card { position: relative; display: flex; gap: .5rem; background: #141626; border: 1px solid #232847; border-left: 3px solid #6c63ff; border-radius: 9px; padding: .7rem .85rem; }
+  .suggest-card.review { border-left-color: #f0a060; }
+  .suggest-title { font-size: .82rem; font-weight: 650; color: #c5c9e8; }
+  .suggest-detail { font-size: .72rem; color: #8a91b8; margin-top: .28rem; line-height: 1.35; }
+  .suggest-action { font-size: .72rem; color: #7d84c9; margin-top: .4rem; font-weight: 600; }
+  .suggest-dismiss { position: absolute; top: .35rem; right: .45rem; background: transparent; border: 0; color: #4a4f70; font-size: 1rem; line-height: 1; cursor: pointer; }
+  .suggest-dismiss:hover { color: #c5c9e8; }
   .pill-live { background: rgba(76,175,130,.15); color: #4caf82; }
   .filter-tabs { margin-left: auto; display: inline-flex; gap: .25rem; padding: .15rem; background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px; }
   .filter-tabs button {

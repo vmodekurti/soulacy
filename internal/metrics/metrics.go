@@ -176,6 +176,41 @@ var (
 		},
 		[]string{"channel"}, // channel ID, or "unknown" when not determinable
 	)
+
+	// --- Mobile companion: approvals, pairing, push ---
+
+	// ApprovalsResolvedTotal counts tool-approval decisions by outcome
+	// ("approved" or "denied"), regardless of which device resolved them.
+	ApprovalsResolvedTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "soulacy_approvals_resolved_total",
+			Help: "Tool-call approval decisions, labeled by outcome.",
+		},
+		[]string{"outcome"},
+	)
+	// PairingTokensTotal counts pairing token lifecycle events ("issued",
+	// "redeemed", "rejected").
+	PairingTokensTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "soulacy_pairing_tokens_total",
+			Help: "Mobile pairing token events, labeled by result.",
+		},
+		[]string{"result"},
+	)
+	// PushSubscriptions is the current number of stored web-push subscriptions.
+	PushSubscriptions = prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "soulacy_push_subscriptions",
+		Help: "Web-push subscriptions currently registered.",
+	})
+	// PushSentTotal counts push notifications by delivery result ("sent" or
+	// "gone").
+	PushSentTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "soulacy_push_sent_total",
+			Help: "Web-push notifications attempted, labeled by result.",
+		},
+		[]string{"result"},
+	)
 )
 
 func init() {
@@ -187,6 +222,7 @@ func init() {
 		ActionlogQueueDepth, ActionlogBatchSize, ActionlogDropsTotal,
 		WorkerPoolActiveRuns,
 		ChannelInboxDropsTotal,
+		ApprovalsResolvedTotal, PairingTokensTotal, PushSubscriptions, PushSentTotal,
 		// Process + Go runtime collectors give us memory / CPU / GC for free.
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
 		prometheus.NewGoCollector(),

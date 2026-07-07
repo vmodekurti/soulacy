@@ -17,6 +17,7 @@
   let restartNeeded   = false
   let restarting      = false
   let doctor          = []
+  let vaultCheck      = null
   let doctorLoading   = false
 
   // Add/edit-credentials modal state
@@ -101,6 +102,7 @@
     try {
       const res = await api.providers.doctor()
       doctor = res.providers || []
+      vaultCheck = res.vault || null
     } catch (e) {
       error = e.message
     } finally {
@@ -360,6 +362,19 @@
 
   {#if defaultProvider}
     <div class="default-banner">Default provider: <strong>{defaultProvider}</strong></div>
+  {/if}
+
+  {#if vaultCheck}
+    <div class="doctor-card" class:has-fail={vaultCheck.status === 'fail'} class:has-warn={vaultCheck.status === 'warn'}>
+      <div class="doctor-head">
+        <div>
+          <h2>Vault Consistency</h2>
+          <p>{vaultCheck.detail}{vaultCheck.secrets ? ` · ${vaultCheck.secrets} secret${vaultCheck.secrets === 1 ? '' : 's'}` : ''}</p>
+        </div>
+        <span class="vault-status {vaultCheck.status}">{vaultCheck.status === 'ok' ? '● healthy' : vaultCheck.status === 'warn' ? '▲ warning' : '✕ failing'}</span>
+      </div>
+      {#if vaultCheck.remedy}<div class="vault-remedy">→ {vaultCheck.remedy}</div>{/if}
+    </div>
   {/if}
 
   {#if doctor.length > 0}
@@ -831,6 +846,11 @@
   }
   .doctor-card.has-warn { border-color: rgba(240,196,96,.28); }
   .doctor-card.has-fail { border-color: rgba(240,96,96,.32); }
+  .vault-status { font-size: .74rem; font-weight: 700; }
+  .vault-status.ok { color: #5fce9a; }
+  .vault-status.warn { color: #e6c060; }
+  .vault-status.fail { color: #f06060; }
+  .vault-remedy { margin-top: .5rem; font-size: .76rem; color: #8a91b8; }
   .doctor-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
   .doctor-head h2 { font-size: .95rem; font-weight: 600; margin-bottom: .2rem; }
   .doctor-head p { font-size: .76rem; color: #7b82a8; }

@@ -60,7 +60,7 @@
       const sid = ev.session_id || 'unknown'
       if (!activeBySession[sid] || startTypes.has(ev.type)) {
         const run = {
-          id: `${sid}:${ev.timestamp || runs.length}`,
+          id: `${sid}:${ev.timestamp || runs.length}:${runs.length}`,
           sessionId: sid,
           events: [],
         }
@@ -113,11 +113,24 @@
     expandedRuns   = {}
     historyLoading = true
     try {
-      // Request a large tail but filter to only the event types needed for
-      // run summaries — this excludes tool.log (every stdout line) which
-      // would otherwise eat the limit and hide older completed runs.
-      const res = await api.agents.actions(a.id, 2000, 'message.in,message.out,error,tool.result')
-      historyRuns = groupRuns(res.events || [])
+      const hist = await api.studio.runHistory(a.id)
+      historyRuns = (hist.runs || []).map((r) => ({
+        id: r.runId,
+        sessionId: r.runId,
+        startTime: r.startedAt,
+        status: r.ok ? 'success' : 'failed',
+        output: r.error || '',
+        channel: r.trigger || '',
+        steps: r.steps || 0,
+        source: 'run-history',
+      }))
+      if (historyRuns.length === 0) {
+        // Fallback for classic/non-flow agents: request a large tail but filter
+        // to only run-summary event types so noisy tool.log lines do not hide
+        // older completed runs.
+        const res = await api.agents.actions(a.id, 5000, 'message.in,message.out,error,tool.result', { durable: true })
+        historyRuns = groupRuns(res.events || [])
+      }
     } catch (e) {
       historyError = e.message
     } finally {
@@ -648,6 +661,7 @@ schedule:
                 </span>
                 <span class="run-time">{run.startTime ? new Date(run.startTime).toLocaleString() : '—'}</span>
                 {#if run.channel}<span class="run-channel">{run.channel}</span>{/if}
+                {#if run.steps}<span class="run-channel">{run.steps} step{run.steps === 1 ? '' : 's'}</span>{/if}
                 <span class="run-chevron">{expandedRuns[run.id] ? '▲' : '▼'}</span>
               </button>
               {#if expandedRuns[run.id]}

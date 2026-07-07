@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/soulacy/soulacy/internal/channels"
+	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 )
 
@@ -67,6 +68,81 @@ func TestChannelSendBuiltinUsesInboundContextAndMessageAlias(t *testing.T) {
 		t.Fatalf("sent channel = %q, want inbound adapter", adp.sent.Channel)
 	}
 	if adp.sent.ThreadID != "8546291328" || firstText(adp.sent) != "queued" {
+		t.Fatalf("sent message mismatch: %+v", adp.sent)
+	}
+}
+
+func TestChannelSendBuiltinAcceptsCommonAliases(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	adp := &channelSendCaptureAdapter{id: "slack-research"}
+	reg.Register(adp)
+	e.SetChannelRegistry(reg)
+
+	tool := builtinByName(t, e.buildBuiltins(), "channel.send")
+	out, err := tool.Handler(context.Background(), map[string]any{
+		"adapter":    "slack-research",
+		"channel_id": "C123",
+		"body":       "queued",
+	})
+	if err != nil {
+		t.Fatalf("channel.send returned error: %v", err)
+	}
+	if !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("channel.send result should confirm success, got %s", out)
+	}
+	if adp.sent.Channel != "slack-research" || adp.sent.ThreadID != "C123" || firstText(adp.sent) != "queued" {
+		t.Fatalf("sent message mismatch: %+v", adp.sent)
+	}
+}
+
+func TestChannelSendBuiltinUsesConfiguredDefaultDestination(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	adp := &channelSendCaptureAdapter{id: "telegram-research-librarian"}
+	reg.Register(adp)
+	e.SetChannelRegistry(reg)
+	e.SetChannelDefaultOutputs(map[string]agent.ScheduleOutput{
+		"telegram": {
+			Channel: "telegram-research-librarian",
+			To:      "8546291328",
+		},
+	})
+
+	tool := builtinByName(t, e.buildBuiltins(), "channel.send")
+	out, err := tool.Handler(context.Background(), map[string]any{
+		"channel": "telegram",
+		"text":    "queued",
+	})
+	if err != nil {
+		t.Fatalf("channel.send returned error: %v", err)
+	}
+	if !strings.Contains(out, `"channel":"telegram-research-librarian"`) {
+		t.Fatalf("channel.send result should resolve concrete adapter, got %s", out)
+	}
+	if adp.sent.Channel != "telegram-research-librarian" || adp.sent.ThreadID != "8546291328" {
+		t.Fatalf("sent route mismatch: %+v", adp.sent)
+	}
+}
+
+func TestChannelSendBuiltinUsesOnlyDefaultChannelWhenChannelOmitted(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	adp := &channelSendCaptureAdapter{id: "slack"}
+	reg.Register(adp)
+	e.SetChannelRegistry(reg)
+	e.SetChannelDefaultOutputs(map[string]agent.ScheduleOutput{
+		"slack": {Channel: "slack", To: "C123"},
+	})
+
+	tool := builtinByName(t, e.buildBuiltins(), "channel.send")
+	_, err := tool.Handler(context.Background(), map[string]any{
+		"text": "hello default",
+	})
+	if err != nil {
+		t.Fatalf("channel.send returned error: %v", err)
+	}
+	if adp.sent.Channel != "slack" || adp.sent.ThreadID != "C123" || firstText(adp.sent) != "hello default" {
 		t.Fatalf("sent message mismatch: %+v", adp.sent)
 	}
 }

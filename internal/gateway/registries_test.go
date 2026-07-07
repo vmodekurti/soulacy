@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/soulacy/soulacy/pkg/skill"
 	"gopkg.in/yaml.v3"
 )
 
@@ -121,6 +122,17 @@ registries:
 	if !strings.Contains(warnings[0].(string), "authentication_required: token required") {
 		t.Fatalf("warning = %q", warnings[0])
 	}
+	if body["status"] != "degraded" || body["auth_required"] != true {
+		t.Fatalf("expected degraded auth-required response, body=%v", body)
+	}
+	checked, ok := body["checked"].([]any)
+	if !ok || len(checked) != 1 || checked[0] != "test-skills" {
+		t.Fatalf("checked providers = %#v", body["checked"])
+	}
+	suggestions, ok := body["suggestions"].([]any)
+	if !ok || len(suggestions) == 0 {
+		t.Fatalf("expected auth suggestions, body=%v", body)
+	}
 }
 
 func TestSearchRegistries_UsesConfiguredAuthHeaders(t *testing.T) {
@@ -160,6 +172,56 @@ registries:
 		t.Fatalf("count = %v, body = %v", body["count"], body)
 	}
 	if warnings, ok := body["warnings"].([]any); !ok || len(warnings) != 0 {
+		t.Fatalf("warnings = %#v", body["warnings"])
+	}
+	if body["status"] != "ok" || body["auth_required"] != false {
+		t.Fatalf("expected ok/non-auth response, body=%v", body)
+	}
+}
+
+func TestSearchRegistries_IncludesInstalledLocalSkillMatches(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"authentication_required","message":"token required"}`))
+	})
+	dir := httptest.NewServer(mux)
+	defer dir.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	seed := `
+server:
+  port: 18789
+registries:
+  - id: remote-skills
+    type: skillssh
+    base_url: ` + dir.URL + `
+    priority: 10
+`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	s.skillLoader = &rescanSkillLoader{skills: []*skill.Skill{{
+		Name:        "options-strategy-advisor",
+		Description: "Options strategy guidance and risk framing",
+		Path:        "/tmp/options-strategy-advisor/SKILL.md",
+	}}}
+
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/registries/search?q=options-strategy-advisor", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d %v", status, body)
+	}
+	if body["count"].(float64) != 1 {
+		t.Fatalf("count = %v, body = %v", body["count"], body)
+	}
+	pkgs := body["packages"].([]any)
+	pkg := pkgs[0].(map[string]any)
+	if pkg["slug"] != "options-strategy-advisor" || pkg["provider"] != "local" || pkg["version"] != "installed" {
+		t.Fatalf("local package = %v", pkg)
+	}
+	warnings, ok := body["warnings"].([]any)
+	if !ok || len(warnings) != 1 {
 		t.Fatalf("warnings = %#v", body["warnings"])
 	}
 }

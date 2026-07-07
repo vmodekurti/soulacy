@@ -23,10 +23,18 @@ type Executor struct {
 	image      string
 	pythonBin  string
 	network    string
+	volumes    []string // explicit -v mount specs (host:container[:ro]); the allowlist
 	onProgress func(message.ProgressEvent)
 }
 
 func New(image, pythonBin, network string) *Executor {
+	return NewWithVolumes(image, pythonBin, network, nil)
+}
+
+// NewWithVolumes is New plus an explicit volume allowlist. Only the mounts named
+// here are bound into the container — there are no implicit host mounts — so the
+// operator fully controls what container-run tool code can touch on disk.
+func NewWithVolumes(image, pythonBin, network string, volumes []string) *Executor {
 	if strings.TrimSpace(image) == "" {
 		image = "python:3.12-slim"
 	}
@@ -36,7 +44,13 @@ func New(image, pythonBin, network string) *Executor {
 	if strings.TrimSpace(network) == "" {
 		network = "none"
 	}
-	return &Executor{image: image, pythonBin: pythonBin, network: network}
+	clean := make([]string, 0, len(volumes))
+	for _, v := range volumes {
+		if v = strings.TrimSpace(v); v != "" {
+			clean = append(clean, v)
+		}
+	}
+	return &Executor{image: image, pythonBin: pythonBin, network: network, volumes: clean}
 }
 
 func (e *Executor) SetOnProgress(fn func(message.ProgressEvent)) { e.onProgress = fn }
@@ -50,7 +64,7 @@ func (e *Executor) Run(ctx context.Context, pyFile, funcName, inline string, arg
 		argsJSON = []byte("{}")
 	}
 	runID := uuid.New().String()
-	args := []string{"run", "--rm", "-i", "--network", e.network, e.image, e.pythonBin, "-c", script}
+	args := dockerRunArgs(e.network, e.image, e.pythonBin, e.volumes, script)
 	cmd := exec.CommandContext(ctx, "docker", args...)
 	cmd.Stdin = bytes.NewReader(argsJSON)
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -88,6 +102,16 @@ func (e *Executor) Run(ctx context.Context, pyFile, funcName, inline string, arg
 		return "", fmt.Errorf("executor/docker: %w\n%s", runErr, msg)
 	}
 	return strings.TrimSpace(strings.Join(outputLines, "\n")), nil
+}
+
+// dockerRunArgs builds the `docker run` argv. Each allowlisted volume becomes a
+// `-v host:container[:ro]` mount; nothing is mounted implicitly.
+func dockerRunArgs(network, image, pythonBin string, volumes []string, script string) []string {
+	args := []string{"run", "--rm", "-i", "--network", network}
+	for _, v := range volumes {
+		args = append(args, "-v", v)
+	}
+	return append(args, image, pythonBin, "-c", script)
 }
 
 func (e *Executor) Close() error { return nil }
