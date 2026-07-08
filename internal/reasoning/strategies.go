@@ -186,6 +186,25 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			OutputFormat: env.Config.OutputFormat,
 		})
 	}
+
+	// Final guard: never end the run on a progress note ("I'll…", "Searching…").
+	// If the terminal reflection is still a preamble, force one completion-only
+	// synthesis; failing that, fall back to the last substantive observation so
+	// the user gets the actual gathered result instead of an intent statement.
+	if isPrematureFinalAnswer(resp.Output) {
+		forced, _ := env.LLM.Reflect(ctx, ReflectRequest{
+			TaskInput: taskInput,
+			Steps:     steps,
+			SystemPrompt: strings.TrimSpace(env.Config.SystemPrompt +
+				"\n\nIMPORTANT: The task is complete. Output the FINISHED result now, using only what the steps already gathered. Do NOT describe what you are about to do or say you are proceeding — produce the completed answer itself."),
+			OutputFormat: env.Config.OutputFormat,
+		})
+		if t := strings.TrimSpace(forced.Output); t != "" && !isPrematureFinalAnswer(t) {
+			resp = forced
+		} else if obs := lastUsefulObservation(steps); strings.TrimSpace(obs) != "" {
+			resp.Output = obs
+		}
+	}
 	return steps, resp
 }
 
@@ -598,6 +617,7 @@ func isPrematureFinalAnswer(text string) bool {
 	if s == "" {
 		return false
 	}
+	// Explicit progress phrases — flagged anywhere in the text.
 	for _, phrase := range []string{
 		"proceeding to step",
 		"proceeding to list",
@@ -615,6 +635,27 @@ func isPrematureFinalAnswer(text string) bool {
 	} {
 		if strings.Contains(s, phrase) {
 			return true
+		}
+	}
+	// Progress/intent OPENERS: a preamble *begins* by announcing what it is
+	// about to do ("I'll scout the routes…", "Searching for fares…"). Anchored
+	// to the start and gated to a short, single-block note so a real, structured
+	// report that merely mentions these words later is never misflagged. This
+	// catches contractions and gerund openers the phrase list above misses.
+	if len(s) <= 400 && !strings.Contains(s, "\n") {
+		for _, opener := range []string{
+			// future-intent openers (contractions the phrase list above misses)
+			"i'll ", "we'll ", "i'm going to ", "i am going to ", "i'm about to ",
+			"i plan to ", "i shall ", "let's ", "let me now ", "first, i", "first i ",
+			"next, i", "now i'll", "i'm now ", "going to ",
+			// intent gerunds — anchored AND followed by a target preposition so a
+			// results statement ("Searching returned 20 results…") is not flagged.
+			"searching for ", "looking for ", "scouting for ", "scouting the ",
+			"fetching the ", "retrieving the ", "gathering the ", "compiling the ",
+		} {
+			if strings.HasPrefix(s, opener) {
+				return true
+			}
 		}
 	}
 	return false

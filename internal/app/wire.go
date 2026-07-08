@@ -260,6 +260,7 @@ func (a *App) Run(parent context.Context) error {
 	// ── Scheduler ────────────────────────────────────────────────────────────
 	sched := scheduler.New(engine, loader, log, ctx)
 	sched.SetStatePath(filepath.Join(cfg.Memory.Dir, "scheduler-state.json"))
+	sched.SetEventSink(hub) // record scheduled-delivery outcomes in Activity
 	for _, def := range loader.All() {
 		if err := sched.RegisterAgent(def); err != nil {
 			log.Warn("scheduler register failed", zap.String("agent", def.ID), zap.Error(err))

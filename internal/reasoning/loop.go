@@ -144,7 +144,9 @@ func (l *Loop) Run(ctx context.Context, agentID, taskInput string) Result {
 	steps, reflectResp := strat.Run(ctx, env, taskInput)
 
 	return Result{
-		Output:       reflectResp.Output,
+		// Guard against the model leaking internal control JSON (thought/action/
+		// is_done) as the answer — extract a real answer or fall back gracefully.
+		Output:       SanitizeFinalOutput(reflectResp.Output, steps),
 		Steps:        steps,
 		Confident:    !containsToolErrors(steps),
 		Duration:     time.Since(start),

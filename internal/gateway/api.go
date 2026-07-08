@@ -2014,7 +2014,19 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 			return replyText
 		}()),
 	)
-	return c.JSON(fiber.Map{"result": replyText})
+
+	// Publish to the configured output channel too, so a manual "Run" of a
+	// scheduled agent tests the WHOLE path (not just the GUI preview) and the
+	// result actually reaches Telegram/Slack/etc. Gated to agents that declare a
+	// cron trigger or a resolvable output target so we never spam a channel from
+	// an ad-hoc run of a plain chat agent.
+	delivered := false
+	if s.scheduler != nil && strings.TrimSpace(replyText) != "" &&
+		(def.Trigger == agent.TriggerCron || s.scheduler.HasScheduledOutputTarget(def)) {
+		s.scheduler.DeliverScheduledOutput(ctx, def, msg, replyText, "manual")
+		delivered = s.scheduler.HasScheduledOutputTarget(def)
+	}
+	return c.JSON(fiber.Map{"result": replyText, "delivered": delivered})
 }
 
 func (s *Server) handleReplayAgentRun(c *fiber.Ctx) error {

@@ -2476,8 +2476,8 @@
   .suggestion:hover { border-color: rgba(108,99,255,.55); transform: translateY(-1px); color: #fff; }
 
   /* Collapsible long output */
-  .markdown-body.clamped { max-height: 340px; overflow: hidden;
-    -webkit-mask-image: linear-gradient(180deg, #000 78%, transparent); mask-image: linear-gradient(180deg, #000 78%, transparent); }
+  .markdown-body.clamped { max-height: 560px; overflow: hidden;
+    -webkit-mask-image: linear-gradient(180deg, #000 85%, transparent); mask-image: linear-gradient(180deg, #000 85%, transparent); }
   .show-more {
     background: none; border: none; color: #8b85ff; font-size: .78rem; cursor: pointer;
     padding: .25rem 0; align-self: flex-start;

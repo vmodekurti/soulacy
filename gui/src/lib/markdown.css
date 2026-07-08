@@ -65,7 +65,10 @@
   color: var(--text);
 }
 
-/* Fenced code blocks — bordered panel, horizontal scroll, no wrap. */
+/* Fenced code blocks — bordered panel. Long lines wrap (including output that
+   arrives as one physical line with escaped \n) so a code block never collapses
+   into a thin, horizontally scrolling sliver; overflow-x remains as a safety net
+   for the rare unbreakable token. */
 .markdown-body pre {
   margin: 0.7em 0;
   padding: 12px 14px;
@@ -81,7 +84,9 @@
   background: none;
   border: 0;
   padding: 0;
-  white-space: pre;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* Blockquotes — left accent rule, muted. */

@@ -266,7 +266,10 @@
     running = { ...running, [id]: new Date().toISOString() }
     try {
       const res = await api.agents.trigger(id)
-      notice = `▶ ${id} ran. ` + (res?.result ? `Result: ${truncate(res.result, 160)}` : 'Done.')
+      const deliveryNote = res?.delivered
+        ? ' 📤 Result was sent to the configured output channel.'
+        : ' (Result shown here only — no output channel resolved; configure one under Edit → Scheduled output.)'
+      notice = `▶ ${id} ran. ` + (res?.result ? `Result: ${truncate(res.result, 160)}` : 'Done.') + deliveryNote
     } catch (e) {
       error = e.message   // includes "agent is already running" (409)
     } finally {
@@ -367,31 +370,55 @@
     const a = agents.find(a => a.id === id)
     return a?.name || id
   }
+  // hasDefaultSender mirrors Channels.svelte: a channel-level outbound sender
+  // (base Telegram token, or an explicit default destination) that cron jobs use
+  // when they don't target an agent-specific bot.
+  function hasDefaultSender(ch) {
+    return !!(ch?.settings?.token || ch?.settings?.default_output_to || ch?.settings?.bot_name)
+  }
+
   function buildOutputBotOptions(list) {
     const rows = []
+    const seen = new Set()
+    const pushOpt = (o) => { if (!seen.has(o.channel)) { seen.add(o.channel); rows.push(o) } }
+
     for (const ch of list || []) {
       if (!ch || ch.id === 'http') continue
-      const bots = ch.bots || []
-      if (bots.length) {
-        for (const bot of bots) {
-          const adapterID = bot._adapter_id || ch.id
-          rows.push({
-            channel: adapterID,
-            bot_name: bot.bot_name || adapterID,
-            agent_id: bot.agent_id || '',
-            connected: !!bot._connected,
-            label: `${bot.bot_name || adapterID} (${adapterID}${bot.agent_id ? ' → ' + bot.agent_id : ''})`,
-          })
-        }
-        continue
-      }
-      if (ch.settings?.agent_id || ch.id === 'whatsapp') {
-        rows.push({
+
+      // Channel-level DEFAULT OUTBOUND sender — the target for cron/scheduled
+      // output that isn't routed through a per-agent bot. This was previously
+      // omitted, so Telegram's default outbound never appeared as an option.
+      if (hasDefaultSender(ch) && (ch.id === 'telegram' || ch.settings?.default_output_to)) {
+        const name = ch.settings?.bot_name || ch.name || ch.id
+        pushOpt({
           channel: ch.id,
-          bot_name: ch.settings?.bot_name || ch.name || ch.id,
+          bot_name: name,
+          agent_id: '',
+          connected: !!ch.status?.connected,
+          label: `${name} (${ch.id} · default outbound)`,
+        })
+      }
+
+      const bots = ch.bots || []
+      for (const bot of bots) {
+        const adapterID = bot._adapter_id || ch.id
+        pushOpt({
+          channel: adapterID,
+          bot_name: bot.bot_name || adapterID,
+          agent_id: bot.agent_id || '',
+          connected: !!bot._connected,
+          label: `${bot.bot_name || adapterID} (${adapterID}${bot.agent_id ? ' → ' + bot.agent_id : ''})`,
+        })
+      }
+
+      if (!bots.length && (ch.settings?.agent_id || ch.id === 'whatsapp')) {
+        const name = ch.settings?.bot_name || ch.name || ch.id
+        pushOpt({
+          channel: ch.id,
+          bot_name: name,
           agent_id: ch.settings?.agent_id || '',
           connected: !!ch.status?.connected,
-          label: `${ch.settings?.bot_name || ch.name || ch.id} (${ch.id}${ch.settings?.agent_id ? ' → ' + ch.settings.agent_id : ''})`,
+          label: `${name} (${ch.id}${ch.settings?.agent_id ? ' → ' + ch.settings.agent_id : ''})`,
         })
       }
     }
@@ -491,7 +518,10 @@
                     <span>{out.channel}{out.to ? ` → ${out.to}` : ''}</span>
                   </div>
                 {:else}
-                  <span class="td-hint">—</span>
+                  <button class="delivery-warn" on:click={() => openEdit(a)}
+                    title="This cron agent has no delivery target — its results only go to the logs. Click to set an output channel.">
+                    ⚠ No delivery
+                  </button>
                 {/if}
               </td>
               <td><span class="pill" class:pill-ok={a.enabled}>{a.enabled ? 'Yes' : 'No'}</span></td>
@@ -754,6 +784,8 @@ schedule:
   .output-cell { display: flex; flex-direction: column; gap: .15rem; min-width: 150px; }
   .output-cell strong { color: #c8cadf; font-size: .78rem; font-weight: 600; }
   .output-cell span { color: #6b7294; font-family: monospace; font-size: .7rem; word-break: break-all; }
+  .delivery-warn { background: rgba(240,160,96,.12); border: 1px solid rgba(240,160,96,.4); color: #f0b070; border-radius: 7px; padding: .18rem .5rem; font-size: .72rem; font-weight: 600; cursor: pointer; white-space: nowrap; }
+  .delivery-warn:hover { background: rgba(240,160,96,.2); }
 
   /* status cell */
   .status { font-size: .78rem; display: inline-flex; align-items: center; gap: .35rem; }
