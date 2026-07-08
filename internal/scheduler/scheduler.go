@@ -63,7 +63,37 @@ type Scheduler struct {
 
 	defaultMu      sync.RWMutex
 	defaultOutputs map[string]agent.ScheduleOutput
+
+	// sink, when set, receives a schedule.output event for every scheduled
+	// delivery attempt (delivered or not) so results are visible in Activity and
+	// never silently vanish. Wired to the gateway EventHub.
+	sink EventSink
 }
+
+// EventSink is the minimal event surface the scheduler needs to record delivery
+// outcomes. Satisfied by *gateway.EventHub.
+type EventSink interface {
+	Emit(message.Event)
+}
+
+// SetEventSink wires an event sink so scheduled-delivery outcomes are recorded.
+// Safe to call once at startup.
+func (s *Scheduler) SetEventSink(sink EventSink) {
+	s.mu.Lock()
+	s.sink = sink
+	s.mu.Unlock()
+}
+
+// Delivery outcome reason codes for schedule.output events.
+const (
+	deliveryDelivered     = "delivered"
+	deliveryViaFallback   = "delivered_via_fallback"
+	deliveryNoOutput      = "no_output_configured"
+	deliveryIncomplete    = "incomplete_output"
+	deliveryNoRegistry    = "channel_registry_unavailable"
+	deliveryAdapterUnknown = "adapter_not_registered"
+	deliverySendFailed    = "send_failed"
+)
 
 type scheduleState struct {
 	LastCompleted map[string]time.Time `json:"last_completed,omitempty"`
@@ -578,41 +608,133 @@ func (s *Scheduler) saveStateLocked() error {
 	return os.Rename(tmp, s.statePath)
 }
 
+// deliveryOutcome is the structured result of attempting to deliver a scheduled
+// reply. It always ends up logged and emitted as a schedule.output event so a
+// cron result can never silently go nowhere.
+type deliveryOutcome struct {
+	delivered bool
+	fallback  bool
+	channel   string
+	to        string
+	reason    string
+	detail    string
+}
+
+// DeliverScheduledOutput publicly runs the same delivery + reporting path a cron
+// fire uses, so a MANUAL trigger of a scheduled agent lands in the configured
+// channel too — not just in the GUI. It is a safe no-op (with an "undelivered"
+// event) for agents that have no resolvable output target.
+func (s *Scheduler) DeliverScheduledOutput(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string) {
+	s.sendScheduledOutput(ctx, def, source, replyText, triggerType)
+}
+
+// HasScheduledOutputTarget reports whether the agent has a delivery target the
+// scheduler can resolve (explicit schedule.output, or a channel default). Used
+// by the manual-trigger path to decide whether to publish the result.
+func (s *Scheduler) HasScheduledOutputTarget(def *agent.Definition) bool {
+	_, ok := s.resolveScheduledOutput(def)
+	return ok
+}
+
 func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string) {
 	if def == nil || strings.TrimSpace(replyText) == "" {
 		return
 	}
+	outcome := s.deliverScheduled(ctx, def, source, replyText, triggerType)
+	s.reportDelivery(def, source, replyText, outcome)
+}
+
+// deliverScheduled attempts primary delivery and, if that isn't possible, a
+// single-default-channel fallback so results still land somewhere.
+func (s *Scheduler) deliverScheduled(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string) deliveryOutcome {
+	s.mu.Lock()
+	reg := s.channels
+	s.mu.Unlock()
+
 	outCfg, ok := s.resolveScheduledOutput(def)
 	if !ok {
-		return
+		// No per-agent or channel-default output resolved. Try a global
+		// single-default fallback before giving up.
+		if o, done := s.tryFallback(ctx, reg, def, source, replyText, triggerType); done {
+			return o
+		}
+		return deliveryOutcome{reason: deliveryNoOutput}
 	}
 	channelID := strings.TrimSpace(outCfg.Channel)
 	to := strings.TrimSpace(outCfg.To)
 	if channelID == "" || to == "" {
-		return
+		if o, done := s.tryFallback(ctx, reg, def, source, replyText, triggerType); done {
+			return o
+		}
+		return deliveryOutcome{reason: deliveryIncomplete, channel: channelID, to: to}
 	}
-
-	s.mu.Lock()
-	reg := s.channels
-	s.mu.Unlock()
 	if reg == nil {
-		s.log.Warn("scheduled output configured but channel registry is unavailable",
-			zap.String("agent", def.ID),
-			zap.String("channel", channelID),
-			zap.String("to", to),
-			zap.String("bot_name", outCfg.BotName))
-		return
+		return deliveryOutcome{reason: deliveryNoRegistry, channel: channelID, to: to}
 	}
-	if _, ok := reg.Statuses()[channelID]; !ok {
-		s.log.Error("scheduled output adapter not registered",
-			zap.String("agent", def.ID),
-			zap.String("channel", channelID),
-			zap.String("to", to),
-			zap.String("bot_name", outCfg.BotName))
-		return
+	if _, known := reg.Statuses()[channelID]; !known {
+		if o, done := s.tryFallback(ctx, reg, def, source, replyText, triggerType); done {
+			return o
+		}
+		return deliveryOutcome{reason: deliveryAdapterUnknown, channel: channelID, to: to}
 	}
 
 	text := RenderScheduledOutput(outCfg.Template, def, replyText, triggerType)
+	if err := s.sendVia(ctx, reg, def, source, channelID, to, outCfg.BotName, triggerType, text); err != nil {
+		return deliveryOutcome{reason: deliverySendFailed, channel: channelID, to: to, detail: err.Error()}
+	}
+	return deliveryOutcome{delivered: true, reason: deliveryDelivered, channel: channelID, to: to}
+}
+
+// tryFallback delivers to the single configured default outbound channel when
+// the agent's own output couldn't be resolved, so a result is not lost. Returns
+// done=false when no usable fallback exists.
+func (s *Scheduler) tryFallback(ctx context.Context, reg *channels.Registry, def *agent.Definition, source message.Message, replyText, triggerType string) (deliveryOutcome, bool) {
+	if reg == nil {
+		return deliveryOutcome{}, false
+	}
+	fb, ok := s.singleDefaultOutput()
+	if !ok {
+		return deliveryOutcome{}, false
+	}
+	channelID := strings.TrimSpace(fb.Channel)
+	to := strings.TrimSpace(fb.To)
+	if channelID == "" || to == "" {
+		return deliveryOutcome{}, false
+	}
+	if _, known := reg.Statuses()[channelID]; !known {
+		return deliveryOutcome{}, false
+	}
+	// Prefix so the operator knows this landed on the fallback channel because
+	// the agent's own delivery target wasn't configured.
+	body := RenderScheduledOutput(fb.Template, def, replyText, triggerType)
+	notice := fmt.Sprintf("⚠ Scheduled result for %q had no delivery target — routed to the default channel.\n\n%s", def.ID, body)
+	if err := s.sendVia(ctx, reg, def, source, channelID, to, fb.BotName, triggerType, notice); err != nil {
+		return deliveryOutcome{reason: deliverySendFailed, channel: channelID, to: to, detail: err.Error(), fallback: true}, true
+	}
+	return deliveryOutcome{delivered: true, fallback: true, reason: deliveryViaFallback, channel: channelID, to: to}, true
+}
+
+// singleDefaultOutput returns the sole default outbound target when exactly one
+// is configured — the unambiguous fallback for otherwise-undeliverable results.
+func (s *Scheduler) singleDefaultOutput() (agent.ScheduleOutput, bool) {
+	s.defaultMu.RLock()
+	defer s.defaultMu.RUnlock()
+	var only agent.ScheduleOutput
+	count := 0
+	for _, o := range s.defaultOutputs {
+		if strings.TrimSpace(o.To) == "" {
+			continue
+		}
+		only = o
+		count++
+	}
+	if count == 1 {
+		return only, true
+	}
+	return agent.ScheduleOutput{}, false
+}
+
+func (s *Scheduler) sendVia(ctx context.Context, reg *channels.Registry, def *agent.Definition, source message.Message, channelID, to, botName, triggerType, text string) error {
 	out := message.Message{
 		ID:        uuid.New().String(),
 		SessionID: source.SessionID,
@@ -625,24 +747,58 @@ func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definiti
 		Parts:     message.Text(text),
 		Metadata: map[string]string{
 			"trigger":  triggerType,
-			"bot_name": outCfg.BotName,
+			"bot_name": botName,
 		},
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := reg.Send(ctx, out); err != nil {
-		s.log.Error("scheduled output send failed",
-			zap.String("agent", def.ID),
-			zap.String("channel", channelID),
-			zap.String("to", to),
-			zap.String("bot_name", outCfg.BotName),
-			zap.Error(err))
+	return reg.Send(ctx, out)
+}
+
+// reportDelivery logs the outcome and emits a schedule.output event so every
+// scheduled reply's fate is visible in Activity — delivered, routed to a
+// fallback, or (loudly) undelivered.
+func (s *Scheduler) reportDelivery(def *agent.Definition, source message.Message, replyText string, o deliveryOutcome) {
+	fields := []zap.Field{
+		zap.String("agent", def.ID),
+		zap.String("reason", o.reason),
+		zap.String("channel", o.channel),
+		zap.String("to", o.to),
+		zap.Bool("fallback", o.fallback),
+	}
+	if o.detail != "" {
+		fields = append(fields, zap.String("detail", o.detail))
+	}
+	if o.delivered {
+		s.log.Info("scheduled output delivered", fields...)
+	} else {
+		s.log.Warn("scheduled reply was NOT delivered to any channel — check schedule.output", fields...)
+	}
+
+	s.mu.Lock()
+	sink := s.sink
+	s.mu.Unlock()
+	if sink == nil {
 		return
 	}
-	s.log.Info("scheduled output sent",
-		zap.String("agent", def.ID),
-		zap.String("channel", channelID),
-		zap.String("to", to),
-		zap.String("bot_name", outCfg.BotName))
+	preview := replyText
+	if len(preview) > 280 {
+		preview = preview[:280] + "…"
+	}
+	sink.Emit(message.Event{
+		Type:      "schedule.output",
+		AgentID:   def.ID,
+		SessionID: source.SessionID,
+		Timestamp: time.Now().UTC(),
+		Payload: map[string]any{
+			"delivered":     o.delivered,
+			"fallback":      o.fallback,
+			"reason":        o.reason,
+			"channel":       o.channel,
+			"to":            o.to,
+			"detail":        o.detail,
+			"reply_preview": preview,
+		},
+	})
 }
 
 func (s *Scheduler) resolveScheduledOutput(def *agent.Definition) (*agent.ScheduleOutput, bool) {

@@ -2307,6 +2307,14 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		finalContent = e.finalSynthesis(ctx, def, msg.AgentID, msg.SessionID, chatMsgs)
 	}
 
+	// Safety net: never surface leaked reasoning control JSON (thought/action/
+	// is_done) as the reply, even on the classic (non-loop) path where a model
+	// primed with a ReAct-style prompt emits its step object as text. Skipped
+	// when a structured OutputSchema is declared — that JSON is intentional.
+	if def.LLM.OutputSchema == nil && strings.TrimSpace(finalContent) != "" {
+		finalContent = reasoning.SanitizeFinalOutput(finalContent, nil)
+	}
+
 	// Structured output enforcement: if the agent has an output_schema, validate
 	// the final reply parses as JSON. On failure, do ONE corrective retry that
 	// asks the model to fix its output (with response_format=json_schema). If

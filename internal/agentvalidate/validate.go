@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -134,6 +135,27 @@ func validateDefinitionShape(report *Report, def *agent.Definition, path string)
 			}
 			if channel != "" && to == "" {
 				report.add(Error, "schedule.output.to", "required when schedule.output.channel is set", "", nil)
+			}
+		}
+	}
+
+	// Delivery-gap warnings for cron agents. A cron agent with no complete
+	// schedule.output produces a reply that only lands in the logs unless a
+	// default outbound channel is configured — a very common "results went
+	// nowhere" trap, especially when the system prompt asks to deliver results.
+	if def.Trigger == agent.TriggerCron {
+		hasOutput := def.Schedule != nil && def.Schedule.Output != nil &&
+			strings.TrimSpace(def.Schedule.Output.Channel) != "" &&
+			strings.TrimSpace(def.Schedule.Output.To) != ""
+		if !hasOutput {
+			if PromptImpliesDelivery(def.SystemPrompt) {
+				report.add(Warn, "schedule.output",
+					"the system prompt asks to deliver results, but schedule.output is not set — the reply will not be sent to any channel (set schedule.output.channel and schedule.output.to, or configure a default outbound channel)",
+					"", nil)
+			} else {
+				report.add(Warn, "schedule.output",
+					"cron agent has no delivery target — results are only logged unless schedule.output or a default outbound channel is configured",
+					"", nil)
 			}
 		}
 	}
@@ -599,6 +621,27 @@ func reasoningModelSuggestions(provider string) []string {
 	default: // ollama
 		return []string{"qwen2.5:72b", "qwen2.5:32b", "gemma4:latest", "llama3.3:70b"}
 	}
+}
+
+// deliveryPromptRe matches system-prompt language that implies the agent is
+// expected to send its result to a communication channel. Used to warn when a
+// cron agent describes delivery in prose but has no schedule.output wired, so
+// the result silently goes nowhere.
+var deliveryPromptRe = regexp.MustCompile(`(?i)\b(send|deliver|post|notify|message|email|dm|report (?:to|it)|share (?:it|the))\b[^.\n]{0,40}\b(telegram|slack|discord|whatsapp|channel|chat|inbox|email|me|team|user|group|recipient)\b`)
+
+// simpleChannelRe catches a bare channel name mentioned as a destination even
+// without a verb nearby (e.g. "Output: Telegram").
+var simpleChannelRe = regexp.MustCompile(`(?i)\b(to|on|via|through|output(?:s)?|deliver(?:y|ed)?)\b[^.\n]{0,20}\b(telegram|slack|discord|whatsapp)\b`)
+
+// PromptImpliesDelivery reports whether a system prompt appears to ask the agent
+// to deliver its output to a channel. Intentionally conservative — it only
+// drives a warning, never a hard error.
+func PromptImpliesDelivery(prompt string) bool {
+	p := strings.TrimSpace(prompt)
+	if p == "" {
+		return false
+	}
+	return deliveryPromptRe.MatchString(p) || simpleChannelRe.MatchString(p)
 }
 
 func contains(values []string, target string) bool {
