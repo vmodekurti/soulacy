@@ -641,7 +641,11 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	}
 
 	prompt := BuildPrompt(intent, catalog, answers)
-	raw, err := llm.Complete(ctx, prompt)
+	// Schema-constrained generation when the client supports it: the builder
+	// model is handed a JSON Schema that pins node.kind to the valid set at the
+	// source (preventing the invent-a-"start"-node class), instead of relying on
+	// the prompt alone and repairing after. Falls back to plain Complete.
+	raw, err := completeDraft(ctx, llm, prompt)
 	if err != nil {
 		return Result{}, fmt.Errorf("studio: llm complete: %w", err)
 	}

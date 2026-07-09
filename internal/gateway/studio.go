@@ -73,6 +73,27 @@ func (a routerLLM) Complete(ctx context.Context, prompt string) (string, error) 
 	return resp.Content, nil
 }
 
+// CompleteSchema constrains the builder model's output to the supplied JSON
+// Schema (studio.SchemaLLM). The schema is a strong GUIDE, not a strict
+// contract — it intentionally allows freeform sub-objects — so JSONSchemaLenient
+// keeps OpenAI in non-strict mode instead of rejecting it. Providers without
+// schema support (Ollama) transparently fall back to JSON mode + post-validation.
+func (a routerLLM) CompleteSchema(ctx context.Context, prompt string, schema map[string]any) (string, error) {
+	resp, err := a.router.Complete(ctx, a.provider, llm.CompletionRequest{
+		Model: a.model,
+		Messages: []llm.ChatMessage{
+			{Role: "user", Content: prompt},
+		},
+		ResponseFormat:    "json_schema",
+		JSONSchema:        schema,
+		JSONSchemaLenient: true,
+	})
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
 // studioLLM builds the studio.LLM the compiler will use, wiring the default
 // provider + model out of config. Returns nil when no router is available.
 func (s *Server) studioLLM() studio.LLM {

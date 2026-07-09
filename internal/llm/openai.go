@@ -133,7 +133,7 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 				"type": "json_schema",
 				"json_schema": map[string]any{
 					"name":   "output",
-					"strict": true,
+					"strict": !req.JSONSchemaLenient,
 					"schema": req.JSONSchema,
 				},
 			}

@@ -585,6 +585,43 @@ func TestOpenAICompleteJSONSchemaNilFallsBackToJSONObject(t *testing.T) {
 	}
 }
 
+// TestOpenAICompleteJSONSchemaLenientSetsStrictFalse verifies that
+// JSONSchemaLenient makes the schema a best-effort guide (strict:false) instead
+// of a hard strict-mode contract — needed for schemas with freeform sub-objects.
+func TestOpenAICompleteJSONSchemaLenientSetsStrictFalse(t *testing.T) {
+	var got map[string]any
+	p := NewOpenAIProvider("openai", "http://openai.test", "key", "gpt")
+	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		return jsonResponse(200, `{"choices":[{"message":{"content":"{}"}}],"usage":{}}`), nil
+	})
+	_, err := p.Complete(context.Background(), CompletionRequest{
+		ResponseFormat:    "json_schema",
+		JSONSchema:        map[string]any{"type": "object"},
+		JSONSchemaLenient: true,
+		Messages:          []ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	rf := got["response_format"].(map[string]any)
+	js := rf["json_schema"].(map[string]any)
+	if js["strict"] != false {
+		t.Errorf("strict = %v, want false when lenient", js["strict"])
+	}
+
+	// Default (non-lenient) stays strict:true.
+	_, _ = p.Complete(context.Background(), CompletionRequest{
+		ResponseFormat: "json_schema",
+		JSONSchema:     map[string]any{"type": "object"},
+		Messages:       []ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	js = got["response_format"].(map[string]any)["json_schema"].(map[string]any)
+	if js["strict"] != true {
+		t.Errorf("strict = %v, want true by default", js["strict"])
+	}
+}
+
 // TestOpenAICompleteStreamWithToolsDoesNotStream verifies that stream+tools
 // takes the non-streaming path (same as Ollama).
 func TestOpenAICompleteStreamWithToolsDoesNotStream(t *testing.T) {
