@@ -480,6 +480,15 @@ type LLMConfig struct {
 type StudioLLMConfig struct {
 	Provider string `mapstructure:"provider"`
 	Model    string `mapstructure:"model"`
+	// Learning toggles whether Studio records lessons from accepted live-run
+	// repairs and injects them into future workflow generation so it builds
+	// flows that work the first time. nil = enabled (default); set false to
+	// opt out. Only meaningful on the `studio` block (ignored on `reasoner`).
+	//
+	//	llm:
+	//	  studio:
+	//	    learning: false
+	Learning *bool `mapstructure:"learning"`
 }
 
 type ProviderConfig struct {

@@ -83,6 +83,11 @@ func (s *Server) handleStudioApplyRepair(c *fiber.Ctx) error {
 	}
 	raw, _ := json.Marshal(d)
 	check := studio.NormalizeAndCheck(string(raw))
+	// Learn from this accepted repair (only when the patch validates) so future
+	// generations avoid the same real-API shape mistake. Best-effort.
+	if check.Valid {
+		s.recordLessonFromRepair(req.Workflow, req.Proposal)
+	}
 	return c.JSON(fiber.Map{
 		"workflow": d,
 		"valid":    check.Valid,

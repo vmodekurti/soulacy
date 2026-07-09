@@ -219,6 +219,9 @@ func (s *Server) groundCatalog(cat *studio.Catalog) {
 	// Inject the authoring rulebook so the builder follows the same rules the
 	// validator and AI fixer enforce.
 	cat.Rules = s.soulRules()
+	// Inject lessons learned from accepted live-run repairs so generation avoids
+	// repeating real shape mistakes (gated by llm.studio.learning).
+	s.groundLessons(cat)
 	// Installed skills (so "yahoo finance" maps to the real "yfinance").
 	if s.skillLoader != nil {
 		cat.Skills = cat.Skills[:0]

@@ -48,6 +48,11 @@ type Catalog struct {
 	// builder injects it so generation follows the same rules validation and the
 	// AI fixer enforce. Not part of the live inventory — it's guidance.
 	Rules string `json:"rules,omitempty"`
+	// Lessons are guidance sentences distilled from accepted live-run repairs
+	// (real API shapes that broke a node and the fix that worked). Injected into
+	// the generation prompt so Studio learns to build flows that work the first
+	// time. Populated server-side from the lesson store; not user-authored.
+	Lessons []Lesson `json:"lessons,omitempty"`
 }
 
 // CatalogKB is one knowledge base the workflow's agents could use as a source.
@@ -374,6 +379,10 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	// User-editable authoring rulebook (same rules the validator + AI fixer use),
 	// so generation follows them up front instead of being corrected after.
 	sb.WriteString(RulesPromptBlock(catalog.Rules))
+
+	// Lessons distilled from accepted live-run repairs — real API shapes that
+	// broke a node before, so this generation avoids repeating the same mistake.
+	sb.WriteString(LessonsPromptBlock(catalog.Lessons))
 
 	if len(catalog.Skills) > 0 {
 		sb.WriteString("Available skills (use the EXACT name in read_skill's skill_name):\n")
