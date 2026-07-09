@@ -58,13 +58,34 @@ var _ executor.Backend = (*Pool)(nil)
 // serialises calls per-worker so there's no concurrent access to a single
 // Python interpreter.
 const workerShim = `
-import sys, json, importlib.util, traceback, os
+import sys, json, importlib.util, traceback, os, inspect
 
 # Silence normal print() so tool code doesn't pollute the IPC channel.
 # Tool code that explicitly writes to sys.stdout still works because we
 # restore it per-request around the user function call.
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
+
+def _invoke(fn, args):
+    # Call convention MUST match the process backend and the documented
+    # signature 'def run(inputs):' — pass the whole dict as ONE positional arg.
+    # Fall back to keyword spread ONLY for functions that declare **kwargs (the
+    # deployed-file 'def run(**args):' style), so both conventions work under
+    # either executor. Previously this backend always spread (**args), which
+    # raised TypeError for the standard 'def run(inputs):' Studio node.
+    try:
+        params = list(inspect.signature(fn).parameters.values())
+    except (TypeError, ValueError):
+        params = []
+    positional = [p for p in params
+                  if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)]
+    has_var_positional = any(p.kind == p.VAR_POSITIONAL for p in params)
+    has_var_keyword = any(p.kind == p.VAR_KEYWORD for p in params)
+    if positional or has_var_positional:
+        return fn(args)
+    if isinstance(args, dict) and has_var_keyword:
+        return fn(**args)
+    return fn(args)
 
 def _run_request(req):
     inline   = req.get("inline", "")
@@ -74,14 +95,16 @@ def _run_request(req):
     try:
         args = json.loads(args_json)
     except Exception:
-        args = {}
+        # A non-JSON rendered input (e.g. a plain templated string) is delivered
+        # under 'input' rather than silently dropped (mirrors the process backend).
+        args = {"input": args_json}
 
     if inline:
         # Execute inline source in a fresh namespace.
         ns = {}
         exec(compile(inline, "<inline>", "exec"), ns)
         if func_name and func_name in ns:
-            result = ns[func_name](**(args if isinstance(args, dict) else {}))
+            result = _invoke(ns[func_name], args)
         else:
             result = ns.get("__result__", "")
     elif py_file:
@@ -92,7 +115,7 @@ def _run_request(req):
         spec.loader.exec_module(mod)
         if func_name:
             fn     = getattr(mod, func_name)
-            result = fn(**(args if isinstance(args, dict) else {}))
+            result = _invoke(fn, args)
         else:
             result = ""
     else:

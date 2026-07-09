@@ -948,6 +948,70 @@ Use null for fields that are not present.`
     } finally {
       trying = false
     }
+    // A fresh run invalidates any prior repair proposals.
+    repairProposals = []
+    repairError = ''
+    repairDone = ''
+  }
+
+  // ── Observe-and-adjust: learn from the last Run Live and fix a node ─────────
+  // After a run where a node broke because a real API returned an unexpected
+  // shape, ask Studio to observe the actual node outputs and propose adjustments.
+  let repairing = false
+  let repairProposals = []   // [{ node_id, field, class, old, new, rationale, auto, observed_keys }]
+  let repairError = ''
+  let repairDone = ''
+  // True when the last run has at least one failed node worth adjusting.
+  $: liveHasFailure = !!(tryResult && (tryResult.error || (tryResult.nodeTrace || []).some(n => n.error)))
+
+  async function adjustToLiveOutput() {
+    if (repairing || !workflow || !tryResult) return
+    repairing = true
+    repairError = ''
+    repairDone = ''
+    repairProposals = []
+    try {
+      const res = await bridge.repairLive(workflow, tryResult.nodeTrace || [])
+      const props = (res && Array.isArray(res.proposals)) ? res.proposals : []
+      if (!props.length) {
+        repairDone = 'No automatic adjustment found. The failing node may be a real API/auth error rather than a format mismatch — check the node output below.'
+      }
+      repairProposals = props
+    } catch (e) {
+      repairError = (e && e.message) || 'could not analyze the run'
+    } finally {
+      repairing = false
+    }
+  }
+
+  async function applyProposal(p) {
+    if (!workflow || p._applying) return
+    p._applying = true
+    repairProposals = repairProposals
+    try {
+      const res = await bridge.applyRepair(workflow, p)
+      if (res && res.workflow) {
+        workflow = res.workflow          // patch the draft in place (triggers reactivity)
+        if (res.valid === false) {
+          repairError = 'Applied, but the node still needs attention: ' + ((res.errors || []).join('; '))
+        } else {
+          repairDone = 'Adjusted node “' + p.node_id + '”. Run Live again to confirm.'
+        }
+        // Drop the applied proposal from the list.
+        repairProposals = repairProposals.filter(x => x !== p)
+      } else {
+        repairError = 'Could not apply the adjustment.'
+      }
+    } catch (e) {
+      repairError = (e && e.message) || 'apply failed'
+    } finally {
+      p._applying = false
+      repairProposals = repairProposals
+    }
+  }
+
+  function rejectProposal(p) {
+    repairProposals = repairProposals.filter(x => x !== p)
   }
 
   // ── Execution-mode override (Workflow ⇄ ReAct ⇄ Plan-Execute) ──────────────
@@ -3508,6 +3572,59 @@ Use null for fields that are not present.`
                   <div class="att-hint">Branch nodes evaluate conditions and aren't listed; the path taken is reflected by which nodes ran.</div>
                 </div>
               {/if}
+
+              <!-- ── Observe-and-adjust: fix a node against the REAL output ──── -->
+              {#if liveHasFailure}
+                <div class="live-adjust">
+                  <div class="try-fix-row">
+                    <button
+                      class="btn btn-sm cv-fixbtn"
+                      type="button"
+                      on:click={adjustToLiveOutput}
+                      disabled={repairing || !workflow}
+                      title="Have Studio observe what each node actually returned and propose a per-node adjustment"
+                    >
+                      {repairing ? 'Analyzing the run…' : '🔎 Adjust to real output'}
+                    </button>
+                    <span class="try-fix-hint">Observes the actual node outputs and proposes targeted fixes for review.</span>
+                  </div>
+
+                  {#if repairError}<div class="agent-try-err">⚠ {repairError}</div>{/if}
+                  {#if repairDone}<div class="adjust-done">✓ {repairDone}</div>{/if}
+
+                  {#each repairProposals as p (p.node_id + p.field)}
+                    <div class="adjust-card" class:auto={p.auto}>
+                      <div class="adjust-head">
+                        <span class="node-kind">{p.node_id}</span>
+                        <span class="adjust-class">{(p.class || '').replace('_',' ')}</span>
+                        {#if p.auto}<span class="adjust-badge">safe / deterministic</span>{/if}
+                      </div>
+                      <div class="adjust-rationale">{p.rationale}</div>
+                      {#if p.observed_keys && p.observed_keys.length}
+                        <div class="adjust-observed">The API actually returned: <code>{p.observed_keys.join(', ')}</code></div>
+                      {/if}
+                      {#if p.new}
+                        <div class="adjust-diff">
+                          {#if p.old}<div class="diff-old"><span class="diff-tag">was</span><code>{p.old}</code></div>{/if}
+                          <div class="diff-new"><span class="diff-tag">now</span><code>{p.new}</code></div>
+                        </div>
+                        <div class="adjust-actions">
+                          <button class="btn btn-sm btn-primary" type="button" on:click={() => applyProposal(p)} disabled={p._applying}>
+                            {p._applying ? 'Applying…' : 'Approve & apply'}
+                          </button>
+                          <button class="btn btn-sm" type="button" on:click={() => rejectProposal(p)} disabled={p._applying}>Dismiss</button>
+                        </div>
+                      {:else}
+                        <div class="adjust-advisory">No automatic rewrite — adjust this node manually using the observed shape above.</div>
+                        <div class="adjust-actions">
+                          <button class="btn btn-sm" type="button" on:click={() => rejectProposal(p)}>Dismiss</button>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
               {#if tryResult.trace && tryResult.trace.length}
                 <div class="agent-try-trace">
                   <div class="att-label">Tool calls ({tryResult.trace.length}) — click for details</div>
@@ -5885,6 +6002,30 @@ Use null for fields that are not present.`
   }
   .try-fix-row .cv-fixbtn:first-of-type { margin-left: 0; }
   .try-fix-hint { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+  /* Observe-and-adjust panel */
+  .live-adjust { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+  .adjust-done { font-size: 12px; color: var(--ok, #2ea043); margin-top: 6px; }
+  .adjust-card {
+    margin-top: 8px; padding: 10px; border-radius: 8px;
+    background: var(--bg-elev-2); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent, #6ea8fe);
+  }
+  .adjust-card.auto { border-left-color: var(--ok, #2ea043); }
+  .adjust-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .adjust-class { font-size: 11px; color: var(--text-muted); text-transform: capitalize; }
+  .adjust-badge {
+    font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: var(--ok-bg, rgba(46,160,67,0.15)); color: var(--ok, #2ea043);
+  }
+  .adjust-rationale { font-size: 12px; color: var(--text); margin-top: 4px; line-height: 1.4; }
+  .adjust-observed { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .adjust-observed code, .adjust-diff code { font-family: var(--mono, monospace); font-size: 11px; }
+  .adjust-diff { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+  .diff-old code { color: var(--text-muted); text-decoration: line-through; }
+  .diff-new code { color: var(--text); }
+  .diff-tag { display: inline-block; width: 30px; font-size: 10px; color: var(--text-muted); }
+  .adjust-advisory { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+  .adjust-actions { display: flex; gap: 6px; margin-top: 8px; }
   .agent-try-reply.muted { color: var(--text-muted); }
   .agent-try-trace { margin-top: 10px; }
   .att-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }

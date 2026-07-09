@@ -463,6 +463,12 @@ export const api = {
     /** Run an UNSAVED reasoning agent against one sample question (ephemeral). */
     tryAgent: ({ workflow, question } = {}) =>
       apiFetch('/studio/try-agent', { method: 'POST', body: JSON.stringify({ workflow, question }) }),
+    /** Propose repairs from the last Run Live node trace (observe real output → adjust). */
+    repairLive: ({ workflow, node_trace } = {}) =>
+      apiFetch('/studio/repair-live', { method: 'POST', body: JSON.stringify({ workflow, node_trace }) }),
+    /** Apply ONE approved repair proposal to the draft and re-validate. */
+    applyRepair: ({ workflow, proposal } = {}) =>
+      apiFetch('/studio/apply-repair', { method: 'POST', body: JSON.stringify({ workflow, proposal }) }),
     /** Serialize the current draft to SOUL.yaml for the Code view. */
     yaml: ({ workflow } = {}) =>
       apiFetch('/studio/yaml', { method: 'POST', body: JSON.stringify({ workflow }) }),
