@@ -76,6 +76,11 @@ type BuildOptions struct {
 	// structured detail, so a build is fully debuggable after the fact. Nil-safe:
 	// all BuildTrace methods are no-ops on a nil trace.
 	Trace *BuildTrace
+	// ExtraProblems, when set, contributes additional deterministic problem lines
+	// to each attempt's problem set (fed to the repair model). The gateway uses it
+	// to add findings that need host access preflight can't do purely — e.g.
+	// syntax-checking a python node with the interpreter. Nil-safe.
+	ExtraProblems func(Draft) []string
 }
 
 // BuildEvent is one live progress update emitted during BuildUntilWorks. Kind is
@@ -169,6 +174,9 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 		donePf := tr.Step("preflight", "repair", n, "preflight against the live environment")
 		pf := Preflight(rep.Workflow, opts.In)
 		problems := buildProblemSet(pf, rep.Workflow, cat)
+		if opts.ExtraProblems != nil {
+			problems = append(problems, opts.ExtraProblems(rep.Workflow)...)
+		}
 		donePf(nil, map[string]any{
 			"blockers": len(pf.Blockers), "warnings": len(pf.Warnings),
 			"problems": problems,

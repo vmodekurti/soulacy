@@ -941,6 +941,7 @@ Use null for fields that are not present.`
         reply: (res && res.reply) || '',
         error: (res && res.error) || '',
         trace: (res && Array.isArray(res.trace)) ? res.trace : [],
+        nodeTrace: (res && Array.isArray(res.node_trace)) ? res.node_trace : [],
       }
     } catch (e) {
       tryResult = { reply: '', error: (e && e.message) || 'run failed' }
@@ -3254,6 +3255,34 @@ Use null for fields that are not present.`
                   {#if tryResult.reply}<div class="agent-try-reply">{tryResult.reply}</div>{/if}
                   {#if !tryResult.reply && !tryResult.error}<div class="agent-try-reply muted">(no text reply)</div>{/if}
                 </div>
+                {#if tryResult.nodeTrace && tryResult.nodeTrace.length}
+                  <div class="agent-try-trace">
+                    <div class="att-label">Every node that ran ({tryResult.nodeTrace.length}) — click a node for its input/output</div>
+                    <ol class="att-list">
+                      {#each tryResult.nodeTrace as n, i}
+                        <li class="att-item" class:err={n.error}>
+                          <button class="att-row" type="button" on:click={() => { n._open = !n._open; tryResult = tryResult }} title="Show input & output">
+                            <span class="att-n">{i + 1}</span>
+                            <span class="att-dot">{n.skipped ? '⏭' : n.error ? '✕' : '✓'}</span>
+                            <span class="node-kind kind-{n.kind}">{n.kind}</span>
+                            <span class="att-name">{n.node_id}</span>
+                            {#if n.skipped}<span class="node-skip">skipped · needs consent</span>{/if}
+                            <span class="att-caret">{n._open ? '▾' : '▸'}</span>
+                          </button>
+                          {#if n._open}
+                            <div class="att-detail-box">
+                              {#if n.input}<div class="att-kv"><span class="att-k">input</span><code>{n.input}</code></div>{/if}
+                              {#if n.output}<div class="att-kv"><span class="att-k">output</span><code>{n.output}</code></div>{/if}
+                              {#if n.error}<div class="att-kv"><span class="att-k">error</span><code>{n.error}</code></div>{/if}
+                              {#if !n.input && !n.output && !n.error}<div class="att-kv muted">(no data captured)</div>{/if}
+                            </div>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ol>
+                    <div class="att-hint">Branch nodes evaluate conditions and aren't listed as steps; the path taken is reflected by which nodes ran.</div>
+                  </div>
+                {/if}
                 {#if tryResult.trace && tryResult.trace.length}
                   <div class="agent-try-trace">
                     <div class="att-label">Skills & tools it called ({tryResult.trace.length}) — click a step for details</div>
@@ -3451,9 +3480,37 @@ Use null for fields that are not present.`
                 {#if tryResult.reply}<div class="agent-try-reply">{tryResult.reply}</div>{/if}
                 {#if !tryResult.reply && !tryResult.error}<div class="agent-try-reply muted">(no text result)</div>{/if}
               </div>
+              {#if tryResult.nodeTrace && tryResult.nodeTrace.length}
+                <div class="agent-try-trace">
+                  <div class="att-label">Every node that ran ({tryResult.nodeTrace.length}) — click a node for its input/output</div>
+                  <ol class="att-list">
+                    {#each tryResult.nodeTrace as n, i}
+                      <li class="att-item" class:err={n.error}>
+                        <button class="att-row" type="button" on:click={() => { n._open = !n._open; tryResult = tryResult }} title="Show input & output">
+                          <span class="att-n">{i + 1}</span>
+                          <span class="att-dot">{n.skipped ? '⏭' : n.error ? '✕' : '✓'}</span>
+                          <span class="node-kind kind-{n.kind}">{n.kind}</span>
+                          <span class="att-name">{n.node_id}</span>
+                          {#if n.skipped}<span class="node-skip">skipped · needs consent</span>{/if}
+                          <span class="att-caret">{n._open ? '▾' : '▸'}</span>
+                        </button>
+                        {#if n._open}
+                          <div class="att-detail-box">
+                            {#if n.input}<div class="att-kv"><span class="att-k">input</span><code>{n.input}</code></div>{/if}
+                            {#if n.output}<div class="att-kv"><span class="att-k">output</span><code>{n.output}</code></div>{/if}
+                            {#if n.error}<div class="att-kv"><span class="att-k">error</span><code>{n.error}</code></div>{/if}
+                            {#if !n.input && !n.output && !n.error}<div class="att-kv muted">(no data captured)</div>{/if}
+                          </div>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ol>
+                  <div class="att-hint">Branch nodes evaluate conditions and aren't listed; the path taken is reflected by which nodes ran.</div>
+                </div>
+              {/if}
               {#if tryResult.trace && tryResult.trace.length}
                 <div class="agent-try-trace">
-                  <div class="att-label">Steps it ran ({tryResult.trace.length}) — click for details</div>
+                  <div class="att-label">Tool calls ({tryResult.trace.length}) — click for details</div>
                   <ol class="att-list">
                     {#each tryResult.trace as t, i}
                       <li class="att-item" class:err={t.error}>
@@ -5840,6 +5897,13 @@ Use null for fields that are not present.`
   .att-dot { color: #36d399; }
   .att-item.err .att-dot { color: var(--error); }
   .att-name { color: var(--text); font-family: ui-monospace, monospace; flex: 1 1 auto; }
+  .node-kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 999px; }
+  .node-kind.kind-python { background: rgba(236,124,196,.16); color: #ec7cc4; }
+  .node-kind.kind-tool   { background: rgba(96,204,154,.16); color: #5fce9a; }
+  .node-kind.kind-agent  { background: rgba(108,99,255,.18); color: #b3adff; }
+  .node-kind.kind-llm    { background: rgba(240,176,112,.16); color: #f0b070; }
+  .node-skip { font-size: 11px; color: #f0b070; margin-left: 6px; }
+  .att-hint { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
   .att-detail { color: var(--accent); }
   .att-caret { color: var(--text-muted); }
   .att-detail-box { padding: 2px 10px 8px 30px; display: flex; flex-direction: column; gap: 5px; }

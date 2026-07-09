@@ -3396,6 +3396,28 @@ func toolObserverFrom(ctx context.Context) ToolObserver {
 	return fn
 }
 
+type flowNodeObserverKey struct{}
+
+// FlowNodeObserver is invoked after every executed workflow node (python, tool,
+// agent, llm) with its per-node record — id, kind, input, output, error. Like
+// ToolObserver it is a synchronous in-process tap; Studio's "Run live" uses it
+// to show EVERY node's result (not just tool calls), including a Python node
+// that was refused by the consent gate.
+type FlowNodeObserver func(rec reasoning.FlowNodeRun)
+
+// WithFlowNodeObserver attaches a FlowNodeObserver for the duration of a run.
+func WithFlowNodeObserver(ctx context.Context, fn FlowNodeObserver) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, flowNodeObserverKey{}, fn)
+}
+
+func flowNodeObserverFrom(ctx context.Context) FlowNodeObserver {
+	fn, _ := ctx.Value(flowNodeObserverKey{}).(FlowNodeObserver)
+	return fn
+}
+
 // toolTimeoutOverride reads a per-node override set by WithToolTimeout.
 func toolTimeoutOverride(ctx context.Context) (time.Duration, bool) {
 	d, ok := ctx.Value(toolTimeoutOverrideKey{}).(time.Duration)

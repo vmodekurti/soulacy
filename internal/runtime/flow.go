@@ -63,12 +63,24 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		}
 	}
 
+	// The user's inbound text is exposed under several aliases because
+	// Studio-generated input templates variously reference {{ .trigger.text }},
+	// {{ .trigger.message }}, or {{ .trigger.input }}. Aliasing them all to the
+	// same value prevents an entry node from receiving null just because the
+	// generated template picked a different (equally reasonable) field name.
+	inputText := flattenParts(msg.Parts)
 	vars := map[string]interface{}{
 		"trigger": triggerInput{
-			"text": flattenParts(msg.Parts),
+			"text":    inputText,
+			"message": inputText,
+			"input":   inputText,
 		},
 		"history": history,
 	}
+
+	// Synchronous in-process tap so a caller like Studio "Run live" can collect
+	// EVERY node's result during this run (not just tool calls).
+	nodeObs := flowNodeObserverFrom(ctx)
 
 	hooks := reasoning.FlowHooks{}
 	// Per-block run trace (Story S0.3 Phase 1): record every executed block's
@@ -76,6 +88,9 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	// can render a legible run trace. Independent of the checkpoint store.
 	hooks.Observe = func(rec reasoning.FlowNodeRun) {
 		displayRec := trimFlowNodeRun(rec)
+		if nodeObs != nil {
+			nodeObs(displayRec)
+		}
 		w.engine.recordFlowNode(agentID, runID, displayRec)
 		if w.engine.sink == nil {
 			return
@@ -142,6 +157,12 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 			})
 		}
 	}
+
+	// lastSentText captures the human-readable content the workflow last handed to
+	// channel.send. When the flow's final result is a bare delivery RECEIPT
+	// (channel.send returns {ok,channel,to}, not content), the interactive reply
+	// falls back to this text so the user sees the actual message — not the receipt.
+	var lastSentText string
 
 	runNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
 		// Per-node timeout — the framework wraps EVERY block with its own budget.
@@ -227,6 +248,14 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 				"do not answer it directly):\n" + history + "\n\nUser's new message: " + base
 		}
 
+		// Remember the content routed to a delivery tool so a receipt-terminated
+		// workflow can still return the message to an interactive caller.
+		if tool == "channel.send" {
+			if t := strings.TrimSpace(fmt.Sprint(tc.Arguments["text"])); t != "" && t != "<no value>" {
+				lastSentText = t
+			}
+		}
+
 		outStr, rerr := w.engine.runTool(ctx, def, msg.SessionID, tc)
 		if rerr != nil {
 			return nil, rerr
@@ -274,18 +303,49 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	// last-executed node's. RunFlow mutates `vars` in place, so each node's
 	// output is available here by its output-var name. Falls back to `out` when
 	// the output node has no var or produced nothing.
+	final := out
 	if outID := spec.Output; outID != "" {
 		for _, n := range spec.Nodes {
 			if n.ID == outID && n.Output != "" {
 				if v, ok := vars[n.Output]; ok {
 					if b, jerr := json.Marshal(v); jerr == nil {
-						return json.RawMessage(b), nil
+						final = json.RawMessage(b)
 					}
 				}
 			}
 		}
 	}
-	return out, nil
+
+	// A workflow that terminates in channel.send yields a delivery RECEIPT, not
+	// content — so an interactive reply would be a cryptic {"ok":true,...}. When
+	// that's the case, surface the message the workflow actually sent instead, so
+	// the user reads the real answer. Delivery still happened via channel.send.
+	if isChannelSendReceipt(final) && strings.TrimSpace(lastSentText) != "" {
+		if b, jerr := json.Marshal(lastSentText); jerr == nil {
+			return json.RawMessage(b), nil
+		}
+	}
+	return final, nil
+}
+
+// isChannelSendReceipt reports whether b is a bare channel.send delivery receipt
+// ({ok, channel, to}) rather than real content.
+func isChannelSendReceipt(b json.RawMessage) bool {
+	if len(b) == 0 {
+		return false
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		return false
+	}
+	if _, hasOK := m["ok"]; !hasOK {
+		return false
+	}
+	if _, hasChannel := m["channel"]; !hasChannel {
+		return false
+	}
+	// Receipt is small (ok/channel/to). More keys ⇒ it's real content, leave it.
+	return len(m) <= 3
 }
 
 func trimFlowNodeRun(rec reasoning.FlowNodeRun) reasoning.FlowNodeRun {

@@ -69,6 +69,16 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 				n.Kind = sdkr.FlowNodeBranch
 			}
 		}
+		// Tolerate common entry/exit synonyms a builder model sometimes emits
+		// ("start"/"entry"/"begin" for the first node, "end"/"finish"/"done" for
+		// the last). These are structural passthroughs — the real entry is the
+		// `entry` field — so map them rather than hard-failing the whole flow.
+		switch strings.ToLower(strings.TrimSpace(n.Kind)) {
+		case "start", "entry", "begin", "receive", "input_node":
+			n.Kind = sdkr.FlowNodeTrigger
+		case "end", "finish", "done", "output_node":
+			n.Kind = sdkr.FlowNodeExit
+		}
 		switch n.Kind {
 		case sdkr.FlowNodeTool:
 			if n.Tool == "" {

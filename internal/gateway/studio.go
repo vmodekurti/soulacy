@@ -42,6 +42,7 @@ import (
 	"github.com/soulacy/soulacy/internal/auth"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/llm"
+	reasoningpkg "github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/internal/studio"
@@ -623,7 +624,7 @@ func (s *Server) handleStudioBuild(c *fiber.Ctx) error {
 	if req.Verify != nil {
 		verify = *req.Verify
 	}
-	opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr}
+	opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr, ExtraProblems: s.pythonBuildProblems}
 	if verify {
 		opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
 	}
@@ -734,7 +735,7 @@ func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
 		if req.Verify != nil {
 			verify = *req.Verify
 		}
-		opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr}
+		opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr, ExtraProblems: s.pythonBuildProblems}
 		if verify {
 			opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
 		}
@@ -876,6 +877,26 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 		traceMu.Unlock()
 	})
 
+	// Capture EVERY workflow node (python, branch-adjacent tool, agent, llm) with
+	// its input/output/error — not just tool calls — so the author can see what
+	// each node returned and why a branch went the way it did (e.g. a Python node
+	// refused by the consent gate, or one that produced no data).
+	var nodeTrace []fiber.Map
+	ctx = runtime.WithFlowNodeObserver(ctx, func(rec reasoningpkg.FlowNodeRun) {
+		out := strings.TrimSpace(string(rec.Output))
+		traceMu.Lock()
+		nodeTrace = append(nodeTrace, fiber.Map{
+			"node_id":     rec.NodeID,
+			"kind":        rec.Kind,
+			"input":       truncate(rec.Input, 300),
+			"output":      truncate(out, 600),
+			"error":       rec.Error,
+			"skipped":     rec.Error != "" && strings.Contains(strings.ToLower(rec.Error), "consent"),
+			"duration_ms": rec.DurationMS,
+		})
+		traceMu.Unlock()
+	})
+
 	msg := message.Message{
 		ID:        uuid.NewString(),
 		SessionID: "studio-try-" + def.ID,
@@ -899,8 +920,12 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 	}
 	traceMu.Lock()
 	usedTrace := trace
+	usedNodeTrace := nodeTrace
 	traceMu.Unlock()
-	resp := fiber.Map{"reply": replyText, "parts": reply.Parts, "trace": usedTrace}
+	if usedNodeTrace == nil {
+		usedNodeTrace = []fiber.Map{}
+	}
+	resp := fiber.Map{"reply": replyText, "parts": reply.Parts, "trace": usedTrace, "node_trace": usedNodeTrace}
 	if runErr != nil {
 		resp["error"] = runErr.Error()
 	}
@@ -1079,8 +1104,9 @@ func (s *Server) handleStudioDiagnoseRun(c *fiber.Ctx) error {
 
 	// (2) Validate (and, for workflows, re-run) to confirm the fix holds.
 	rep := studio.BuildUntilWorks(c.Context(), model, healed, cat, studio.BuildOptions{
-		In:       in,
-		Verifier: studio.RealRunVerifier{Runner: s.studioRealRunner()},
+		In:            in,
+		Verifier:      studio.RealRunVerifier{Runner: s.studioRealRunner()},
+		ExtraProblems: s.pythonBuildProblems,
 	})
 
 	return c.JSON(fiber.Map{
@@ -1145,8 +1171,9 @@ func (s *Server) handleStudioDiagnoseSession(c *fiber.Ctx) error {
 	studio.RepairWiring(&healed, cat)
 
 	rep := studio.BuildUntilWorks(c.Context(), model, healed, cat, studio.BuildOptions{
-		In:       in,
-		Verifier: studio.RealRunVerifier{Runner: s.studioRealRunner()},
+		In:            in,
+		Verifier:      studio.RealRunVerifier{Runner: s.studioRealRunner()},
+		ExtraProblems: s.pythonBuildProblems,
 	})
 
 	return c.JSON(fiber.Map{
@@ -1470,6 +1497,13 @@ func (s *Server) handleStudioValidate(c *fiber.Ctx) error {
 	// argument the tool doesn't accept (the "unexpected keyword argument" class),
 	// before it fails at run time.
 	res.Warnings = append(res.Warnings, studio.ValidateToolArgs(req.Workflow, s.studioCatalogSnapshot())...)
+	// Python validity: syntax-check every inline python node and require the
+	// run(inputs) entrypoint — catches broken generated code at build time
+	// instead of at run time. Parse-only; never executes the code.
+	if pyErrs := s.validatePythonNodes(req.Workflow); len(pyErrs) > 0 {
+		res.Ok = false
+		res.Errors = append(res.Errors, pyErrs...)
+	}
 	return c.JSON(res)
 }
 

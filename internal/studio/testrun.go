@@ -200,8 +200,12 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 	}
 
 	vars := map[string]any{
+		// Alias the inbound text under text/message/input so a generated template
+		// referencing any of them resolves (matches runtime flow behavior).
 		"trigger": triggerInput{
-			"text": input,
+			"text":    input,
+			"message": input,
+			"input":   input,
 		},
 	}
 	result, err := reasoning.RunFlow(ctx, g, vars, run, hooks)
