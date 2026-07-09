@@ -1,6 +1,7 @@
 package studio
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -77,6 +78,32 @@ func TestLessonStore_GeneralLessonAlwaysRelevant(t *testing.T) {
 	_ = st.Add(l)
 	if got := st.Relevant([]string{"anything"}, 8); len(got) != 1 {
 		t.Fatalf("general lesson should always be relevant, got %+v", got)
+	}
+}
+
+func TestAppendGenSample_DedupCapAndReload(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "corpus.json")
+	valid := `{"name":"E","trigger":{"type":"channel"},"flow":{"nodes":[{"id":"a","kind":"agent","agent":"h","input":"{{ .trigger.text }}","output":"r"}],"edges":[{"from":"a","to":"end"}],"entry":"a"}}`
+
+	if err := AppendGenSample(path, GenSample{Name: "repair:X:a", Raw: valid, Recoverable: true}, 200); err != nil {
+		t.Fatal(err)
+	}
+	// Same name → replace, not duplicate.
+	if err := AppendGenSample(path, GenSample{Name: "repair:X:a", Raw: valid, Recoverable: true}, 200); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	samples, err := LoadGenSamples(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 deduped sample, got %d", len(samples))
+	}
+	// The persisted fixed draft round-trips through the corpus scorer as valid.
+	rep := RunGenerationCorpus(samples)
+	if rep.Recovered != 1 || len(rep.Failures) != 0 {
+		t.Fatalf("persisted repair case should score valid: %+v", rep)
 	}
 }
 

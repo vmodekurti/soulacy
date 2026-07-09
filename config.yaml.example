@@ -83,6 +83,14 @@ channels:
 # ── LLM providers ─────────────────────────────────────────────────────────────
 llm:
     default_provider: ollama
+    # studio: overrides the model that BUILDS workflows in Studio (independent of
+    # the model agents run on). learning (default: true) lets Studio record
+    # lessons from repairs you accept after a Run Live and inject them into future
+    # generations so it builds flows that work the first time. Set false to opt out.
+    # studio:
+    #     provider: anthropic
+    #     model: claude-sonnet-4-6
+    #     learning: true
     providers:
         anthropic:
             api_key: "sk-ant-..."          # Your Anthropic API key
@@ -156,6 +164,15 @@ runtime:
     python_bin: python3.11
 
     tool_timeout: 30s
+
+    # adaptive_nodes (default: true): when a workflow node hits an unexpected data
+    # shape at run time — it errors, or "succeeds" but its output reports an error
+    # (e.g. a script that couldn't parse a real API response) — the runtime asks
+    # the model to produce the node's intended output from the actual input so the
+    # flow keeps running instead of aborting. Bounded to one salvage attempt per
+    # node, and only for shape/format surprises (never auth/network/consent).
+    # Set false to require per-node opt-in (adaptive: true on a flow node) instead.
+    # adaptive_nodes: true
 
     # Python sandbox resource caps (Linux rlimits — ignored on macOS).
     # For long-running tools (e.g. the AI podcast pipeline takes ~15 min),

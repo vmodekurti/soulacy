@@ -290,11 +290,14 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 
 	// runNode wraps execNode with opt-in runtime adaptation: when an adaptive node
 	// fails or soft-fails on a shape surprise, the model salvages usable output so
-	// the flow keeps running (bounded to one attempt per node).
+	// the flow keeps running (bounded to one attempt per node). markAdapted flags
+	// salvaged nodes so the trace can show which ones the runtime rescued.
+	ctx, markAdapted := reasoning.WithAdaptedTracker(ctx)
 	runNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
 		out, err := execNode(ctx, node, renderedInput)
 		if node.Adaptive || w.engine.adaptiveNodes {
 			if salvaged, ok := w.engine.adaptFlowNode(ctx, msg, node, renderedInput, out, err); ok {
+				markAdapted(node.ID)
 				return salvaged, nil
 			}
 		}

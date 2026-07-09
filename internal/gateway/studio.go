@@ -920,6 +920,7 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 			"output":      truncate(out, 600),
 			"input_full":  truncate(rec.Input, 100000),
 			"output_full": truncate(out, 100000),
+			"adapted":     rec.Adapted,
 			"error":       rec.Error,
 			"skipped":     rec.Error != "" && strings.Contains(strings.ToLower(rec.Error), "consent"),
 			"duration_ms": rec.DurationMS,

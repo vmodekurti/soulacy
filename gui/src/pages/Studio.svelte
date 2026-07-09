@@ -3583,7 +3583,8 @@ Use null for fields that are not present.`
                           <span class="node-kind kind-{n.kind}">{n.kind}</span>
                           <span class="att-name">{n.node_id}</span>
                           {#if n.skipped}<span class="node-skip">skipped · needs consent</span>{/if}
-                          {#if !n.error && soft}<span class="node-skip soft">ran, but output reports an error</span>{/if}
+                          {#if n.adapted}<span class="node-adapted" title="The runtime salvaged this node with the LLM because the input shape was unexpected. The output is a reconstruction — consider fixing the node so it parses the real shape.">✦ auto-adapted</span>{/if}
+                          {#if !n.error && soft && !n.adapted}<span class="node-skip soft">ran, but output reports an error</span>{/if}
                           <span class="att-caret">{n._open ? '▾' : '▸'}</span>
                         </button>
                         {#if n._open}
@@ -6074,6 +6075,10 @@ Use null for fields that are not present.`
   .copy-mini:hover { color: var(--text); }
   .att-item.soft .att-dot { color: var(--warn, #f5a524); }
   .node-skip.soft { color: var(--warn, #f5a524); }
+  .node-adapted {
+    margin-left: 6px; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: var(--accent-bg, rgba(110,168,254,0.15)); color: var(--accent, #6ea8fe);
+  }
   .agent-try-reply.muted { color: var(--text-muted); }
   .agent-try-trace { margin-top: 10px; }
   .att-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }

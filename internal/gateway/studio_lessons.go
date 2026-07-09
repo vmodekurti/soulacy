@@ -1,8 +1,10 @@
 package gateway
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/soulacy/soulacy/internal/studio"
 )
@@ -71,6 +73,50 @@ func (s *Server) recordLessonFromRepair(wf studio.Draft, p studio.RepairProposal
 	if l, ok := studio.LessonFromProposal(p, tool, wf.Intent); ok {
 		_ = store.Add(l)
 	}
+}
+
+// corpusPath resolves where accepted-repair regression cases are stored, mirroring
+// the lessons/runs path resolution. "" disables corpus capture.
+func corpusPath() string {
+	if p := os.Getenv("SOULACY_STUDIO_CORPUS"); p != "" {
+		return p
+	}
+	ws := os.Getenv("SOULACY_WORKSPACE")
+	if ws == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			ws = filepath.Join(home, ".soulacy")
+		}
+	}
+	if ws == "" {
+		return ""
+	}
+	return filepath.Join(ws, "studio-corpus.json")
+}
+
+// recordCorpusCase persists the FIXED draft as a recoverable generation-eval case
+// so a future normalizer regression that breaks this now-correct shape is caught
+// by `sy eval generation --corpus`. Best-effort.
+func (s *Server) recordCorpusCase(fixed studio.Draft, nodeID string) {
+	if !s.studioLearningEnabled() {
+		return
+	}
+	p := corpusPath()
+	if p == "" {
+		return
+	}
+	raw, err := json.Marshal(fixed)
+	if err != nil {
+		return
+	}
+	name := strings.TrimSpace(fixed.Name)
+	if name == "" {
+		name = "workflow"
+	}
+	_ = studio.AppendGenSample(p, studio.GenSample{
+		Name:        "repair:" + name + ":" + nodeID,
+		Raw:         string(raw),
+		Recoverable: true,
+	}, 200)
 }
 
 // groundLessons populates the catalog with lessons relevant to the tools it can
