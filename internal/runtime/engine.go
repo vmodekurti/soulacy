@@ -91,8 +91,12 @@ type Engine struct {
 	archive     storage.MemoryBackend
 	pythonBin   string
 	toolTimeout time.Duration
-	log         *zap.Logger
-	sink        EventSink
+	// adaptiveNodes is the global default for runtime LLM salvage of shape
+	// surprises (see FlowNode.Adaptive). Off by default in the zero engine so
+	// tests are unaffected; the app wires it from cfg.Runtime.AdaptiveNodes.
+	adaptiveNodes bool
+	log           *zap.Logger
+	sink          EventSink
 	sessions    sync.Map // sessionID → *Session
 
 	// flowTraces holds the per-block run traces of recent flow runs (Story S0.3
@@ -503,6 +507,10 @@ func (e *Engine) BrainStore() *agentmemory.CompositeStore { return e.brainStore 
 
 // SetLearningStore wires the reviewable post-run learning proposal store.
 func (e *Engine) SetLearningStore(store *learning.Store) { e.learningStore = store }
+
+// SetAdaptiveNodes sets the global default for runtime LLM salvage of flow nodes
+// that hit an unexpected data shape (FlowNode.Adaptive forces it per-node too).
+func (e *Engine) SetAdaptiveNodes(on bool) { e.adaptiveNodes = on }
 
 // LearningStore returns the proposal store, or nil when learning is disabled.
 func (e *Engine) LearningStore() *learning.Store { return e.learningStore }

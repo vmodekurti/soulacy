@@ -62,31 +62,41 @@ type RepairProposal struct {
 // intentionally conservative: only shape_drift / template_error are treated as
 // auto-repairable classes; tool_failure is surfaced advisory-only.
 func Classify(run LiveNodeRun) RepairClass {
-	if strings.TrimSpace(run.Error) == "" {
+	// A node can fail two ways: a hard Go-level error, OR it "ran" (✓) but its
+	// OUTPUT reports an error — e.g. a python script that caught a json.loads
+	// failure and returned {"error": "..."}. Both are repairable.
+	e := strings.TrimSpace(run.Error)
+	if e == "" {
+		e = outputErrorText(run.Output)
+	}
+	if e == "" {
 		return RepairNone
 	}
-	e := strings.ToLower(run.Error)
+	el := strings.ToLower(e)
 
 	// Template funcmap / syntax problems (caught at render, before the tool ran).
 	for _, s := range []string{"function \"", "not defined", "unexpected \"", "unterminated", "unclosed", "template:"} {
-		if strings.Contains(e, s) {
+		if strings.Contains(el, s) {
 			return RepairTemplateError
 		}
 	}
 	// Shape mismatches: the classic string-vs-object and key-not-found signals
-	// from Go templates and from python parsing real API output.
+	// from Go templates and from python parsing real API output — plus the JSON
+	// decode failures a script hits when the input isn't the shape it assumed
+	// (e.g. an HTTP response with headers before the JSON body).
 	for _, s := range []string{
 		"can't evaluate field", "range can't iterate", "can't give argument",
 		"keyerror", "typeerror", "indexerror", "has no attribute",
-		"not subscriptable", "nonetype", "is not a", "expected", // "expected object, got string" etc.
+		"not subscriptable", "nonetype", "is not a", "expected",
+		"expecting value", "expecting property", "json", "decode", "char 0", "no such key",
 	} {
-		if strings.Contains(e, s) {
+		if strings.Contains(el, s) {
 			return RepairShapeDrift
 		}
 	}
 	// Auth / HTTP / network: a real failure the user must fix, not a reshape.
 	for _, s := range []string{"401", "403", "404", "429", "500", "unauthorized", "forbidden", "timeout", "no such host", "connection refused"} {
-		if strings.Contains(e, s) {
+		if strings.Contains(el, s) {
 			return RepairToolFailure
 		}
 	}
@@ -312,6 +322,36 @@ func stringWrappedJSON(raw json.RawMessage) (string, bool) {
 	return "", false
 }
 
+// outputErrorText extracts an error a node reported in its OUTPUT despite
+// "succeeding" (no Go error) — the soft-failure case. It reads a top-level
+// "error"/"errors"/"err" string field. Empty/whitespace values (a script that
+// sets error:"" on success) don't count. This is what lets Studio notice that
+// parse_stock_data returned {"error":"Expecting value: line 1 column 1"} even
+// though the node ran green.
+func outputErrorText(raw json.RawMessage) string {
+	obj := decodeObject(raw)
+	if obj == nil {
+		return ""
+	}
+	for _, k := range []string{"error", "errors", "err"} {
+		if v, ok := obj[k]; ok {
+			if s, ok := v.(string); ok && strings.TrimSpace(s) != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+// EffectiveError is the hard error if present, else the soft output-reported
+// error. It's what the repair pipeline reasons about.
+func EffectiveError(run LiveNodeRun) string {
+	if e := strings.TrimSpace(run.Error); e != "" {
+		return e
+	}
+	return outputErrorText(run.Output)
+}
+
 func decodeObject(raw json.RawMessage) map[string]any {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err != nil {
@@ -357,6 +397,16 @@ func rewriteVarWithFromJSON(tmpl, v string) string {
 	// Standalone `.v` at a boundary (range/print) → parsed value.
 	out = strings.ReplaceAll(out, " ."+v+" ", " (fromJson ."+v+") ")
 	return out
+}
+
+// nodeCode returns the inline python code of the draft node with id, or "".
+func nodeCode(d Draft, id string) string {
+	for _, n := range d.Flow.Nodes {
+		if n.ID == id {
+			return n.Code
+		}
+	}
+	return ""
 }
 
 func strIn(ss []string, s string) bool {

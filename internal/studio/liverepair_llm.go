@@ -73,9 +73,6 @@ func advisory(r LiveNodeRun, class RepairClass, d ShapeDiagnosis) RepairProposal
 }
 
 func currentField(r LiveNodeRun) string {
-	if r.Field() == "code" {
-		return "" // code isn't carried on the run; the UI shows the node's code
-	}
 	return r.Input
 }
 
@@ -96,14 +93,20 @@ func llmRepair(ctx context.Context, llm LLM, draft Draft, r LiveNodeRun, d Shape
 	old := ""
 	if field == "input" {
 		old = r.Input
+	} else if field == "code" {
+		old = nodeCode(draft, r.NodeID)
 	}
 	if value == old {
 		return RepairProposal{}, false
 	}
+	rationale := "Rewritten to match the real output shape observed in the last run."
+	if field == "code" {
+		rationale = "Rewrote the script to parse the real input it actually received in the last run (defensively)."
+	}
 	return RepairProposal{
 		NodeID: r.NodeID, Field: field, Class: class,
 		Old: old, New: value, Auto: false, ObservedKeys: d.ObservedKeys,
-		Rationale: "Rewritten to match the real output shape observed in the last run.",
+		Rationale: rationale,
 	}, true
 }
 
@@ -112,14 +115,24 @@ func llmRepair(ctx context.Context, llm LLM, draft Draft, r LiveNodeRun, d Shape
 // deterministic.
 func BuildLiveRepairPrompt(draft Draft, r LiveNodeRun, d ShapeDiagnosis, class RepairClass) string {
 	var sb strings.Builder
-	sb.WriteString("You are repairing ONE node in a running workflow. A live execution failed because the node's assumptions did not match the REAL output of an upstream tool/API.\n\n")
+	sb.WriteString("You are repairing ONE node in a running workflow. A live execution produced a wrong result because the node's assumptions did not match the REAL data it received from an upstream tool/API.\n\n")
 	sb.WriteString("Node id: " + r.NodeID + "\nNode kind: " + r.Kind + "\n")
 	sb.WriteString("Failure class: " + string(class) + "\n")
-	sb.WriteString("Error:\n" + strings.TrimSpace(r.Error) + "\n\n")
-	if r.Field() == "input" {
-		sb.WriteString("Current input template (Go text/template over flow vars):\n" + r.Input + "\n\n")
+	sb.WriteString("Error (may be reported in the node's OUTPUT rather than as a crash):\n" + EffectiveError(r) + "\n\n")
+	if r.Field() == "code" {
+		// Python node: show the CURRENT code and the REAL input it received, so the
+		// model can rewrite parsing to match reality (e.g. an upstream tool that
+		// returns an HTTP response with headers before the JSON body).
+		if code := nodeCode(draft, r.NodeID); code != "" {
+			sb.WriteString("Current python code (def run(inputs)):\n" + code + "\n\n")
+		}
+		if in := strings.TrimSpace(r.Input); in != "" {
+			sb.WriteString("The ACTUAL input this code received last run (parse THIS shape — it may be a string, may have headers/prefix before JSON, may be wrapped):\n")
+			sb.WriteString(string(redactSample(json.RawMessage(in), 6, 400)) + "\n\n")
+		}
+		sb.WriteString("Rewrite `def run(inputs):` to read the input DEFENSIVELY: locate/parse the JSON even if it's embedded in a larger string (e.g. slice from the first '{' or split on a blank line), tolerate missing keys, and never raise — return a sensible fallback on bad input.\n")
 	} else {
-		sb.WriteString("This is a python node; repair its `def run(inputs):` code to parse the real shape defensively.\n\n")
+		sb.WriteString("Current input template (Go text/template over flow vars):\n" + r.Input + "\n\n")
 	}
 	if len(d.ObservedKeys) > 0 {
 		sb.WriteString("The upstream output ACTUALLY has these top-level keys: " + strings.Join(d.ObservedKeys, ", ") + "\n")
@@ -130,7 +143,7 @@ func BuildLiveRepairPrompt(draft Draft, r LiveNodeRun, d ShapeDiagnosis, class R
 	if d.StringWrapped {
 		sb.WriteString("NOTE: the upstream value is a JSON STRING that wraps JSON; parse it (fromJson in templates, json.loads in python) before field access.\n")
 	}
-	if len(r.Output) > 0 {
+	if r.Field() != "code" && len(r.Output) > 0 {
 		sb.WriteString("\nRedacted sample of the REAL upstream/node output:\n")
 		sb.WriteString(string(redactSample(r.Output, 6, 240)) + "\n")
 	}

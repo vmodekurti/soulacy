@@ -954,6 +954,31 @@ Use null for fields that are not present.`
     repairDone = ''
   }
 
+  // Copy any value (full node input/output) to the clipboard for offline testing.
+  let copiedKey = ''
+  async function copyValue(text, key) {
+    try {
+      await navigator.clipboard.writeText(text || '')
+      copiedKey = key
+      setTimeout(() => { if (copiedKey === key) { copiedKey = ''; } }, 1500)
+    } catch (_) { /* clipboard blocked; ignore */ }
+  }
+  // Soft failure: a node ran (no error) but its OUTPUT reports an error field.
+  function nodeSoftError(n) {
+    const raw = (n && (n.output_full || n.output)) || ''
+    if (!raw) return ''
+    try {
+      const o = JSON.parse(raw)
+      if (o && typeof o === 'object') {
+        for (const k of ['error', 'errors', 'err']) {
+          if (typeof o[k] === 'string' && o[k].trim()) return o[k]
+        }
+      }
+    } catch (_) { /* not JSON */ }
+    return ''
+  }
+  function nodeLooksWrong(n) { return !!(n && (n.error || nodeSoftError(n))) }
+
   // ── Observe-and-adjust: learn from the last Run Live and fix a node ─────────
   // After a run where a node broke because a real API returned an unexpected
   // shape, ask Studio to observe the actual node outputs and propose adjustments.
@@ -961,8 +986,9 @@ Use null for fields that are not present.`
   let repairProposals = []   // [{ node_id, field, class, old, new, rationale, auto, observed_keys }]
   let repairError = ''
   let repairDone = ''
-  // True when the last run has at least one failed node worth adjusting.
-  $: liveHasFailure = !!(tryResult && (tryResult.error || (tryResult.nodeTrace || []).some(n => n.error)))
+  // True when the last run has at least one node worth adjusting — either a hard
+  // error OR a soft failure (ran green but its output reports an error).
+  $: liveHasFailure = !!(tryResult && (tryResult.error || (tryResult.nodeTrace || []).some(nodeLooksWrong)))
 
   async function adjustToLiveOutput() {
     if (repairing || !workflow || !tryResult) return
@@ -3549,19 +3575,32 @@ Use null for fields that are not present.`
                   <div class="att-label">Every node that ran ({tryResult.nodeTrace.length}) — click a node for its input/output</div>
                   <ol class="att-list">
                     {#each tryResult.nodeTrace as n, i}
-                      <li class="att-item" class:err={n.error}>
+                      {@const soft = nodeSoftError(n)}
+                      <li class="att-item" class:err={n.error} class:soft={!n.error && soft}>
                         <button class="att-row" type="button" on:click={() => { n._open = !n._open; tryResult = tryResult }} title="Show input & output">
                           <span class="att-n">{i + 1}</span>
-                          <span class="att-dot">{n.skipped ? '⏭' : n.error ? '✕' : '✓'}</span>
+                          <span class="att-dot">{n.skipped ? '⏭' : n.error ? '✕' : soft ? '⚠' : '✓'}</span>
                           <span class="node-kind kind-{n.kind}">{n.kind}</span>
                           <span class="att-name">{n.node_id}</span>
                           {#if n.skipped}<span class="node-skip">skipped · needs consent</span>{/if}
+                          {#if !n.error && soft}<span class="node-skip soft">ran, but output reports an error</span>{/if}
                           <span class="att-caret">{n._open ? '▾' : '▸'}</span>
                         </button>
                         {#if n._open}
                           <div class="att-detail-box">
-                            {#if n.input}<div class="att-kv"><span class="att-k">input</span><code>{n.input}</code></div>{/if}
-                            {#if n.output}<div class="att-kv"><span class="att-k">output</span><code>{n.output}</code></div>{/if}
+                            {#if (n.input_full || n.input)}
+                              <div class="att-kv">
+                                <span class="att-k">input <button class="copy-mini" type="button" on:click|stopPropagation={() => copyValue(n.input_full || n.input, 'in'+i)}>{copiedKey==='in'+i ? 'copied' : 'copy'}</button></span>
+                                <code class="full">{n.input_full || n.input}</code>
+                              </div>
+                            {/if}
+                            {#if (n.output_full || n.output)}
+                              <div class="att-kv">
+                                <span class="att-k">output <button class="copy-mini" type="button" on:click|stopPropagation={() => copyValue(n.output_full || n.output, 'out'+i)}>{copiedKey==='out'+i ? 'copied' : 'copy'}</button></span>
+                                <code class="full">{n.output_full || n.output}</code>
+                              </div>
+                            {/if}
+                            {#if soft && !n.error}<div class="att-kv"><span class="att-k">reported error</span><code>{soft}</code></div>{/if}
                             {#if n.error}<div class="att-kv"><span class="att-k">error</span><code>{n.error}</code></div>{/if}
                             {#if !n.input && !n.output && !n.error}<div class="att-kv muted">(no data captured)</div>{/if}
                           </div>
@@ -6026,6 +6065,15 @@ Use null for fields that are not present.`
   .diff-tag { display: inline-block; width: 30px; font-size: 10px; color: var(--text-muted); }
   .adjust-advisory { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
   .adjust-actions { display: flex; gap: 6px; margin-top: 8px; }
+  /* Full input/output for copy-paste testing outside Studio */
+  code.full { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; display: block; }
+  .copy-mini {
+    margin-left: 6px; font-size: 10px; padding: 0 6px; border-radius: 4px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg-elev-1); color: var(--text-muted);
+  }
+  .copy-mini:hover { color: var(--text); }
+  .att-item.soft .att-dot { color: var(--warn, #f5a524); }
+  .node-skip.soft { color: var(--warn, #f5a524); }
   .agent-try-reply.muted { color: var(--text-muted); }
   .agent-try-trace { margin-top: 10px; }
   .att-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }

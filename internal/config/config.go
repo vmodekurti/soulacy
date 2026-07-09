@@ -214,6 +214,16 @@ type RuntimeConfig struct {
 	PythonBin             string `mapstructure:"python_bin"`   // path to python3 interpreter
 	ToolTimeout           string `mapstructure:"tool_timeout"` // e.g. "30s"
 
+	// AdaptiveNodes is the global default for runtime LLM salvage of flow nodes
+	// that hit an unexpected data shape (see FlowNode.Adaptive). nil = enabled
+	// (the flow tries to keep running through surprises); set false to require
+	// per-node opt-in only. Salvage is bounded (one attempt/node) and never fires
+	// for auth/network/consent failures — only shape/format surprises.
+	//
+	//	runtime:
+	//	  adaptive_nodes: false
+	AdaptiveNodes *bool `mapstructure:"adaptive_nodes"`
+
 	// MaxTurnsCeiling is a hard server-side cap on an agent's max_turns
 	// (Story 1 / S3.2). A single inbound message can fan out to
 	// depth × max_turns × tool-calls LLM requests; without a ceiling a

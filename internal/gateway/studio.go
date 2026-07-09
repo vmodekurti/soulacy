@@ -909,11 +909,17 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 	ctx = runtime.WithFlowNodeObserver(ctx, func(rec reasoningpkg.FlowNodeRun) {
 		out := strings.TrimSpace(string(rec.Output))
 		traceMu.Lock()
+		// Truncated fields drive the compact trace list; the *_full fields carry
+		// the complete input/output (generously capped) so the author can copy the
+		// exact data and reproduce a node's behavior outside Studio. The full data
+		// also gives live-repair an accurate shape to diagnose against.
 		nodeTrace = append(nodeTrace, fiber.Map{
 			"node_id":     rec.NodeID,
 			"kind":        rec.Kind,
 			"input":       truncate(rec.Input, 300),
 			"output":      truncate(out, 600),
+			"input_full":  truncate(rec.Input, 100000),
+			"output_full": truncate(out, 100000),
 			"error":       rec.Error,
 			"skipped":     rec.Error != "" && strings.Contains(strings.ToLower(rec.Error), "consent"),
 			"duration_ms": rec.DurationMS,

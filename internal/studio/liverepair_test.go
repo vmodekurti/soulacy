@@ -122,6 +122,51 @@ func TestProposeLiveRepairs_LLMFallback(t *testing.T) {
 	}
 }
 
+// Soft failure: the node ran green (no Go error) but its OUTPUT reports a json
+// decode error — exactly the parse_stock_data case where the upstream tool
+// returned an HTTP response with headers before the JSON body. Classify must
+// catch it, and the python node gets an LLM code-repair carrying the real input.
+func TestSoftFailure_PythonOutputError(t *testing.T) {
+	realInput := `{"stock_data": "Status: 200 OK\nContent-Type: application/json\n\n{\"chart\":{\"result\":[{\"meta\":{\"regularMarketPrice\":314.48}}]}}"}`
+	py := LiveNodeRun{
+		NodeID: "parse_stock_data", Kind: "python",
+		Input:  realInput,
+		Output: json.RawMessage(`{"current_price":"N/A","chart_data":[],"ticker":"","error":"Expecting value: line 1 column 1 (char 0)"}`),
+		// note: NO run.Error — it "succeeded"
+	}
+	if got := Classify(py); got != RepairShapeDrift {
+		t.Fatalf("soft failure should classify as shape_drift, got %s", got)
+	}
+	draft := Draft{}
+	draft.Flow.Nodes = []sdkr.FlowNode{{
+		ID: "parse_stock_data", Kind: sdkr.FlowNodePython,
+		Code: "import json\ndef run(inputs):\n    data = json.loads(inputs['stock_data'])\n    return data",
+	}}
+	llm := repairFake{reply: `{"field":"code","value":"import json\ndef run(inputs):\n    raw = inputs.get('stock_data','')\n    i = raw.find('{')\n    data = json.loads(raw[i:]) if i>=0 else {}\n    return data"}`}
+	props := ProposeLiveRepairs(context.Background(), llm, draft, []LiveNodeRun{py})
+	if len(props) != 1 {
+		t.Fatalf("want 1 proposal, got %d", len(props))
+	}
+	if props[0].Field != "code" || !strings.Contains(props[0].New, "find('{')") {
+		t.Fatalf("expected a defensive code rewrite, got %+v", props[0])
+	}
+	if !strings.Contains(props[0].Old, "json.loads(inputs['stock_data'])") {
+		t.Fatalf("proposal should carry the OLD code for the diff, got old=%q", props[0].Old)
+	}
+}
+
+func TestOutputErrorText(t *testing.T) {
+	if got := outputErrorText(json.RawMessage(`{"error":"boom"}`)); got != "boom" {
+		t.Fatalf("got %q", got)
+	}
+	if got := outputErrorText(json.RawMessage(`{"error":""}`)); got != "" {
+		t.Fatalf("empty error should not count, got %q", got)
+	}
+	if got := outputErrorText(json.RawMessage(`{"ok":true}`)); got != "" {
+		t.Fatalf("no error field, got %q", got)
+	}
+}
+
 // tool_failure is advisory-only: reported, but never a code rewrite.
 func TestProposeLiveRepairs_ToolFailureAdvisory(t *testing.T) {
 	target := LiveNodeRun{NodeID: "s", Kind: "tool", Input: `{{ .q }}`, Error: "web_search: 403 forbidden"}

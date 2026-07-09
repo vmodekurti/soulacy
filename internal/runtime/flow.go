@@ -164,7 +164,7 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	// falls back to this text so the user sees the actual message — not the receipt.
 	var lastSentText string
 
-	runNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
+	execNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
 		// Per-node timeout — the framework wraps EVERY block with its own budget.
 		// Precedence: an explicit FlowNode.Timeout (the inspector "timeout" field)
 		// wins; else a wait/timeout argument the node declares (max_wait, timeout_s);
@@ -286,6 +286,19 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		}
 		wrapped, _ := json.Marshal(outStr)
 		return json.RawMessage(wrapped), nil
+	}
+
+	// runNode wraps execNode with opt-in runtime adaptation: when an adaptive node
+	// fails or soft-fails on a shape surprise, the model salvages usable output so
+	// the flow keeps running (bounded to one attempt per node).
+	runNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
+		out, err := execNode(ctx, node, renderedInput)
+		if node.Adaptive || w.engine.adaptiveNodes {
+			if salvaged, ok := w.engine.adaptFlowNode(ctx, msg, node, renderedInput, out, err); ok {
+				return salvaged, nil
+			}
+		}
+		return out, err
 	}
 
 	out, err := reasoning.RunFlow(ctx, g, vars, runNode, hooks)

@@ -24,11 +24,22 @@ type repairLiveRequest struct {
 }
 
 type repairTraceNodeJSON struct {
-	NodeID string `json:"node_id"`
-	Kind   string `json:"kind"`
-	Input  string `json:"input"`
-	Output string `json:"output"`
-	Error  string `json:"error"`
+	NodeID     string `json:"node_id"`
+	Kind       string `json:"kind"`
+	Input      string `json:"input"`
+	Output     string `json:"output"`
+	InputFull  string `json:"input_full"`
+	OutputFull string `json:"output_full"`
+	Error      string `json:"error"`
+}
+
+// pick returns the full field when present, else the truncated one — so repair
+// diagnosis always uses the most complete data the client has.
+func pick(full, short string) string {
+	if strings.TrimSpace(full) != "" {
+		return full
+	}
+	return short
 }
 
 // handleStudioRepairLive turns a live trace into repair proposals. It maps each
@@ -50,8 +61,8 @@ func (s *Server) handleStudioRepairLive(c *fiber.Ctx) error {
 		runs = append(runs, studio.LiveNodeRun{
 			NodeID:    t.NodeID,
 			Kind:      t.Kind,
-			Input:     t.Input,
-			Output:    toRawJSON(t.Output),
+			Input:     pick(t.InputFull, t.Input),
+			Output:    toRawJSON(pick(t.OutputFull, t.Output)),
 			Error:     t.Error,
 			OutputVar: outVar[t.NodeID],
 		})

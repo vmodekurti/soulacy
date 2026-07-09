@@ -99,6 +99,13 @@ type FlowNode struct {
 	Output string `yaml:"output,omitempty" json:"output,omitempty"`
 	// OnError is retry | skip | abort (default abort).
 	OnError string `yaml:"on_error,omitempty" json:"on_error,omitempty"`
+	// Adaptive opts this node into runtime LLM salvage: when it fails or produces
+	// a soft error (its output reports an error) because a real tool/API returned
+	// an unexpected shape, the runtime asks the model to produce the node's
+	// intended output from the actual input so the flow keeps running instead of
+	// aborting. Bounded to one salvage attempt per node. Independent of the global
+	// runtime.adaptive_nodes default. Applies to tool, python, and llm nodes.
+	Adaptive bool `yaml:"adaptive,omitempty" json:"adaptive,omitempty"`
 	// Timeout optionally overrides the global runtime.tool_timeout for THIS node's
 	// execution (a Go duration string, e.g. "30s", "10m"). It lets a developer fix
 	// a single slow-by-design block — e.g. a NotebookLM research/audio poll — by
