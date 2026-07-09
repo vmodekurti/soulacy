@@ -822,6 +822,10 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/review-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioReviewYAML)
 	// Studio plugin backend (M3): canvas-time graph validation (read-only).
 	api.Post("/studio/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidate)
+	// Learn-from-Run-Live: propose repairs from the last run's node trace, and
+	// apply one approved proposal (re-validated). Nothing is auto-applied.
+	api.Post("/studio/repair-live", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioRepairLive)
+	api.Post("/studio/apply-repair", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioApplyRepair)
 	// Studio plugin backend (M6): starter templates (read-only).
 	api.Get("/studio/templates", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioTemplates)
 	// Phase 2: coarse composite-block catalog (read-only) — one node that
