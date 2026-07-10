@@ -69,6 +69,16 @@ func CompileFlow(spec sdkr.FlowSpec) (*FlowGraph, error) {
 				n.Kind = sdkr.FlowNodeBranch
 			}
 		}
+		// Tolerate common entry/exit synonyms a builder model sometimes emits
+		// ("start"/"entry"/"begin" for the first node, "end"/"finish"/"done" for
+		// the last). These are structural passthroughs — the real entry is the
+		// `entry` field — so map them rather than hard-failing the whole flow.
+		switch strings.ToLower(strings.TrimSpace(n.Kind)) {
+		case "start", "entry", "begin", "receive", "input_node":
+			n.Kind = sdkr.FlowNodeTrigger
+		case "end", "finish", "done", "output_node":
+			n.Kind = sdkr.FlowNodeExit
+		}
 		switch n.Kind {
 		case sdkr.FlowNodeTool:
 			if n.Tool == "" {
@@ -187,6 +197,29 @@ type FlowNodeRun struct {
 	// WiredPorts is true when this node's input was assembled from typed port
 	// wires (template-free handoff) rather than a Go-template input.
 	WiredPorts bool `json:"wiredPorts,omitempty"`
+	// Adapted is true when the runtime salvaged this node's output via an LLM
+	// because it hit an unexpected data shape (see FlowNode.Adaptive). The output
+	// recorded here is the model's reconstruction, not the node's raw result.
+	Adapted bool `json:"adapted,omitempty"`
+}
+
+// adaptedTrackerKey carries a per-run set of node ids the runtime salvaged, so
+// the walker can flag them on the trace it emits.
+type adaptedTrackerKey struct{}
+
+// WithAdaptedTracker returns a context carrying an adapted-node set plus a marker
+// the runner calls when it salvages a node. The walker reads the set via
+// nodeWasAdapted when building each FlowNodeRun.
+func WithAdaptedTracker(ctx context.Context) (context.Context, func(nodeID string)) {
+	m := map[string]bool{}
+	return context.WithValue(ctx, adaptedTrackerKey{}, m), func(id string) { m[id] = true }
+}
+
+func nodeWasAdapted(ctx context.Context, id string) bool {
+	if m, ok := ctx.Value(adaptedTrackerKey{}).(map[string]bool); ok {
+		return m[id]
+	}
+	return false
 }
 
 // RunFlow walks the compiled graph. vars seeds the template namespace
@@ -306,6 +339,7 @@ func RunFlow(ctx context.Context, g *FlowGraph, vars map[string]any, run FlowRun
 						DurationMS: time.Since(start).Milliseconds(),
 						StartedAt:  start.UTC(),
 						WiredPorts: hasPorts,
+						Adapted:    nodeWasAdapted(ctx, current),
 					}
 					if err != nil {
 						rec.Error = err.Error()

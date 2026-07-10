@@ -37,6 +37,11 @@ func getPushService() (*webpush.Service, error) {
 			return
 		}
 		pushSvc, pushErr = webpush.NewService(pub, priv, "mailto:admin@localhost", subsPath)
+		if pushErr == nil && pushSvc != nil {
+			// Register the process-wide default so the run-failure notifier and
+			// scheduler (which don't hold this *Service) can also fire pushes.
+			webpush.SetDefault(pushSvc)
+		}
 	})
 	return pushSvc, pushErr
 }

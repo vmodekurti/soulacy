@@ -296,6 +296,10 @@
   let agents    = []
   let input     = ''
   let error     = null
+  let shareBusy = false
+  let shareLink = ''      // last-created shareable URL (shown in a small toast)
+  let shareErr  = ''
+  let toolRetry = {}      // toolKey(ev) → { busy, ok, output, error, durationMs }
   let msgListEl
 
   // Command palette + saved prompts.
@@ -324,6 +328,7 @@
     { id: 'clear', label: 'Clear this chat', run: () => clearChat() },
     { id: 'export-md', label: 'Export chat as Markdown', run: () => exportThreadMarkdown() },
     { id: 'export-json', label: 'Export chat as JSON', run: () => exportThreadJSON() },
+    { id: 'share', label: 'Share chat (read-only link)', run: () => shareThread() },
     { id: 'search', label: 'Search chat history', run: () => historySearchOpen = true },
     { id: 'save-prompt', label: 'Save current input as a prompt', run: () => saveCurrentPrompt() },
     { id: 'prompts', label: 'Open saved prompts', run: () => promptsOpen = true },
@@ -632,6 +637,62 @@
     link.click()
     link.remove()
     setTimeout(() => URL.revokeObjectURL(href), 1000)
+  }
+
+  // shareThread creates a server-side, read-only snapshot of the current
+  // conversation and returns a link anyone can open without an API key. The
+  // link is copied to the clipboard and shown in a small toast.
+  async function shareThread() {
+    if (!activeThread || shareBusy) return
+    shareBusy = true
+    shareErr = ''
+    shareLink = ''
+    try {
+      const title = activeThread.title || agentName(activeThread.agentId) || 'Chat'
+      const messages = (activeThread.messages || [])
+        .filter(m => ['user', 'assistant', 'system'].includes(m.role))
+        .map(m => ({
+          role: m.role,
+          text: m.text || '',
+          via: m.via || '',
+          ts: m.ts ? new Date(m.ts).toISOString() : null,
+          attachments: (m.attachments || []).map(a => ({ name: a.filename || a.id })),
+        }))
+      if (!messages.length) { shareErr = 'Nothing to share yet.'; return }
+      const res = await api.shareChat({ title, agent_name: agentName(activeThread.agentId), messages })
+      shareLink = `${location.origin}/${res.path.replace(/^\//, '')}`
+      try { await navigator.clipboard.writeText(shareLink) } catch (_) { /* clipboard blocked — link still shown */ }
+    } catch (e) {
+      shareErr = (e && e.message) || 'Could not create a share link.'
+    } finally {
+      shareBusy = false
+    }
+  }
+
+  // ── per-tool-call retry ──────────────────────────────────────────────
+  // Re-run a single tool with the exact arguments it was originally called with,
+  // and show the fresh output/error/duration on the card — without re-running
+  // the whole turn.
+  function toolKey(ev) {
+    const p = ev?.payload || {}
+    return p.id || `${p.name || 'tool'}:${JSON.stringify(p.arguments || {})}`
+  }
+  async function retryToolCall(ev) {
+    const p = ev?.payload || {}
+    const name = p.name
+    if (!name) return
+    const key = toolKey(ev)
+    toolRetry = { ...toolRetry, [key]: { busy: true } }
+    try {
+      const res = await api.tools.run(name, p.arguments || {})
+      const output = res.output == null ? ''
+        : (typeof res.output === 'string' ? res.output : JSON.stringify(res.output, null, 2))
+      toolRetry = { ...toolRetry, [key]: {
+        busy: false, ok: !!res.ok, output, error: res.error || '', durationMs: res.duration_ms,
+      } }
+    } catch (e) {
+      toolRetry = { ...toolRetry, [key]: { busy: false, ok: false, error: (e && e.message) || 'Retry failed.' } }
+    }
   }
 
   async function searchHistory() {
@@ -1146,6 +1207,16 @@
     restoreThreads()      // repopulate the chat list from a previous session
     hydrated = true       // now persist future changes
     await loadAgents()
+    // First-run wizard hands off the freshly created agent so Chat opens with it
+    // already selected ("land in Chat with a working agent"). One-shot: consumed
+    // then cleared so normal navigation isn't affected.
+    try {
+      const preselect = localStorage.getItem('soulacy-preselect-agent')
+      if (preselect) {
+        localStorage.removeItem('soulacy-preselect-agent')
+        if (agents.find(a => a.id === preselect)) setActiveAgent(preselect)
+      }
+    } catch (_) { /* localStorage unavailable — ignore */ }
     if (activeThread?.agentId && activeThread?.sessionId) {
       loadArtifacts(activeThread.id, activeThread.agentId, activeThread.sessionId)
     }
@@ -1276,6 +1347,7 @@
       <button class="btn-secondary" class:on={historySearchOpen} on:click={() => historySearchOpen = !historySearchOpen} title="Search persisted chat history">Search</button>
       <button class="btn-secondary" on:click={exportThreadMarkdown} disabled={!activeThread?.messages?.length} title="Download this chat as Markdown">Export</button>
       <button class="btn-secondary" on:click={exportThreadJSON} disabled={!activeThread?.messages?.length} title="Download this chat as JSON (share/archive)">JSON</button>
+      <button class="btn-secondary" on:click={shareThread} disabled={!activeThread?.messages?.length || shareBusy} title="Create a read-only link to this conversation">{shareBusy ? 'Sharing…' : 'Share'}</button>
       <button class="btn-secondary" on:click={clearChat}>Clear</button>
       <button class="voice-btn {voiceState}"
               on:click={voiceClick}
@@ -1490,6 +1562,21 @@
                                 {#if eventDuration(ev)}<span class="think-dur">{eventDuration(ev)}</span>{/if}
                               </summary>
                               <pre class="think-full">{fullEventDetail(ev)}</pre>
+                              {#if ev.type === 'tool.call'}
+                                {@const rr = toolRetry[toolKey(ev)]}
+                                <div class="tool-retry">
+                                  <button class="tool-retry-btn" on:click|preventDefault={() => retryToolCall(ev)} disabled={rr?.busy}
+                                          title="Re-run this tool with the same arguments">
+                                    {rr?.busy ? 'Running…' : '↻ Retry tool'}
+                                  </button>
+                                  {#if rr && !rr.busy}
+                                    <div class="tool-retry-result {rr.ok ? 'ok' : 'bad'}">
+                                      <span class="trr-head">{rr.ok ? '✓ Succeeded' : '✕ Failed'}{rr.durationMs != null ? ` · ${rr.durationMs}ms` : ''}</span>
+                                      <pre class="trr-body">{rr.ok ? rr.output : rr.error}</pre>
+                                    </div>
+                                  {/if}
+                                </div>
+                              {/if}
                             </details>
                           {:else}
                             <div class="think-event {eventClass(ev.type)}">
@@ -1692,8 +1779,33 @@
   </div>
 </div>
 
+{#if shareLink || shareErr}
+  <div class="share-toast" class:err={!!shareErr}>
+    {#if shareErr}
+      <span>{shareErr}</span>
+    {:else}
+      <span class="share-toast-title">Shareable link created — copied to clipboard</span>
+      <input class="share-toast-link" readonly value={shareLink}
+             on:focus={(e) => e.currentTarget.select()} />
+      <div class="share-toast-note">Anyone with this link can view a read-only copy of this conversation.</div>
+    {/if}
+    <button class="share-toast-x" on:click={() => { shareLink = ''; shareErr = '' }} title="Dismiss">×</button>
+  </div>
+{/if}
+
 <style>
   .page        { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; height: 100%; }
+  .share-toast { position: fixed; right: 20px; bottom: 20px; z-index: 60; max-width: 420px;
+    background: #12162a; border: 1px solid #2a2f52; border-radius: 10px; padding: 12px 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,.4); display: flex; flex-direction: column; gap: 6px; }
+  .share-toast.err { border-color: rgba(255,90,90,.5); color: #ff9a9a; }
+  .share-toast-title { font-size: .82rem; color: #72d9aa; font-weight: 600; }
+  .share-toast-link { width: 100%; font-size: .78rem; padding: .4rem .5rem; border-radius: 6px;
+    border: 1px solid #2a2f52; background: #0d0f1c; color: #e6e8f5; }
+  .share-toast-note { font-size: .7rem; color: #8f96bb; }
+  .share-toast-x { position: absolute; top: 6px; right: 8px; background: none; border: none;
+    color: #7b82a8; font-size: 1rem; cursor: pointer; line-height: 1; }
+  .share-toast-x:hover { color: #c8cadf; }
   .page-header { display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
   .page-header h1 { font-size: 1.2rem; font-weight: 600; }
   .controls    { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; min-width: 0; }
@@ -2137,6 +2249,21 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+
+  /* ── Per-tool-call retry ─────────────────────────────────────────────── */
+  .tool-retry { margin: .35rem 0 .1rem; display: flex; flex-direction: column; gap: .35rem; }
+  .tool-retry-btn { align-self: flex-start; background: rgba(139,133,255,.12); border: 1px solid rgba(139,133,255,.4);
+    color: #b9b4ff; font-size: .68rem; padding: .2rem .6rem; border-radius: 6px; cursor: pointer; }
+  .tool-retry-btn:hover:not(:disabled) { background: rgba(139,133,255,.2); }
+  .tool-retry-btn:disabled { opacity: .6; cursor: default; }
+  .tool-retry-result { border-radius: 6px; padding: .4rem .55rem; border: 1px solid #2a2f52; }
+  .tool-retry-result.ok { border-color: rgba(96,200,120,.4); background: rgba(96,200,120,.07); }
+  .tool-retry-result.bad { border-color: rgba(240,96,96,.4); background: rgba(240,96,96,.07); }
+  .trr-head { font-size: .68rem; font-weight: 600; }
+  .tool-retry-result.ok .trr-head { color: #60c878; }
+  .tool-retry-result.bad .trr-head { color: #f06060; }
+  .trr-body { margin: .3rem 0 0; max-height: 220px; overflow: auto; font-size: .68rem; line-height: 1.4;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; word-break: break-word; color: #c9cef0; }
 
   /* ── Live in-progress indicator ──────────────────────────────────────── */
   .thinking.live { border-color: rgba(139, 133, 255, .4); }

@@ -28,6 +28,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/soulacy/soulacy/internal/channels"
+	"github.com/soulacy/soulacy/internal/webpush"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 )
@@ -38,6 +39,16 @@ type failureNotifier struct {
 }
 
 const defaultFailureTemplate = "🚨 Soulacy agent {agent_id} failed at {timestamp}: {error}"
+
+// truncateForPush keeps push bodies short (notifications are clipped by the OS
+// anyway) and single-line.
+func truncateForPush(s string) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if len(s) > 140 {
+		return s[:137] + "…"
+	}
+	return s
+}
 
 // NotifyFailure satisfies runtime.FailureNotifier. Logs every call (so the
 // audit trail in /tmp/soulacy.log is consistent regardless of channel
@@ -52,6 +63,19 @@ func (f *failureNotifier) NotifyFailure(ctx context.Context, def *agent.Definiti
 		zap.String("trigger_channel", inbound.Channel),
 		zap.String("error", errMsg),
 	)
+
+	// Fire a push to any paired mobile devices (Epic 8). Best-effort and a no-op
+	// when push isn't configured; independent of the channel-delivery path below.
+	pushAgentName := def.Name
+	if pushAgentName == "" {
+		pushAgentName = def.ID
+	}
+	webpush.NotifyDefault(webpush.Notification{
+		Title: "Agent run failed",
+		Body:  fmt.Sprintf("%s: %s", pushAgentName, truncateForPush(errMsg)),
+		URL:   "/#mobile",
+		Tag:   "fail-" + def.ID,
+	})
 
 	channelID, to, body, ok := f.resolveTarget(def, inbound, errMsg)
 	if !ok {

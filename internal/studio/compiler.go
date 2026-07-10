@@ -48,6 +48,11 @@ type Catalog struct {
 	// builder injects it so generation follows the same rules validation and the
 	// AI fixer enforce. Not part of the live inventory — it's guidance.
 	Rules string `json:"rules,omitempty"`
+	// Lessons are guidance sentences distilled from accepted live-run repairs
+	// (real API shapes that broke a node and the fix that worked). Injected into
+	// the generation prompt so Studio learns to build flows that work the first
+	// time. Populated server-side from the lesson store; not user-authored.
+	Lessons []Lesson `json:"lessons,omitempty"`
 }
 
 // CatalogKB is one knowledge base the workflow's agents could use as a source.
@@ -356,6 +361,9 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- trigger.type is one of: schedule, channel, webhook, manual.\n")
 	sb.WriteString("- For schedule triggers, put a cron expression in trigger.config.cron.\n")
 	sb.WriteString("- channels is a list of output channel names (e.g. \"telegram\", \"slack\", \"email\").\n")
+	sb.WriteString("- THE OUTPUT NODE IS THE ANSWER, NOT A DELIVERY RECEIPT: the flow's output node (its result is the reply the user reads AND what is delivered) MUST be the node that produces the human-readable CONTENT — the agent/llm/python node that formats the final message, summary, chart URL, or answer. NEVER make a `channel.send` (or any pure delivery/notify) node the terminal/output node: `channel.send` returns a delivery receipt like {\"ok\":true,\"channel\":...}, which is a useless reply. Set the content node as the last node (or reference it via the flow-level output field). Deliver to channels via the `channels` list, not by ending the graph on channel.send.\n")
+	sb.WriteString("- channel.send IS FOR OUT-OF-BAND DELIVERY ONLY (e.g. pushing a scheduled result to Telegram/Slack). For channel/manual/webhook (interactive) triggers the reply is returned to the caller automatically — do NOT route the answer through channel.send. If a run must BOTH answer interactively AND push to a channel, produce the content in a node, make THAT node the output, and add channel.send as a SEPARATE branch — never as the output node.\n")
+	sb.WriteString("- VALID NODE KINDS ARE ONLY: tool, agent, python, llm, branch. Do NOT invent a \"start\", \"entry\", \"begin\", \"end\", or \"receive_request\" node — those kinds are invalid and break the flow. The graph has NO separate start/end node: the FIRST real node (usually an `llm` extractor or an `agent`) is the entry, named in the top-level `entry` field. The user's inbound text is available to any node as {{ .trigger.text }} (aliases {{ .trigger.message }} / {{ .trigger.input }}) — reference it directly instead of creating a passthrough start node.\n")
 	sb.WriteString("- KEEP GRAPHS SIMPLE, but COMPOSE THE CAPABILITIES YOU HAVE: aim for a handful of meaningful nodes, not a 10-15 step pipeline. Collapse pure DATA GLUE (parsing, reshaping, dedupe, formatting) into a SINGLE `python` node. But do NOT collapse real OPERATIONS into python: when an available tool / MCP tool / skill performs the operation, emit a discrete `tool` node that CALLS it, and sequence several such nodes for a multi-step external job (e.g. create -> add sources -> generate -> poll). Delegate open-ended reasoning/summarizing to an `agent` node.\n")
 	sb.WriteString("- USE `llm` NODES FOR FUZZY HUMAN LANGUAGE: when a downstream tool needs clean structured arguments (city, ticker, date range, product query, intent) but the trigger text may be phrased many ways, insert a `llm` node before the tool. Put the raw text in `input`, set params.system to an extraction instruction, set params.response_format to \"json\", and store the object in `output`. Then wire/pass only the extracted scalar fields to tools. Do not use brittle regex Python for natural-language intent extraction.\n")
 	sb.WriteString("- PRODUCTION MINDSET: Treat every intent as a production workload. Handle empty states, edge cases, and failure modes explicitly (e.g. using a branch node to emit a fallback message if no items are found).\n")
@@ -371,6 +379,10 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	// User-editable authoring rulebook (same rules the validator + AI fixer use),
 	// so generation follows them up front instead of being corrected after.
 	sb.WriteString(RulesPromptBlock(catalog.Rules))
+
+	// Lessons distilled from accepted live-run repairs — real API shapes that
+	// broke a node before, so this generation avoids repeating the same mistake.
+	sb.WriteString(LessonsPromptBlock(catalog.Lessons))
 
 	if len(catalog.Skills) > 0 {
 		sb.WriteString("Available skills (use the EXACT name in read_skill's skill_name):\n")
@@ -638,7 +650,11 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	}
 
 	prompt := BuildPrompt(intent, catalog, answers)
-	raw, err := llm.Complete(ctx, prompt)
+	// Schema-constrained generation when the client supports it: the builder
+	// model is handed a JSON Schema that pins node.kind to the valid set at the
+	// source (preventing the invent-a-"start"-node class), instead of relying on
+	// the prompt alone and repairing after. Falls back to plain Complete.
+	raw, err := completeDraft(ctx, llm, prompt)
 	if err != nil {
 		return Result{}, fmt.Errorf("studio: llm complete: %w", err)
 	}
@@ -667,6 +683,12 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// they didn't declare — which would otherwise throw away an entire
 	// otherwise-valid draft over one cosmetic wiring slip.
 	reconcilePorts(&draft)
+
+	// Deterministic output-node guarantee: the reply the user reads must be a
+	// content node, never a channel.send delivery receipt. Re-points a delivery
+	// output to the content node feeding it. (Prompt steers the model here too;
+	// this makes it certain regardless of model variance.)
+	ensureContentOutput(&draft)
 
 	// Deterministic data-flow repair (local-first pivot, Story #10): fill empty
 	// required tool args from same-named upstream outputs AND reconcile dangling
@@ -698,6 +720,7 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	if focusedRepair(ctx, llm, &draft) {
 		normalizeFlow(&draft)
 		reconcilePorts(&draft)
+		ensureContentOutput(&draft)
 		AutoWire(&draft, catalog)
 		classifyFlowNodes(&draft.Flow)
 	}
@@ -1103,6 +1126,14 @@ func normalizeFlow(d *Draft) {
 		// the stored Code is `{"code":"..."}` — which fails at run time with
 		// "name 'run' is not defined". Replace it with the inner source.
 		unwrapNodeCode(n)
+
+		// Canonicalize invented kind synonyms to the valid structural kinds so a
+		// generated "start"/"end" node never fails the strict compile. This is the
+		// single deterministic place LLM kind-variance is absorbed.
+		if k := canonicalNodeKind(n.Kind); k != "" {
+			n.Kind = k
+		}
+
 		if strings.TrimSpace(n.Kind) != "" {
 			continue
 		}
@@ -1116,6 +1147,82 @@ func normalizeFlow(d *Draft) {
 		default:
 			n.Kind = sdkr.FlowNodeBranch
 		}
+	}
+}
+
+// deliveryTools are pure out-of-band delivery tools whose result is a receipt,
+// not content — they must never be a flow's output node.
+var deliveryTools = map[string]bool{"channel.send": true}
+
+func isDeliveryNode(n sdkr.FlowNode) bool {
+	return strings.EqualFold(n.Kind, sdkr.FlowNodeTool) && deliveryTools[strings.TrimSpace(n.Tool)]
+}
+
+func isContentNode(n sdkr.FlowNode) bool {
+	switch strings.ToLower(strings.TrimSpace(n.Kind)) {
+	case sdkr.FlowNodeAgent, sdkr.FlowNodeLLM, sdkr.FlowNodePython:
+		return true
+	case sdkr.FlowNodeTool:
+		return !deliveryTools[strings.TrimSpace(n.Tool)]
+	default:
+		return false // branch/trigger/exit produce no content
+	}
+}
+
+// ensureContentOutput enforces the rule that a flow's OUTPUT (the reply the user
+// reads) is a CONTENT node, never a delivery node like channel.send whose result
+// is a {"ok":true,...} receipt. Deterministic: if the designated/terminal output
+// is a delivery node, it re-points Output to the content node feeding it (or the
+// last content node). This is the authoritative guarantee — the runtime
+// receipt→content fallback is only defense-in-depth for older saved flows.
+func ensureContentOutput(d *Draft) {
+	if d == nil || len(d.Flow.Nodes) == 0 {
+		return
+	}
+	idx := make(map[string]*sdkr.FlowNode, len(d.Flow.Nodes))
+	for i := range d.Flow.Nodes {
+		idx[d.Flow.Nodes[i].ID] = &d.Flow.Nodes[i]
+	}
+	outID := strings.TrimSpace(d.Flow.Output)
+	if outID == "" {
+		outID = d.Flow.Nodes[len(d.Flow.Nodes)-1].ID
+	}
+	n := idx[outID]
+	if n == nil || !isDeliveryNode(*n) {
+		return // output is already content (or unknown) — leave it
+	}
+	// Prefer the content node that feeds the delivery node.
+	for _, e := range d.Flow.Edges {
+		if e.To == outID {
+			if pred, ok := idx[e.From]; ok && isContentNode(*pred) {
+				d.Flow.Output = pred.ID
+				return
+			}
+		}
+	}
+	// Fall back to the last content node in the graph.
+	for i := len(d.Flow.Nodes) - 1; i >= 0; i-- {
+		if isContentNode(d.Flow.Nodes[i]) {
+			d.Flow.Output = d.Flow.Nodes[i].ID
+			return
+		}
+	}
+}
+
+// canonicalNodeKind maps kind synonyms a builder model sometimes emits to the
+// valid flow kinds. Returns "" when the kind is already valid/blank (leave it).
+// This is the authoritative, deterministic normalization — CompileFlow's own
+// tolerance is only a defense-in-depth net for older saved flows.
+func canonicalNodeKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "start", "entry", "begin", "receive", "input_node", "trigger_node":
+		return sdkr.FlowNodeTrigger
+	case "end", "finish", "done", "output_node", "exit_node":
+		return sdkr.FlowNodeExit
+	case "llm_extract", "extract", "extractor":
+		return sdkr.FlowNodeLLM
+	default:
+		return ""
 	}
 }
 

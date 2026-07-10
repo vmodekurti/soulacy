@@ -74,7 +74,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.11"
+          go-version: "1.25.12"
           cache: true
 
       - name: Set up Node.js (for GUI build)
@@ -100,6 +100,46 @@ jobs:
             go build \
               -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=${VERSION}" \
               -o bin/release/sy-darwin-${{ matrix.arch }} ./cmd/sy
+
+      # Sign + notarize the Mach-O binaries BEFORE tarballing, so the release
+      # checksums (computed later) cover the signed bytes. Fully gated on signing
+      # secrets: when they're absent the job ships unsigned binaries and only
+      # emits a warning, so forks and pre-notarization releases still build.
+      - name: Codesign & notarize (macOS)
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+          CODESIGN_IDENTITY: ${{ secrets.MACOS_CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          if [ -z "${MACOS_CERTIFICATE:-}" ] || [ -z "${APPLE_ID:-}" ]; then
+            echo "::warning::macOS signing secrets not configured — shipping unsigned binaries (Gatekeeper will warn on first run)."
+            exit 0
+          fi
+          set -euo pipefail
+          KEYCHAIN=build.keychain
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security default-keychain -s "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > cert.p12
+          security import cert.p12 -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          for b in bin/release/soulacy-darwin-${{ matrix.arch }} bin/release/sy-darwin-${{ matrix.arch }}; do
+            codesign --force --timestamp --options runtime --sign "$CODESIGN_IDENTITY" "$b"
+            codesign --verify --strict --verbose=2 "$b"
+          done
+          # Notarize the pair (CLI tools can't be stapled; Gatekeeper verifies the
+          # notarization ticket online on first run).
+          ZIP="notarize-${{ matrix.arch }}.zip"
+          /usr/bin/zip -j "$ZIP" bin/release/soulacy-darwin-${{ matrix.arch }} bin/release/sy-darwin-${{ matrix.arch }}
+          xcrun notarytool submit "$ZIP" \
+            --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD" --wait
+          rm -f cert.p12 "$ZIP"
+          echo "Signed + notarized ${{ matrix.arch }} binaries."
 
       - name: Create tarballs
         run: |
@@ -315,3 +355,42 @@ jobs:
             artifacts/soulacy.sbom.spdx.json.cosign.bundle
           generate_release_notes: true
           fail_on_unmatched_files: false
+
+      # Auto-bump the Homebrew tap formula to this release with the REAL macOS
+      # checksums, replacing the placeholder hashes. Gated on a tap push token so
+      # it's a no-op when unset.
+      - name: Bump Homebrew formula
+        if: ${{ !contains(github.ref_name, '-') }}
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN not set — skipping Homebrew formula bump."
+            exit 0
+          fi
+          set -euo pipefail
+          VERSION="${{ github.ref_name }}"
+          ARM_SHA="$(grep "soulacy_${VERSION}_darwin_arm64.tar.gz" artifacts/checksums.sha256 | awk '{print $1}')"
+          AMD_SHA="$(grep "soulacy_${VERSION}_darwin_amd64.tar.gz" artifacts/checksums.sha256 | awk '{print $1}')"
+          if [ -z "$ARM_SHA" ] || [ -z "$AMD_SHA" ]; then
+            echo "::error::could not find darwin checksums for $VERSION"; exit 1
+          fi
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/vmodekurti/homebrew-tap.git" tap
+          F=tap/Formula/soulacy.rb
+          # Version, urls, and both sha256 lines (works whether the current value
+          # is the placeholder or a previous real hash).
+          sed -i.bak -E "s/version \"[^\"]+\"/version \"${VERSION#v}\"/" "$F"
+          sed -i.bak -E "s#(download/)v?[^/]+/soulacy_v?[^_]+_darwin_arm64#\1${VERSION}/soulacy_${VERSION}_darwin_arm64#g" "$F"
+          sed -i.bak -E "s#(download/)v?[^/]+/soulacy_v?[^_]+_darwin_amd64#\1${VERSION}/soulacy_${VERSION}_darwin_amd64#g" "$F"
+          awk -v arm="$ARM_SHA" -v amd="$AMD_SHA" '
+            /darwin_arm64/ { print; getline; sub(/sha256 "[^"]*"/, "sha256 \"" arm "\""); print; next }
+            /darwin_amd64/ { print; getline; sub(/sha256 "[^"]*"/, "sha256 \"" amd "\""); print; next }
+            { print }
+          ' "$F" > "$F.new" && mv "$F.new" "$F"
+          rm -f "$F.bak"
+          cd tap
+          git config user.name "soulacy-release-bot"
+          git config user.email "bot@soulacy.local"
+          git add Formula/soulacy.rb
+          git commit -m "soulacy ${VERSION}" || { echo "no formula changes"; exit 0; }
+          git push origin HEAD:main

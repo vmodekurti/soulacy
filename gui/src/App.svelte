@@ -24,11 +24,13 @@
   import Mobile     from './pages/Mobile.svelte'
   import PluginFrame from './pages/PluginFrame.svelte'
   import PluginManager from './pages/PluginManager.svelte'
+  import ShareView from './pages/ShareView.svelte'
   import { pageTitle } from './lib/pagetitle.js'
   import { api } from './lib/api.js'
   import { pluginNavEntries, isPluginPage, pluginIdFromPage } from './lib/pluginui.js'
 
   let page = 'dashboard'
+  let shareToken = ''   // set from #share/<token> — renders the public read-only view
   let pluginPages = []   // nav entries for mounted plugin UIs (E8)
   let showKeyModal = false
   let keyInput = ''
@@ -139,6 +141,10 @@
   onMount(() => {
     const applyHash = () => {
       const h = location.hash.slice(1)
+      // Public read-only shared conversation: /#share/<token>. Rendered outside
+      // the app shell and the login gate, so it needs no API key.
+      if (h.startsWith('share/')) { shareToken = h.slice('share/'.length); return }
+      shareToken = ''
       if (retiredPages[h]) {
         navigate(retiredPages[h])
         return
@@ -161,6 +167,26 @@
     try { navCollapsed = localStorage.getItem('soulacy-nav-collapsed') === '1' } catch (_) {}
     window.addEventListener('popstate', applyHash)
     window.addEventListener('hashchange', applyHash)
+
+    // A public shared view needs no auth probe, no first-run redirect, and no
+    // plugin nav — it renders standalone. Skip the rest of setup.
+    if (shareToken) return
+
+    // First-run: if the user landed on the default page with no explicit route
+    // and setup isn't done yet, guide them into the wizard. One-shot — once
+    // they've seen it (or completed setup) we never auto-redirect again.
+    try {
+      const seen = localStorage.getItem('soulacy-onboarding-seen') === '1'
+      if (!seen && !location.hash && page === 'dashboard') {
+        api.onboarding.status()
+          .then((st) => {
+            const provider = (st?.steps || []).find(s => s.key === 'provider')
+            if (!st?.complete && provider && provider.status === 'todo') navigate('onboarding')
+            else localStorage.setItem('soulacy-onboarding-seen', '1')
+          })
+          .catch(() => {}) // older gateway without onboarding status: skip silently
+      }
+    } catch (_) { /* localStorage unavailable — skip first-run redirect */ }
 
     // Auth probe: hit an authenticated endpoint. apiFetch flips $authRequired
     // true on 401/403 (→ login screen) and false on success (→ dashboard).
@@ -210,8 +236,11 @@
   }
 </script>
 
-<!-- Full-screen login: intercepts the whole UI while authentication is required. -->
-{#if $authRequired}
+<!-- Public read-only shared conversation — rendered before (and instead of) the
+     login gate and the app shell, so it needs no API key. -->
+{#if shareToken}
+  <ShareView token={shareToken} />
+{:else if $authRequired}
   <div class="login-screen">
     <div class="login-aurora" aria-hidden="true"></div>
     <form class="login-card" on:submit|preventDefault={submitLogin}>
@@ -316,6 +345,7 @@
   </div>
 {/if}
 
+{#if !shareToken}
 <div class="layout">
   <!-- Mobile top bar (hidden on desktop) -->
   <header class="topbar">
@@ -445,6 +475,7 @@
     {/if}
   </main>
 </div>
+{/if}
 
 
 <style>

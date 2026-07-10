@@ -12,6 +12,7 @@
   let actionLoading = {}
   let restartNeeded = false
   let restarting = false
+  let diagnosis = {}   // adapterId → { ok, category, reason, fix, detail, to }
 
   // Edit modal state
   let editing   = null   // the channel being edited
@@ -86,6 +87,32 @@
     } finally {
       actionLoading = { ...actionLoading, [`test:${adapterId}`]: false }
     }
+  }
+
+  // diagnoseChannel runs the "delivery doctor" for a mapping. Unlike test, it
+  // always returns a structured, plain-language diagnosis (never a raw error),
+  // which we surface in a per-adapter panel.
+  async function diagnoseChannel(ch, row = null) {
+    const adapterId = row?.adapter_id || ch.id
+    actionLoading = { ...actionLoading, [`diag:${adapterId}`]: true }
+    error = ''
+    notice = ''
+    try {
+      const res = await api.channels.diagnose(ch.id, row ? { adapter_id: adapterId } : {})
+      diagnosis = { ...diagnosis, [adapterId]: { ...res.diagnosis, to: res.to } }
+    } catch (e) {
+      // The endpoint returns 200 with a diagnosis; a thrown error here is an
+      // unexpected transport/auth problem, so show it plainly.
+      diagnosis = { ...diagnosis, [adapterId]: { ok: false, category: 'unknown', reason: e.message, fix: '' } }
+    } finally {
+      actionLoading = { ...actionLoading, [`diag:${adapterId}`]: false }
+    }
+  }
+
+  function dismissDiagnosis(adapterId) {
+    const next = { ...diagnosis }
+    delete next[adapterId]
+    diagnosis = next
   }
 
   function openEdit(ch) {
@@ -473,8 +500,26 @@
                           on:click={() => testChannel(ch, row)}>
                           {actionLoading[`test:${row.adapter_id}`] ? '…' : 'Test'}
                         </button>
+                        <button
+                          class="btn-secondary tiny"
+                          disabled={actionLoading[`diag:${row.adapter_id}`]}
+                          title="Diagnose delivery for this bot mapping and explain any failure in plain language"
+                          on:click={() => diagnoseChannel(ch, row)}>
+                          {actionLoading[`diag:${row.adapter_id}`] ? '…' : 'Diagnose'}
+                        </button>
                       {/if}
                     </div>
+                    {#if diagnosis[row.adapter_id]}
+                      <div class="diag-result {diagnosis[row.adapter_id].ok ? 'ok' : 'bad'}">
+                        <div class="diag-head">
+                          <strong>{diagnosis[row.adapter_id].ok ? '✓ Delivery OK' : '✗ ' + (diagnosis[row.adapter_id].category || 'failed')}</strong>
+                          <button class="diag-x" on:click={() => dismissDiagnosis(row.adapter_id)} title="Dismiss">×</button>
+                        </div>
+                        <p>{diagnosis[row.adapter_id].reason}</p>
+                        {#if diagnosis[row.adapter_id].fix}<p class="diag-fix"><strong>Fix:</strong> {diagnosis[row.adapter_id].fix}</p>{/if}
+                        {#if diagnosis[row.adapter_id].detail}<details><summary>Raw error</summary><code>{diagnosis[row.adapter_id].detail}</code></details>{/if}
+                      </div>
+                    {/if}
                   </div>
                 {/each}
               </div>
@@ -493,6 +538,18 @@
               </div>
             {/if}
 
+            {#if diagnosis[ch.id]}
+              <div class="diag-result {diagnosis[ch.id].ok ? 'ok' : 'bad'}">
+                <div class="diag-head">
+                  <strong>{diagnosis[ch.id].ok ? '✓ Delivery OK' : '✗ ' + (diagnosis[ch.id].category || 'failed')}</strong>
+                  <button class="diag-x" on:click={() => dismissDiagnosis(ch.id)} title="Dismiss">×</button>
+                </div>
+                <p>{diagnosis[ch.id].reason}</p>
+                {#if diagnosis[ch.id].fix}<p class="diag-fix"><strong>Fix:</strong> {diagnosis[ch.id].fix}</p>{/if}
+                {#if diagnosis[ch.id].detail}<details><summary>Raw error</summary><code>{diagnosis[ch.id].detail}</code></details>{/if}
+              </div>
+            {/if}
+
           </div>
 
           <div class="ch-footer">
@@ -508,6 +565,13 @@
                 title={!ch.registered ? 'Save settings and restart the gateway before testing' : !ch.enabled ? 'Enable this channel before testing' : 'Send a real test message through this channel'}
                 on:click={() => testChannel(ch)}>
                 {actionLoading[`test:${ch.id}`] ? 'Testing…' : 'Test'}
+              </button>
+              <button
+                class="btn-secondary small-btn"
+                disabled={actionLoading[`diag:${ch.id}`]}
+                title="Diagnose delivery and explain any failure in plain language"
+                on:click={() => diagnoseChannel(ch)}>
+                {actionLoading[`diag:${ch.id}`] ? 'Diagnosing…' : 'Diagnose'}
               </button>
             {/if}
             {#if !ch.always}
@@ -811,6 +875,23 @@
   .diag-row.warn { border-color: rgba(240,196,96,.36); background: rgba(240,196,96,.07); }
   .diag-row.warn strong { color: #f0c460; }
   .diag-row.info strong { color: #8b85ff; }
+
+  /* Delivery doctor result panel */
+  .diag-result { margin-top: .5rem; padding: .55rem .7rem; border-radius: 8px; border: 1px solid #2a2f52; background: #131735; }
+  .diag-result.ok { border-color: rgba(96,200,120,.4); background: rgba(96,200,120,.08); }
+  .diag-result.bad { border-color: rgba(240,96,96,.4); background: rgba(240,96,96,.08); }
+  .diag-head { display: flex; align-items: center; justify-content: space-between; }
+  .diag-head strong { font-size: .72rem; letter-spacing: .02em; }
+  .diag-result.ok .diag-head strong { color: #60c878; }
+  .diag-result.bad .diag-head strong { color: #f06060; text-transform: capitalize; }
+  .diag-result p { margin: .35rem 0 0; color: #c8cadf; font-size: .78rem; line-height: 1.4; }
+  .diag-result p.diag-fix { color: #a7d3ff; }
+  .diag-result details { margin-top: .4rem; }
+  .diag-result summary { cursor: pointer; color: #7b82a8; font-size: .7rem; }
+  .diag-result code { display: block; margin-top: .3rem; color: #9aa0c2; font-size: .7rem; word-break: break-word; }
+  .diag-x { background: none; border: none; color: #7b82a8; font-size: 1rem; cursor: pointer; line-height: 1; padding: 0 .2rem; }
+  .diag-x:hover { color: #c8cadf; }
+
   .ch-footer { padding: .75rem 1rem; border-top: 1px solid #1a1e36; display: flex; gap: .5rem; justify-content: flex-end; }
   .small-btn { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }
   .ch-footer button { padding: .35rem .9rem; font-size: .8rem; border-radius: 6px; }

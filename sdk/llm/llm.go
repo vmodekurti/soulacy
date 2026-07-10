@@ -34,6 +34,13 @@ type CompletionRequest struct {
 	// + post-validation in the engine).
 	ResponseFormat string
 	JSONSchema     map[string]any
+	// JSONSchemaLenient, when true, asks providers that support strict structured
+	// output (OpenAI) to treat the JSONSchema as a best-effort GUIDE rather than a
+	// hard, strict-mode contract. This is for schemas that intentionally allow
+	// freeform sub-objects (e.g. a workflow builder's node params / trigger
+	// config) which strict mode — additionalProperties:false + all-required —
+	// would reject. Zero value (false) preserves the existing strict behaviour.
+	JSONSchemaLenient bool
 
 	// ToolChoice constrains the model's tool-selection behaviour for this
 	// single request. Empty = no constraint. Otherwise one of:

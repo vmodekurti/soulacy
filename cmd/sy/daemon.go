@@ -50,12 +50,16 @@ Both modes are user-scoped — no sudo, no root daemon.
 Subcommands:
   install     Write the unit file and load/enable the service.
   uninstall   Stop, unload, and remove the unit file.
+  start       Start the installed service without reinstalling it.
+  stop        Stop the running service, leaving it installed.
   status      Show whether the service is loaded and its recent state.
   logs        Tail the service log.`,
 	}
 	cmd.AddCommand(
 		buildDaemonInstallCmd(),
 		buildDaemonUninstallCmd(),
+		buildDaemonStartCmd(),
+		buildDaemonStopCmd(),
 		buildDaemonStatusCmd(),
 		buildDaemonLogsCmd(),
 	)
@@ -78,6 +82,26 @@ func buildDaemonUninstallCmd() *cobra.Command {
 		Short: "Stop the gateway service and remove the service file",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return daemonUninstall()
+		},
+	}
+}
+
+func buildDaemonStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "start",
+		Short: "Start the installed gateway service",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return daemonStart()
+		},
+	}
+}
+
+func buildDaemonStopCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "stop",
+		Short: "Stop the running gateway service (leaves it installed)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return daemonStop()
 		},
 	}
 }
@@ -143,6 +167,28 @@ func daemonStatus() error {
 		return statusSystemdUserUnit()
 	default:
 		return fmt.Errorf("daemon status: unsupported OS %q", runtime.GOOS)
+	}
+}
+
+func daemonStart() error {
+	switch runtime.GOOS {
+	case "darwin":
+		return startLaunchAgent()
+	case "linux":
+		return startSystemdUserUnit()
+	default:
+		return fmt.Errorf("daemon start: unsupported OS %q", runtime.GOOS)
+	}
+}
+
+func daemonStop() error {
+	switch runtime.GOOS {
+	case "darwin":
+		return stopLaunchAgent()
+	case "linux":
+		return stopSystemdUserUnit()
+	default:
+		return fmt.Errorf("daemon stop: unsupported OS %q", runtime.GOOS)
 	}
 }
 
@@ -245,6 +291,46 @@ func statusLaunchAgent() error {
 	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
 		fmt.Printf("    %s\n", line)
 	}
+	return nil
+}
+
+func startLaunchAgent() error {
+	path, err := launchAgentPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("not installed: run `sy daemon install` first")
+	}
+	// load -w is idempotent and re-enables a service that `stop` unloaded.
+	if out, err := exec.Command("launchctl", "load", "-w", path).CombinedOutput(); err != nil {
+		// Already loaded is fine; only surface a genuine failure.
+		msg := strings.TrimSpace(string(out))
+		if msg != "" && !strings.Contains(strings.ToLower(msg), "already loaded") {
+			return fmt.Errorf("launchctl load failed: %v: %s", err, msg)
+		}
+	}
+	_ = exec.Command("launchctl", "start", launchdLabel).Run()
+	fmt.Printf("%s Gateway service started.\n", green("✓"))
+	return nil
+}
+
+func stopLaunchAgent() error {
+	path, err := launchAgentPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("%s Not installed (nothing to stop).\n", yellow("•"))
+		return nil
+	}
+	// Unload stops the job even with KeepAlive=true; the plist file stays in
+	// place so `sy daemon status` still reports it as installed and `start`
+	// can bring it back.
+	if out, err := exec.Command("launchctl", "unload", path).CombinedOutput(); err != nil {
+		return fmt.Errorf("launchctl unload failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("%s Gateway service stopped (still installed; `sy daemon start` to resume).\n", green("✓"))
 	return nil
 }
 
@@ -353,6 +439,37 @@ func statusSystemdUserUnit() error {
 	}
 	statusOut, _ := exec.Command("systemctl", "--user", "status", "--no-pager", "-n", "5", systemdUnitName).CombinedOutput()
 	fmt.Printf("%s\n", strings.TrimSpace(string(statusOut)))
+	return nil
+}
+
+func startSystemdUserUnit() error {
+	path, err := systemdUnitPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return fmt.Errorf("not installed: run `sy daemon install` first")
+	}
+	if out, err := exec.Command("systemctl", "--user", "start", systemdUnitName).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl start failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("%s Gateway service started.\n", green("✓"))
+	return nil
+}
+
+func stopSystemdUserUnit() error {
+	path, err := systemdUnitPath()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("%s Not installed (nothing to stop).\n", yellow("•"))
+		return nil
+	}
+	if out, err := exec.Command("systemctl", "--user", "stop", systemdUnitName).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl stop failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	fmt.Printf("%s Gateway service stopped (still installed; `sy daemon start` to resume).\n", green("✓"))
 	return nil
 }
 

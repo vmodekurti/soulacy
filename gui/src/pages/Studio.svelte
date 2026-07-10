@@ -941,12 +941,134 @@ Use null for fields that are not present.`
         reply: (res && res.reply) || '',
         error: (res && res.error) || '',
         trace: (res && Array.isArray(res.trace)) ? res.trace : [],
+        nodeTrace: (res && Array.isArray(res.node_trace)) ? res.node_trace : [],
       }
     } catch (e) {
       tryResult = { reply: '', error: (e && e.message) || 'run failed' }
     } finally {
       trying = false
     }
+    // A fresh run invalidates any prior repair proposals.
+    repairProposals = []
+    repairError = ''
+    repairDone = ''
+  }
+
+  // Copy any value (full node input/output) to the clipboard for offline testing.
+  let copiedKey = ''
+  async function copyValue(text, key) {
+    try {
+      await navigator.clipboard.writeText(text || '')
+      copiedKey = key
+      setTimeout(() => { if (copiedKey === key) { copiedKey = ''; } }, 1500)
+    } catch (_) { /* clipboard blocked; ignore */ }
+  }
+  // Soft failure: a node ran (no error) but its OUTPUT reports an error field.
+  function nodeSoftError(n) {
+    const raw = (n && (n.output_full || n.output)) || ''
+    if (!raw) return ''
+    try {
+      const o = JSON.parse(raw)
+      if (o && typeof o === 'object') {
+        for (const k of ['error', 'errors', 'err']) {
+          if (typeof o[k] === 'string' && o[k].trim()) return o[k]
+        }
+      }
+    } catch (_) { /* not JSON */ }
+    return ''
+  }
+  function nodeLooksWrong(n) { return !!(n && (n.error || nodeSoftError(n))) }
+
+  // ── Observe-and-adjust: learn from the last Run Live and fix a node ─────────
+  // After a run where a node broke because a real API returned an unexpected
+  // shape, ask Studio to observe the actual node outputs and propose adjustments.
+  let repairing = false
+  let repairProposals = []   // [{ node_id, field, class, old, new, rationale, auto, observed_keys }]
+  let repairError = ''
+  let repairDone = ''
+  // True when the last run has at least one node worth adjusting — either a hard
+  // error OR a soft failure (ran green but its output reports an error).
+  $: liveHasFailure = !!(tryResult && (tryResult.error || (tryResult.nodeTrace || []).some(nodeLooksWrong)))
+
+  async function adjustToLiveOutput() {
+    if (repairing || !workflow || !tryResult) return
+    repairing = true
+    repairError = ''
+    repairDone = ''
+    repairProposals = []
+    try {
+      const res = await bridge.repairLive(workflow, tryResult.nodeTrace || [])
+      const props = (res && Array.isArray(res.proposals)) ? res.proposals : []
+      if (!props.length) {
+        repairDone = 'No automatic adjustment found. The failing node may be a real API/auth error rather than a format mismatch — check the node output below.'
+      }
+      repairProposals = props
+    } catch (e) {
+      repairError = (e && e.message) || 'could not analyze the run'
+    } finally {
+      repairing = false
+    }
+  }
+
+  // Diff preview (Epic 4): compute what a repair proposal would change in the
+  // SOUL.yaml WITHOUT saving, so the user can review before applying.
+  let repairDiff = null   // { p, candidate, lines, stats }
+  let repairDiffBusy = false
+  async function previewProposal(p) {
+    if (!workflow || repairDiffBusy) return
+    repairDiffBusy = true
+    repairError = ''
+    try {
+      const res = await bridge.applyRepair(workflow, p)   // returns candidate; not persisted
+      const candidate = res && res.workflow
+      if (!candidate) { repairError = 'Could not compute the change.'; return }
+      const d = await api.studio.diff(workflow, candidate)
+      repairDiff = { p, candidate, lines: (d && d.lines) || [], stats: (d && d.stats) || { added: 0, removed: 0 } }
+    } catch (e) {
+      repairError = (e && e.message) || 'could not preview the change'
+    } finally {
+      repairDiffBusy = false
+    }
+  }
+  function applyDiff() {
+    if (!repairDiff) return
+    workflow = repairDiff.candidate
+    rebuildGraph()
+    scheduleValidate()
+    repairProposals = repairProposals.filter(x => x !== repairDiff.p)
+    repairDone = 'Applied. Run Live again to confirm.'
+    repairDiff = null
+  }
+  function cancelDiff() { repairDiff = null }
+
+  async function applyProposal(p) {
+    if (!workflow || p._applying) return
+    p._applying = true
+    repairProposals = repairProposals
+    try {
+      const res = await bridge.applyRepair(workflow, p)
+      if (res && res.workflow) {
+        workflow = res.workflow          // patch the draft in place (triggers reactivity)
+        if (res.valid === false) {
+          repairError = 'Applied, but the node still needs attention: ' + ((res.errors || []).join('; '))
+        } else {
+          repairDone = 'Adjusted node “' + p.node_id + '”. Run Live again to confirm.'
+        }
+        // Drop the applied proposal from the list.
+        repairProposals = repairProposals.filter(x => x !== p)
+      } else {
+        repairError = 'Could not apply the adjustment.'
+      }
+    } catch (e) {
+      repairError = (e && e.message) || 'apply failed'
+    } finally {
+      p._applying = false
+      repairProposals = repairProposals
+    }
+  }
+
+  function rejectProposal(p) {
+    repairProposals = repairProposals.filter(x => x !== p)
   }
 
   // ── Execution-mode override (Workflow ⇄ ReAct ⇄ Plan-Execute) ──────────────
@@ -1490,6 +1612,29 @@ Use null for fields that are not present.`
 
   // Insert a suggested Python step (Stories 3 & 4) right after the node it was
   // suggested for, pre-seeded from the matching template and auto-connected.
+  // addStepFromText: describe a step in plain English; the backend compiles a
+  // single block (recommending tool/python/agent) and appends it to the flow.
+  let addStepBusy = false
+  let addStepMsg = ''
+  async function addStepFromText(instruction) {
+    if (!workflow || !instruction || !instruction.trim() || addStepBusy) return
+    addStepBusy = true
+    addStepMsg = ''
+    try {
+      const res = await api.studio.addStep(workflow, instruction.trim())
+      if (res && res.workflow) {
+        workflow = res.workflow
+        rebuildGraph()
+        scheduleValidate()
+        addStepMsg = `Added a ${res.recommended || 'step'}${res.step_summary ? `: ${res.step_summary}` : ''}.`
+      }
+    } catch (e) {
+      addStepMsg = (e && e.message) || 'Could not add that step.'
+    } finally {
+      addStepBusy = false
+    }
+  }
+
   function addSuggestedPython(s) {
     if (!workflow || !s) return
     const flow = workflow.flow || { nodes: [], edges: [], entry: '' }
@@ -3179,7 +3324,7 @@ Use null for fields that are not present.`
           <strong>Review the plan before editing nodes.</strong>
           <span>Confirm when it runs, what work it performs, and where output goes; use Canvas only for advanced rewiring.</span>
         </div>
-        <PlanView {workflow} onSelectNode={planSelectNode} onSave={() => save()} onAddPython={addSuggestedPython} onUpdateNode={updateNodeConfig} testByNode={stepResultsByNode(testResult)} {saving} />
+        <PlanView {workflow} onSelectNode={planSelectNode} onSave={() => save()} onAddPython={addSuggestedPython} onAddStep={addStepFromText} addStepBusy={addStepBusy} addStepMsg={addStepMsg} onUpdateNode={updateNodeConfig} testByNode={stepResultsByNode(testResult)} {saving} />
       {:else}
       <div
         class="canvas"
@@ -3254,6 +3399,34 @@ Use null for fields that are not present.`
                   {#if tryResult.reply}<div class="agent-try-reply">{tryResult.reply}</div>{/if}
                   {#if !tryResult.reply && !tryResult.error}<div class="agent-try-reply muted">(no text reply)</div>{/if}
                 </div>
+                {#if tryResult.nodeTrace && tryResult.nodeTrace.length}
+                  <div class="agent-try-trace">
+                    <div class="att-label">Every node that ran ({tryResult.nodeTrace.length}) — click a node for its input/output</div>
+                    <ol class="att-list">
+                      {#each tryResult.nodeTrace as n, i}
+                        <li class="att-item" class:err={n.error}>
+                          <button class="att-row" type="button" on:click={() => { n._open = !n._open; tryResult = tryResult }} title="Show input & output">
+                            <span class="att-n">{i + 1}</span>
+                            <span class="att-dot">{n.skipped ? '⏭' : n.error ? '✕' : '✓'}</span>
+                            <span class="node-kind kind-{n.kind}">{n.kind}</span>
+                            <span class="att-name">{n.node_id}</span>
+                            {#if n.skipped}<span class="node-skip">skipped · needs consent</span>{/if}
+                            <span class="att-caret">{n._open ? '▾' : '▸'}</span>
+                          </button>
+                          {#if n._open}
+                            <div class="att-detail-box">
+                              {#if n.input}<div class="att-kv"><span class="att-k">input</span><code>{n.input}</code></div>{/if}
+                              {#if n.output}<div class="att-kv"><span class="att-k">output</span><code>{n.output}</code></div>{/if}
+                              {#if n.error}<div class="att-kv"><span class="att-k">error</span><code>{n.error}</code></div>{/if}
+                              {#if !n.input && !n.output && !n.error}<div class="att-kv muted">(no data captured)</div>{/if}
+                            </div>
+                          {/if}
+                        </li>
+                      {/each}
+                    </ol>
+                    <div class="att-hint">Branch nodes evaluate conditions and aren't listed as steps; the path taken is reflected by which nodes ran.</div>
+                  </div>
+                {/if}
                 {#if tryResult.trace && tryResult.trace.length}
                   <div class="agent-try-trace">
                     <div class="att-label">Skills & tools it called ({tryResult.trace.length}) — click a step for details</div>
@@ -3451,9 +3624,120 @@ Use null for fields that are not present.`
                 {#if tryResult.reply}<div class="agent-try-reply">{tryResult.reply}</div>{/if}
                 {#if !tryResult.reply && !tryResult.error}<div class="agent-try-reply muted">(no text result)</div>{/if}
               </div>
+              {#if tryResult.nodeTrace && tryResult.nodeTrace.length}
+                <div class="agent-try-trace">
+                  <div class="att-label">Every node that ran ({tryResult.nodeTrace.length}) — click a node for its input/output</div>
+                  <ol class="att-list">
+                    {#each tryResult.nodeTrace as n, i}
+                      {@const soft = nodeSoftError(n)}
+                      <li class="att-item" class:err={n.error} class:soft={!n.error && soft}>
+                        <button class="att-row" type="button" on:click={() => { n._open = !n._open; tryResult = tryResult }} title="Show input & output">
+                          <span class="att-n">{i + 1}</span>
+                          <span class="att-dot">{n.skipped ? '⏭' : n.error ? '✕' : soft ? '⚠' : '✓'}</span>
+                          <span class="node-kind kind-{n.kind}">{n.kind}</span>
+                          <span class="att-name">{n.node_id}</span>
+                          {#if n.skipped}<span class="node-skip">skipped · needs consent</span>{/if}
+                          {#if n.adapted}<span class="node-adapted" title="The runtime salvaged this node with the LLM because the input shape was unexpected. The output is a reconstruction — consider fixing the node so it parses the real shape.">✦ auto-adapted</span>{/if}
+                          {#if !n.error && soft && !n.adapted}<span class="node-skip soft">ran, but output reports an error</span>{/if}
+                          <span class="att-caret">{n._open ? '▾' : '▸'}</span>
+                        </button>
+                        {#if n._open}
+                          <div class="att-detail-box">
+                            {#if (n.input_full || n.input)}
+                              <div class="att-kv">
+                                <span class="att-k">input <button class="copy-mini" type="button" on:click|stopPropagation={() => copyValue(n.input_full || n.input, 'in'+i)}>{copiedKey==='in'+i ? 'copied' : 'copy'}</button></span>
+                                <code class="full">{n.input_full || n.input}</code>
+                              </div>
+                            {/if}
+                            {#if (n.output_full || n.output)}
+                              <div class="att-kv">
+                                <span class="att-k">output <button class="copy-mini" type="button" on:click|stopPropagation={() => copyValue(n.output_full || n.output, 'out'+i)}>{copiedKey==='out'+i ? 'copied' : 'copy'}</button></span>
+                                <code class="full">{n.output_full || n.output}</code>
+                              </div>
+                            {/if}
+                            {#if soft && !n.error}<div class="att-kv"><span class="att-k">reported error</span><code>{soft}</code></div>{/if}
+                            {#if n.error}<div class="att-kv"><span class="att-k">error</span><code>{n.error}</code></div>{/if}
+                            {#if !n.input && !n.output && !n.error}<div class="att-kv muted">(no data captured)</div>{/if}
+                          </div>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ol>
+                  <div class="att-hint">Branch nodes evaluate conditions and aren't listed; the path taken is reflected by which nodes ran.</div>
+                </div>
+              {/if}
+
+              <!-- ── Observe-and-adjust: fix a node against the REAL output ──── -->
+              {#if liveHasFailure}
+                <div class="live-adjust">
+                  <div class="try-fix-row">
+                    <button
+                      class="btn btn-sm cv-fixbtn"
+                      type="button"
+                      on:click={adjustToLiveOutput}
+                      disabled={repairing || !workflow}
+                      title="Have Studio observe what each node actually returned and propose a per-node adjustment"
+                    >
+                      {repairing ? 'Analyzing the run…' : '🔎 Adjust to real output'}
+                    </button>
+                    <span class="try-fix-hint">Observes the actual node outputs and proposes targeted fixes for review.</span>
+                  </div>
+
+                  {#if repairError}<div class="agent-try-err">⚠ {repairError}</div>{/if}
+                  {#if repairDone}<div class="adjust-done">✓ {repairDone}</div>{/if}
+
+                  {#each repairProposals as p (p.node_id + p.field)}
+                    <div class="adjust-card" class:auto={p.auto}>
+                      <div class="adjust-head">
+                        <span class="node-kind">{p.node_id}</span>
+                        <span class="adjust-class">{(p.class || '').replace('_',' ')}</span>
+                        {#if p.auto}<span class="adjust-badge">safe / deterministic</span>{/if}
+                      </div>
+                      <div class="adjust-rationale">{p.rationale}</div>
+                      {#if p.observed_keys && p.observed_keys.length}
+                        <div class="adjust-observed">The API actually returned: <code>{p.observed_keys.join(', ')}</code></div>
+                      {/if}
+                      {#if p.new}
+                        <div class="adjust-diff">
+                          {#if p.old}<div class="diff-old"><span class="diff-tag">was</span><code>{p.old}</code></div>{/if}
+                          <div class="diff-new"><span class="diff-tag">now</span><code>{p.new}</code></div>
+                        </div>
+                        <div class="adjust-actions">
+                          <button class="btn btn-sm btn-primary" type="button" on:click={() => applyProposal(p)} disabled={p._applying}>
+                            {p._applying ? 'Applying…' : 'Approve & apply'}
+                          </button>
+                          <button class="btn btn-sm" type="button" on:click={() => previewProposal(p)} disabled={p._applying || repairDiffBusy}>
+                            {repairDiffBusy && repairDiff?.p === p ? 'Diffing…' : 'Preview diff'}
+                          </button>
+                          <button class="btn btn-sm" type="button" on:click={() => rejectProposal(p)} disabled={p._applying}>Dismiss</button>
+                        </div>
+                        {#if repairDiff && repairDiff.p === p}
+                          <div class="repair-diff">
+                            <div class="repair-diff-head">
+                              SOUL.yaml changes <span class="rd-stat add">+{repairDiff.stats.added}</span> <span class="rd-stat del">−{repairDiff.stats.removed}</span>
+                            </div>
+                            <pre class="repair-diff-body">{#each repairDiff.lines as l}<span class="rd-{l.op === '+' ? 'add' : l.op === '-' ? 'del' : 'ctx'}">{l.op} {l.text}
+</span>{/each}</pre>
+                            <div class="adjust-actions">
+                              <button class="btn btn-sm btn-primary" type="button" on:click={applyDiff}>Apply this change</button>
+                              <button class="btn btn-sm" type="button" on:click={cancelDiff}>Cancel</button>
+                            </div>
+                          </div>
+                        {/if}
+                      {:else}
+                        <div class="adjust-advisory">No automatic rewrite — adjust this node manually using the observed shape above.</div>
+                        <div class="adjust-actions">
+                          <button class="btn btn-sm" type="button" on:click={() => rejectProposal(p)}>Dismiss</button>
+                        </div>
+                      {/if}
+                    </div>
+                  {/each}
+                </div>
+              {/if}
+
               {#if tryResult.trace && tryResult.trace.length}
                 <div class="agent-try-trace">
-                  <div class="att-label">Steps it ran ({tryResult.trace.length}) — click for details</div>
+                  <div class="att-label">Tool calls ({tryResult.trace.length}) — click for details</div>
                   <ol class="att-list">
                     {#each tryResult.trace as t, i}
                       <li class="att-item" class:err={t.error}>
@@ -5828,6 +6112,53 @@ Use null for fields that are not present.`
   }
   .try-fix-row .cv-fixbtn:first-of-type { margin-left: 0; }
   .try-fix-hint { color: var(--text-muted); font-size: 12px; line-height: 1.4; }
+  /* Observe-and-adjust panel */
+  .live-adjust { margin-top: 10px; padding-top: 8px; border-top: 1px dashed var(--border); }
+  .adjust-done { font-size: 12px; color: var(--ok, #2ea043); margin-top: 6px; }
+  .adjust-card {
+    margin-top: 8px; padding: 10px; border-radius: 8px;
+    background: var(--bg-elev-2); border: 1px solid var(--border);
+    border-left: 3px solid var(--accent, #6ea8fe);
+  }
+  .adjust-card.auto { border-left-color: var(--ok, #2ea043); }
+  .adjust-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .adjust-class { font-size: 11px; color: var(--text-muted); text-transform: capitalize; }
+  .adjust-badge {
+    font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: var(--ok-bg, rgba(46,160,67,0.15)); color: var(--ok, #2ea043);
+  }
+  .adjust-rationale { font-size: 12px; color: var(--text); margin-top: 4px; line-height: 1.4; }
+  .adjust-observed { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+  .adjust-observed code, .adjust-diff code { font-family: var(--mono, monospace); font-size: 11px; }
+  .adjust-diff { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
+  .diff-old code { color: var(--text-muted); text-decoration: line-through; }
+  .diff-new code { color: var(--text); }
+  .repair-diff { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .repair-diff-head { padding: 6px 10px; font-size: 12px; background: var(--bg-elev-2); border-bottom: 1px solid var(--border); }
+  .rd-stat { font-weight: 700; }
+  .rd-stat.add { color: #36d399; }
+  .rd-stat.del { color: #ff6b81; }
+  .repair-diff-body { margin: 0; padding: 8px 10px; max-height: 260px; overflow: auto; font-size: 11px; line-height: 1.45;
+    font-family: ui-monospace, Menlo, monospace; white-space: pre; }
+  .repair-diff-body .rd-add { color: #36d399; display: block; }
+  .repair-diff-body .rd-del { color: #ff6b81; display: block; }
+  .repair-diff-body .rd-ctx { color: var(--text-muted); display: block; }
+  .diff-tag { display: inline-block; width: 30px; font-size: 10px; color: var(--text-muted); }
+  .adjust-advisory { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+  .adjust-actions { display: flex; gap: 6px; margin-top: 8px; }
+  /* Full input/output for copy-paste testing outside Studio */
+  code.full { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; display: block; }
+  .copy-mini {
+    margin-left: 6px; font-size: 10px; padding: 0 6px; border-radius: 4px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg-elev-1); color: var(--text-muted);
+  }
+  .copy-mini:hover { color: var(--text); }
+  .att-item.soft .att-dot { color: var(--warn, #f5a524); }
+  .node-skip.soft { color: var(--warn, #f5a524); }
+  .node-adapted {
+    margin-left: 6px; font-size: 10px; padding: 1px 6px; border-radius: 999px;
+    background: var(--accent-bg, rgba(110,168,254,0.15)); color: var(--accent, #6ea8fe);
+  }
   .agent-try-reply.muted { color: var(--text-muted); }
   .agent-try-trace { margin-top: 10px; }
   .att-label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
@@ -5840,6 +6171,13 @@ Use null for fields that are not present.`
   .att-dot { color: #36d399; }
   .att-item.err .att-dot { color: var(--error); }
   .att-name { color: var(--text); font-family: ui-monospace, monospace; flex: 1 1 auto; }
+  .node-kind { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; padding: 1px 6px; border-radius: 999px; }
+  .node-kind.kind-python { background: rgba(236,124,196,.16); color: #ec7cc4; }
+  .node-kind.kind-tool   { background: rgba(96,204,154,.16); color: #5fce9a; }
+  .node-kind.kind-agent  { background: rgba(108,99,255,.18); color: #b3adff; }
+  .node-kind.kind-llm    { background: rgba(240,176,112,.16); color: #f0b070; }
+  .node-skip { font-size: 11px; color: #f0b070; margin-left: 6px; }
+  .att-hint { font-size: 11px; color: var(--text-muted); margin-top: 6px; }
   .att-detail { color: var(--accent); }
   .att-caret { color: var(--text-muted); }
   .att-detail-box { padding: 2px 10px 8px 30px; display: flex; flex-direction: column; gap: 5px; }

@@ -284,6 +284,15 @@
     learningBusy = false
   }
 
+  async function toggleDisableProposal(p) {
+    learningBusy = true; error = null
+    try {
+      await api.brainMemory.disableLearning(p.id, !p.disabled)
+      await loadLearning()
+    } catch (e) { error = e.message }
+    learningBusy = false
+  }
+
   function toggleExpand(id) {
     if (expandedIDs.has(id)) expandedIDs.delete(id)
     else expandedIDs.add(id)
@@ -719,12 +728,17 @@
             {:else}
               <pre class="proposal-content">{p.content}</pre>
             {/if}
+            {#if p.why}
+              <div class="proposal-why"><strong>Why it matters:</strong> {p.why}</div>
+            {/if}
             <div class="proposal-actions">
+              <span class="meta-item">Agent: <code>{p.affected_agent || p.agent_id || '—'}</code></span>
               <span class="meta-item">Session: <code>{(p.session_id || '').slice(0,12) || '—'}</code></span>
               <span class="meta-item">Source: <code>{p.source || '—'}</code></span>
               {#if p.meta?.tools_used}
                 <span class="meta-item">Tools: <code>{p.meta.tools_used}</code></span>
               {/if}
+              {#if p.disabled}<span class="meta-item disabled-tag">disabled</span>{/if}
               <div style="flex:1"></div>
               {#if p.status === 'pending'}
                 {#if editingProposalID === p.id}
@@ -737,6 +751,12 @@
                     {p.kind === 'skill' ? 'Install skill' : 'Accept'}
                   </button>
                 {/if}
+              {:else if p.status === 'accepted'}
+                <button class="btn-secondary" on:click={() => toggleDisableProposal(p)} disabled={learningBusy}
+                        title={p.disabled ? 'Re-enable this learning' : 'Turn this learning off without deleting it'}>
+                  {p.disabled ? 'Enable' : 'Disable'}
+                </button>
+                <span class="proposal-status">{p.status}</span>
               {:else}
                 <span class="proposal-status">{p.status}</span>
               {/if}
@@ -937,6 +957,8 @@
   .proposal-skill-input{width:190px;font-family:monospace}
   .proposal-content{margin:0;background:#0e1020;border:1px solid #1a1e36;border-radius:7px;padding:.65rem .75rem;color:#9da3c0;font-size:.76rem;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:240px;overflow:auto}
   .proposal-editor{width:100%;min-height:190px;margin:0;background:#0e1020;border:1px solid #252a45;border-radius:7px;padding:.65rem .75rem;color:#c5c9e8;font-family:'Menlo','Monaco','Fira Code',monospace;font-size:.76rem;line-height:1.5;resize:vertical}
-  .proposal-actions{display:flex;align-items:center;gap:.5rem}
+  .proposal-actions{display:flex;align-items:center;gap:.5rem;flex-wrap:wrap}
+  .proposal-why{font-size:.74rem;color:#a7d3ff;background:rgba(80,140,255,.08);border:1px solid rgba(80,140,255,.2);border-radius:7px;padding:.45rem .6rem;margin:.35rem 0}
+  .disabled-tag{font-size:.63rem;padding:.1rem .4rem;border-radius:999px;background:rgba(255,107,129,.16);color:#ff8b9c}
   .proposal-status{font-size:.72rem;color:#6b7294;text-transform:uppercase;letter-spacing:.05em}
 </style>

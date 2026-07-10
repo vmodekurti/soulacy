@@ -1010,6 +1010,10 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 		engine.SetLearningStore(d.learningStore)
 	}
 
+	// Runtime adaptive-node salvage: on by default (keep flows running through
+	// shape surprises); operators opt out with runtime.adaptive_nodes: false.
+	engine.SetAdaptiveNodes(cfg.Runtime.AdaptiveNodes == nil || *cfg.Runtime.AdaptiveNodes)
+
 	engine.SetAuditLog(audit.New(cfg.Runtime.AuditDir))
 	if cfg.Runtime.AuditDir != "" {
 		log.Info("audit logging enabled", zap.String("dir", cfg.Runtime.AuditDir))

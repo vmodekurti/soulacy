@@ -21,6 +21,12 @@ export const authRequired = writable(false)
 // Agent to pre-select when navigating to the Activity page (set by "Watch" buttons).
 export const activityAgent = writable('')
 
+// PWA install: holds the deferred beforeinstallprompt event when the app is
+// installable (null otherwise), so the UI can offer an explicit Install button.
+export const installPrompt = writable(null)
+// True once the PWA has been installed to the device.
+export const appInstalled = writable(false)
+
 // Agent to pre-select when navigating to the Agents page (set by Studio after save).
 export const editAgent = writable('')
 

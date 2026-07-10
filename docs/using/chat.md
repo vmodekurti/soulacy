@@ -102,6 +102,17 @@ A denial fails that tool call (the agent is told it was denied); an approval let
 !!! warning
     Confirmation gates only pause runs that have a streaming connection to deliver the prompt. On non-streaming calls (plain `POST /api/v1/chat`) the engine logs a warning and proceeds, so pair `confirm_tools` with streaming clients for tools you truly want gated.
 
+## Sharing a conversation
+
+The **Share** button in the Chat header creates a read-only link to the current
+conversation. Soulacy stores a snapshot server-side and returns a link of the
+form `<your-host>/#share/<token>` — copied to your clipboard automatically.
+
+Anyone with the link can open a clean, read-only view of the conversation
+**without an API key** (the unguessable token is the access capability). The
+shared view renders markdown, code, and tables just like Chat. Use **Export** or
+**JSON** instead when you want a local file rather than a hosted link.
+
 ## Voice
 
 The **🎤** button in the Chat header starts a realtime voice conversation whose transcripts land in the same session — see [Voice](voice.md).

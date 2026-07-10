@@ -127,6 +127,16 @@ func flowOutputString(out json.RawMessage) string {
 var flowTemplateFuncs = template.FuncMap{
 	"toJson": toJSONString,
 	"json":   toJSONString,
+	// fromJson is the inverse models constantly reach for (the exact
+	// "function \"fromJson\" not defined" blocker seen on generated flows). Flow
+	// vars are already PARSED JSON, so this parses a JSON *string* into a value
+	// (or passes a structured value through) and re-emits valid JSON — so a
+	// template using either toJson or fromJson always renders well-formed JSON.
+	"fromJson":  tmplFromJSON,
+	"fromjson":  tmplFromJSON,
+	"parseJson": tmplFromJSON,
+	"parseJSON": tmplFromJSON,
+	"unmarshal": tmplFromJSON,
 	// Curated helpers models commonly reach for (Sprig-style). Having them
 	// registered means a reasonable generated template (e.g. {{ pluck "url"
 	// .articles }}) works instead of failing to parse with "function X not
@@ -236,6 +246,20 @@ func toJSONString(v any) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+// tmplFromJSON supports {{ fromJson .x }}: if x is a JSON string it is parsed and
+// re-emitted as valid JSON; an already-structured value (map/slice) is emitted
+// as JSON directly. Never errors on well-formed input — the goal is that a
+// template using fromJson renders valid JSON exactly like toJson does.
+func tmplFromJSON(v any) (string, error) {
+	if s, ok := v.(string); ok {
+		var parsed any
+		if err := json.Unmarshal([]byte(s), &parsed); err == nil {
+			return toJSONString(parsed)
+		}
+	}
+	return toJSONString(v)
 }
 
 // tmplDefault returns val when it's "present" (non-nil, non-empty), else def.

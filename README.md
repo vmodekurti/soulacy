@@ -6,6 +6,17 @@ Soulacy is a self-hosted AI agent runtime. Write an agent in a single YAML file,
 
 Think of it as Ollama — but for agents.
 
+**Build it. Run it. Fix and learn.**
+
+- **Build it** — describe the automation in plain English in Studio, or start from
+  a vetted template. Soulacy drafts the plan, generates the workflow, and checks
+  it end-to-end before you save.
+- **Run it** — deploy the agent to Telegram, Slack, Discord, WhatsApp, HTTP, or a
+  schedule. One binary, no cloud required.
+- **Fix and learn** — when a run fails, Debug in Studio explains it in plain
+  English and proposes a fix you can preview. Successful repairs become
+  regression tests, and Soulacy shows you what it's learned over time.
+
 [![CI](https://github.com/vmodekurti/soulacy/actions/workflows/ci.yml/badge.svg)](https://github.com/vmodekurti/soulacy/actions/workflows/ci.yml)
 [![Release](https://github.com/vmodekurti/soulacy/actions/workflows/release.yml/badge.svg)](https://github.com/vmodekurti/soulacy/releases/latest)
 [![Docker](https://img.shields.io/badge/ghcr.io-vmodekurti%2Fsoulacy-blue?logo=docker)](https://github.com/vmodekurti/soulacy/pkgs/container/soulacy)

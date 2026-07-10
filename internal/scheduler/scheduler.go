@@ -24,6 +24,7 @@ import (
 
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/internal/runtime"
+	"github.com/soulacy/soulacy/internal/webpush"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 )
@@ -86,13 +87,13 @@ func (s *Scheduler) SetEventSink(sink EventSink) {
 
 // Delivery outcome reason codes for schedule.output events.
 const (
-	deliveryDelivered     = "delivered"
-	deliveryViaFallback   = "delivered_via_fallback"
-	deliveryNoOutput      = "no_output_configured"
-	deliveryIncomplete    = "incomplete_output"
-	deliveryNoRegistry    = "channel_registry_unavailable"
+	deliveryDelivered      = "delivered"
+	deliveryViaFallback    = "delivered_via_fallback"
+	deliveryNoOutput       = "no_output_configured"
+	deliveryIncomplete     = "incomplete_output"
+	deliveryNoRegistry     = "channel_registry_unavailable"
 	deliveryAdapterUnknown = "adapter_not_registered"
-	deliverySendFailed    = "send_failed"
+	deliverySendFailed     = "send_failed"
 )
 
 type scheduleState struct {
@@ -450,6 +451,18 @@ func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
 	if isCron {
 		s.recordFireResult(agentID, true) // success resets the failure streak
 		s.markScheduleCompleted(agentID, scheduledAt)
+		// Push a heads-up that the scheduled run completed (Epic 8). Best-effort,
+		// no-op when push isn't configured.
+		schedAgentName := agentID
+		if def != nil && def.Name != "" {
+			schedAgentName = def.Name
+		}
+		webpush.NotifyDefault(webpush.Notification{
+			Title: "Scheduled run completed",
+			Body:  schedAgentName + " finished its scheduled run.",
+			URL:   "/#mobile",
+			Tag:   "sched-" + agentID,
+		})
 	}
 	replyText := ""
 	for _, p := range reply.Parts {

@@ -582,6 +582,12 @@ func (s *Server) buildApp() *fiber.App {
 		app.Post("/api/v1/auth/refresh", s.authEngine.HandleRefresh)
 	}
 
+	// --- Shared read-only chat sessions (public — no auth) ---
+	// A share token is an unguessable capability, so the read view bypasses the
+	// API key just like the static GUI does. Registered before the /api/v1
+	// group so it isn't caught by the auth middleware.
+	app.Get("/api/v1/shared/:token", s.handleShareView)
+
 	// --- Plugin GUI mounts (Story E8) ---
 	// Static plugin UIs — no auth, same policy as the main GUI bundle below.
 	// Mounts are resolved at request time so SetPluginUI can run after New().
@@ -656,6 +662,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/chat/confirm", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleToolConfirm)
 	// Cancel an in-flight run (Story #22): stop a slow local-model run.
 	api.Post("/chat/cancel", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleChatCancel)
+	api.Post("/chat/share", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleCreateShare)
 	api.Get("/chat/artifacts", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleChatArtifacts)
 	api.Get("/chat/artifacts/download", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleChatArtifactDownload)
 	api.Post("/chat/attachments", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleChatAttachmentUpload)
@@ -666,6 +673,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/channels", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleListChannels)
 	api.Patch("/channels/:id", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleUpdateChannel)
 	api.Post("/channels/:id/test", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleTestChannelDelivery)
+	api.Post("/channels/:id/diagnose", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleDiagnoseChannelDelivery)
 	api.Post("/channels/whatsapp_web/pair", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleStartWhatsAppWebPairing)
 	api.Post("/channels/:id/enable", s.rbacMW(rbac.ResourceChannels, rbac.ActionEnable), s.handleEnableChannel)
 	api.Post("/channels/:id/disable", s.rbacMW(rbac.ResourceChannels, rbac.ActionEnable), s.handleDisableChannel)
@@ -717,6 +725,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Patch("/learning/proposals/:id", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleUpdateLearningProposal)
 	api.Post("/learning/proposals/:id/accept", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleAcceptLearningProposal)
 	api.Post("/learning/proposals/:id/reject", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleRejectLearningProposal)
+	api.Post("/learning/proposals/:id/disable", s.rbacMW(rbac.ResourceMemory, rbac.ActionWrite), s.handleDisableLearningProposal)
 
 	// Ephemeral queues — live workflow handoff buffers shared by ReAct agents,
 	// Studio workflows, MCP clients, and admin tooling. They are in-memory and
@@ -763,6 +772,7 @@ func (s *Server) buildApp() *fiber.App {
 
 	// Unified tool catalog (python tools + MCP tools + Go built-ins)
 	api.Get("/tool-catalog", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleToolCatalog)
+	api.Post("/tools/run", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleRunTool)
 
 	// Conversational Agent Builder
 	api.Post("/builder/chat", s.rbacMW(rbac.ResourceBuilder, rbac.ActionWrite), s.handleBuilderChat)
@@ -822,6 +832,12 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/review-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioReviewYAML)
 	// Studio plugin backend (M3): canvas-time graph validation (read-only).
 	api.Post("/studio/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidate)
+	// Learn-from-Run-Live: propose repairs from the last run's node trace, and
+	// apply one approved proposal (re-validated). Nothing is auto-applied.
+	api.Post("/studio/repair-live", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioRepairLive)
+	api.Post("/studio/apply-repair", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioApplyRepair)
+	api.Post("/studio/diff", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioDiff)
+	api.Post("/studio/add-step", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioAddStep)
 	// Studio plugin backend (M6): starter templates (read-only).
 	api.Get("/studio/templates", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioTemplates)
 	// Phase 2: coarse composite-block catalog (read-only) — one node that
@@ -857,6 +873,8 @@ func (s *Server) buildApp() *fiber.App {
 	// Templates (starter agent definitions — "New from template" flow)
 	api.Get("/templates", s.rbacMW(rbac.ResourceTemplates, rbac.ActionRead), s.handleListTemplates)
 	api.Post("/templates/:name/instantiate", s.rbacMW(rbac.ResourceTemplates, rbac.ActionWrite), s.handleInstantiateTemplate)
+	api.Get("/templates/:name/readiness", s.rbacMW(rbac.ResourceTemplates, rbac.ActionRead), s.handleTemplateReadiness)
+	api.Post("/templates/:name/mock-test", s.rbacMW(rbac.ResourceTemplates, rbac.ActionRead), s.handleTemplateMockTest)
 
 	// Config (read / write config.yaml via API)
 	api.Get("/config", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleGetConfig)

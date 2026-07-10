@@ -124,6 +124,10 @@ export const api = {
 
   templates: {
     list:        ()         => apiFetch('/templates'),
+    // Live readiness: inspects the vault/providers/channels for this template.
+    readiness:   (name)     => apiFetch(`/templates/${encodeURIComponent(name)}/readiness`),
+    // Dry-run preview with no real side effects.
+    mockTest:    (name)     => apiFetch(`/templates/${encodeURIComponent(name)}/mock-test`, { method: 'POST' }),
     instantiate: (name, opts = {}) => apiFetch(
       `/templates/${encodeURIComponent(name)}/instantiate`,
       { method: 'POST', body: JSON.stringify(typeof opts === 'string' ? { id: opts } : opts) },
@@ -146,6 +150,10 @@ export const api = {
         ...(overrides ? { overrides } : {}),
       }),
     }),
+
+  // shareChat stores a read-only snapshot of a conversation and returns
+  // { token, path } where path is the shareable "/#share/<token>".
+  shareChat: (body) => apiFetch('/chat/share', { method: 'POST', body: JSON.stringify(body) }),
 
   chatArtifacts: (agentId, sessionId) =>
     apiFetch(`/chat/artifacts?agent_id=${encodeURIComponent(agentId)}&session_id=${encodeURIComponent(sessionId)}`),
@@ -315,12 +323,18 @@ export const api = {
       apiFetch(`/learning/proposals/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
     rejectLearning: (id) =>
       apiFetch(`/learning/proposals/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
+    // Toggle an accepted learning on/off without deleting it.
+    disableLearning: (id, disabled = true) =>
+      apiFetch(`/learning/proposals/${encodeURIComponent(id)}/disable`, {
+        method: 'POST', body: JSON.stringify({ disabled }),
+      }),
   },
 
   channels: {
     list:    ()          => apiFetch('/channels'),
     update:  (id, patch) => apiFetch(`/channels/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     test:    (id, body = {}) => apiFetch(`/channels/${id}/test`, { method: 'POST', body: JSON.stringify(body) }),
+    diagnose: (id, body = {}) => apiFetch(`/channels/${id}/diagnose`, { method: 'POST', body: JSON.stringify(body) }),
     enable:  (id)        => apiFetch(`/channels/${id}/enable`,  { method: 'POST' }),
     disable: (id)        => apiFetch(`/channels/${id}/disable`, { method: 'POST' }),
     pairWhatsAppWeb: (body) => apiFetch('/channels/whatsapp_web/pair', {
@@ -352,6 +366,8 @@ export const api = {
 
   tools: {
     catalog: () => apiFetch('/tool-catalog'),
+    // run re-executes a single tool with explicit args (per-tool-call retry).
+    run: (tool, args) => apiFetch('/tools/run', { method: 'POST', body: JSON.stringify({ tool, args }) }),
   },
 
   providers: {
@@ -463,6 +479,12 @@ export const api = {
     /** Run an UNSAVED reasoning agent against one sample question (ephemeral). */
     tryAgent: ({ workflow, question } = {}) =>
       apiFetch('/studio/try-agent', { method: 'POST', body: JSON.stringify({ workflow, question }) }),
+    /** Propose repairs from the last Run Live node trace (observe real output → adjust). */
+    repairLive: ({ workflow, node_trace } = {}) =>
+      apiFetch('/studio/repair-live', { method: 'POST', body: JSON.stringify({ workflow, node_trace }) }),
+    /** Apply ONE approved repair proposal to the draft and re-validate. */
+    applyRepair: ({ workflow, proposal } = {}) =>
+      apiFetch('/studio/apply-repair', { method: 'POST', body: JSON.stringify({ workflow, proposal }) }),
     /** Serialize the current draft to SOUL.yaml for the Code view. */
     yaml: ({ workflow } = {}) =>
       apiFetch('/studio/yaml', { method: 'POST', body: JSON.stringify({ workflow }) }),
@@ -617,6 +639,19 @@ export const api = {
      * @returns {Promise<{traces:{id,intent,start,events,last}[], dir:string}>}
      */
     buildTraces: () => apiFetch('/studio/build-traces'),
+    /**
+     * Add one step to a workflow from a natural-language instruction. Compiles a
+     * single block (recommending tool/python/agent), appends and wires it.
+     * @returns {Promise<{workflow, node, recommended, step_summary}>}
+     */
+    addStep: (workflow, instruction, kind = '') =>
+      apiFetch('/studio/add-step', { method: 'POST', body: JSON.stringify({ workflow, instruction, kind }) }),
+    /**
+     * Diff two workflows as SOUL.yaml — used to preview a repair before saving.
+     * @returns {Promise<{before, after, lines:{op,text}[], stats:{added,removed}, unified}>}
+     */
+    diff: (before, after) =>
+      apiFetch('/studio/diff', { method: 'POST', body: JSON.stringify({ before, after }) }),
     /**
      * Diagnose a failed run and self-heal its saved agent: repair against the
      * real error, then validate/re-run. Returns the healed draft + transcript.

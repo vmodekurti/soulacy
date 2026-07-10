@@ -38,8 +38,8 @@ import (
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
-	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/internal/session"
@@ -91,9 +91,13 @@ type Engine struct {
 	archive     storage.MemoryBackend
 	pythonBin   string
 	toolTimeout time.Duration
-	log         *zap.Logger
-	sink        EventSink
-	sessions    sync.Map // sessionID → *Session
+	// adaptiveNodes is the global default for runtime LLM salvage of shape
+	// surprises (see FlowNode.Adaptive). Off by default in the zero engine so
+	// tests are unaffected; the app wires it from cfg.Runtime.AdaptiveNodes.
+	adaptiveNodes bool
+	log           *zap.Logger
+	sink          EventSink
+	sessions      sync.Map // sessionID → *Session
 
 	// flowTraces holds the per-block run traces of recent flow runs (Story S0.3
 	// Phase 1 logging), lazily created via ftStore(). In-memory + bounded.
@@ -503,6 +507,10 @@ func (e *Engine) BrainStore() *agentmemory.CompositeStore { return e.brainStore 
 
 // SetLearningStore wires the reviewable post-run learning proposal store.
 func (e *Engine) SetLearningStore(store *learning.Store) { e.learningStore = store }
+
+// SetAdaptiveNodes sets the global default for runtime LLM salvage of flow nodes
+// that hit an unexpected data shape (FlowNode.Adaptive forces it per-node too).
+func (e *Engine) SetAdaptiveNodes(on bool) { e.adaptiveNodes = on }
 
 // LearningStore returns the proposal store, or nil when learning is disabled.
 func (e *Engine) LearningStore() *learning.Store { return e.learningStore }
@@ -3067,6 +3075,20 @@ func (e *Engine) buildSystemPrefix(def *agent.Definition) string {
 			if err == nil {
 				if block := agentmemory.BuildContextBlock(result); block != "" {
 					systemPrompt += "\n\n" + block
+					// Citation (Epic 10): record that this run applied learned
+					// operating rules, so Activity/evidence surfaces when a
+					// learned procedure was actually used.
+					if e.sink != nil {
+						e.sink.Emit(message.Event{
+							Type:      "learning.applied",
+							AgentID:   def.ID,
+							Timestamp: time.Now().UTC(),
+							Payload: map[string]any{
+								"kind": "procedural",
+								"note": "Applied learned operating rules for this agent.",
+							},
+						})
+					}
 				}
 			}
 		}
@@ -3393,6 +3415,28 @@ func WithToolObserver(ctx context.Context, fn ToolObserver) context.Context {
 
 func toolObserverFrom(ctx context.Context) ToolObserver {
 	fn, _ := ctx.Value(toolObserverKey{}).(ToolObserver)
+	return fn
+}
+
+type flowNodeObserverKey struct{}
+
+// FlowNodeObserver is invoked after every executed workflow node (python, tool,
+// agent, llm) with its per-node record — id, kind, input, output, error. Like
+// ToolObserver it is a synchronous in-process tap; Studio's "Run live" uses it
+// to show EVERY node's result (not just tool calls), including a Python node
+// that was refused by the consent gate.
+type FlowNodeObserver func(rec reasoning.FlowNodeRun)
+
+// WithFlowNodeObserver attaches a FlowNodeObserver for the duration of a run.
+func WithFlowNodeObserver(ctx context.Context, fn FlowNodeObserver) context.Context {
+	if fn == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, flowNodeObserverKey{}, fn)
+}
+
+func flowNodeObserverFrom(ctx context.Context) FlowNodeObserver {
+	fn, _ := ctx.Value(flowNodeObserverKey{}).(FlowNodeObserver)
 	return fn
 }
 

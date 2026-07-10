@@ -94,6 +94,10 @@ export const bridge = {
   // Try an unsaved reasoning agent against one sample question.
   tryAgent: (workflow, question) => api.studio.tryAgent({ workflow, question }),
 
+  // Learn from Run Live: propose repairs from the node trace, apply one approved.
+  repairLive: (workflow, node_trace) => api.studio.repairLive({ workflow, node_trace }),
+  applyRepair: (workflow, proposal) => api.studio.applyRepair({ workflow, proposal }),
+
   // Credentials: list configured secrets (with a `set` flag) and set one inline.
   listSecrets: () => api.secrets.list(),
   setSecret: (name, value) => api.secrets.set(name, value),

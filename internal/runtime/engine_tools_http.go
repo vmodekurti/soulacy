@@ -7,6 +7,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,6 +92,20 @@ func (e *Engine) buildHTTPTools() []BuiltinTool {
 					return "", fmt.Errorf("fetch_url: read body: %w", err)
 				}
 
+				// When the response is JSON, return the RAW JSON body so downstream
+				// python (json.loads) and templates ({{ ... }}) can parse it directly.
+				// Previously a "URL:/Status:/Content-Type:" header block was prepended
+				// to EVERY response, which made json.loads fail at char 0 on API
+				// responses. The header context is still useful for text/HTML pages,
+				// so it's kept only for non-JSON bodies.
+				trimmed := strings.TrimSpace(string(body))
+				ctype := strings.ToLower(resp.Header.Get("Content-Type"))
+				isJSON := strings.Contains(ctype, "json") ||
+					((strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) && json.Valid([]byte(trimmed)))
+				if isJSON && len(body) < maxBytes {
+					// Full (untruncated) JSON body → hand it back clean.
+					return trimmed, nil
+				}
 				result := fmt.Sprintf("URL: %s\nStatus: %d\nContent-Type: %s\n\n%s",
 					fetchURL, resp.StatusCode,
 					resp.Header.Get("Content-Type"),
@@ -182,6 +197,16 @@ func (e *Engine) buildHTTPTools() []BuiltinTool {
 				respBody, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 				if err != nil {
 					return "", fmt.Errorf("http_request: read response: %w", err)
+				}
+				// Return the raw JSON body directly for JSON responses (the common
+				// REST-API case) so json.loads / templates parse it without stripping
+				// a header preamble; keep the Status/Content-Type context for non-JSON.
+				trimmed := strings.TrimSpace(string(respBody))
+				ctype := strings.ToLower(resp.Header.Get("Content-Type"))
+				isJSON := strings.Contains(ctype, "json") ||
+					((strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")) && json.Valid([]byte(trimmed)))
+				if isJSON {
+					return trimmed, nil
 				}
 				return fmt.Sprintf("Status: %d %s\nContent-Type: %s\n\n%s",
 					resp.StatusCode, resp.Status,
