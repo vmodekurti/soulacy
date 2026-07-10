@@ -38,7 +38,7 @@ type shareMessage struct {
 	Role        string `json:"role"`
 	Text        string `json:"text"`
 	Via         string `json:"via,omitempty"`
-	Ts          any    `json:"ts,omitempty"`
+	TS          any    `json:"ts,omitempty"`
 	Attachments []struct {
 		Name string `json:"name"`
 	} `json:"attachments,omitempty"`

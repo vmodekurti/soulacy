@@ -44,7 +44,7 @@ NEEDS_SUDO=0
 [[ "$BIN_DIR" == /usr/* || "$BIN_DIR" == /opt/* ]] && NEEDS_SUDO=1
 
 TOOLCHAIN="${HOME}/.soulacy/toolchain"
-GO_VERSION="1.25.11"
+GO_VERSION="1.25.12"
 NODE_VERSION="22.12.0"
 
 # Detect an existing config up-front (BEFORE anything is written) so we only run
