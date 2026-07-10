@@ -30,7 +30,65 @@ func (s *Server) handleListLearningProposals(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(fiber.Map{"enabled": true, "proposals": proposals})
+	// Augment each proposal with the explicit "affected agent" and a derived
+	// "why it matters" so the UI can show trust context without recomputing it.
+	views := make([]map[string]any, 0, len(proposals))
+	for _, p := range proposals {
+		views = append(views, learningProposalView(p))
+	}
+	return c.JSON(fiber.Map{"enabled": true, "proposals": views})
+}
+
+// learningProposalView renders a proposal as JSON with the extra trust fields.
+func learningProposalView(p learning.Proposal) map[string]any {
+	return map[string]any{
+		"id":             p.ID,
+		"agent_id":       p.AgentID,
+		"affected_agent": p.AgentID,
+		"session_id":     p.SessionID,
+		"kind":           p.Kind,
+		"title":          p.Title,
+		"content":        p.Content,
+		"status":         p.Status,
+		"confidence":     p.Confidence,
+		"source":         p.Source,
+		"meta":           p.Meta,
+		"created_at":     p.CreatedAt,
+		"updated_at":     p.UpdatedAt,
+		"disabled":       p.Disabled,
+		"why":            p.Why(),
+	}
+}
+
+// handleDisableLearningProposal toggles an accepted learning on/off without
+// deleting it. Body: {"disabled": true|false} (defaults to true).
+func (s *Server) handleDisableLearningProposal(c *fiber.Ctx) error {
+	store := s.engine.LearningStore()
+	if store == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "learning is not enabled")
+	}
+	id := strings.TrimSpace(c.Params("id"))
+	if id == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "id is required")
+	}
+	var req struct {
+		Disabled *bool `json:"disabled"`
+	}
+	if len(c.Body()) > 0 {
+		_ = c.BodyParser(&req)
+	}
+	disabled := true
+	if req.Disabled != nil {
+		disabled = *req.Disabled
+	}
+	p, err := store.SetDisabled(id, disabled)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return s.errMsg(c, fiber.StatusNotFound, "learning not found")
+		}
+		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
+	}
+	return c.JSON(fiber.Map{"ok": true, "proposal": learningProposalView(p)})
 }
 
 func (s *Server) handleLearningSummary(c *fiber.Ctx) error {

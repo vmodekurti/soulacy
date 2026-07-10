@@ -38,8 +38,8 @@ import (
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/memory"
-	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/metrics"
+	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/sandbox"
 	"github.com/soulacy/soulacy/internal/session"
@@ -97,7 +97,7 @@ type Engine struct {
 	adaptiveNodes bool
 	log           *zap.Logger
 	sink          EventSink
-	sessions    sync.Map // sessionID → *Session
+	sessions      sync.Map // sessionID → *Session
 
 	// flowTraces holds the per-block run traces of recent flow runs (Story S0.3
 	// Phase 1 logging), lazily created via ftStore(). In-memory + bounded.
@@ -3075,6 +3075,20 @@ func (e *Engine) buildSystemPrefix(def *agent.Definition) string {
 			if err == nil {
 				if block := agentmemory.BuildContextBlock(result); block != "" {
 					systemPrompt += "\n\n" + block
+					// Citation (Epic 10): record that this run applied learned
+					// operating rules, so Activity/evidence surfaces when a
+					// learned procedure was actually used.
+					if e.sink != nil {
+						e.sink.Emit(message.Event{
+							Type:      "learning.applied",
+							AgentID:   def.ID,
+							Timestamp: time.Now().UTC(),
+							Payload: map[string]any{
+								"kind": "procedural",
+								"note": "Applied learned operating rules for this agent.",
+							},
+						})
+					}
 				}
 			}
 		}

@@ -52,7 +52,7 @@
     const py = t.python_tools || []
     const builtins = t.builtins || []
     const items = []
-    builtins.forEach((x) => items.push({ label: x.name, sub: 'builtin', drag: { kind: 'tool', name: x.name } }))
+    builtins.forEach((x) => items.push({ label: x.name, sub: 'builtin', risk: x.risk, drag: { kind: 'tool', name: x.name } }))
     py.forEach((x) => items.push({ label: x.name, sub: 'python', drag: { kind: 'tool', name: x.name } }))
     return items
   }
@@ -134,6 +134,11 @@
   // Shorten a long description to a concise, one-line-ish summary for the
   // palette. Prefers the first sentence when short; otherwise hard-truncates.
   // The full text stays available via the element's title (hover) tooltip.
+  // riskShort maps a risk tier to a compact badge label.
+  function riskShort(r) {
+    return { write: 'write', network: 'net', privileged: 'priv', shell_system: 'shell' }[r] || r
+  }
+
   function concise(text, max = 90) {
     if (!text) return ''
     const t = String(text).trim().replace(/\s+/g, ' ')
@@ -328,6 +333,7 @@
                   title={it.sub ? it.sub : (it.drag ? 'Drag onto the canvas to add as a step' : '')}
                 >
                   <span class="item-label">{it.label}</span>
+                  {#if it.risk && it.risk !== 'safe'}<span class="risk-badge risk-{it.risk}" title="Risk tier: {it.risk.replace('_',' ')}">{riskShort(it.risk)}</span>{/if}
                   {#if it.badge}<span class="item-badge">{it.badge}</span>{/if}
                   {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
                 </div>
@@ -521,6 +527,15 @@
     background: rgba(108,140,255,0.18); color: var(--accent, #6c8cff);
     vertical-align: middle;
   }
+  .risk-badge {
+    display: inline-block; margin-left: 6px; padding: 0 6px;
+    font-size: 9px; line-height: 15px; border-radius: 7px; vertical-align: middle;
+    text-transform: uppercase; letter-spacing: .03em; font-weight: 700;
+  }
+  .risk-badge.risk-write { background: rgba(120,160,255,.16); color: #8fb0ff; }
+  .risk-badge.risk-network { background: rgba(245,165,36,.16); color: #f5a524; }
+  .risk-badge.risk-privileged { background: rgba(255,120,80,.18); color: #ff8b60; }
+  .risk-badge.risk-shell_system { background: rgba(255,107,129,.2); color: #ff6b81; }
   .item-sub {
     margin-top: 2px;
     font-size: 11px;

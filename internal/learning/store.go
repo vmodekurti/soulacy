@@ -38,6 +38,64 @@ type Proposal struct {
 	Meta       map[string]string `json:"meta,omitempty"`
 	CreatedAt  time.Time         `json:"created_at"`
 	UpdatedAt  time.Time         `json:"updated_at"`
+	// Disabled turns off an already-accepted learning without deleting it, so it
+	// stops affecting agents but its review history is preserved (Epic 10).
+	Disabled bool `json:"disabled,omitempty"`
+	// Rationale is an optional explicit "why this matters" note. When empty, the
+	// UI falls back to Why() derived from the kind/metadata.
+	Rationale string `json:"rationale,omitempty"`
+}
+
+// Why returns a plain-language reason the learning matters — the explicit
+// Rationale when set, otherwise one derived from the kind and metadata.
+func (p Proposal) Why() string {
+	if s := strings.TrimSpace(p.Rationale); s != "" {
+		return s
+	}
+	switch p.Kind {
+	case "skill":
+		name := ""
+		if p.Meta != nil {
+			name = p.Meta["skill_name"]
+		}
+		if name != "" {
+			return "Reusable skill \"" + name + "\" — lets the agent repeat this procedure without re-deriving it each time."
+		}
+		return "A reusable skill the agent can apply again instead of re-deriving the steps."
+	case "procedure":
+		return "An operating rule that reduces repeated mistakes on this kind of task."
+	case "preference":
+		return "A remembered preference so the agent doesn't have to ask again."
+	default:
+		if p.Confidence >= 0.8 {
+			return "A high-confidence lesson learned from a completed run."
+		}
+		return "A lesson extracted from a completed run, kept for review."
+	}
+}
+
+// SetDisabled toggles the Disabled flag on a learning. Unlike editing
+// (pending-only), disabling is allowed on accepted proposals so a bad learning
+// can be switched off without destroying unrelated memory.
+func (s *Store) SetDisabled(id string, disabled bool) (Proposal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all, err := s.loadLocked()
+	if err != nil {
+		return Proposal{}, err
+	}
+	for i := range all {
+		if all[i].ID != id {
+			continue
+		}
+		all[i].Disabled = disabled
+		all[i].UpdatedAt = time.Now().UTC()
+		if err := s.rewriteLocked(all); err != nil {
+			return Proposal{}, err
+		}
+		return all[i], nil
+	}
+	return Proposal{}, os.ErrNotExist
 }
 
 // Summary is the product-facing health snapshot for the learning loop. It lets

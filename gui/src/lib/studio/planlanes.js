@@ -1,19 +1,51 @@
-// planlanes.js — organizes a Studio workflow into the three fixed lanes of the
-// Guided Studio Builder — Trigger, Work Plan, Delivery — and derives the
+// planlanes.js — organizes a Studio workflow into the six lanes of the Guided
+// Studio Builder — Trigger, Gather, Think, Act, Verify, Deliver — and derives the
 // plain-English "plan review" shown before save. Pure & unit-tested.
+//
+// The six lanes mirror how an automation actually runs, so a non-expert can read
+// the plan top-to-bottom: what starts it (Trigger), what inputs it collects
+// (Gather), how it reasons (Think), what it does (Act), how it self-checks
+// (Verify), and where the result goes (Deliver).
 //
 // Consumes the workflow model used across Studio: { name, trigger, channels[],
 // flow: { nodes[], edges[], entry, output } } and the block helpers.
 
 import { stepLabel, blockReadiness, riskLevel } from './blockmeta.js'
 
-// laneOf assigns a flow node to a lane. Triggers start; exits/deliveries finish;
-// everything else is the work plan.
+// laneOf assigns a flow node to a top-level bucket. Triggers start;
+// exits/deliveries finish; everything else is "work" (further split by
+// workLaneOf into Gather/Think/Act/Verify).
 export function laneOf(node) {
   const k = node?.kind || ''
   if (k === 'trigger') return 'trigger'
   if (k === 'exit') return 'delivery'
   return 'work'
+}
+
+// workLaneOf classifies a work node into one of the four middle lanes. It reads
+// the node kind plus a haystack of its tool/description/id, using intent
+// keywords. Heuristic but stable: Verify wins on explicit validation intent;
+// Gather covers reads/fetches/lookups; Act covers side-effecting tools; Think
+// covers reasoning/transform steps (python, agent, llm) and anything unclassified.
+export function workLaneOf(node) {
+  const k = node?.kind || ''
+  const hay = `${node?.tool || ''} ${node?.description || node?.label || ''} ${node?.id || ''}`.toLowerCase()
+
+  if (/(verify|validat|\bcheck(?:_|\b)|assert|ensure|guard|review|sanity|confirm|\btest(?:_|\b)|lint)/.test(hay)) return 'verify'
+
+  // Gather: pulling inputs/context in. Checked before Act so read-ish tools
+  // (e.g. a screener that "runs" but really collects candidates) land here.
+  if (/(fetch|http_get|\bget_|read|read_file|search|screen|screener|list|load|query|lookup|retrieve|scrape|browse|knowledge|\brag\b|price|weather|download|pull)/.test(hay)) return 'gather'
+
+  // Act: side effects / outputs. Applies to tools that do something external.
+  if (k === 'tool' && /(send|post|write|create|update|delete|publish|deliver|notify|email|message|upload|execute|\brun_|dispatch|submit)/.test(hay)) return 'act'
+
+  // Think: reasoning / transformation.
+  if (k === 'python' || k === 'agent' || k === 'llm' || k === 'reason' || k === 'reasoning') return 'think'
+
+  // Remaining tools do something → Act; anything else → Think.
+  if (k === 'tool') return 'act'
+  return 'think'
 }
 
 // Order the work nodes by following edges from the entry (topological-ish), so
@@ -34,10 +66,13 @@ function orderWork(nodes, edges, entry) {
   return out
 }
 
-// toLanes returns { trigger, work, delivery } — arrays of "lane cards". Each card
-// carries the node plus its computed label, readiness, and risk so the view can
-// render without recomputing. Delivery also includes synthetic channel cards.
-export function toLanes(workflow) {
+// buildCards returns { trigger, work, delivery } — arrays of "lane cards". Each
+// card carries the node plus its computed label, readiness, and risk so the view
+// can render without recomputing. `work` is edge-ordered (start-to-finish).
+// Delivery also includes synthetic channel cards. This is the shared internal
+// model; toLanes() further splits `work` into the four middle lanes, while
+// planReview() consumes the flat ordered `work` to preserve execution order.
+function buildCards(workflow) {
   const flow = workflow?.flow || {}
   const nodes = flow.nodes || []
   const edges = flow.edges || []
@@ -78,6 +113,30 @@ export function toLanes(workflow) {
     })
   }
   return { trigger, work, delivery }
+}
+
+// LANES is the canonical ordered list of lane keys/labels for rendering.
+export const LANES = [
+  { key: 'trigger', label: 'Trigger' },
+  { key: 'gather', label: 'Gather' },
+  { key: 'think', label: 'Think' },
+  { key: 'act', label: 'Act' },
+  { key: 'verify', label: 'Verify' },
+  { key: 'deliver', label: 'Deliver' },
+]
+
+// toLanes returns the six lanes { trigger, gather, think, act, verify, deliver },
+// each an array of lane cards. The middle four are the ordered work nodes bucketed
+// by workLaneOf, preserving execution order within each lane.
+export function toLanes(workflow) {
+  const { trigger, work, delivery } = buildCards(workflow)
+  const gather = [], think = [], act = [], verify = []
+  const buckets = { gather, think, act, verify }
+  for (const c of work) {
+    const wl = c.node ? workLaneOf(c.node) : 'think'
+    ;(buckets[wl] || think).push(c)
+  }
+  return { trigger, gather, think, act, verify, deliver: delivery }
 }
 
 // migrateEndpoints converts legacy structural trigger/exit NODES into the
@@ -141,7 +200,7 @@ export function triggerLabel(trigger) {
 // 6 & 11): when it runs, what it does, what tools/code it uses, where output
 // goes, and what needs attention or is risky.
 export function planReview(workflow) {
-  const { trigger, work, delivery } = toLanes(workflow)
+  const { trigger, work, delivery } = buildCards(workflow)
   const usesTools = []
   const usesCode = []
   const risks = []

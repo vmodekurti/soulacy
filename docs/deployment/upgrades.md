@@ -114,11 +114,32 @@ What it does, in order:
     above *first*. For a normal version bump, use the standard upgrade
     flow — never the reinstall script.
 
-## Downgrading
+## Rollback
 
-There is no automated downgrade. Because schema migrations only move
-forward, rolling back a binary against an upgraded database is
-unsupported — restore the matching workspace backup instead.
+Every upgrade run by `install.sh` first **snapshots the outgoing install** —
+both the `soulacy` and `sy` binaries and the current `config.yaml` — into
+`~/.soulacy/backups/<timestamp>/` before overwriting anything. The five most
+recent snapshots are kept (`SOULACY_BACKUP_KEEP` to change; `SOULACY_BACKUP_DIR`
+to relocate).
+
+If a new version misbehaves, roll straight back to the previous one:
+
+```bash
+./install.sh --rollback
+# or from the one-liner:
+curl -fsSL https://raw.githubusercontent.com/vmodekurti/soulacy/main/install.sh | bash -s -- --rollback
+```
+
+This restores the previous binaries and their matching `config.yaml`. Your
+current config is never destroyed — it's saved next to the restored one as
+`config.yaml.pre-rollback.<epoch>` first. Restart the gateway afterward
+(`soulacy serve`, or `sy daemon stop && sy daemon start`).
+
+!!! note "Data, not just the binary"
+    Rollback swaps the binary and config back. Because schema migrations only
+    move forward, if an upgrade migrated your workspace database, pair the
+    rollback with the matching workspace backup (see below) for a fully
+    consistent previous state.
 
 ## See also
 

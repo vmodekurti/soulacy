@@ -1,9 +1,9 @@
 <script>
   // PlanView — the "Simple" plan-first view for the Guided Studio Builder.
-  // Renders the workflow as three fixed lanes (Trigger, Work Plan, Delivery)
-  // with plain-English cards showing readiness and risk, a "Needs attention"
-  // group, and a plain-English plan review. Reads the SAME `workflow` model the
-  // canvas uses, so switching views never loses edits (slice items 1,5,6,8,13).
+  // Renders the workflow as six lanes (Trigger, Gather, Think, Act, Verify,
+  // Deliver) with plain-English cards showing readiness and risk, a "Needs
+  // attention" group, and a plain-English plan review. Reads the SAME `workflow`
+  // model the canvas uses, so switching views never loses edits.
   import { toLanes, planReview } from './planlanes.js'
   import { suggestPythonSteps } from './pyinfer.js'
   import ConfigCard from './ConfigCard.svelte'
@@ -12,16 +12,26 @@
   export let onSelectNode = null   // (node) => void — open a block in the Inspector
   export let onSave = null         // () => void — proceed to save
   export let onAddPython = null    // (suggestion) => void — insert a suggested Python step
+  export let onAddStep = null      // (instruction) => void — add one step from natural language
+  export let addStepBusy = false   // true while a natural-language step is compiling
+  export let addStepMsg = ''       // result/error message from the last add-step
   export let onUpdateNode = null   // (updatedNode) => void — patch a block's config
   export let testByNode = {}       // { [nodeId]: {ok,error,durationMs} } — test results
   export let saving = false
+
+  let stepText = ''
+  function submitStep() {
+    if (!stepText.trim() || !onAddStep) return
+    onAddStep(stepText)
+    stepText = ''
+  }
 
   let expanded = {}                // per-card technical-detail disclosure
   let editing = {}                 // per-card inline config-card editing
   const toggle = (id) => (expanded = { ...expanded, [id]: !expanded[id] })
   const toggleEdit = (id) => (editing = { ...editing, [id]: !editing[id] })
 
-  $: lanes = workflow ? toLanes(workflow) : { trigger: [], work: [], delivery: [] }
+  $: lanes = workflow ? toLanes(workflow) : { trigger: [], gather: [], think: [], act: [], verify: [], deliver: [] }
   $: review = workflow ? planReview(workflow) : null
   $: attention = review ? review.attention : []
   $: pySuggestions = workflow ? suggestPythonSteps(workflow) : []
@@ -38,8 +48,8 @@
   {#if !workflow}
     <div class="plan-empty">Describe an automation above, then press Generate — the plan will appear here.</div>
   {:else}
-    <!-- Three fixed lanes -->
-    {#each [['trigger','⚡','Trigger','How it starts'], ['work','🛠️','Work Plan','What it does, step by step'], ['delivery','📤','Delivery','Where the result goes']] as [key, icon, title, sub]}
+    <!-- Six lanes: Trigger → Gather → Think → Act → Verify → Deliver -->
+    {#each [['trigger','⚡','Trigger','How it starts'], ['gather','📥','Gather','Inputs and context it collects'], ['think','🧠','Think','How it reasons or analyzes'], ['act','🛠️','Act','Actions it takes'], ['verify','✅','Verify','Checks before delivering'], ['deliver','📤','Deliver','Where the result goes']] as [key, icon, title, sub]}
       <section class="lane lane-{key}">
         <header class="lane-head">
           <span class="lane-icon" aria-hidden="true">{icon}</span>
@@ -106,6 +116,22 @@
         </div>
       </section>
     {/each}
+
+    <!-- Add a step in natural language (Epic 3): describe it; the backend picks
+         the right block (tool/python/agent) and appends it to the flow. -->
+    {#if onAddStep}
+      <section class="add-step">
+        <header class="add-step-head">✨ Add a step</header>
+        <div class="add-step-row">
+          <input class="add-step-input" placeholder="Describe a step to add, e.g. 'summarize the results with an LLM'"
+                 bind:value={stepText} on:keydown={(e) => e.key === 'Enter' && submitStep()} disabled={addStepBusy} />
+          <button class="btn btn-sm" on:click={submitStep} disabled={addStepBusy || !stepText.trim()}>
+            {addStepBusy ? 'Adding…' : 'Add step'}
+          </button>
+        </div>
+        {#if addStepMsg}<div class="add-step-msg">{addStepMsg}</div>{/if}
+      </section>
+    {/if}
 
     <!-- Python suggestions (Stories 3 & 4): deterministic hint that a step
          looks like computation that belongs in Python, with the reason. -->
@@ -180,7 +206,10 @@
   .lane-title { font-weight: 600; font-size: 13px; color: var(--text); }
   .lane-sub { font-size: 11px; color: var(--text-muted); }
   .lane-cards { display: flex; flex-wrap: wrap; gap: 10px; padding: 12px 14px; }
-  .lane-work .lane-cards { flex-direction: column; }
+  .lane-gather .lane-cards,
+  .lane-think .lane-cards,
+  .lane-act .lane-cards,
+  .lane-verify .lane-cards { flex-direction: column; }
   .card {
     flex: 0 1 auto; min-width: 200px; max-width: 360px;
     border: 1px solid var(--border); border-left: 3px solid var(--border);
@@ -213,6 +242,11 @@
   .card-detail dt { color: var(--text-muted); min-width: 60px; margin: 0; }
   .card-detail dd { margin: 0; color: var(--text); word-break: break-word; }
   .card-detail .mono { font-family: ui-monospace, Menlo, monospace; }
+  .add-step { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elev); padding: 12px 14px; }
+  .add-step-head { font-weight: 600; font-size: 13px; margin-bottom: 8px; }
+  .add-step-row { display: flex; gap: 8px; }
+  .add-step-input { flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg-elev-2); color: var(--text); font-size: 13px; }
+  .add-step-msg { margin-top: 8px; font-size: 12px; color: var(--text-muted); }
   .suggest { border: 1px solid var(--border); border-radius: 12px; background: rgba(108,140,255,.06); }
   .suggest-head { padding: 10px 14px; font-weight: 600; font-size: 13px; color: var(--accent, #6c8cff); }
   .suggest-list { margin: 0; padding: 0 14px 12px; list-style: none; display: flex; flex-direction: column; gap: 8px; }

@@ -61,6 +61,142 @@ warn() { printf "${YELLOW}⚠${NC}  %s\n" "$*"; }
 err()  { printf "${RED}✗${NC} %s\n" "$*" >&2; exit 1; }
 hdr()  { printf "\n${BOLD}%s${NC}\n" "$*"; }
 
+# >>> ROLLBACK BLOCK START (extracted verbatim by scripts/rollback_test.sh)
+# ── Backup / rollback support ────────────────────────────────────────────────
+# Every upgrade snapshots the currently-installed binaries and config into
+# $BACKUP_ROOT/<timestamp>/ BEFORE overwriting them, so a bad release can be
+# undone with `install.sh --rollback`. Fresh installs (nothing installed yet)
+# create no backup. Only POSIX/BSD-safe shell is used so this works on macOS.
+BACKUP_ROOT="${SOULACY_BACKUP_DIR:-$HOME/.soulacy/backups}"
+BACKUP_KEEP="${SOULACY_BACKUP_KEEP:-5}"
+
+_bin_version() { "$1" --version 2>/dev/null | head -1 || true; }
+
+# _restore_binary src dst — install a binary honoring the sudo requirement.
+_restore_binary() {
+    local src="$1" dst="$2"
+    if [ "$NEEDS_SUDO" -eq 1 ]; then
+        sudo install -m 0755 "$src" "$dst"
+    else
+        install -m 0755 "$src" "$dst" 2>/dev/null || { cp "$src" "$dst" && chmod 0755 "$dst"; }
+    fi
+}
+
+backup_current_install() {
+    # Nothing to back up on a genuinely fresh install.
+    if [ ! -x "$BIN_DIR/soulacy" ] && [ ! -x "$BIN_DIR/sy" ]; then
+        return 0
+    fi
+    local stamp dir
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    dir="$BACKUP_ROOT/$stamp"
+    if ! mkdir -p "$dir"; then
+        warn "Could not create backup dir $dir — continuing without a rollback point."
+        return 0
+    fi
+    [ -x "$BIN_DIR/soulacy" ] && cp -p "$BIN_DIR/soulacy" "$dir/soulacy"
+    [ -x "$BIN_DIR/sy" ]      && cp -p "$BIN_DIR/sy"      "$dir/sy"
+    # Snapshot whichever config file(s) exist, recording their absolute paths so
+    # rollback can put them back exactly where they came from.
+    local cf
+    for cf in "$CONFIG_WORKSPACE" "$CONFIG_LEGACY"; do
+        if [ -f "$cf" ]; then
+            mkdir -p "$dir/config"
+            cp -p "$cf" "$dir/config/$(basename "$cf")"
+            echo "$cf" >> "$dir/config/paths.txt"
+        fi
+    done
+    {
+        echo "timestamp=$stamp"
+        echo "bin_dir=$BIN_DIR"
+        [ -x "$BIN_DIR/soulacy" ] && echo "soulacy_version=$(_bin_version "$BIN_DIR/soulacy")"
+        [ -x "$BIN_DIR/sy" ]      && echo "sy_version=$(_bin_version "$BIN_DIR/sy")"
+    } > "$dir/manifest.txt"
+    echo "$stamp" > "$BACKUP_ROOT/latest"
+    ok "Backed up current install to $dir"
+    _prune_backups
+}
+
+# _prune_backups keeps only the newest $BACKUP_KEEP snapshots (portable — no
+# GNU-only `head -n -N`).
+_prune_backups() {
+    local all n excess
+    all="$(ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null | sort || true)"
+    n="$(printf '%s\n' "$all" | grep -c . || true)"
+    if [ "$n" -gt "$BACKUP_KEEP" ]; then
+        excess=$((n - BACKUP_KEEP))
+        printf '%s\n' "$all" | head -n "$excess" | while IFS= read -r d; do
+            [ -n "$d" ] && rm -rf "$d"
+        done
+    fi
+}
+
+rollback_install() {
+    hdr "Rolling back Soulacy"
+    local stamp="" dir=""
+    if [ -f "$BACKUP_ROOT/latest" ]; then
+        stamp="$(cat "$BACKUP_ROOT/latest" 2>/dev/null || true)"
+    fi
+    dir="$BACKUP_ROOT/${stamp:-}"
+    if [ -z "${stamp:-}" ] || [ ! -d "$dir" ]; then
+        # Fall back to the newest snapshot directory. `|| true` keeps the empty
+        # (no-backups) case from tripping set -e / pipefail before the friendly
+        # error below.
+        dir="$(ls -1d "$BACKUP_ROOT"/*/ 2>/dev/null | sort | tail -1 || true)"
+    fi
+    if [ -z "$dir" ] || [ ! -d "$dir" ]; then
+        err "No rollback point found under $BACKUP_ROOT. A backup is created automatically on your next upgrade."
+    fi
+    echo "  Restoring from: $dir"
+    [ -f "$dir/manifest.txt" ] && sed 's/^/    /' "$dir/manifest.txt"
+
+    if [ -f "$dir/soulacy" ]; then _restore_binary "$dir/soulacy" "$BIN_DIR/soulacy"; ok "Restored $BIN_DIR/soulacy"; fi
+    if [ -f "$dir/sy" ];      then _restore_binary "$dir/sy"      "$BIN_DIR/sy";      ok "Restored $BIN_DIR/sy"; fi
+
+    # Restore the config that shipped with that binary, but never destroy the
+    # current one: save it alongside as .pre-rollback.<epoch> first.
+    if [ -d "$dir/config" ] && [ -f "$dir/config/paths.txt" ]; then
+        local cf base
+        while IFS= read -r cf; do
+            [ -n "$cf" ] || continue
+            base="$(basename "$cf")"
+            if [ -f "$dir/config/$base" ]; then
+                if [ -f "$cf" ]; then cp -p "$cf" "$cf.pre-rollback.$(date +%s)" 2>/dev/null || true; fi
+                mkdir -p "$(dirname "$cf")"
+                if cp -p "$dir/config/$base" "$cf"; then
+                    ok "Restored config $cf (previous saved as $cf.pre-rollback.*)"
+                fi
+            fi
+        done < "$dir/config/paths.txt"
+    fi
+    ok "Rollback complete. Restart the gateway:  soulacy serve   (or: sy daemon stop && sy daemon start)"
+}
+# <<< ROLLBACK BLOCK END
+
+# Handle CLI flags before any install work happens.
+case "${1:-}" in
+    --rollback)
+        rollback_install
+        exit 0
+        ;;
+    -h|--help)
+        cat <<EOF
+Soulacy installer
+  ./install.sh                 install or upgrade (snapshots the current install first)
+  ./install.sh --rollback      restore the previous binaries + config from the last backup
+
+Environment overrides:
+  SOULACY_PREFIX      install prefix (default: \$HOME/.local)
+  SOULACY_REF         git ref / release tag to install
+  SOULACY_VERSION     release tag to download
+  SOULACY_FROM_SOURCE always build from source
+  SOULACY_BACKUP_DIR  where upgrade snapshots are kept (default: \$HOME/.soulacy/backups)
+  SOULACY_BACKUP_KEEP how many snapshots to retain (default: 5)
+EOF
+        exit 0
+        ;;
+esac
+
 ensure_go() {
     if command -v go >/dev/null 2>&1; then
         local local_ver
@@ -271,6 +407,10 @@ install_one() {
         install -m 0755 "$src" "$dst" 2>/dev/null || { cp "$src" "$dst" && chmod 0755 "$dst"; }
     fi
 }
+
+# Snapshot the outgoing install (binaries + config) so `install.sh --rollback`
+# can undo this upgrade. No-op on a fresh install.
+backup_current_install
 
 install_one "$BUILT_SOULACY" "$BIN_DIR/soulacy"
 install_one "$BUILT_SY"      "$BIN_DIR/sy"

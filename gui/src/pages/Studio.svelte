@@ -1010,6 +1010,37 @@ Use null for fields that are not present.`
     }
   }
 
+  // Diff preview (Epic 4): compute what a repair proposal would change in the
+  // SOUL.yaml WITHOUT saving, so the user can review before applying.
+  let repairDiff = null   // { p, candidate, lines, stats }
+  let repairDiffBusy = false
+  async function previewProposal(p) {
+    if (!workflow || repairDiffBusy) return
+    repairDiffBusy = true
+    repairError = ''
+    try {
+      const res = await bridge.applyRepair(workflow, p)   // returns candidate; not persisted
+      const candidate = res && res.workflow
+      if (!candidate) { repairError = 'Could not compute the change.'; return }
+      const d = await api.studio.diff(workflow, candidate)
+      repairDiff = { p, candidate, lines: (d && d.lines) || [], stats: (d && d.stats) || { added: 0, removed: 0 } }
+    } catch (e) {
+      repairError = (e && e.message) || 'could not preview the change'
+    } finally {
+      repairDiffBusy = false
+    }
+  }
+  function applyDiff() {
+    if (!repairDiff) return
+    workflow = repairDiff.candidate
+    rebuildGraph()
+    scheduleValidate()
+    repairProposals = repairProposals.filter(x => x !== repairDiff.p)
+    repairDone = 'Applied. Run Live again to confirm.'
+    repairDiff = null
+  }
+  function cancelDiff() { repairDiff = null }
+
   async function applyProposal(p) {
     if (!workflow || p._applying) return
     p._applying = true
@@ -1581,6 +1612,29 @@ Use null for fields that are not present.`
 
   // Insert a suggested Python step (Stories 3 & 4) right after the node it was
   // suggested for, pre-seeded from the matching template and auto-connected.
+  // addStepFromText: describe a step in plain English; the backend compiles a
+  // single block (recommending tool/python/agent) and appends it to the flow.
+  let addStepBusy = false
+  let addStepMsg = ''
+  async function addStepFromText(instruction) {
+    if (!workflow || !instruction || !instruction.trim() || addStepBusy) return
+    addStepBusy = true
+    addStepMsg = ''
+    try {
+      const res = await api.studio.addStep(workflow, instruction.trim())
+      if (res && res.workflow) {
+        workflow = res.workflow
+        rebuildGraph()
+        scheduleValidate()
+        addStepMsg = `Added a ${res.recommended || 'step'}${res.step_summary ? `: ${res.step_summary}` : ''}.`
+      }
+    } catch (e) {
+      addStepMsg = (e && e.message) || 'Could not add that step.'
+    } finally {
+      addStepBusy = false
+    }
+  }
+
   function addSuggestedPython(s) {
     if (!workflow || !s) return
     const flow = workflow.flow || { nodes: [], edges: [], entry: '' }
@@ -3270,7 +3324,7 @@ Use null for fields that are not present.`
           <strong>Review the plan before editing nodes.</strong>
           <span>Confirm when it runs, what work it performs, and where output goes; use Canvas only for advanced rewiring.</span>
         </div>
-        <PlanView {workflow} onSelectNode={planSelectNode} onSave={() => save()} onAddPython={addSuggestedPython} onUpdateNode={updateNodeConfig} testByNode={stepResultsByNode(testResult)} {saving} />
+        <PlanView {workflow} onSelectNode={planSelectNode} onSave={() => save()} onAddPython={addSuggestedPython} onAddStep={addStepFromText} addStepBusy={addStepBusy} addStepMsg={addStepMsg} onUpdateNode={updateNodeConfig} testByNode={stepResultsByNode(testResult)} {saving} />
       {:else}
       <div
         class="canvas"
@@ -3652,8 +3706,24 @@ Use null for fields that are not present.`
                           <button class="btn btn-sm btn-primary" type="button" on:click={() => applyProposal(p)} disabled={p._applying}>
                             {p._applying ? 'Applying…' : 'Approve & apply'}
                           </button>
+                          <button class="btn btn-sm" type="button" on:click={() => previewProposal(p)} disabled={p._applying || repairDiffBusy}>
+                            {repairDiffBusy && repairDiff?.p === p ? 'Diffing…' : 'Preview diff'}
+                          </button>
                           <button class="btn btn-sm" type="button" on:click={() => rejectProposal(p)} disabled={p._applying}>Dismiss</button>
                         </div>
+                        {#if repairDiff && repairDiff.p === p}
+                          <div class="repair-diff">
+                            <div class="repair-diff-head">
+                              SOUL.yaml changes <span class="rd-stat add">+{repairDiff.stats.added}</span> <span class="rd-stat del">−{repairDiff.stats.removed}</span>
+                            </div>
+                            <pre class="repair-diff-body">{#each repairDiff.lines as l}<span class="rd-{l.op === '+' ? 'add' : l.op === '-' ? 'del' : 'ctx'}">{l.op} {l.text}
+</span>{/each}</pre>
+                            <div class="adjust-actions">
+                              <button class="btn btn-sm btn-primary" type="button" on:click={applyDiff}>Apply this change</button>
+                              <button class="btn btn-sm" type="button" on:click={cancelDiff}>Cancel</button>
+                            </div>
+                          </div>
+                        {/if}
                       {:else}
                         <div class="adjust-advisory">No automatic rewrite — adjust this node manually using the observed shape above.</div>
                         <div class="adjust-actions">
@@ -6063,6 +6133,16 @@ Use null for fields that are not present.`
   .adjust-diff { margin-top: 6px; display: flex; flex-direction: column; gap: 3px; }
   .diff-old code { color: var(--text-muted); text-decoration: line-through; }
   .diff-new code { color: var(--text); }
+  .repair-diff { margin-top: 8px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .repair-diff-head { padding: 6px 10px; font-size: 12px; background: var(--bg-elev-2); border-bottom: 1px solid var(--border); }
+  .rd-stat { font-weight: 700; }
+  .rd-stat.add { color: #36d399; }
+  .rd-stat.del { color: #ff6b81; }
+  .repair-diff-body { margin: 0; padding: 8px 10px; max-height: 260px; overflow: auto; font-size: 11px; line-height: 1.45;
+    font-family: ui-monospace, Menlo, monospace; white-space: pre; }
+  .repair-diff-body .rd-add { color: #36d399; display: block; }
+  .repair-diff-body .rd-del { color: #ff6b81; display: block; }
+  .repair-diff-body .rd-ctx { color: var(--text-muted); display: block; }
   .diff-tag { display: inline-block; width: 30px; font-size: 10px; color: var(--text-muted); }
   .adjust-advisory { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
   .adjust-actions { display: flex; gap: 6px; margin-top: 8px; }

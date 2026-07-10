@@ -2,6 +2,28 @@
 
 Every plugin staged through the install API and every remote skill resolved by `sy skill install` runs through a three-check safety pipeline *before* you are asked to approve anything — and a check that cannot run degrades to a visible finding, never a silent gap.
 
+## Tool risk tiers
+
+Every tool is classified into one of five risk tiers so you can see a tool's blast
+radius before an agent that uses it is bound to a channel:
+
+| Tier | Meaning | Examples |
+| --- | --- | --- |
+| `safe` | Reads only, no side effects | `read_file`, `kb_search`, `list_dir` |
+| `write` | Changes local files or state | `write_file`, `kb_write`, `queue_put` |
+| `network` | Reaches external services | `fetch_url`, `http_request`, `web_search`, MCP tools |
+| `privileged` | Installs software / broad system config | `install_library` |
+| `shell_system` | Runs arbitrary commands or code | `shell_exec`, `run_script`, `python_eval` |
+
+The tier appears on tools in the Studio palette and in the `/tool-catalog` API
+(`risk` field). The top two tiers (`privileged`, `shell_system`) are treated as
+high-risk and require confirmation before running unless the agent explicitly
+allows them (see `confirm_tools` in the SOUL.yaml reference).
+
+When you approve or deny a gated tool, the decision — **who approved what, at
+which risk tier** — is recorded in the action log (a `tool.approval` event) so
+the Activity view shows an accountable trail.
+
 ## Quick look
 
 Install something and the report appears automatically:

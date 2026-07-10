@@ -21,6 +21,10 @@
   let wizardTemplate = '{reply}'
   let createdAgent = null
   let testingOutput = false
+  let readiness = null       // { ready, checks[] }
+  let readinessBusy = false
+  let mockResult = null      // { plan[], note }
+  let mockBusy = false
 
   const WORKFLOW_TAG = 'workflow'
 
@@ -53,8 +57,36 @@
     wizardTo = t.definition?.schedule?.output?.to || ''
     wizardTemplate = t.definition?.schedule?.output?.template || '{reply}'
     createdAgent = null
+    readiness = null
+    mockResult = null
     error = ''
     notice = ''
+    checkReadiness(t)
+  }
+
+  async function checkReadiness(t = wizard) {
+    if (!t) return
+    readinessBusy = true
+    try {
+      readiness = await api.templates.readiness(t.name)
+    } catch (e) {
+      readiness = null
+    } finally {
+      readinessBusy = false
+    }
+  }
+
+  async function runMockTest(t = wizard) {
+    if (!t) return
+    mockBusy = true
+    error = ''
+    try {
+      mockResult = await api.templates.mockTest(t.name)
+    } catch (e) {
+      error = e.message || 'Mock test failed'
+    } finally {
+      mockBusy = false
+    }
   }
 
   async function useTemplate(t = wizard) {
@@ -280,14 +312,25 @@
 
       <div class="wizard-grid">
         <div>
-          <h3>Readiness</h3>
+          <h3>Readiness {#if readiness}<span class="ready-pill {readiness.ready ? 'ok' : 'no'}">{readiness.ready ? 'ready' : 'needs setup'}</span>{/if}
+            <button class="btn-link" on:click={() => checkReadiness(wizard)} disabled={readinessBusy}>{readinessBusy ? '…' : 'recheck'}</button>
+          </h3>
           <div class="wizard-list">
-            {#each wizard.setup || [] as item}
-              <div class="wizard-row {item.status}">
-                <strong>{item.label}</strong>
-                <span>{item.detail}</span>
-              </div>
-            {/each}
+            {#if readiness && readiness.checks}
+              {#each readiness.checks as ck}
+                <div class="wizard-row {ck.satisfied ? 'ready' : (ck.optional ? 'optional' : 'needs_setup')}">
+                  <strong>{ck.satisfied ? '✓' : (ck.optional ? '○' : '✗')} {ck.label}</strong>
+                  <span>{ck.detail}</span>
+                </div>
+              {/each}
+            {:else}
+              {#each wizard.setup || [] as item}
+                <div class="wizard-row {item.status}">
+                  <strong>{item.label}</strong>
+                  <span>{item.detail}</span>
+                </div>
+              {/each}
+            {/if}
           </div>
         </div>
         <div>
@@ -320,7 +363,14 @@
         </div>
       {/if}
 
-      {#if wizard.mock_prompt}
+      {#if mockResult}
+        <div class="mock">
+          <div class="mock-label">Mock test — {mockResult.note}</div>
+          <ul class="mock-plan">
+            {#each mockResult.plan || [] as step}<li>{step}</li>{/each}
+          </ul>
+        </div>
+      {:else if wizard.mock_prompt}
         <div class="mock">
           <div class="mock-label">Smoke test prompt</div>
           <p>{wizard.mock_prompt}</p>
@@ -331,6 +381,9 @@
         {#if createdAgent}
           <button class="btn-secondary" on:click={() => window.location.hash = '#agents'}>Open Agents</button>
           <button class="btn-secondary" on:click={() => window.location.hash = '#chat'}>Try in Chat</button>
+          <button class="btn-secondary" on:click={() => api.agents.trigger(createdAgent.id).then(() => notice = 'Real test run started for "' + createdAgent.id + '".').catch(e => error = e.message)}>
+            Run real test
+          </button>
           {#if hasSchedule(wizard)}
             <button class="btn-primary" on:click={testOutput} disabled={testingOutput}>
               {testingOutput ? 'Sending…' : 'Test output'}
@@ -338,6 +391,9 @@
           {/if}
         {:else}
           <button class="btn-secondary" on:click={() => wizard = null}>Cancel</button>
+          <button class="btn-secondary" on:click={() => runMockTest(wizard)} disabled={mockBusy}>
+            {mockBusy ? 'Testing…' : 'Mock test'}
+          </button>
           <button class="btn-primary" on:click={() => useTemplate(wizard)} disabled={instantiating === wizard.name || !wizardId.trim()}>
             {instantiating === wizard.name ? 'Installing…' : 'Install agent'}
           </button>
@@ -395,6 +451,12 @@
   .wizard-row { border: 1px solid #252a46; background: #15182a; border-radius: 8px; padding: .55rem .65rem; }
   .wizard-row.ready { border-color: rgba(95, 206, 154, .25); }
   .wizard-row.needs_setup { border-color: rgba(240, 160, 96, .3); }
+  .wizard-row.optional { border-color: #252a46; opacity: .82; }
+  .ready-pill { font-size: .6rem; padding: .05rem .4rem; border-radius: 999px; text-transform: uppercase; letter-spacing: .04em; vertical-align: middle; }
+  .ready-pill.ok { background: rgba(95,206,154,.18); color: #5fce9a; }
+  .ready-pill.no { background: rgba(240,160,96,.18); color: #f0a060; }
+  .btn-link { background: none; border: none; color: #8b85ff; font-size: .68rem; cursor: pointer; margin-left: .4rem; }
+  .mock-plan { margin: .3rem 0 0; padding-left: 1.1rem; font-size: .74rem; color: #b9bedc; line-height: 1.5; }
   .wizard-row strong, .wizard-row span { display: block; }
   .wizard-row strong { font-size: .75rem; }
   .wizard-row span { color: #8f96bb; font-size: .72rem; margin-top: .12rem; }

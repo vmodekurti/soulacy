@@ -30,6 +30,13 @@ type Entry struct {
 	DurationMS int64          `json:"duration_ms"`
 	Denied     bool           `json:"denied,omitempty"`
 	Error      string         `json:"error,omitempty"`
+	// Action is the kind of audited event, e.g. "tool" (default, a tool call)
+	// or "approval" (a human approved/denied a gated tool). Empty means "tool".
+	Action string `json:"action,omitempty"`
+	// Approver is the identity that approved or denied a gated action, recorded
+	// so the activity log can answer "who approved what". Empty for unattended
+	// tool calls.
+	Approver string `json:"approver,omitempty"`
 }
 
 // secretPattern matches common secret field names so their values can be

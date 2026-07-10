@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -17,48 +18,63 @@ import (
 
 // Suite is a collection of test cases for an agent.
 type Suite struct {
-	Name        string        `yaml:"name" json:"name"`
-	Description string        `yaml:"description" json:"description,omitempty"`
-	Defaults    CaseDefaults  `yaml:"defaults" json:"defaults,omitempty"`
-	Cases       []Case        `yaml:"cases" json:"cases"`
-	Tags        []string      `yaml:"tags" json:"tags,omitempty"`
+	Name        string         `yaml:"name" json:"name"`
+	Description string         `yaml:"description" json:"description,omitempty"`
+	Defaults    CaseDefaults   `yaml:"defaults" json:"defaults,omitempty"`
+	Cases       []Case         `yaml:"cases" json:"cases"`
+	Tags        []string       `yaml:"tags" json:"tags,omitempty"`
 	Metadata    map[string]any `yaml:"metadata" json:"metadata,omitempty"`
 }
 
 // CaseDefaults contains suite-level defaults applied to each case.
 type CaseDefaults struct {
 	UserID     string         `yaml:"user_id" json:"user_id,omitempty"`
-	TimeoutSec int           `yaml:"timeout_sec" json:"timeout_sec,omitempty"`
+	TimeoutSec int            `yaml:"timeout_sec" json:"timeout_sec,omitempty"`
 	Overrides  map[string]any `yaml:"overrides" json:"overrides,omitempty"`
 }
 
 // Case is one evaluation test case.
 type Case struct {
-	Name                string   `yaml:"name" json:"name"`
-	Input               string   `yaml:"input" json:"input"`
-	UserID              string   `yaml:"user_id" json:"user_id,omitempty"`
-	SessionID           string   `yaml:"session_id" json:"session_id,omitempty"`
-	ExpectedContains    []string `yaml:"expected_contains" json:"expected_contains"`    // all must appear in reply (case-insensitive)
-	ExpectedNotContains []string `yaml:"expected_not_contains" json:"expected_not_contains"` // none must appear
-	ExpectedRegex       []string `yaml:"expected_regex" json:"expected_regex,omitempty"` // all regexes must match reply
-	ExpectedNotRegex    []string `yaml:"expected_not_regex" json:"expected_not_regex,omitempty"` // no regex may match reply
-	MaxTokens           int      `yaml:"max_tokens" json:"max_tokens"`                  // 0 = no limit check
-	MaxLatencyMS        int      `yaml:"max_latency_ms" json:"max_latency_ms,omitempty"` // 0 = no limit check
-	TimeoutSec          int      `yaml:"timeout_sec" json:"timeout_sec"`                // default 30
-	Overrides           map[string]any `yaml:"overrides" json:"overrides,omitempty"`     // chat override payload
-	Tags                []string `yaml:"tags" json:"tags,omitempty"`
+	Name                string         `yaml:"name" json:"name"`
+	Input               string         `yaml:"input" json:"input"`
+	UserID              string         `yaml:"user_id" json:"user_id,omitempty"`
+	SessionID           string         `yaml:"session_id" json:"session_id,omitempty"`
+	ExpectedContains    []string       `yaml:"expected_contains" json:"expected_contains"`             // all must appear in reply (case-insensitive)
+	ExpectedNotContains []string       `yaml:"expected_not_contains" json:"expected_not_contains"`     // none must appear
+	ExpectedRegex       []string       `yaml:"expected_regex" json:"expected_regex,omitempty"`         // all regexes must match reply
+	ExpectedNotRegex    []string       `yaml:"expected_not_regex" json:"expected_not_regex,omitempty"` // no regex may match reply
+	MaxTokens           int            `yaml:"max_tokens" json:"max_tokens"`                           // 0 = no limit check
+	MaxLatencyMS        int            `yaml:"max_latency_ms" json:"max_latency_ms,omitempty"`         // 0 = no limit check
+	TimeoutSec          int            `yaml:"timeout_sec" json:"timeout_sec"`                         // default 30
+	Overrides           map[string]any `yaml:"overrides" json:"overrides,omitempty"`                   // chat override payload
+	Tags                []string       `yaml:"tags" json:"tags,omitempty"`
+
+	// ExpectToolSuccess lists tool names that must appear in the reply's tool
+	// trace and must have succeeded. Requires the gateway to return a "tools"
+	// array of {name, ok} objects; asserted only when this list is non-empty.
+	ExpectToolSuccess []string `yaml:"expect_tool_success" json:"expect_tool_success,omitempty"`
+	// ExpectDelivered, when set, asserts the response's channel-delivery flag.
+	// nil = no assertion; requires the gateway to return a "delivered" boolean.
+	ExpectDelivered *bool `yaml:"expect_delivered" json:"expect_delivered,omitempty"`
+	// RequiresSecret lists environment variable names that must be non-empty
+	// for this case to run. If any is unset the case is SKIPPED (not failed)
+	// with a clear reason — this is how secret-backed cases self-document why
+	// they don't run in CI without leaking the secret itself.
+	RequiresSecret []string `yaml:"requires_secret" json:"requires_secret,omitempty"`
 }
 
 // Result is the outcome of running one Case.
 type Result struct {
-	Case     Case          `json:"case"`
-	Passed   bool          `json:"passed"`
-	Reply    string        `json:"reply,omitempty"`
-	Latency  time.Duration `json:"latency"`
-	Tokens   int           `json:"tokens,omitempty"`
-	Error    error         `json:"-"`
-	ErrorText string       `json:"error,omitempty"`
-	Reasons  []string     `json:"reasons,omitempty"` // why it failed
+	Case       Case          `json:"case"`
+	Passed     bool          `json:"passed"`
+	Skipped    bool          `json:"skipped,omitempty"` // requirements (e.g. secrets) not met
+	SkipReason string        `json:"skip_reason,omitempty"`
+	Reply      string        `json:"reply,omitempty"`
+	Latency    time.Duration `json:"latency"`
+	Tokens     int           `json:"tokens,omitempty"`
+	Error      error         `json:"-"`
+	ErrorText  string        `json:"error,omitempty"`
+	Reasons    []string      `json:"reasons,omitempty"` // why it failed
 }
 
 // Runner executes a Suite against a live gateway.
@@ -92,6 +108,17 @@ func (r *Runner) Run(ctx context.Context, suite Suite) ([]Result, error) {
 
 // runCase executes a single test case and returns its result.
 func (r *Runner) runCase(ctx context.Context, idx int, c Case) Result {
+	// Skip secret-backed cases when their required environment variables are
+	// missing, with an explicit (non-secret-leaking) reason. This lets CI run
+	// the non-secret subset and lets local runs document exactly what to set.
+	if missing := missingSecrets(c.RequiresSecret); len(missing) > 0 {
+		return Result{
+			Case:       c,
+			Skipped:    true,
+			SkipReason: "missing required secret(s): " + strings.Join(missing, ", "),
+		}
+	}
+
 	timeoutSec := c.TimeoutSec
 	if timeoutSec <= 0 {
 		timeoutSec = 30
@@ -155,6 +182,12 @@ func (r *Runner) runCase(ctx context.Context, idx int, c Case) Result {
 	var parsed struct {
 		Reply  string `json:"reply"`
 		Tokens int    `json:"tokens"`
+		Tools  []struct {
+			Name  string `json:"name"`
+			OK    *bool  `json:"ok"`
+			Error string `json:"error"`
+		} `json:"tools"`
+		Delivered *bool `json:"delivered"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return resultError(c, latency, fmt.Errorf("failed to parse response: %w", err))
@@ -197,6 +230,35 @@ func (r *Runner) runCase(ctx context.Context, idx int, c Case) Result {
 		}
 	}
 
+	// Tool-success assertions: each named tool must have run and succeeded.
+	for _, want := range c.ExpectToolSuccess {
+		found, ok := false, false
+		var toolErr string
+		for _, t := range parsed.Tools {
+			if strings.EqualFold(t.Name, want) {
+				found = true
+				ok = t.OK == nil || *t.OK // absent ok defaults to success
+				toolErr = t.Error
+				break
+			}
+		}
+		switch {
+		case !found:
+			reasons = append(reasons, fmt.Sprintf("expected tool not called: %q", want))
+		case !ok:
+			reasons = append(reasons, fmt.Sprintf("tool %q failed: %s", want, strings.TrimSpace(toolErr)))
+		}
+	}
+
+	// Channel-delivery assertion: reply must report the expected delivery state.
+	if c.ExpectDelivered != nil {
+		if parsed.Delivered == nil {
+			reasons = append(reasons, "expected channel-delivery status but response reported none")
+		} else if *parsed.Delivered != *c.ExpectDelivered {
+			reasons = append(reasons, fmt.Sprintf("delivery mismatch: got delivered=%v, want %v", *parsed.Delivered, *c.ExpectDelivered))
+		}
+	}
+
 	if c.MaxTokens > 0 && parsed.Tokens > c.MaxTokens {
 		reasons = append(reasons, fmt.Sprintf("token limit exceeded: %d > %d", parsed.Tokens, c.MaxTokens))
 	}
@@ -217,6 +279,7 @@ func (r *Runner) runCase(ctx context.Context, idx int, c Case) Result {
 // PrintReport writes a formatted report of eval results to w.
 func PrintReport(results []Result, w io.Writer) {
 	passed := 0
+	skipped := 0
 	total := len(results)
 
 	// Header
@@ -226,7 +289,11 @@ func PrintReport(results []Result, w io.Writer) {
 	for _, r := range results {
 		status := "PASS"
 		reason := ""
-		if r.Error != nil {
+		if r.Skipped {
+			status = "SKIP"
+			reason = r.SkipReason
+			skipped++
+		} else if r.Error != nil {
 			status = "ERROR"
 			reason = r.Error.Error()
 		} else if !r.Passed {
@@ -258,7 +325,11 @@ func PrintReport(results []Result, w io.Writer) {
 	}
 
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
-	fmt.Fprintf(w, "%d/%d passed\n", passed, total)
+	if skipped > 0 {
+		fmt.Fprintf(w, "%d/%d passed, %d skipped\n", passed, total-skipped, skipped)
+	} else {
+		fmt.Fprintf(w, "%d/%d passed\n", passed, total)
+	}
 }
 
 // LoadSuite parses a Suite from JSON or YAML bytes.
@@ -330,6 +401,22 @@ func applyDefaults(c Case, d CaseDefaults) Case {
 
 func resultError(c Case, latency time.Duration, err error) Result {
 	return Result{Case: c, Latency: latency, Error: err, ErrorText: err.Error(), Reasons: []string{err.Error()}}
+}
+
+// missingSecrets returns the subset of the given environment variable names
+// that are unset or empty.
+func missingSecrets(names []string) []string {
+	var missing []string
+	for _, n := range names {
+		n = strings.TrimSpace(n)
+		if n == "" {
+			continue
+		}
+		if strings.TrimSpace(os.Getenv(n)) == "" {
+			missing = append(missing, n)
+		}
+	}
+	return missing
 }
 
 func slug(s string) string {

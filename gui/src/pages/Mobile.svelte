@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
+  import { installPrompt, appInstalled, authRequired } from '../lib/stores.js'
 
   let loading = true
   let error = ''
@@ -12,6 +13,30 @@
   let queues = []
   let recentErrors = []
   let refreshingError = ''
+  let activeRuns = []          // in-progress runs (scheduler running snapshot)
+  let installEvt = null        // deferred PWA install prompt
+  let installing = false
+
+  $: installEvt = $installPrompt
+  $: sessionExpired = $authRequired
+
+  async function loadActiveRuns() {
+    try {
+      const st = await api.schedule.status()
+      const running = st?.running || {}
+      activeRuns = Object.entries(running).map(([agentId, started]) => ({ agentId, started }))
+    } catch { activeRuns = [] }
+  }
+
+  async function installApp() {
+    if (!installEvt) return
+    installing = true
+    try {
+      installEvt.prompt()
+      await installEvt.userChoice
+      installPrompt.set(null)
+    } catch (_) { /* user dismissed */ } finally { installing = false }
+  }
 
   // Companion: approvals, push, pairing.
   let approvals = []
@@ -178,10 +203,20 @@
   onMount(() => {
     load()
     loadApprovals()
+    loadActiveRuns()
     detectPush()
-    const t = setInterval(loadApprovals, 10000)
+    const t = setInterval(() => { loadApprovals(); loadActiveRuns() }, 10000)
     return () => clearInterval(t)
   })
+
+  function fmtStarted(iso) {
+    if (!iso) return ''
+    const d = new Date(iso)
+    if (Number.isNaN(d.getTime())) return ''
+    const secs = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000))
+    if (secs < 60) return `${secs}s`
+    return `${Math.round(secs / 60)}m`
+  }
 </script>
 
 <div class="mobile-page">
@@ -193,7 +228,39 @@
     <button class="btn-secondary" on:click={() => { load(); loadApprovals() }} disabled={loading}>↻</button>
   </header>
 
+  {#if sessionExpired}
+    <div class="m-banner err">
+      Your session expired. <button class="linkish" on:click={() => location.reload()}>Sign in again</button>
+    </div>
+  {/if}
+
+  {#if installEvt && !$appInstalled}
+    <div class="m-banner">
+      <span>Install Soulacy for quick access and notifications.</span>
+      <button class="btn-primary tiny" on:click={installApp} disabled={installing}>{installing ? 'Installing…' : 'Install app'}</button>
+    </div>
+  {/if}
+
   {#if companionMsg}<button class="companion-note" type="button" on:click={() => companionMsg = ''}>{companionMsg}</button>{/if}
+
+  <!-- Active runs -->
+  <section class="m-card" class:active={activeRuns.length}>
+    <div class="m-card-hd">
+      <span>Active runs</span>
+      {#if activeRuns.length}<span class="m-badge">{activeRuns.length}</span>{/if}
+    </div>
+    {#if activeRuns.length === 0}
+      <p class="m-empty">No runs in progress.</p>
+    {:else}
+      {#each activeRuns as r}
+        <div class="run-row">
+          <span class="run-dot" aria-hidden="true"></span>
+          <strong>{r.agentId}</strong>
+          <span class="run-age">running {fmtStarted(r.started)}</span>
+        </div>
+      {/each}
+    {/if}
+  </section>
 
   <!-- Approvals -->
   <section class="m-card approvals-card" class:active={approvals.length}>
@@ -367,6 +434,16 @@
   .m-badge { font-size: .68rem; padding: .1rem .45rem; border-radius: 999px; background: #1c1f35; color: #8a91b8; }
   .m-badge.urgent { background: rgba(240,160,96,.18); color: #f0b070; }
   .m-empty { color: #6b7294; font-size: .82rem; margin: 0; }
+  .m-banner { display: flex; align-items: center; justify-content: space-between; gap: .6rem; background: rgba(108,99,255,.1); border: 1px solid rgba(108,99,255,.3); color: #b9bcf0; border-radius: 9px; padding: .55rem .8rem; font-size: .82rem; }
+  .m-banner.err { background: rgba(255,90,90,.12); border-color: rgba(255,90,90,.4); color: #ff9a9a; }
+  .m-banner .tiny { padding: .28rem .7rem; font-size: .74rem; border-radius: 6px; white-space: nowrap; }
+  .linkish { background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
+  .run-row { display: flex; align-items: center; gap: .5rem; padding: .45rem 0; border-top: 1px solid #1a1e36; font-size: .82rem; }
+  .run-row:first-of-type { border-top: none; }
+  .run-row strong { color: #dfe2f5; }
+  .run-age { margin-left: auto; color: #8a91b8; font-size: .74rem; }
+  .run-dot { width: 8px; height: 8px; border-radius: 50%; background: #60c878; box-shadow: 0 0 0 0 rgba(96,200,120,.5); animation: runpulse 1.6s infinite; }
+  @keyframes runpulse { 0% { box-shadow: 0 0 0 0 rgba(96,200,120,.5); } 70% { box-shadow: 0 0 0 6px rgba(96,200,120,0); } 100% { box-shadow: 0 0 0 0 rgba(96,200,120,0); } }
   .approval { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .55rem 0; border-top: 1px solid #1a1e36; }
   .approval:first-of-type { border-top: 0; }
   .approval-tool { font-size: .86rem; font-weight: 650; color: #c5c9e8; }

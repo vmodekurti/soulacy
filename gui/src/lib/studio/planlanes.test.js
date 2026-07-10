@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { laneOf, toLanes, triggerLabel, planReview, migrateEndpoints } from './planlanes.js'
+import { laneOf, workLaneOf, toLanes, triggerLabel, planReview, migrateEndpoints, LANES } from './planlanes.js'
 
 const wf = {
   name: 'Stock report',
@@ -36,17 +36,41 @@ describe('triggerLabel', () => {
   })
 })
 
+describe('workLaneOf', () => {
+  it('classifies work nodes into gather/think/act/verify', () => {
+    expect(workLaneOf({ kind: 'tool', tool: 'run_stock_screener' })).toBe('gather')
+    expect(workLaneOf({ kind: 'tool', tool: 'get_weather' })).toBe('gather')
+    expect(workLaneOf({ kind: 'tool', tool: 'fetch_url' })).toBe('gather')
+    expect(workLaneOf({ kind: 'python', description: 'Rank Stocks' })).toBe('think')
+    expect(workLaneOf({ kind: 'agent' })).toBe('think')
+    expect(workLaneOf({ kind: 'tool', tool: 'send_telegram_message' })).toBe('act')
+    expect(workLaneOf({ kind: 'tool', tool: 'create_report' })).toBe('act')
+    expect(workLaneOf({ kind: 'python', description: 'Validate the totals' })).toBe('verify')
+    expect(workLaneOf({ kind: 'tool', tool: 'check_schema' })).toBe('verify')
+  })
+})
+
+describe('LANES', () => {
+  it('is the six ordered lanes', () => {
+    expect(LANES.map((l) => l.key)).toEqual(['trigger', 'gather', 'think', 'act', 'verify', 'deliver'])
+  })
+})
+
 describe('toLanes', () => {
-  it('splits into trigger / work / delivery and orders work by edges', () => {
+  it('splits work into the six lanes and orders each by edges', () => {
     const lanes = toLanes(wf)
     expect(lanes.trigger[0].label).toMatch(/schedule/)
-    expect(lanes.work.map((c) => c.id)).toEqual(['screen', 'rank', 'send'])
-    // telegram channel becomes an implied delivery card
-    expect(lanes.delivery.some((c) => /telegram/i.test(c.label))).toBe(true)
+    // screen → gather, rank → think, send → act
+    expect(lanes.gather.map((c) => c.id)).toEqual(['screen'])
+    expect(lanes.think.map((c) => c.id)).toEqual(['rank'])
+    expect(lanes.act.map((c) => c.id)).toEqual(['send'])
+    expect(lanes.verify).toEqual([])
+    // telegram channel becomes an implied deliver card
+    expect(lanes.deliver.some((c) => /telegram/i.test(c.label))).toBe(true)
   })
-  it('falls back to a console delivery when nothing is set', () => {
+  it('falls back to a console deliver card when nothing is set', () => {
     const lanes = toLanes({ flow: { nodes: [{ id: 'a', kind: 'tool', tool: 't' }], edges: [], entry: 'a' } })
-    expect(lanes.delivery[0].label).toMatch(/return the result/i)
+    expect(lanes.deliver[0].label).toMatch(/return the result/i)
   })
 })
 

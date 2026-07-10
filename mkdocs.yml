@@ -93,6 +93,7 @@ nav:
     - GUI Tour: getting-started/gui-tour.md
   - Using Soulacy:
     - Chat: using/chat.md
+    - Studio (Workflow Builder): using/studio.md
     - Voice Conversations: using/voice.md
     - Dashboard & Activity: using/dashboard.md
     - Workboard: using/workboard.md
@@ -100,7 +101,16 @@ nav:
     - Knowledge Bases: using/knowledge.md
     - Agent Memory & Rulebooks: using/memory.md
     - Workflow Templates: using/templates.md
+    - Evaluations (sy eval): using/evaluations.md
     - Flow View: using/flow-view.md
+  - Template Setup Guides:
+    - Overview: templates/index.md
+    - Weather: templates/weather.md
+    - Stock Screener: templates/stock-screener.md
+    - Deal Finder: templates/deal-finder.md
+    - Research Librarian: templates/research-librarian.md
+    - Document Ingestion: templates/document-ingestion.md
+    - Inbox / Meeting Assistant: templates/inbox-meeting.md
   - Agents:
     - SOUL.yaml Reference: agents/soul-yaml.md
     - Agent Tools: agents/tools.md
@@ -112,6 +122,7 @@ nav:
   - Skills & Plugins:
     - Installing Skills: extend/installing-skills.md
     - Skill Sources: extend/skill-sources.md
+    - MCP Servers: extend/mcp.md
     - Plugins: extend/plugins.md
     - Plugin Security Model: extend/plugin-security.md
     - Safety Introspection: extend/safety.md
@@ -157,6 +168,8 @@ nav:
     - macOS: deployment/macos.md
     - Linux / VPS: deployment/linux.md
     - Upgrades & Reinstall: deployment/upgrades.md
+  - Troubleshooting:
+    - Common Failures → Fixes: troubleshooting/common-failures.md
   - Architecture:
     - Overview: architecture/overview.md
     - Specs & Deep Dives: architecture/specs.md

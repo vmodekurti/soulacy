@@ -32,6 +32,7 @@ import (
 	wawebchan "github.com/soulacy/soulacy/internal/channels/whatsappweb"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/mcp"
+	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/scheduler"
 	"github.com/soulacy/soulacy/internal/secrets"
@@ -1057,6 +1058,7 @@ func (s *Server) handleToolConfirm(c *fiber.Ctx) error {
 	var req struct {
 		CallID   string `json:"call_id"`
 		Approved bool   `json:"approved"`
+		Approver string `json:"approver"` // optional display name of who decided
 	}
 	if err := c.BodyParser(&req); err != nil {
 		return s.errJSON(c, fiber.StatusBadRequest, err)
@@ -1064,12 +1066,58 @@ func (s *Server) handleToolConfirm(c *fiber.Ctx) error {
 	if req.CallID == "" {
 		return s.errMsg(c, fiber.StatusBadRequest, "call_id is required")
 	}
+	// Capture the pending request's context (tool/agent/session) before it is
+	// resolved and removed, so we can record who approved what.
+	var tool, agentID, sessionID string
+	for _, p := range s.engine.Broker().List() {
+		if p.CallID == req.CallID {
+			tool, agentID, sessionID = p.Tool, p.AgentID, p.SessionID
+			break
+		}
+	}
 	if !s.engine.Broker().Resolve(req.CallID, req.Approved) {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "call_id not found — it may have already timed out or been resolved",
 		})
 	}
+	s.recordApproval(agentID, sessionID, tool, req.CallID, req.Approved, approverIdentity(c, req.Approver))
 	return c.JSON(fiber.Map{"ok": true})
+}
+
+// approverIdentity resolves who made an approval decision. This system uses a
+// single API key rather than per-user identity, so we record the client-provided
+// name when given, else the calling device by IP — the meaningful granularity of
+// "who approved what" available here.
+func approverIdentity(c *fiber.Ctx, provided string) string {
+	if p := strings.TrimSpace(provided); p != "" {
+		return p
+	}
+	ip := strings.TrimSpace(c.IP())
+	if ip == "" {
+		return "operator"
+	}
+	return "operator@" + ip
+}
+
+// recordApproval writes an approval/denial to the durable action log so the
+// Activity view can show who approved what, at which risk tier.
+func (s *Server) recordApproval(agentID, sessionID, tool, callID string, approved bool, approver string) {
+	if s.actions == nil {
+		return
+	}
+	s.actions.Append(message.Event{
+		Type:      "tool.approval",
+		AgentID:   agentID,
+		SessionID: sessionID,
+		Payload: map[string]any{
+			"call_id":  callID,
+			"tool":     tool,
+			"approved": approved,
+			"approver": approver,
+			"risk":     policy.RiskTierOf(tool).String(),
+		},
+		Timestamp: time.Now().UTC(),
+	})
 }
 
 // --- Channels ---
@@ -1562,6 +1610,91 @@ func (s *Server) handleTestChannelDelivery(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusBadGateway, "channel delivery test failed: "+err.Error())
 	}
 	return c.JSON(fiber.Map{"ok": true, "channel": adapterID, "channel_family": id, "to": to})
+}
+
+// handleDiagnoseChannelDelivery is the "delivery doctor" behind each mapping's
+// Diagnose button. Unlike /test (which returns a raw error on failure), this
+// always returns 200 with a structured, plain-language Diagnosis: what happened
+// and how to fix it. With {"dry": true} it only runs precondition checks
+// (destination set? adapter registered? connected?) without sending a message.
+func (s *Server) handleDiagnoseChannelDelivery(c *fiber.Ctx) error {
+	id := strings.TrimSpace(c.Params("id"))
+	if channelSpecByID(id) == nil {
+		return s.errMsg(c, fiber.StatusNotFound, "unknown channel: "+id)
+	}
+	if s.channels == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "channel registry is unavailable")
+	}
+	statuses := s.channels.Statuses()
+
+	var req struct {
+		AdapterID   string `json:"adapter_id"`
+		To          string `json:"to"`
+		Destination string `json:"destination"`
+		ChatID      string `json:"chat_id"`
+		ChannelID   string `json:"channel_id"`
+		Text        string `json:"text"`
+		Message     string `json:"message"`
+		Dry         bool   `json:"dry"`
+	}
+	if len(c.Body()) > 0 {
+		if err := c.BodyParser(&req); err != nil {
+			return s.errJSON(c, fiber.StatusBadRequest, err)
+		}
+	}
+
+	adapterID := strings.TrimSpace(req.AdapterID)
+	if adapterID == "" {
+		adapterID = id
+	}
+	cfg := s.cfg.Channels[id]
+	to := firstNonBlank(req.To, req.Destination, req.ChatID, req.ChannelID)
+	if to == "" {
+		to = channelDefaultDestination(cfg, id, adapterID)
+	}
+
+	status, registered := statuses[adapterID]
+
+	respond := func(d channels.Diagnosis) error {
+		return c.JSON(fiber.Map{
+			"channel":        adapterID,
+			"channel_family": id,
+			"to":             to,
+			"diagnosis":      d,
+		})
+	}
+
+	// Precondition problems short-circuit before any send attempt.
+	if to == "" && adapterID != "webhook" {
+		return respond(channels.DiagnoseDelivery(adapterID, "", registered, status.Connected, nil))
+	}
+	if !registered {
+		return respond(channels.DiagnoseDelivery(adapterID, to, false, false, nil))
+	}
+	if req.Dry {
+		// No live send: report readiness only.
+		return respond(channels.DiagnoseDelivery(adapterID, to, true, status.Connected, nil))
+	}
+
+	text := firstNonBlank(req.Text, req.Message)
+	if text == "" {
+		text = "Soulacy delivery doctor check from " + adapterID + " at " + time.Now().Format(time.RFC3339)
+	}
+	out := message.Message{
+		ID:        uuid.New().String(),
+		SessionID: "channel-diagnose-" + uuid.New().String(),
+		AgentID:   "channel-diagnose",
+		Channel:   adapterID,
+		ThreadID:  to,
+		UserID:    "operator",
+		Username:  "operator",
+		Role:      message.RoleAssistant,
+		Parts:     message.Text(text),
+		Metadata:  map[string]string{"source": "channels.diagnose"},
+		CreatedAt: time.Now().UTC(),
+	}
+	sendErr := s.channels.Send(c.UserContext(), out)
+	return respond(channels.DiagnoseDelivery(adapterID, to, true, status.Connected, sendErr))
 }
 
 func channelDefaultDestination(cfg map[string]any, channelID, adapterID string) string {
@@ -2289,10 +2422,16 @@ type mcpToolView struct {
 	// with *), e.g. "title*:string, description:string" — so a caller (notably
 	// the Studio compiler) passes the RIGHT keyword arguments instead of guessing.
 	Params string `json:"params,omitempty"`
+	// Risk is the 5-tier risk classification for this MCP tool.
+	Risk string `json:"risk,omitempty"`
 }
 type builtinToolView struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// Risk is the 5-tier risk classification (safe/write/network/privileged/
+	// shell_system) so the UI can show a tool's blast radius before an agent is
+	// bound to a channel.
+	Risk string `json:"risk,omitempty"`
 }
 
 const toolCatalogTTL = 30 * time.Second
@@ -2392,6 +2531,7 @@ func (s *Server) snapshotMCPTools() []mcpToolView {
 				FullName: t.FullName, Name: t.Name,
 				Server: srv.ID, Description: t.Description,
 				Params: t.Params,
+				Risk:   policy.RiskTierOf(t.FullName).String(),
 			})
 		}
 	}
@@ -2406,6 +2546,7 @@ func (s *Server) snapshotBuiltins() []builtinToolView {
 	for _, b := range s.engine.Builtins() {
 		builtins = append(builtins, builtinToolView{
 			Name: b.Name, Description: b.Description,
+			Risk: policy.RiskTierOf(b.Name).String(),
 		})
 	}
 	return builtins
@@ -4053,8 +4194,20 @@ func (s *Server) handleInstantiateTemplate(c *fiber.Ctx) error {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
-	// Register with scheduler if applicable (cron / oneshot templates).
+	// Register with scheduler if applicable (cron / oneshot templates). If this
+	// fails for a scheduled template, roll back the just-created agent so the
+	// install doesn't leave a half-broken agent that never fires — the wizard
+	// then reports a clean, recoverable failure.
 	if err := s.scheduler.RegisterAgent(def); err != nil {
+		if def.Trigger == agent.TriggerCron {
+			s.scheduler.DeregisterAgent(def.ID)
+			if delErr := s.loader.Delete(def.ID); delErr != nil {
+				s.log.Warn("template install rollback: delete failed", zap.String("agent", def.ID), zap.Error(delErr))
+			}
+			return s.errMsg(c, fiber.StatusBadGateway,
+				"could not schedule the agent ("+err.Error()+"); the partially-created agent was removed — fix the schedule and try again")
+		}
+		// Non-scheduled template: registration failure is non-fatal.
 		s.log.Warn("scheduler registration failed", zap.String("agent", def.ID), zap.Error(err))
 	}
 

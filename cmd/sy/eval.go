@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/soulacy/soulacy/internal/eval"
 	"github.com/soulacy/soulacy/internal/studio"
@@ -44,7 +47,7 @@ Examples:
 		},
 	}
 	cmd.Flags().StringVar(&agentID, "agent", "", "Agent ID to evaluate")
-	cmd.Flags().StringVarP(&suiteFile, "suite", "s", "", "Path to eval suite JSON file")
+	cmd.Flags().StringVarP(&suiteFile, "suite", "s", "", "Path to an eval suite (JSON or YAML) or a directory of suites")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output results as JSON")
 	cmd.AddCommand(buildEvalGenerationCmd())
 	return cmd
@@ -109,41 +112,89 @@ Examples:
 	return cmd
 }
 
-func runEval(agentID, suiteFile string, jsonOut bool) error {
-	data, err := os.ReadFile(suiteFile)
-	if err != nil {
-		return fmt.Errorf("failed to read suite file %s: %w", suiteFile, err)
-	}
-
-	suite, err := eval.LoadSuiteFromJSON(data)
+func runEval(agentID, suitePath string, jsonOut bool) error {
+	suiteFiles, err := collectSuiteFiles(suitePath)
 	if err != nil {
 		return err
 	}
 
 	runner := eval.NewRunner(gatewayURL, apiKey, agentID)
-	results, err := runner.Run(context.Background(), suite)
-	if err != nil {
-		return fmt.Errorf("eval run failed: %w", err)
+	var allResults []eval.Result
+	failures := 0
+
+	for _, sf := range suiteFiles {
+		data, err := os.ReadFile(sf)
+		if err != nil {
+			return fmt.Errorf("failed to read suite file %s: %w", sf, err)
+		}
+		// LoadSuite accepts both JSON and YAML.
+		suite, err := eval.LoadSuite(data)
+		if err != nil {
+			return fmt.Errorf("%s: %w", sf, err)
+		}
+		results, err := runner.Run(context.Background(), suite)
+		if err != nil {
+			return fmt.Errorf("eval run failed for %s: %w", sf, err)
+		}
+		if !jsonOut && len(suiteFiles) > 1 {
+			fmt.Printf("\n=== %s (%s) ===\n", suite.Name, filepath.Base(sf))
+		}
+		if !jsonOut {
+			eval.PrintReport(results, os.Stdout)
+		}
+		for _, r := range results {
+			// Skipped cases (e.g. missing secrets) are not failures.
+			if r.Skipped {
+				continue
+			}
+			if !r.Passed || r.Error != nil {
+				failures++
+			}
+		}
+		allResults = append(allResults, results...)
 	}
 
 	if jsonOut {
-		out, err := json.MarshalIndent(results, "", "  ")
+		out, err := json.MarshalIndent(allResults, "", "  ")
 		if err != nil {
 			return fmt.Errorf("failed to marshal results: %w", err)
 		}
 		fmt.Println(string(out))
-	} else {
-		eval.PrintReport(results, os.Stdout)
 	}
 
-	failures := 0
-	for _, r := range results {
-		if !r.Passed || r.Error != nil {
-			failures++
-		}
-	}
 	if failures > 0 {
 		return fmt.Errorf("%d case(s) failed", failures)
 	}
 	return nil
+}
+
+// collectSuiteFiles returns the suite files to run: a single file, or every
+// .json/.yaml/.yml file directly inside a directory (sorted for determinism).
+func collectSuiteFiles(path string) ([]string, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read suite path %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return []string{path}, nil
+	}
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read suite dir %s: %w", path, err)
+	}
+	var files []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		switch strings.ToLower(filepath.Ext(e.Name())) {
+		case ".json", ".yaml", ".yml":
+			files = append(files, filepath.Join(path, e.Name()))
+		}
+	}
+	if len(files) == 0 {
+		return nil, fmt.Errorf("no eval suites (*.json/*.yaml) found in %s", path)
+	}
+	sort.Strings(files)
+	return files, nil
 }

@@ -117,6 +117,7 @@ func collectDoctorReport() doctorReport {
 	add(checkVaultConsistency())
 	add(checkSandboxState())
 	add(checkKnowledgeDB(runtimeDir))
+	add(checkWorkspaceVersion(runtimeDir))
 	add(checkGatewayHealth())
 	add(checkRecentErrors())
 	add(checkMCPStatus())
