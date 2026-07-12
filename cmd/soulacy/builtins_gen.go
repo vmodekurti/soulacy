@@ -6,6 +6,7 @@ package main
 
 import (
 	_ "github.com/soulacy/soulacy/internal/channels/discord"
+	_ "github.com/soulacy/soulacy/internal/channels/email"
 	_ "github.com/soulacy/soulacy/internal/channels/slack"
 	_ "github.com/soulacy/soulacy/internal/channels/telegram"
 	_ "github.com/soulacy/soulacy/internal/channels/webhook"

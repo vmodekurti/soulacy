@@ -14,7 +14,9 @@ import (
 //
 // Config keys: id (default "webhook"), url (required), method (default POST),
 // headers (optional "Key: value" lines or map), template (optional plain-text
-// body template), timeout_seconds (default 10).
+// body template), secret (optional HMAC signing secret), timeout_seconds
+// (default 10). When `secret` is set, every request carries
+// X-Soulacy-Timestamp + X-Soulacy-Signature so the receiver can verify it.
 func init() {
 	registry.MustRegisterChannel("webhook", func(cfg map[string]any) (channel.Adapter, error) {
 		endpoint := cfgmap.Str(cfg, "url", "")
@@ -28,6 +30,7 @@ func init() {
 			cfgmap.Str(cfg, "method", "POST"),
 			parseHeaders(cfg["headers"]),
 			cfgmap.Str(cfg, "template", ""),
+			cfgmap.Str(cfg, "secret", ""),
 			timeout,
 		)
 	})
