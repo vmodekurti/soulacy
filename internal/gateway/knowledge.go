@@ -14,7 +14,6 @@
 package gateway
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/url"
@@ -22,7 +21,6 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
 	"go.uber.org/zap"
 
 	"github.com/soulacy/soulacy/internal/knowledge"
@@ -344,109 +342,23 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		title = "Untitled document"
 	}
 
-	text, err := knowledge.ExtractText(mimeType, data)
-	if err != nil {
-		return s.errMsg(c, fiber.StatusBadRequest, fmt.Sprintf("extract text: %v", err))
-	}
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return s.errMsg(c, fiber.StatusBadRequest, "document produced no extractable text")
-	}
-
-	embedder := svc.Embedders.Get(kb.EmbeddingProvider)
-	if embedder == nil {
-		return c.Status(fiber.StatusFailedDependency).JSON(fiber.Map{
-			"error": fmt.Sprintf("embedder %q not registered", kb.EmbeddingProvider),
-		})
-	}
-
-	// Parent chunks: large windows for LLM context (returned to agent after retrieval).
-	parentSize := kb.ChunkSize * 4
-	if parentSize < 1 {
-		parentSize = 4000
-	}
-	parentTexts := knowledge.ChunkText(text, parentSize, kb.ChunkOverlap*2)
-
-	// Child chunks: smaller windows for embedding/retrieval.
-	childTexts := knowledge.ChunkText(text, kb.ChunkSize, kb.ChunkOverlap)
-
-	if len(childTexts) == 0 {
-		return s.errMsg(c, fiber.StatusBadRequest, "no chunks produced (empty document?)")
-	}
-
-	// Embed only child chunks in batches to avoid huge payloads on big files.
-	const batchSize = 64
-	vecs := make([][]float32, 0, len(childTexts))
-	for i := 0; i < len(childTexts); i += batchSize {
-		end := i + batchSize
-		if end > len(childTexts) {
-			end = len(childTexts)
-		}
-		ctx2, cancel := context.WithCancel(c.Context())
-		batch, eerr := embedder.Embed(ctx2, kb.EmbeddingModel, childTexts[i:end])
-		cancel()
-		if eerr != nil {
-			return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
-				"error": fmt.Sprintf("embed batch %d-%d: %v", i, end, eerr),
-			})
-		}
-		vecs = append(vecs, batch...)
-	}
-
-	// Pre-assign UUIDs for parent chunks so children can reference them.
-	parentIDs := make([]string, len(parentTexts))
-	for i := range parentTexts {
-		parentIDs[i] = uuid.New().String()
-	}
-
-	// Assign each child to the parent whose character range covers the child's midpoint.
-	// Track cumulative rune positions for parent boundaries.
-	parentEndRunes := make([]int, len(parentTexts))
-	{
-		pos := 0
-		for i, p := range parentTexts {
-			pos += len([]rune(p))
-			parentEndRunes[i] = pos
-		}
-	}
-
-	allChunks := make([]knowledge.Chunk, 0, len(parentTexts)+len(childTexts))
-	// Add parent chunks first (no vector — zero-length Vector means no vec insert).
-	for i, pt := range parentTexts {
-		allChunks = append(allChunks, knowledge.Chunk{ID: parentIDs[i], Content: pt})
-	}
-	// Add child chunks, each linked to its parent.
-	childRunePos := 0
-	parentIdx := 0
-	for i, ct := range childTexts {
-		cr := len([]rune(ct))
-		mid := childRunePos + cr/2
-		for parentIdx < len(parentEndRunes)-1 && mid > parentEndRunes[parentIdx] {
-			parentIdx++
-		}
-		allChunks = append(allChunks, knowledge.Chunk{
-			Content:       ct,
-			ParentChunkID: parentIDs[parentIdx],
-			Vector:        vecs[i],
-		})
-		childRunePos += cr
-	}
-
-	doc, err := svc.Store.AddDocument(kb, knowledge.Document{
-		Title:    title,
-		Source:   source,
-		MIMEType: mimeType,
-		ByteSize: int64(len(data)),
-	}, allChunks)
+	// Spool the raw bytes to disk and ENQUEUE. Ingestion (extract → chunk →
+	// embed → store) used to run INLINE here, blocking the HTTP request for the
+	// entire embed — minutes on a large PDF, the whole file pinned in memory, no
+	// progress, and the work lost on a restart or a transient embedder error.
+	// Now the request only records the job durably and returns 202 Accepted; the
+	// background worker performs the ingestion and reports live progress.
+	job, err := s.enqueueIngest(kb.Name, title, source, mimeType, data)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
-	s.log.Info("knowledge: doc ingested",
+	s.log.Info("knowledge: ingest queued",
 		zap.String("kb", kb.Name),
 		zap.String("title", title),
-		zap.Int("chunks", len(allChunks)),
+		zap.String("job", job.ID),
+		zap.Int("bytes", len(data)),
 	)
-	return c.Status(fiber.StatusCreated).JSON(doc)
+	return c.Status(fiber.StatusAccepted).JSON(job)
 }
 
 // handleDeleteKnowledgeDocument removes a single document and its chunks.

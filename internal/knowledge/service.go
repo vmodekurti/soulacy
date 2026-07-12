@@ -160,16 +160,38 @@ func (s *Service) Search(ctx context.Context, kbName, query string, topK int) (s
 
 // IngestText stores text content in a named knowledge base using the same
 // chunking and embedding pipeline as the REST ingestion endpoint.
+//
+// It is now a thin wrapper over ingestExtracted so the synchronous path (the
+// kb_write tool) and the async worker share ONE implementation — the gateway
+// used to carry a third, duplicated copy of this pipeline.
 func (s *Service) IngestText(ctx context.Context, kbName, title, source, mimeType, content string) (*Document, error) {
+	if s == nil || s.Store == nil {
+		return nil, errors.New("knowledge: service not configured")
+	}
+	if strings.TrimSpace(content) == "" {
+		return nil, errors.New("kb_write: content is required")
+	}
+	text, err := ExtractText(mimeType, []byte(content))
+	if err != nil {
+		return nil, fmt.Errorf("kb_write: extract text: %w", err)
+	}
+	return s.ingestExtracted(ctx, kbName, title, source, mimeType, text, nil)
+}
+
+// ingestExtracted is the single ingestion pipeline: chunk → embed (batched) →
+// store. `report`, when non-nil, is called with 0..100 after each embedding
+// batch so a long document shows live progress instead of appearing hung.
+func (s *Service) ingestExtracted(
+	ctx context.Context,
+	kbName, title, source, mimeType, text string,
+	report func(pct int),
+) (*Document, error) {
 	if s == nil || s.Store == nil {
 		return nil, errors.New("knowledge: service not configured")
 	}
 	kbName = strings.TrimSpace(kbName)
 	if kbName == "" {
 		return nil, errors.New("kb_write: kb is required")
-	}
-	if strings.TrimSpace(content) == "" {
-		return nil, errors.New("kb_write: content is required")
 	}
 	kb, err := s.Store.GetKB(kbName)
 	if err != nil {
@@ -180,10 +202,6 @@ func (s *Service) IngestText(ctx context.Context, kbName, title, source, mimeTyp
 	}
 	if strings.TrimSpace(title) == "" {
 		title = "Untitled document"
-	}
-	text, err := ExtractText(mimeType, []byte(content))
-	if err != nil {
-		return nil, fmt.Errorf("kb_write: extract text: %w", err)
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -222,6 +240,11 @@ func (s *Service) IngestText(ctx context.Context, kbName, title, source, mimeTyp
 			return nil, fmt.Errorf("kb_write: embed batch %d-%d: %w", i, end, eerr)
 		}
 		vecs = append(vecs, batch...)
+		// Embedding dominates the wall-clock cost, so batch completion is the
+		// honest progress signal. Reserve the last few percent for the write.
+		if report != nil {
+			report(int(float64(len(vecs)) / float64(len(childTexts)) * 95))
+		}
 	}
 	if len(vecs) != len(childTexts) {
 		return nil, fmt.Errorf("kb_write: embedder returned %d vectors for %d chunks", len(vecs), len(childTexts))
@@ -262,12 +285,19 @@ func (s *Service) IngestText(ctx context.Context, kbName, title, source, mimeTyp
 		childRunePos += cr
 	}
 
-	return s.Store.AddDocument(kb, Document{
+	doc, err := s.Store.AddDocument(kb, Document{
 		Title:    title,
 		Source:   source,
 		MIMEType: mimeType,
-		ByteSize: int64(len(content)),
+		ByteSize: int64(len(text)),
 	}, allChunks)
+	if err != nil {
+		return nil, err
+	}
+	if report != nil {
+		report(100)
+	}
+	return doc, nil
 }
 
 // FormatHits renders search results as a compact XML-ish block. Designed to
