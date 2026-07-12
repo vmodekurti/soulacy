@@ -661,7 +661,13 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 
 	draft, err := ParseDraft(raw)
 	if err != nil {
-		return Result{}, err
+		// Don't discard the evidence. Classify what the model ACTUALLY returned
+		// (nothing / prose / truncated mid-object / malformed) so the operator
+		// gets the real cause and the right fix instead of a raw JSON parser
+		// error they can't act on.
+		rd := DiagnoseRawOutput(raw)
+		return Result{}, fmt.Errorf("studio: %s [%s, %d chars returned] model output: %s",
+			rd.Reason, rd.Kind, rd.Chars, rd.Excerpt)
 	}
 
 	// Deterministic post-parse normalization: fill in an obvious trigger the
@@ -676,6 +682,14 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// SHAPE (nodes/edges/entry/ports stay as emitted) — it only fills a blank
 	// Kind from the node's Tool/Agent fields, mirroring CompileFlow.
 	normalizeFlow(&draft)
+
+	// Reconcile any node whose DECLARED kind contradicts the fields it carries
+	// (the classic weak-model slip: kind=python with neither inline code nor a
+	// tool). CompileFlow is strict about this and would discard the whole
+	// otherwise-valid graph over one mislabelled step; downgrade the step to a
+	// kind it can actually satisfy instead. Whole-draft only — the per-node
+	// compiler still rejects these, since there the user asked for that step.
+	reconcileNodeKinds(&draft)
 
 	// Auto-declare any edge-referenced port the model forgot to list on a node.
 	// reasoning.CompileFlow is strict (a named from_port/to_port MUST appear in
@@ -760,6 +774,15 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	} else if rec := recommendKBs(intent, catalog); len(rec) > 0 {
 		notes = append(notes, "Consider attaching knowledge base(s) for this task: "+strings.Join(rec, ", ")+".")
 	}
+	// Final gate: a draft that parsed but carries only empty placeholder steps
+	// (or steps with nothing connecting them) is not a workflow — it's debris
+	// from a builder model that couldn't hold the schema. Fail loudly here
+	// instead of rendering a canvas of meaningless BRANCH nodes for the user to
+	// debug.
+	if reason := DegenerateReason(draft); reason != "" {
+		return Result{}, fmt.Errorf("studio: the builder model did not produce a usable workflow: %s", reason)
+	}
+
 	explanation := ExplainDraft(draft)
 	return Result{
 		Workflow:    draft,
@@ -1146,6 +1169,79 @@ func normalizeFlow(d *Draft) {
 			n.Kind = sdkr.FlowNodePython
 		default:
 			n.Kind = sdkr.FlowNodeBranch
+		}
+	}
+}
+
+// reconcileNodeKinds repairs every node in a WHOLE-DRAFT whose declared Kind
+// can't be satisfied by the fields it actually carries.
+//
+// This is deliberately NOT part of normalizeFlow: the per-node compiler
+// (CompileNode, "describe this one step") must still REJECT a node that names
+// no tool, because there the user asked for one specific step and silently
+// downgrading it would be wrong. But when generating a whole workflow, one
+// mislabelled step must not discard the entire otherwise-valid draft — the
+// strict compiler would throw away a good graph over a single slip.
+func reconcileNodeKinds(d *Draft) {
+	if d == nil {
+		return
+	}
+	for i := range d.Flow.Nodes {
+		reconcileNodeKind(&d.Flow.Nodes[i])
+	}
+}
+
+// reconcileNodeKind repairs a node whose declared Kind can't be satisfied by the
+// fields it actually carries. CompileFlow is strict — kind=tool MUST name a
+// tool, kind=agent MUST name an agent, kind=python MUST have inline code or a
+// python tool.
+//
+// The repair is deterministic and always DOWNGRADES to a kind the node can
+// actually satisfy. A step that names no tool, agent, or code but still has an
+// intent (e.g. "format_response") is an LLM transform: kind=llm needs no extra
+// field and does exactly that work, so the flow stays valid and the step keeps
+// doing what the model meant.
+func reconcileNodeKind(n *sdkr.FlowNode) {
+	hasTool := strings.TrimSpace(n.Tool) != ""
+	hasAgent := strings.TrimSpace(n.Agent) != ""
+	hasCode := strings.TrimSpace(n.Code) != ""
+
+	switch strings.ToLower(strings.TrimSpace(n.Kind)) {
+	case sdkr.FlowNodePython:
+		// Legal as python only with inline code OR a deployed python tool.
+		if hasCode || hasTool {
+			return
+		}
+		if hasAgent {
+			n.Kind = sdkr.FlowNodeAgent
+			return
+		}
+		n.Kind = sdkr.FlowNodeLLM
+
+	case sdkr.FlowNodeTool:
+		if hasTool {
+			return
+		}
+		switch {
+		case hasCode:
+			n.Kind = sdkr.FlowNodePython
+		case hasAgent:
+			n.Kind = sdkr.FlowNodeAgent
+		default:
+			n.Kind = sdkr.FlowNodeLLM
+		}
+
+	case sdkr.FlowNodeAgent:
+		if hasAgent {
+			return
+		}
+		switch {
+		case hasTool:
+			n.Kind = sdkr.FlowNodeTool
+		case hasCode:
+			n.Kind = sdkr.FlowNodePython
+		default:
+			n.Kind = sdkr.FlowNodeLLM
 		}
 	}
 }

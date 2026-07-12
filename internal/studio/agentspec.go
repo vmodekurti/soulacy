@@ -58,6 +58,8 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	sb.WriteString("Guidance:\n")
 	sb.WriteString("- DO NOT emit a flow/graph. The agent is driven by its system_prompt + tools, not nodes/edges.\n")
 	sb.WriteString("- tools MUST be EXACT names from the catalog below (builtins like web_search, or full mcp__server__tool names). Never invent tool names; if a capability is missing, describe it in the prompt and pick the closest real tool.\n")
+	sb.WriteString("- If the agent uses channel.send, its arguments are exactly {\"channel\":\"telegram|slack|discord|whatsapp\", \"to\":\"destination id or chat/thread id\", \"text\":\"message text\"}. The field is `text`, not `message`. Omit `to` only when the run arrived from that channel or the channel has a configured default outbound destination.\n")
+	sb.WriteString("- For ordinary interactive replies, do not call channel.send just to answer the user. Return the answer normally; use channel.send only for explicit out-of-band delivery.\n")
 	sb.WriteString("- The system_prompt is where the procedure lives: spell out the steps as INSTRUCTIONS (e.g. \"create the notebook, then add EACH source one at a time, then start audio generation, then POLL the status until it reports ready, then deliver the link\").\n")
 	sb.WriteString("- Include authentication/setup steps the user asked for as the FIRST instruction if a matching tool exists (e.g. refresh/login tools).\n")
 	sb.WriteString("- Invent a peer agent ONLY if needed, and give it a full reusable system_prompt in new_agents.\n")
@@ -171,10 +173,14 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 
 // recoLabelGo is a tiny server-side label for the strategy.
 func recoLabelGo(strategy string) string {
-	if strings.EqualFold(strategy, "plan_execute") {
+	switch {
+	case strings.EqualFold(strategy, "plan_execute"):
 		return "Plan-Execute"
+	case strings.EqualFold(strategy, "auto"):
+		return "Auto tool-calling"
+	default:
+		return "ReAct"
 	}
-	return "ReAct"
 }
 
 // parseAgentSpec tolerantly extracts the agent JSON (fence/prose tolerant).

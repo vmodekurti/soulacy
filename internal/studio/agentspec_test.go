@@ -56,6 +56,24 @@ func TestCompileAgent_PreservesAutoStrategy(t *testing.T) {
 	if res.Workflow.Recommendation == nil || res.Workflow.Recommendation.Mode != "auto" {
 		t.Fatalf("recommendation = %+v, want auto", res.Workflow.Recommendation)
 	}
+	if len(res.Notes) == 0 || !strings.Contains(res.Notes[0], "Auto tool-calling") {
+		t.Fatalf("auto agent should be labelled as Auto tool-calling, notes=%v", res.Notes)
+	}
+}
+
+func TestBuildAgentPromptIncludesChannelSendContract(t *testing.T) {
+	p := BuildAgentPrompt("capture telegram URLs and acknowledge", Catalog{
+		Tools: []string{"channel.send", "queue_put"},
+	}, "auto", nil)
+	for _, want := range []string{
+		`"text":"message text"`,
+		"The field is `text`, not `message`",
+		"do not call channel.send just to answer the user",
+	} {
+		if !strings.Contains(p, want) {
+			t.Fatalf("agent prompt missing %q:\n%s", want, p)
+		}
+	}
 }
 
 // End-to-end grounding through CompileAgent: a near-miss skill the model named is
