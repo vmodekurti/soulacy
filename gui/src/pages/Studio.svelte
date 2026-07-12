@@ -1736,8 +1736,8 @@ Use null for fields that are not present.`
       const res = await bridge.saveYaml(codeYaml)
       codeOrig = codeYaml
       const id = (res && res.id) || ''
-      saveMsg = id ? `Saved ${id} — manage it from the Agents page.` : 'Saved'
-      // Mirror the canvas Save: hand off to the Agents page to review/enable.
+      saveMsg = id ? `Saved ${id} — manage it from Deployed.` : 'Saved'
+      // Mirror the canvas Save: hand off to Deployed to review/enable.
       if (id) { $editAgent = id; window.location.hash = '#agents' }
     } catch (e) {
       const v = e && e.body && e.body.validation
@@ -2236,7 +2236,7 @@ Use null for fields that are not present.`
       const res = await bridge.save(workflow, acceptPrivilegedExposure, grants)
       const id = res.agentId
       loadedAgentId = id || loadedAgentId
-      saveMsg = `Saved as disabled agent ${id} — enable it from the Agents page.`
+      saveMsg = `Saved as disabled agent ${id} — enable it from Deployed.`
       $editAgent = res.agentId
       window.location.hash = '#agents'
       consent = null
@@ -2925,7 +2925,7 @@ Use null for fields that are not present.`
       changed: false,
       pending: true,
     }
-    toast(`Debugging ${pending.agentId} from Activity…`)
+    toast(`Debugging ${pending.agentId} from Runs…`)
     healActivityRun(pending.agentId, pending.sessionId)
   })
 
@@ -3114,7 +3114,14 @@ Use null for fields that are not present.`
       {/if}
 
       {#if compileError}
-        <div class="strip strip-error">⚠ {compileError}</div>
+        <!-- Generation failures carry a multi-line, actionable fix (which builder
+             model failed and how to fix it) — render it readably, not squashed
+             onto one line. -->
+        <div class="strip strip-error strip-multiline">
+          <span class="strip-icon" aria-hidden="true">⚠</span>
+          <span class="strip-body">{compileError}</span>
+          <button class="strip-x" title="Dismiss" on:click={() => (compileError = '')}>×</button>
+        </div>
       {/if}
 
       {#if notes.length}
@@ -5136,6 +5143,15 @@ Use null for fields that are not present.`
     padding: 1px 8px;
   }
   .strip-error { background: rgba(255, 107, 129, 0.12); color: var(--error); }
+  /* Multi-line, actionable generation errors (model name + the fixes). */
+  .strip-multiline { align-items: flex-start; flex-wrap: nowrap; padding: 10px 14px; }
+  .strip-multiline .strip-icon { flex: 0 0 auto; line-height: 1.5; }
+  .strip-multiline .strip-body { flex: 1 1 auto; white-space: pre-line; line-height: 1.5; word-break: break-word; }
+  .strip-multiline .strip-x {
+    flex: 0 0 auto; background: none; border: none; color: inherit; opacity: .7;
+    font-size: 15px; line-height: 1; cursor: pointer; padding: 0 2px;
+  }
+  .strip-multiline .strip-x:hover { opacity: 1; }
   .strip-ok { background: rgba(54, 211, 153, 0.12); color: var(--ok); }
   .strip-reco { background: rgba(124, 122, 255, 0.12); color: var(--text); }
   .strip-warn { background: rgba(245, 167, 66, 0.12); color: var(--warn, #f5a742); }

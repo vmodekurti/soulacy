@@ -1,6 +1,6 @@
 # Costs API
 
-Soulacy records LLM token usage and estimated cost for every agent invocation. Use this API to monitor spend by agent, user, or time period.
+Soulacy records LLM token usage for every agent invocation. Estimated `cost_usd` is populated when `costs.pricing` is configured for the provider/model; unknown prices remain `0` rather than guessed. Use this API to monitor spend by agent, user, or time period.
 
 ## Cost summary
 

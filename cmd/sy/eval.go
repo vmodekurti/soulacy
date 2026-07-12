@@ -18,6 +18,9 @@ func buildEvalCmd() *cobra.Command {
 	var agentID string
 	var suiteFile string
 	var jsonOut bool
+	var tags []string
+	var repeat int
+	var failFast bool
 
 	cmd := &cobra.Command{
 		Use:   "eval",
@@ -35,7 +38,9 @@ Suite file format (JSON):
 
 Examples:
   sy eval --agent my-agent --suite tests/smoke.json
-  sy eval --agent my-agent --suite tests/smoke.json --json`,
+  sy eval --agent my-agent --suite tests/smoke.json --json
+  sy eval --agent my-agent --suite evals/golden --tag weather --repeat 3
+  sy eval --agent my-agent --suite evals/golden --tag channel --fail-fast`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if agentID == "" {
 				return fmt.Errorf("--agent is required")
@@ -43,12 +48,19 @@ Examples:
 			if suiteFile == "" {
 				return fmt.Errorf("--suite is required")
 			}
-			return runEval(agentID, suiteFile, jsonOut)
+			return runEval(agentID, suiteFile, eval.RunOptions{
+				Tags:     tags,
+				Repeat:   repeat,
+				FailFast: failFast,
+			}, jsonOut)
 		},
 	}
 	cmd.Flags().StringVar(&agentID, "agent", "", "Agent ID to evaluate")
 	cmd.Flags().StringVarP(&suiteFile, "suite", "s", "", "Path to an eval suite (JSON or YAML) or a directory of suites")
 	cmd.Flags().BoolVar(&jsonOut, "json", false, "Output results as JSON")
+	cmd.Flags().StringArrayVar(&tags, "tag", nil, "Run only cases with this tag (repeatable or comma-separated)")
+	cmd.Flags().IntVar(&repeat, "repeat", 1, "Run each selected case N times to expose flakiness and latency variance")
+	cmd.Flags().BoolVar(&failFast, "fail-fast", false, "Stop after the first failed or errored case")
 	cmd.AddCommand(buildEvalGenerationCmd())
 	return cmd
 }
@@ -112,7 +124,7 @@ Examples:
 	return cmd
 }
 
-func runEval(agentID, suitePath string, jsonOut bool) error {
+func runEval(agentID, suitePath string, opts eval.RunOptions, jsonOut bool) error {
 	suiteFiles, err := collectSuiteFiles(suitePath)
 	if err != nil {
 		return err
@@ -132,7 +144,7 @@ func runEval(agentID, suitePath string, jsonOut bool) error {
 		if err != nil {
 			return fmt.Errorf("%s: %w", sf, err)
 		}
-		results, err := runner.Run(context.Background(), suite)
+		results, err := runner.RunWithOptions(context.Background(), suite, opts)
 		if err != nil {
 			return fmt.Errorf("eval run failed for %s: %w", sf, err)
 		}

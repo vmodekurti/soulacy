@@ -1,12 +1,13 @@
 # Templates
 
-The Templates tab turns a one-line click into a working agent: pick a shipped workflow or starter, hit **⊕ Create agent**, and chat with it immediately.
+The Templates tab turns a known-good starter into a working agent: pick a shipped workflow or starter, open **Install**, check readiness, run a mock test, choose optional schedule delivery, then deploy it as a normal agent.
 
 ## Quick start
 
 1. Open **📋 Templates** in the GUI.
-2. Under **Agentic workflows**, find **Meeting Minutes & Action Items** and click **⊕ Create agent**.
-3. Go to **Chat**, select the new agent, and paste any meeting transcript.
+2. Under **Agentic workflows**, find **Meeting Minutes & Action Items** and click **Install**.
+3. Review the readiness checks, keep or edit the suggested agent ID, and click **Mock test**.
+4. Click **Install agent**, then go to **Chat**, select the new agent, and paste any meeting transcript.
 
 API equivalents:
 
@@ -42,9 +43,17 @@ Audits draft text against your reference policies using a knowledge base (RAG). 
 
 Below the workflows sit simpler starting points — including **Basic Chat** (one LLM, one prompt, no tools), **RAG over your docs**, **Scheduled briefing** (daily cron at 7 AM), and **Web researcher**. Use them as skeletons for your own agents.
 
-## One-click creation
+## Guided Install
 
-**⊕ Create agent** instantiates the template as a real agent (its SOUL.yaml lands in your agents directory) and tells you its ID — find it on the **Agents** page. Each template card shows a source badge:
+**Install** opens a guided wizard instead of writing YAML immediately. The wizard:
+
+- checks live provider, secret, channel, and MCP readiness;
+- previews what the agent would do with a no-side-effect mock test;
+- lets cron/scheduled templates choose an output bot from configured Telegram, Slack, Discord, WhatsApp, or webhook mappings;
+- auto-fills the destination and template when a channel mapping has defaults;
+- creates a real agent whose `SOUL.yaml` lands in your agents directory.
+
+Each template card shows a source badge:
 
 - `embedded` — ships with the gateway,
 - `user` — your own template from `~/.soulacy/templates/`.
@@ -56,7 +65,7 @@ The same catalog is reachable from the Agents page via **📋 From template…**
 A template-created agent is a completely normal agent — nothing stays linked to the template:
 
 - **Agents** page → edit the system prompt (e.g. the Market Monitor's WATCHLIST, the Inbox Triage classification rules), swap the LLM provider/model, attach knowledge bases, tools, or channels.
-- **Schedule** page → change cron expressions, set the output bot, enable/disable.
+- **Schedule** page → change cron expressions, set the output bot, enable/disable, and send a delivery smoke test.
 - Click **Validate** in the editor after substantial edits to catch problems before they hit a live run.
 
 !!! tip
@@ -74,4 +83,4 @@ Typical post-creation checklist:
 Drop agent-definition `*.yaml` files into `~/.soulacy/templates/` — they appear in the catalog with a `user` badge. Tag one `workflow` to have it listed in the Agentic workflows section.
 
 !!! note
-    Templates and the **Build** page solve different problems: Templates instantiate a known-good design in one click; Build interviews you and generates a bespoke SOUL.yaml from scratch. Start with a template when one is close to what you need.
+    Templates and **Studio** solve different problems: Templates install a known-good design; Studio generates or repairs a bespoke workflow from intent. Start with a template when one is close to what you need, and use Studio when the automation needs custom steps.

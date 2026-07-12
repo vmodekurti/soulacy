@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"gopkg.in/yaml.v3"
 )
@@ -92,6 +93,7 @@ func Definition(def *agent.Definition, path string, opts Options, report Report)
 	validateDefinitionShape(&report, def, path)
 	validateLLMFit(&report, def, opts)
 	validateReasoningFit(&report, def, opts)
+	validateToolSafety(&report, def)
 	if report.Findings == nil {
 		report.Findings = []Finding{}
 	}
@@ -184,6 +186,77 @@ func validateDefinitionShape(report *Report, def *agent.Definition, path string)
 	}
 	validateMCPList(report, "mcp_servers", def.MCPServers, false)
 	validateMCPList(report, "mcp_tools", def.MCPTools, true)
+}
+
+func validateToolSafety(report *Report, def *agent.Definition) {
+	if def == nil {
+		return
+	}
+	risky := riskyExplicitBuiltins(def)
+	if len(risky) == 0 {
+		return
+	}
+	if confirmsAll(def.ConfirmTools) {
+		return
+	}
+	unconfirmed := make([]string, 0, len(risky))
+	for _, tool := range risky {
+		if !contains(def.ConfirmTools, tool) {
+			unconfirmed = append(unconfirmed, tool)
+		}
+	}
+	if len(unconfirmed) == 0 {
+		return
+	}
+	sort.Strings(unconfirmed)
+	report.add(Warn, "confirm_tools",
+		fmt.Sprintf("high-risk built-in tool(s) can run without an explicit confirmation gate: %s", strings.Join(unconfirmed, ", ")),
+		"add these tools to confirm_tools, use confirm_tools: [all], or enable unattended only for trusted scheduled automation",
+		append([]string{"all"}, unconfirmed...),
+	)
+}
+
+func riskyExplicitBuiltins(def *agent.Definition) []string {
+	seen := map[string]bool{}
+	add := func(name string) {
+		name = strings.TrimSpace(name)
+		if name == "" || name == "*" || strings.EqualFold(name, "all") || seen[name] {
+			return
+		}
+		if policy.RiskTierOf(name).HighRisk() || policy.RiskTierOf(name) == policy.RiskNetwork {
+			seen[name] = true
+		}
+	}
+	if def.Builtins != nil {
+		for _, name := range *def.Builtins {
+			add(name)
+		}
+	}
+	for _, name := range def.ConfirmTools {
+		if name == "*" || strings.EqualFold(name, "all") {
+			return nil
+		}
+	}
+	if def.HasCapability("system") {
+		for _, name := range []string{"shell_exec", "run_script", "install_library", "write_file", "download_file"} {
+			add(name)
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for name := range seen {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func confirmsAll(values []string) bool {
+	for _, value := range values {
+		if value == "*" || strings.EqualFold(value, "all") {
+			return true
+		}
+	}
+	return false
 }
 
 func validateLLMFit(report *Report, def *agent.Definition, opts Options) {

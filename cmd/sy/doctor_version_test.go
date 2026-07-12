@@ -3,7 +3,10 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
+
+	"github.com/soulacy/soulacy/internal/config"
 )
 
 func TestCompareSemver(t *testing.T) {
@@ -56,5 +59,51 @@ func TestCheckWorkspaceVersionDowngradeWarns(t *testing.T) {
 	// won't warn — assert it at least doesn't crash and returns a status.
 	if c.Name == "" || c.Status == "" {
 		t.Errorf("expected a populated check, got %+v", c)
+	}
+}
+
+func TestCheckUpdateManifestCurrentIsOK(t *testing.T) {
+	oldVersion := config.Version
+	config.Version = "1.2.3"
+	defer func() { config.Version = oldVersion }()
+
+	manifest := writeUpdateManifest(t, updateManifest{
+		Product: "soulacy",
+		Version: "1.2.3",
+		Artifacts: []updateArtifact{{
+			Name:   "soulacy.tar.gz",
+			OS:     runtime.GOOS,
+			Arch:   runtime.GOARCH,
+			SHA256: "abc123",
+		}},
+	})
+	t.Setenv("SOULACY_UPDATE_MANIFEST", manifest)
+
+	check := checkUpdateManifest()
+	if check.Status != doctorOK {
+		t.Fatalf("status = %s detail=%s", check.Status, check.Detail)
+	}
+}
+
+func TestCheckUpdateManifestWarnsWhenUpdateAvailable(t *testing.T) {
+	oldVersion := config.Version
+	config.Version = "1.2.3"
+	defer func() { config.Version = oldVersion }()
+
+	manifest := writeUpdateManifest(t, updateManifest{
+		Product: "soulacy",
+		Version: "1.3.0",
+		Artifacts: []updateArtifact{{
+			Name:   "soulacy.tar.gz",
+			OS:     runtime.GOOS,
+			Arch:   runtime.GOARCH,
+			SHA256: "abc123",
+		}},
+	})
+	t.Setenv("SOULACY_UPDATE_MANIFEST", manifest)
+
+	check := checkUpdateManifest()
+	if check.Status != doctorWarn {
+		t.Fatalf("status = %s detail=%s", check.Status, check.Detail)
 	}
 }

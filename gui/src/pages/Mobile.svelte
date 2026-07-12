@@ -11,11 +11,18 @@
   let doctor = null
   let learning = null
   let queues = []
+  let readiness = null
+  let channels = []
   let recentErrors = []
   let refreshingError = ''
   let activeRuns = []          // in-progress runs (scheduler running snapshot)
   let installEvt = null        // deferred PWA install prompt
   let installing = false
+  let scheduleBusy = ''
+  let channelBusy = ''
+  let channelDiagnoses = {}
+  let recentRuns = []
+  let recentRunsError = ''
 
   $: installEvt = $installPrompt
   $: sessionExpired = $authRequired
@@ -138,13 +145,15 @@
     error = ''
     refreshingError = ''
     try {
-      const [h, s, a, d, l, q] = await Promise.allSettled([
+      const [h, s, a, d, l, q, r, ch] = await Promise.allSettled([
         api.health(),
         api.schedule.list(),
         api.agents.list(),
         api.providers.doctor(),
         api.brainMemory.learningSummary(),
         api.queues.names(),
+        api.readiness(),
+        api.channels.list(),
       ])
       if (h.status === 'fulfilled') health = h.value
       if (s.status === 'fulfilled') schedule = s.value?.schedule || []
@@ -152,9 +161,12 @@
       if (d.status === 'fulfilled') doctor = d.value
       if (l.status === 'fulfilled') learning = l.value
       if (q.status === 'fulfilled') queues = q.value?.queues || []
-      const failed = [h, s, a, d, l, q].find(x => x.status === 'rejected')
+      if (r.status === 'fulfilled') readiness = r.value
+      if (ch.status === 'fulfilled') channels = ch.value?.channels || []
+      const failed = [h, s, a, d, l, q, r, ch].find(x => x.status === 'rejected')
       if (failed) error = failed.reason?.message || 'Some mobile data could not be loaded'
-      await loadRecentErrors(a.status === 'fulfilled' ? (a.value?.agents || []) : agents)
+      const loadedAgents = a.status === 'fulfilled' ? (a.value?.agents || []) : agents
+      await Promise.all([loadRecentErrors(loadedAgents), loadRecentRuns(loadedAgents)])
     } finally {
       loading = false
     }
@@ -175,15 +187,156 @@
     if (failed) refreshingError = failed.reason?.message || 'Recent errors could not be loaded'
   }
 
+  async function loadRecentRuns(agentList) {
+    recentRunsError = ''
+    const enabled = (agentList || []).filter(a => a.enabled).slice(0, 10)
+    const results = await Promise.allSettled(enabled.map(async (agent) => {
+      const res = await api.studio.runHistory(agent.id)
+      return (res.runs || []).map(run => ({
+        agent_id: agent.id,
+        agent_name: agent.name || agent.id,
+        run_id: run.runId || run.sessionId || '',
+        session_id: run.sessionId || run.runId || '',
+        started_at: run.startedAt || run.updatedAt || '',
+        updated_at: run.updatedAt || run.startedAt || '',
+        trigger: run.trigger || run.source || '',
+        status: run.status || (run.ok ? 'success' : 'failed'),
+        ok: !!run.ok,
+        steps: run.steps || 0,
+        error: run.error || '',
+        delivery_status: run.deliveryStatus || '',
+      }))
+    }))
+    recentRuns = results
+      .filter(r => r.status === 'fulfilled')
+      .flatMap(r => r.value)
+      .sort((a, b) => String(b.started_at || b.updated_at || '').localeCompare(String(a.started_at || a.updated_at || '')))
+      .slice(0, 8)
+    const failed = results.find(r => r.status === 'rejected')
+    if (failed) recentRunsError = failed.reason?.message || 'Recent runs could not be loaded'
+  }
+
   function go(page) {
     window.location.hash = '#' + page
   }
 
+  function scheduleAgentId(item) {
+    return item?.agent_id || item?.id || item?.agentId || ''
+  }
+
+  function openActivity(agentId = '') {
+    window.location.hash = agentId ? `#activity?agent_id=${encodeURIComponent(agentId)}` : '#activity'
+  }
+
+  function openRun(run) {
+    const agentId = run?.agent_id || ''
+    const sessionId = run?.session_id || run?.run_id || ''
+    if (!agentId) { openActivity(); return }
+    const q = new URLSearchParams({ agent_id: agentId })
+    if (sessionId) q.set('session_id', sessionId)
+    window.location.hash = `#activity?${q.toString()}`
+  }
+
+  async function runScheduleNow(item) {
+    const id = scheduleAgentId(item)
+    if (!id) return
+    scheduleBusy = `run:${id}`
+    try {
+      await api.agents.trigger(id)
+      companionMsg = `Started ${item.name || id}.`
+      await loadActiveRuns()
+    } catch (e) {
+      companionMsg = e.message || String(e)
+    } finally {
+      scheduleBusy = ''
+    }
+  }
+
+  async function testScheduleDelivery(item) {
+    const id = scheduleAgentId(item)
+    if (!id) return
+    scheduleBusy = `test:${id}`
+    try {
+      await api.agents.testScheduleOutput(id)
+      companionMsg = `Sent a delivery test for ${item.name || id}.`
+    } catch (e) {
+      companionMsg = e.message || String(e)
+    } finally {
+      scheduleBusy = ''
+    }
+  }
+
+  function adapterIdFor(ch, target = null) {
+    return target?.adapter_id || target?._adapter_id || ch?.id || ''
+  }
+
+  function channelTargetLabel(ch, target = null) {
+    if (target) return target.bot_name || target.agent_id || adapterIdFor(ch, target)
+    const to = ch?.settings?.default_output_to
+    return to ? `default → ${to}` : 'default output'
+  }
+
+  function channelSeverity(ch) {
+    const diagnostics = ch?.diagnostics || []
+    if (diagnostics.some(d => d.severity === 'fail')) return 'fail'
+    if (diagnostics.some(d => d.severity === 'warn')) return 'warn'
+    if (ch?.enabled && ch?.registered && ch?.status?.connected) return 'ok'
+    if (ch?.enabled || ch?.configured) return 'warn'
+    return 'off'
+  }
+
+  function channelIssueText(ch) {
+    const d = (ch?.diagnostics || []).find(x => x.severity === 'fail') ||
+      (ch?.diagnostics || []).find(x => x.severity === 'warn') ||
+      (ch?.diagnostics || [])[0]
+    if (d) return d.message
+    if (ch?.status?.detail) return ch.status.detail
+    if (ch?.enabled && ch?.registered && ch?.status?.connected) return 'Ready to deliver.'
+    if (!ch?.enabled) return 'Disabled.'
+    return 'Needs a check.'
+  }
+
+  function channelTargets(ch) {
+    const rows = []
+    if (ch?.settings?.default_output_to || ch?.registered) {
+      rows.push(null)
+    }
+    for (const bot of ch?.bots || []) rows.push(bot)
+    return rows.slice(0, 3)
+  }
+
+  async function diagnoseDelivery(ch, target = null, dry = true) {
+    const adapterId = adapterIdFor(ch, target)
+    const key = `${dry ? 'diag' : 'test'}:${adapterId}`
+    channelBusy = key
+    try {
+      const res = dry
+        ? await api.channels.diagnose(ch.id, { adapter_id: adapterId, dry: true })
+        : await api.channels.test(ch.id, { adapter_id: adapterId })
+      if (dry) {
+        channelDiagnoses = { ...channelDiagnoses, [adapterId]: { ...(res.diagnosis || {}), to: res.to } }
+        companionMsg = `${ch.name || ch.id}: ${res.diagnosis?.reason || 'delivery checked'}`
+      } else {
+        companionMsg = `Sent test through ${res.channel}${res.to ? ` to ${res.to}` : ''}.`
+      }
+    } catch (e) {
+      channelDiagnoses = { ...channelDiagnoses, [adapterId]: { ok: false, reason: e.message || String(e), fix: '' } }
+      companionMsg = e.message || String(e)
+    } finally {
+      channelBusy = ''
+    }
+  }
+
   $: providerIssues = (doctor?.providers || []).filter(x => x.status !== 'ok')
   $: channelIssues = (doctor?.channels || []).filter(x => x.status !== 'ok')
+  $: deliveryChannels = channels.filter(ch => ch.id !== 'http' && (ch.configured || ch.enabled || ch.registered || (ch.bots || []).length)).slice(0, 5)
   $: enabledAgents = agents.filter(a => a.enabled)
   $: riskCount = providerIssues.length + channelIssues.length + recentErrors.length
   $: pendingLearning = learning?.pending || 0
+  $: readinessSummary = readiness?.summary || {}
+  $: readinessStatus = readinessSummary.status || ''
+  $: readinessLabel = readinessStatus === 'ready' ? 'Ready' : readinessStatus === 'at_risk' ? 'At risk' : 'Needs setup'
+  $: nextActions = readiness?.next_actions || []
 
   function eventText(ev) {
     if (!ev) return ''
@@ -198,6 +351,23 @@
     const d = new Date(raw)
     if (Number.isNaN(d.getTime())) return raw
     return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+  }
+
+  function runTime(run) {
+    const raw = run?.started_at || run?.updated_at || ''
+    if (!raw) return ''
+    const d = new Date(raw)
+    if (Number.isNaN(d.getTime())) return raw
+    return d.toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+  }
+
+  function runSummary(run) {
+    const bits = []
+    if (run?.trigger) bits.push(run.trigger)
+    if (run?.steps) bits.push(`${run.steps} step${run.steps === 1 ? '' : 's'}`)
+    if (run?.delivery_status) bits.push(`delivery ${run.delivery_status}`)
+    if (run?.error) bits.push(run.error)
+    return bits.join(' · ') || (run?.status || 'run')
   }
 
   onMount(() => {
@@ -253,11 +423,11 @@
       <p class="m-empty">No runs in progress.</p>
     {:else}
       {#each activeRuns as r}
-        <div class="run-row">
+        <button class="run-row" type="button" on:click={() => openActivity(r.agentId)}>
           <span class="run-dot" aria-hidden="true"></span>
           <strong>{r.agentId}</strong>
           <span class="run-age">running {fmtStarted(r.started)}</span>
-        </div>
+        </button>
       {/each}
     {/if}
   </section>
@@ -335,16 +505,100 @@
     <span class:ok={health && !riskCount} class:warn={health && riskCount}>{health ? (riskCount ? 'Review' : 'Live') : 'Check'}</span>
   </section>
 
+  {#if readiness}
+    <section class="launch-card">
+      <div class="launch-top">
+        <div>
+          <span class="kicker">Launch Readiness</span>
+          <h2>{readinessSummary.score || 0}% · {readinessLabel}</h2>
+        </div>
+        <button class="btn-secondary small" on:click={() => go('dashboard')}>Details</button>
+      </div>
+      <div class="launch-stats">
+        <span>{readinessSummary.providers_ready || 0} providers</span>
+        <span>{readinessSummary.enabled_agents || 0} agents</span>
+        <span>{readinessSummary.channels_ready || 0} channels</span>
+      </div>
+      {#if nextActions.length}
+        <div class="list compact">
+          {#each nextActions.slice(0, 3) as action}
+            <button on:click={() => action.href ? (window.location.hash = action.href) : go('dashboard')}>
+              <strong>{action.label}</strong>
+              <small>{action.detail}</small>
+            </button>
+          {/each}
+        </div>
+      {:else}
+        <p class="empty good">Core launch checks are passing.</p>
+      {/if}
+    </section>
+  {/if}
+
   <div class="quick-grid">
     <button on:click={() => go('chat')}>Chat</button>
-    <button on:click={() => go('activity')}>Activity</button>
-    <button on:click={() => go('schedule')}>Schedule</button>
-    <button on:click={() => go('channels')}>Channels</button>
+    <button on:click={() => go('activity')}>Runs</button>
+    <button on:click={() => go('schedule')}>Automations</button>
+    <button on:click={() => go('channels')}>Delivery</button>
     <button on:click={() => go('queues')}>Queues</button>
     <button on:click={() => go('memory')}>Learning</button>
     <button on:click={() => go('providers')}>Providers</button>
     <button on:click={() => go('studio')}>Studio</button>
   </div>
+
+  <section>
+    <div class="section-title-row">
+      <h2>Delivery health</h2>
+      <button class="btn-secondary small" on:click={() => go('channels')}>Configure</button>
+    </div>
+    {#if loading}
+      <p class="empty">Loading…</p>
+    {:else if !deliveryChannels.length}
+      <p class="empty">No configured delivery channels yet.</p>
+    {:else}
+      <div class="list delivery-list">
+        {#each deliveryChannels as ch}
+          <div class="delivery-card">
+            <button class="delivery-main" type="button" on:click={() => go('channels')}>
+              <span class="status-dot {channelSeverity(ch)}" aria-hidden="true"></span>
+              <span>
+                <strong>{ch.name || ch.id}</strong>
+                <small>{channelIssueText(ch)}</small>
+              </span>
+            </button>
+            <div class="delivery-targets">
+              {#each channelTargets(ch) as target}
+                {@const adapterId = adapterIdFor(ch, target)}
+                <div class="delivery-target">
+                  <button class="target-main" type="button" on:click={() => diagnoseDelivery(ch, target, true)}>
+                    <strong>{channelTargetLabel(ch, target)}</strong>
+                    {#if channelDiagnoses[adapterId]}
+                      <small class:good={channelDiagnoses[adapterId].ok}>
+                        {channelDiagnoses[adapterId].ok ? 'Ready' : (channelDiagnoses[adapterId].category || 'Needs fix')}
+                        {#if channelDiagnoses[adapterId].to} · {channelDiagnoses[adapterId].to}{/if}
+                      </small>
+                    {:else}
+                      <small>{target?._connected === false ? 'mapping offline' : 'tap Check before sending'}</small>
+                    {/if}
+                  </button>
+                  <div class="target-actions">
+                    <button type="button" on:click={() => diagnoseDelivery(ch, target, true)} disabled={channelBusy === `diag:${adapterId}`}>
+                      {channelBusy === `diag:${adapterId}` ? 'Checking…' : 'Check'}
+                    </button>
+                    <button type="button" on:click={() => diagnoseDelivery(ch, target, false)} disabled={channelBusy === `test:${adapterId}`}>
+                      {channelBusy === `test:${adapterId}` ? 'Sending…' : 'Send test'}
+                    </button>
+                  </div>
+                  {#if channelDiagnoses[adapterId]?.fix && !channelDiagnoses[adapterId]?.ok}
+                    <p class="delivery-fix">{channelDiagnoses[adapterId].fix}</p>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
 
   <section>
     <h2>Learning loop</h2>
@@ -365,6 +619,32 @@
   </section>
 
   <section>
+    <div class="section-title-row">
+      <h2>Recent runs</h2>
+      <button class="btn-secondary small" on:click={() => go('activity')}>Activity</button>
+    </div>
+    {#if recentRunsError}
+      <p class="empty">{recentRunsError}</p>
+    {:else if loading}
+      <p class="empty">Loading…</p>
+    {:else if !recentRuns.length}
+      <p class="empty">No retained runs yet.</p>
+    {:else}
+      <div class="list run-list">
+        {#each recentRuns as run}
+          <button class="history-run {run.ok ? 'success' : 'failed'}" on:click={() => openRun(run)}>
+            <span class="history-run-top">
+              <strong>{run.agent_name || run.agent_id}</strong>
+              <span>{runTime(run)}</span>
+            </span>
+            <small>{run.ok ? 'success' : 'failed'} · {runSummary(run)}</small>
+          </button>
+        {/each}
+      </div>
+    {/if}
+  </section>
+
+  <section>
     <h2>Today’s automations</h2>
     {#if loading}
       <p class="empty">Loading…</p>
@@ -373,10 +653,20 @@
     {:else}
       <div class="list">
         {#each schedule.slice(0, 6) as item}
-          <button on:click={() => go('schedule')}>
-            <strong>{item.name || item.agent_id || item.id}</strong>
-            <small>{item.next_run || item.next || item.status || 'scheduled'}</small>
-          </button>
+          <div class="schedule-row">
+            <button class="schedule-main" type="button" on:click={() => openActivity(scheduleAgentId(item))}>
+              <strong>{item.name || item.agent_id || item.id}</strong>
+              <small>{item.next_run || item.next || item.status || 'scheduled'}</small>
+            </button>
+            <div class="schedule-actions">
+              <button type="button" on:click={() => runScheduleNow(item)} disabled={scheduleBusy === `run:${scheduleAgentId(item)}`}>
+                {scheduleBusy === `run:${scheduleAgentId(item)}` ? 'Starting…' : 'Run'}
+              </button>
+              <button type="button" on:click={() => testScheduleDelivery(item)} disabled={scheduleBusy === `test:${scheduleAgentId(item)}`}>
+                {scheduleBusy === `test:${scheduleAgentId(item)}` ? 'Testing…' : 'Test output'}
+              </button>
+            </div>
+          </div>
         {/each}
       </div>
     {/if}
@@ -438,7 +728,7 @@
   .m-banner.err { background: rgba(255,90,90,.12); border-color: rgba(255,90,90,.4); color: #ff9a9a; }
   .m-banner .tiny { padding: .28rem .7rem; font-size: .74rem; border-radius: 6px; white-space: nowrap; }
   .linkish { background: none; border: none; color: inherit; text-decoration: underline; cursor: pointer; font: inherit; padding: 0; }
-  .run-row { display: flex; align-items: center; gap: .5rem; padding: .45rem 0; border-top: 1px solid #1a1e36; font-size: .82rem; }
+  .run-row { width: 100%; display: flex; align-items: center; gap: .5rem; padding: .45rem 0; border: 0; border-top: 1px solid #1a1e36; background: transparent; color: inherit; font-size: .82rem; text-align: left; cursor: pointer; }
   .run-row:first-of-type { border-top: none; }
   .run-row strong { color: #dfe2f5; }
   .run-age { margin-left: auto; color: #8a91b8; font-size: .74rem; }
@@ -475,6 +765,14 @@
   .hero span { border-radius: 999px; padding: .2rem .55rem; background: rgba(240, 176, 112, .12); color: #f0b070; font-size: .75rem; }
   .hero span.ok { background: rgba(76, 175, 130, .12); color: #72d9aa; }
   .hero span.warn { background: rgba(240, 176, 112, .12); color: #f0b070; }
+  .launch-card { display: flex; flex-direction: column; gap: .65rem; }
+  .launch-top { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; }
+  .launch-top h2 { margin: .15rem 0 0; font-size: 1rem; }
+  .kicker { color: #8b85ff; text-transform: uppercase; letter-spacing: .08em; font-size: .68rem; font-weight: 700; }
+  .launch-stats { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .launch-stats span { border: 1px solid #252a46; background: #15182a; color: #b9bcf0; border-radius: 999px; padding: .2rem .55rem; font-size: .72rem; }
+  .section-title-row { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
+  .section-title-row h2 { margin-bottom: .2rem; }
   .quick-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
   .quick-grid button, .metrics button { background: #1c1f35; color: #e8eaf6; border: 1px solid #2a2f4a; border-radius: 8px; padding: 13px 8px; }
   section { border: 1px solid #20243d; background: #10121f; border-radius: 8px; padding: 14px; }
@@ -483,12 +781,43 @@
   .metrics strong { display: block; font-size: 1.35rem; }
   .metrics small { color: #8f96bb; }
   .list { display: flex; flex-direction: column; gap: 8px; }
+  .list.compact { gap: 6px; }
   .list button { text-align: left; background: #15182a; border: 1px solid #252a46; color: inherit; border-radius: 8px; padding: 11px; }
   .list strong, .list small { display: block; }
   .list small, .empty { color: #8f96bb; font-size: .8rem; line-height: 1.4; }
   .empty.good { color: #72d9aa; }
+  .run-list { gap: 7px; }
+  .history-run { border-left: 3px solid #5f6688 !important; }
+  .history-run.success { border-left-color: #60c878 !important; }
+  .history-run.failed { border-left-color: #ff7d7d !important; }
+  .history-run-top { display: flex; align-items: center; justify-content: space-between; gap: .6rem; }
+  .history-run-top span { color: #8f96bb; font-size: .72rem; white-space: nowrap; }
+  .delivery-list { gap: 10px; }
+  .delivery-card { background: #15182a; border: 1px solid #252a46; border-radius: 8px; padding: 10px; }
+  .delivery-main { width: 100%; display: grid; grid-template-columns: auto 1fr; align-items: start; gap: .55rem; background: transparent; border: 0; color: inherit; text-align: left; padding: 0; cursor: pointer; }
+  .delivery-main strong { color: #e8eaf6; }
+  .status-dot { width: 9px; height: 9px; border-radius: 50%; margin-top: .25rem; background: #5f6688; }
+  .status-dot.ok { background: #60c878; }
+  .status-dot.warn { background: #f0c460; }
+  .status-dot.fail { background: #ff7d7d; }
+  .delivery-targets { display: flex; flex-direction: column; gap: 7px; margin-top: 9px; }
+  .delivery-target { display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: center; border-top: 1px solid #20243d; padding-top: 8px; }
+  .target-main { min-width: 0; text-align: left; background: transparent; border: 0; color: inherit; padding: 0; cursor: pointer; }
+  .target-main strong { font-size: .82rem; color: #dfe2f5; }
+  .target-main small.good { color: #72d9aa; }
+  .target-actions { display: flex; gap: 5px; }
+  .target-actions button { white-space: nowrap; background: #1c1f35; color: #e8eaf6; border: 1px solid #2a2f4a; border-radius: 7px; padding: .35rem .55rem; font-size: .72rem; }
+  .delivery-fix { grid-column: 1 / -1; margin: -2px 0 0; color: #f0c460; font-size: .75rem; line-height: 1.35; }
+  .schedule-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: stretch; }
+  .schedule-main { min-width: 0; }
+  .schedule-actions { display: flex; gap: 6px; }
+  .schedule-actions button { white-space: nowrap; font-size: .74rem; }
   @media (max-width: 540px) {
     .quick-grid { grid-template-columns: repeat(2, 1fr); }
     .metrics { grid-template-columns: 1fr; }
+    .schedule-row { grid-template-columns: 1fr; }
+    .schedule-actions { display: grid; grid-template-columns: 1fr 1fr; }
+    .delivery-target { grid-template-columns: 1fr; }
+    .target-actions { display: grid; grid-template-columns: 1fr 1fr; }
   }
 </style>

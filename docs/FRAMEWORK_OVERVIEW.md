@@ -150,7 +150,7 @@ The **skills** field is a list of skill names (`["pdf", "xlsx"]` or `["*"]` for 
 
 The **knowledge** field is a list of KB names. Empty list = no KB catalog and no `kb_search` tool. Each name must match a KB in the knowledge store; mismatches are logged but not fatal (the KB may be created later via the API).
 
-The **agents** field is the peer list — IDs of other agents this one may invoke as `agent__<id>` tools. `["*"]` exposes every other loaded agent. Self-references are silently dropped; cycles are bounded by `maxAgentCallDepth` (5).
+The **agents** field is the peer list — IDs of other agents this one may invoke as `agent__<id>` tools. `["*"]` exposes every other loaded agent. Self-references are silently dropped; cycles are bounded by `runtime.max_agent_call_depth` (default 5). Set `parallel_peer_calls: true` on an orchestrator when it should fan out two or more peer-agent calls emitted in the same LLM turn; peer results are still delivered back to the model in the original tool-call order. Set `structured_peer_results: true` when a coordinator should receive each peer reply as a `SOULACY_AGENT_RESULT` JSON envelope with `target_agent`, `ok`, `content`, and parsed `structured` data when the peer returned JSON.
 
 The **builtins** field is a pointer-to-slice (`*[]string`) so the YAML round-trip can distinguish absent from `[]`:
 
@@ -196,6 +196,8 @@ The second is **peer-agent calls inside the engine**. When the LLM emits a tool 
 5. Returns the peer's flattened reply text as the tool result.
 
 The peer runs its *own* agent loop with its own model, tools, KBs, peers, and `run_timeout`. To the caller, it's a tool. To the peer, it's a normal channel message. The pattern composes — a "writer" can delegate to a "researcher" who delegates to a "kb-searcher" — bounded by depth and by each agent's individual `run_timeout`. The `examples/agents/writer` agent is the reference for this style.
+
+For coordinator-style agents, `parallel_peer_calls: true` makes independent peer calls in the same model turn run concurrently under the same nested-chain deadline. Normal built-in/Python/MCP tools remain sequential; the parallel path is intentionally limited to peer agents because they have isolated sessions and deterministic result ordering. If the coordinator also sets `structured_peer_results: true`, each peer response is wrapped before being returned as a tool result, which lets the coordinator inspect citations, confidence, or other JSON fields without requiring a breaking change to the SDK `ToolResult` shape.
 
 Auto-delegation (engine.go:492) is the escape hatch when the model can't be relied on to actually pick the tool: `llm.tool_choice: agent__researcher` makes the engine itself run the peer before the LLM's first turn and stuff the result into the history as if the model had asked for it.
 

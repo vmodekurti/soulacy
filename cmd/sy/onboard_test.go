@@ -162,6 +162,26 @@ func TestPatchSearch_NoDuplicateOnRepeat(t *testing.T) {
 	}
 }
 
+func TestPatchUpdateManifestURL_AddsAndReplaces(t *testing.T) {
+	p := writeTemp(t, baseConfig)
+	first := "https://github.com/vmodekurti/soulacy/releases/latest/download/release-manifest.json"
+	second := "/opt/soulacy/release-manifest.json"
+	if err := patchUpdateManifestURL(p, first); err != nil {
+		t.Fatalf("add update manifest: %v", err)
+	}
+	if err := patchUpdateManifestURL(p, second); err != nil {
+		t.Fatalf("replace update manifest: %v", err)
+	}
+	m := parseConfig(t, p)
+	updates, ok := m["updates"].(map[string]any)
+	if !ok {
+		t.Fatalf("updates block missing: %#v", m["updates"])
+	}
+	if got := updates["manifest_url"]; got != second {
+		t.Fatalf("updates.manifest_url = %v; want %s", got, second)
+	}
+}
+
 // Comments on surviving nodes should be preserved through edits.
 func TestPatch_PreservesComments(t *testing.T) {
 	p := writeTemp(t, baseConfig)

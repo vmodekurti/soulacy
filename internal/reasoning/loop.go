@@ -240,6 +240,9 @@ func containsToolErrors(steps []Step) bool {
 		if s.Obs.Error != nil || strings.HasPrefix(s.Obs.Content, "tool error:") {
 			return true
 		}
+		if s.Obs.Source == "controller" && strings.Contains(strings.ToLower(s.Obs.Content), "think failed") {
+			return true
+		}
 	}
 	return false
 }

@@ -654,7 +654,7 @@ func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definiti
 		return
 	}
 	outcome := s.deliverScheduled(ctx, def, source, replyText, triggerType)
-	s.reportDelivery(def, source, replyText, outcome)
+	s.reportDelivery(def, source, replyText, triggerType, outcome)
 }
 
 // deliverScheduled attempts primary delivery and, if that isn't possible, a
@@ -770,7 +770,7 @@ func (s *Scheduler) sendVia(ctx context.Context, reg *channels.Registry, def *ag
 // reportDelivery logs the outcome and emits a schedule.output event so every
 // scheduled reply's fate is visible in Activity — delivered, routed to a
 // fallback, or (loudly) undelivered.
-func (s *Scheduler) reportDelivery(def *agent.Definition, source message.Message, replyText string, o deliveryOutcome) {
+func (s *Scheduler) reportDelivery(def *agent.Definition, source message.Message, replyText, triggerType string, o deliveryOutcome) {
 	fields := []zap.Field{
 		zap.String("agent", def.ID),
 		zap.String("reason", o.reason),
@@ -809,6 +809,7 @@ func (s *Scheduler) reportDelivery(def *agent.Definition, source message.Message
 			"channel":       o.channel,
 			"to":            o.to,
 			"detail":        o.detail,
+			"trigger":       triggerType,
 			"reply_preview": preview,
 		},
 	})

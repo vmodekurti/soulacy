@@ -104,6 +104,8 @@ Respond ONLY with a JSON object in this exact schema — no markdown fences, no 
   "final_answer": ""
 }
 Keep "thought" under 25 words. Keep tool arguments concise; do not paste fetched documents, HTML, or long code into thought.
+Use only one of the exact Available tools as action.tool. If a tool result reports a missing argument, retry the same tool once with corrected concise arguments.
+After a successful observation, either call the next needed tool or finish with the actual answer; do not repeat the same tool unless new input is required.
 When the next step requires a tool, set "is_done": false and put the tool in "action"; never write tool_name({...}) as prose.
 Only set "is_done": true when the user's request is actually complete. Do not use final_answer for progress notes such as "proceeding", "starting", or "next I will".
 When the task is complete set "is_done": true, put your completed answer in "final_answer", and omit "action".`

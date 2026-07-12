@@ -11,10 +11,12 @@
   let editing  = null   // deep-copy being modified
   let error    = null
   let saveMsg  = ''
+  let saveAudit = null
   let saving   = false
   let deleting = false
   let validating = false
   let validationReport = null
+  let tiers = {} // agent id -> { tier, reasons }
 
   // ── Raw SOUL.yaml view/edit modal ─────────────────────────────────────────
   let showYaml    = false   // modal open
@@ -214,6 +216,23 @@
   let availableSkills    = []  // [{name, description}]
   let availableKBs       = []  // [{id, name, description, document_count, chunk_count}]
 
+  const recommendedConfirmTools = [
+    'shell_exec',
+    'run_script',
+    'python_eval',
+    'write_file',
+    'http_request',
+    'fetch_url',
+    'web_search',
+    'channel.send',
+    'download_file',
+    'install_library',
+    'kb_write',
+    'queue_put',
+    'queue_take',
+    'queue_clear',
+  ]
+
   async function loadLookups() {
     const [chs, sks, kbs] = await Promise.allSettled([
       api.channels.list(),
@@ -248,6 +267,18 @@
   $: builtinOptions = (catalog.builtins || []).map(b => ({
     value: b.name, label: b.name, description: b.description || '',
   }))
+  $: confirmToolOptions = [
+    { value: 'all', label: 'all', description: 'Require confirmation for every tool call', group: 'Policy' },
+    ...recommendedConfirmTools.map(name => ({
+      value: name,
+      label: name,
+      description: confirmToolDescription(name),
+      group: 'Recommended',
+    })),
+    ...builtinOptions
+      .filter(opt => !recommendedConfirmTools.includes(opt.value))
+      .map(opt => ({ ...opt, group: 'Built-ins' })),
+  ]
   $: pythonFileOptions = (catalog.python_tools || []).map(pt => ({
     value: pt.path, label: pt.name, description: pt.description || '',
   }))
@@ -305,6 +336,13 @@
     phaseTopP: 'Phase-specific nucleus sampling. Lower for deterministic routing; higher for more flexible final wording.',
     phaseMaxTokens: 'Phase-specific response cap. Think/Plan need concise JSON; Reflect often needs more room for the final answer.',
     phaseFormat: 'Phase-specific output format. JSON is safest for internal reasoning phases that the engine must parse.',
+    parallelPeerCalls: 'When the model calls two or more different peer agents in one turn, run those peer agents concurrently and return results in the original order. Use for coordinator agents with independent research/review tasks.',
+    structuredPeerResults: 'Wrap peer-agent replies in a SOULACY_AGENT_RESULT JSON envelope. Use when a coordinator needs stable fields such as target_agent, content, citations, confidence, or parsed JSON from the peer.',
+    confirmTools: 'Tools listed here pause for human approval before running. Use all to approve every tool call, or list only risky tools such as shell_exec, write_file, http_request, channel.send, and python_eval.',
+    unattended: 'Allows scheduled or non-interactive runs to auto-approve confirmation gates. Use only for trusted automation after testing manually.',
+    toolTimeout: 'Per-tool timeout for this Python tool. Use longer values for slow fetches or exports without weakening every tool in the agent.',
+    toolRetries: 'Extra attempts after this Python tool fails. Use for idempotent fetch/read/parse tools; leave blank for side-effecting tools.',
+    toolRetryBackoff: 'Delay between retry attempts. Keep short for flaky HTTP reads; increase for rate-limited APIs.',
     playgroundProvider: 'Temporarily override the provider for this playground run only.',
     playgroundModel: 'Temporarily override the model for this playground run only.',
   }
@@ -376,7 +414,7 @@
     llm: { provider: 'ollama', model: '', temperature: 0.7, top_p: 0.9, max_tokens: 512 },
     memory: { read_scopes: ['session'], write_scopes: ['session'], max_tokens: 20 },
     learning: { enabled: false, min_chars: 160, max_proposals: 3 },
-    tools: [], skills: [], knowledge: [], agents: [], max_turns: 5, stream_reply: false, enabled: true,
+    tools: [], skills: [], knowledge: [], agents: [], parallel_peer_calls: false, structured_peer_results: false, confirm_tools: [], unattended: false, max_turns: 5, stream_reply: false, enabled: true,
   })
 
   function isSystemAgent(agent) {
@@ -384,11 +422,13 @@
   }
 
   $: editingProtected = isSystemAgent(selected)
+  $: selectedTier = selected?.id ? tiers[selected.id] : null
 
   async function load() {
     try {
       const res = await api.agents.list()
       agents = res.agents || []
+      loadTiers(agents)
       error  = null
       if ($editAgent) {
         const found = agents.find(a => a.id === $editAgent)
@@ -398,6 +438,40 @@
         $editAgent = ''
       }
     } catch (e) { error = e.message }
+  }
+
+  async function loadTiers(list) {
+    const next = {}
+    await Promise.all((list || []).map(async (agent) => {
+      if (!agent?.id) return
+      try {
+        const res = await api.agents.tier(agent.id)
+        next[agent.id] = {
+          tier: res?.tier || 'unknown',
+          reasons: res?.reasons || [],
+        }
+      } catch (_) {
+        next[agent.id] = { tier: 'unknown', reasons: [] }
+      }
+    }))
+    tiers = next
+  }
+
+  function tierLabel(tier) {
+    switch (tier) {
+      case 'read_only': return 'Read-only'
+      case 'active': return 'Active'
+      case 'privileged': return 'Privileged'
+      default: return 'Unknown'
+    }
+  }
+
+  function tierSummary(tierInfo) {
+    const tier = tierInfo?.tier || 'unknown'
+    if (tier === 'privileged') return 'Can reach OS-level, file-write, package, wildcard, or privileged peer capabilities.'
+    if (tier === 'active') return 'Can use tools, memory writes, MCP, queues, channels, or peer agents with real-world effects.'
+    if (tier === 'read_only') return 'Prompt and model only, with no active tool surface detected.'
+    return 'Tier could not be determined. Treat channel exposure cautiously.'
   }
 
   async function loadCatalog() {
@@ -523,6 +597,15 @@
   function updateParams(i, json) {
     try { editing.tools[i].parameters = JSON.parse(json) } catch { /* mid-edit */ }
   }
+  function updateToolRetries(i, value) {
+    const raw = String(value || '').trim()
+    if (!raw) {
+      delete editing.tools[i].retries
+    } else {
+      editing.tools[i].retries = Math.max(0, Math.min(5, Number(raw) || 0))
+    }
+    editing = editing
+  }
   // ── Channels & skills (CSV inputs) ────────────────────────────────────────
   function csvToArr(s) { return (s || '').split(',').map(x => x.trim()).filter(Boolean) }
   function linesToArr(s) { return (s || '').split('\n').map(x => x.trim()).filter(Boolean) }
@@ -606,6 +689,76 @@
     return 'restricted'
   }
 
+  function confirmToolDescription(name) {
+    switch (name) {
+      case 'all': return 'Gate every tool call'
+      case 'shell_exec': return 'Runs shell commands'
+      case 'run_script': return 'Runs local scripts'
+      case 'python_eval': return 'Executes Python code'
+      case 'write_file': return 'Writes local files'
+      case 'http_request': return 'Makes arbitrary HTTP requests'
+      case 'fetch_url': return 'Fetches external URLs'
+      case 'web_search': return 'Searches the web'
+      case 'channel.send': return 'Sends messages to external channels'
+      case 'download_file': return 'Downloads files to disk'
+      case 'install_library': return 'Installs packages'
+      case 'kb_write': return 'Writes to knowledge bases'
+      case 'queue_put': return 'Adds work to queues'
+      case 'queue_take': return 'Consumes queued work'
+      case 'queue_clear': return 'Clears queue contents'
+      default: return 'Tool confirmation gate'
+    }
+  }
+
+  function uniq(arr) {
+    const seen = new Set()
+    const out = []
+    for (const raw of arr || []) {
+      const value = String(raw || '').trim()
+      if (!value || seen.has(value)) continue
+      seen.add(value)
+      out.push(value)
+    }
+    return out
+  }
+
+  function setRecommendedConfirmTools() {
+    if (!editing) return
+    editing.confirm_tools = uniq([...(editing.confirm_tools || []), ...recommendedConfirmTools])
+    editing = editing
+  }
+
+  function confirmAllTools() {
+    if (!editing) return
+    editing.confirm_tools = ['all']
+    editing = editing
+  }
+
+  function clearConfirmTools() {
+    if (!editing) return
+    editing.confirm_tools = []
+    editing = editing
+  }
+
+  function selectedRiskyTools() {
+    if (!editing) return []
+    const names = new Set()
+    if (Array.isArray(editing.builtins)) {
+      for (const name of editing.builtins) names.add(name)
+    }
+    if (editing.system_tools || editing.allow_shell || (editing.capabilities || []).includes('system')) {
+      for (const name of ['shell_exec', 'run_script', 'install_library', 'write_file', 'download_file']) names.add(name)
+    }
+    return [...names].filter(name => recommendedConfirmTools.includes(name))
+  }
+
+  function unconfirmedRiskyTools() {
+    if (!editing) return []
+    const confirms = editing.confirm_tools || []
+    if (confirms.includes('all') || confirms.includes('*')) return []
+    return selectedRiskyTools().filter(name => !confirms.includes(name))
+  }
+
   function select(agent) {
     selected = agent
     editing  = JSON.parse(JSON.stringify(agent))
@@ -618,8 +771,13 @@
     editing.skills    = editing.skills    || []
     editing.knowledge = editing.knowledge || []
     editing.agents    = editing.agents    || []
+    editing.parallel_peer_calls = !!editing.parallel_peer_calls
+    editing.structured_peer_results = !!editing.structured_peer_results
     editing.channels  = editing.channels  || []
+    editing.confirm_tools = editing.confirm_tools || []
+    editing.unattended = !!editing.unattended
     saveMsg = ''
+    saveAudit = null
     validationReport = null
     showHistory = false
   }
@@ -628,6 +786,7 @@
     selected = null
     editing  = BLANK()
     saveMsg  = ''
+    saveAudit = null
     validationReport = null
     showHistory = false
   }
@@ -652,16 +811,20 @@
     if (!editing) return
     saving  = true
     saveMsg = ''
+    saveAudit = null
     try {
+      let res
       if (selected) {
-        await api.agents.update(selected.id, editing)
+        res = await api.agents.update(selected.id, editing)
       } else {
-        await api.agents.create(editing)
+        res = await api.agents.create(editing)
       }
+      saveAudit = res?.capability_audit || null
       await load()
-      saveMsg  = '✓ Saved'
       const found = agents.find(a => a.id === editing.id)
       if (found) select(found)
+      saveAudit = res?.capability_audit || null
+      saveMsg  = '✓ Saved'
     } catch (e) {
       saveMsg = '✗ ' + e.message
     }
@@ -819,6 +982,16 @@
   // through the GUI but want to script against the agent later.
   let showExport   = false
   let exportTab    = 'curl'      // 'curl' | 'python' | 'js'
+  let packageFileInput = null
+  let showPackageImport = false
+  let packageImportLoading = false
+  let packageImporting = false
+  let packageImportError = ''
+  let packageImportMsg = ''
+  let packageImportRaw = null
+  let packageInspection = null
+  let packageImportDisabled = true
+  let packageImportOverwrite = false
 
   $: gatewayOrigin = (typeof window !== 'undefined') ? window.location.origin : 'http://127.0.0.1:18789'
   $: apiKeyValue   = $apiKey || '<your-api-key>'
@@ -871,6 +1044,72 @@ console.log(reply);` : ''
     navigator.clipboard?.writeText(activeSnippet)
   }
 
+  async function downloadAgentPackage() {
+    if (!selected) return
+    try {
+      const { blob, filename } = await api.agents.package(selected.id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename || `${selected.id}.soulacy-agent.json`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      error = e.message
+    }
+  }
+
+  function triggerPackageImport() {
+    packageImportError = ''
+    packageImportMsg = ''
+    packageFileInput?.click()
+  }
+
+  async function onPackageFilePicked(event) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+    showPackageImport = true
+    packageImportLoading = true
+    packageImportError = ''
+    packageImportMsg = ''
+    packageInspection = null
+    packageImportRaw = null
+    try {
+      const raw = JSON.parse(await file.text())
+      packageImportRaw = raw
+      packageInspection = await api.agents.inspectPackage(raw)
+    } catch (e) {
+      packageImportError = e.message || 'Could not inspect package'
+    }
+    packageImportLoading = false
+  }
+
+  async function importInspectedPackage() {
+    if (!packageImportRaw || packageImporting) return
+    packageImporting = true
+    packageImportError = ''
+    packageImportMsg = ''
+    try {
+      const res = await api.agents.importPackage(packageImportRaw, {
+        disabled: packageImportDisabled,
+        overwrite: packageImportOverwrite,
+      })
+      await load()
+      const id = res?.agent?.id || packageInspection?.agent?.id
+      const found = agents.find(a => a.id === id)
+      if (found) select(found)
+      packageImportMsg = 'Imported package.'
+      showPackageImport = false
+    } catch (e) {
+      packageImportError = e.message || 'Import failed'
+      if (e.body?.validation) packageInspection = e.body
+    }
+    packageImporting = false
+  }
+
   // ── Templates ("New from template" modal) ────────────────────────────────
   // Loaded on demand when the user opens the picker. Each entry has the shape
   // { name, display_name, description, tags, source, definition } from the
@@ -916,10 +1155,18 @@ console.log(reply);` : ''
 
 <div class="page">
   <div class="page-header">
-    <h1>Agents</h1>
+    <h1>Deployed Agents</h1>
     <div class="hdr-actions">
       <button class="btn-secondary" on:click={openTemplates}>📋 From template…</button>
+      <button class="btn-secondary" on:click={triggerPackageImport} title="Inspect and import a .soulacy-agent.json package">Import package…</button>
       <button class="btn-primary"   on:click={newAgent}>+ New Agent</button>
+      <input
+        bind:this={packageFileInput}
+        type="file"
+        accept=".json,.soulacy-agent.json,application/json"
+        style="display:none"
+        on:change={onPackageFilePicked}
+      />
     </div>
   </div>
 
@@ -944,6 +1191,9 @@ console.log(reply);` : ''
             <div class="agent-meta">
               {agent.trigger} · {agent.llm?.provider || 'ollama'}/{agent.llm?.model || '?'}
             </div>
+            <div class="tier-pill" class:read={tiers[agent.id]?.tier === 'read_only'} class:active-tier={tiers[agent.id]?.tier === 'active'} class:privileged={tiers[agent.id]?.tier === 'privileged'}>
+              {tierLabel(tiers[agent.id]?.tier)}
+            </div>
           </div>
           <button class="toggle" class:on={agent.enabled}
                   title={agent.enabled ? 'Disable' : 'Enable'}
@@ -967,6 +1217,8 @@ console.log(reply);` : ''
               {#if selected}
                 <button class="btn-secondary" on:click={() => showExport = true}
                         title="Show API snippets for this agent">&lt;/&gt; API</button>
+                <button class="btn-secondary" on:click={downloadAgentPackage}
+                        title="Download a shareable package with SOUL.yaml, local tool files, and a setup checklist">Package</button>
                 <button class="btn-secondary" on:click={() => showPlay = !showPlay}
                         class:on={showPlay}
                         title="Toggle inline chat panel">
@@ -997,6 +1249,35 @@ console.log(reply);` : ''
           </div>
 
           <div class="fields">
+            {#if saveAudit?.warnings?.length}
+              <div class="save-audit" class:danger={saveAudit.requires_ack}>
+                <strong>{saveAudit.requires_ack ? 'Review channel exposure' : 'Capability tier changed'}</strong>
+                {#each saveAudit.warnings as warning}
+                  <p>{warning}</p>
+                {/each}
+              </div>
+            {/if}
+            {#if selectedTier}
+              <div class="tier-panel" class:read={selectedTier.tier === 'read_only'} class:active-tier={selectedTier.tier === 'active'} class:privileged={selectedTier.tier === 'privileged'}>
+                <div class="tier-panel-head">
+                  <span class="tier-pill" class:read={selectedTier.tier === 'read_only'} class:active-tier={selectedTier.tier === 'active'} class:privileged={selectedTier.tier === 'privileged'}>
+                    {tierLabel(selectedTier.tier)}
+                  </span>
+                  <strong>Capability exposure</strong>
+                </div>
+                <p>{tierSummary(selectedTier)}</p>
+                {#if selectedTier.reasons?.length}
+                  <ul>
+                    {#each selectedTier.reasons.slice(0, 4) as reason}
+                      <li>{reason}</li>
+                    {/each}
+                  </ul>
+                {:else}
+                  <p class="tier-muted">No privileged reasons detected.</p>
+                {/if}
+              </div>
+            {/if}
+
             {#if validationReport}
               <div class="validation-panel" class:ok={validationReport.valid && validationReport.warnings === 0}
                    class:warn={validationReport.valid && validationReport.warnings > 0}
@@ -1665,7 +1946,7 @@ console.log(reply);` : ''
                   <span class="toggle-track-sm"></span>
                 </label>
               </div>
-              <div class="bm-desc">Soulacy stores proposed memories and procedures for human review in Brain Memory → Learning before applying them.</div>
+              <div class="bm-desc">Soulacy stores proposed memories and procedures for human review in Learning before applying them.</div>
               {#if editing.learning?.enabled}
                 <div class="learning-fields">
                   <div class="field">
@@ -1693,7 +1974,7 @@ console.log(reply);` : ''
             </div>
 
             {#if editing.trigger === 'channel'}
-              <div class="sep">Channels</div>
+              <div class="sep">Delivery channels</div>
               <div class="field">
                 <span class="field-label">Bound channels — pick from registered channel adapters</span>
                 <ChipPicker
@@ -1750,10 +2031,29 @@ console.log(reply);` : ''
                            placeholder="What this tool does. The LLM picks tools by description." />
                   </div>
 
-                  <div class="field">
-                    <span class="field-label">Timeout <span class="optional">(optional — overrides global; e.g. 30m, 1h)</span></span>
-                    <input bind:value={tool.timeout}
-                           placeholder="30s (defaults to runtime.tool_timeout)" />
+                  <div class="tool-grid">
+                    <div class="field">
+                      <span class="field-label" title={llmTips.toolTimeout}>Timeout <span class="optional">(optional — overrides global; e.g. 30m, 1h)</span></span>
+                      <input bind:value={tool.timeout}
+                             placeholder="30s (defaults to runtime.tool_timeout)" />
+                    </div>
+
+                    <div class="field">
+                      <span class="field-label" title={llmTips.toolRetries}>Retries <span class="optional">(0-5)</span></span>
+                      <input type="number"
+                             min="0"
+                             max="5"
+                             step="1"
+                             value={tool.retries ?? ''}
+                             placeholder="0"
+                             on:input={(e) => updateToolRetries(i, e.target.value)} />
+                    </div>
+
+                    <div class="field">
+                      <span class="field-label" title={llmTips.toolRetryBackoff}>Retry backoff <span class="optional">(e.g. 1s)</span></span>
+                      <input bind:value={tool.retry_backoff}
+                             placeholder="1s" />
+                    </div>
                   </div>
 
                   <div class="field">
@@ -1812,6 +2112,16 @@ console.log(reply);` : ''
                 on:change={(e) => editing.agents = e.detail}
               />
             </div>
+            <div class="field-row">
+              <label class="check-row peer-toggle" title={llmTips.parallelPeerCalls}>
+                <input type="checkbox" bind:checked={editing.parallel_peer_calls} />
+                <span>Run independent peer calls in parallel</span>
+              </label>
+              <label class="check-row peer-toggle" title={llmTips.structuredPeerResults}>
+                <input type="checkbox" bind:checked={editing.structured_peer_results} />
+                <span>Return structured peer-result envelopes</span>
+              </label>
+            </div>
 
             <div class="sep">Built-in tools <span class="optional">(advanced)</span></div>
             <div class="field">
@@ -1843,6 +2153,41 @@ console.log(reply);` : ''
                   placement="up"
                   on:change={(e) => editing.builtins = e.detail}
                 />
+              {/if}
+            </div>
+
+            <div class="sep">Safety policy <span class="optional">(confirm before risky actions)</span></div>
+            <div class="safety-card">
+              <div class="field">
+                <span class="field-label" title={llmTips.confirmTools}>Confirm tools</span>
+                <ChipPicker
+                  value={editing.confirm_tools || []}
+                  options={confirmToolOptions}
+                  placeholder="Pick tools that require approval before running"
+                  placement="up"
+                  allowFreeform={true}
+                  on:change={(e) => editing.confirm_tools = e.detail}
+                />
+                <span class="field-hint">
+                  {llmTips.confirmTools}
+                </span>
+              </div>
+              <div class="safety-actions">
+                <button class="btn-secondary small" type="button" on:click={setRecommendedConfirmTools}>Use recommended</button>
+                <button class="btn-secondary small" type="button" on:click={confirmAllTools}>Confirm all tools</button>
+                <button class="btn-secondary small" type="button" on:click={clearConfirmTools}>Clear</button>
+              </div>
+              <label class="check-row safety-toggle" title={llmTips.unattended}>
+                <input type="checkbox" bind:checked={editing.unattended} />
+                <span>Unattended runs may auto-approve confirmation gates</span>
+              </label>
+              {#if unconfirmedRiskyTools().length}
+                <div class="safety-warn">
+                  Risky selected tools are not confirmation-gated:
+                  {#each unconfirmedRiskyTools() as tool}
+                    <code>{tool}</code>
+                  {/each}
+                </div>
               {/if}
             </div>
           </div>
@@ -2013,6 +2358,124 @@ console.log(reply);` : ''
 
       <div class="modal-row" style="display:flex;justify-content:flex-end;">
         <button class="btn-secondary" on:click={() => showExport = false}>Close</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showPackageImport}
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close package import modal"
+    on:click|self={() => showPackageImport = false}
+    on:keydown={(e) => e.key === 'Escape' && (showPackageImport = false)}
+  >
+    <div class="modal wide">
+      <h2>Import Agent Package</h2>
+      <div class="modal-sub">
+        Soulacy checks the package before writing anything, including required providers, channels, peer agents, local tool files, and SOUL.yaml validity.
+      </div>
+
+      {#if packageImportLoading}
+        <div class="empty-panel">Inspecting package…</div>
+      {:else if packageImportError}
+        <div class="banner err">⚠ {packageImportError}</div>
+      {/if}
+
+      {#if packageInspection}
+        <div class="pkg-summary">
+          <div>
+            <div class="agent-name">{packageInspection.manifest?.name || packageInspection.agent?.name || packageInspection.agent?.id}</div>
+            <div class="agent-meta">
+              {packageInspection.agent?.id} · {packageInspection.agent?.trigger} · {packageInspection.agent?.llm?.provider || 'default'}/{packageInspection.agent?.llm?.model || '?'}
+            </div>
+          </div>
+          <span class:ok={packageInspection.importable} class:bad={!packageInspection.importable}>
+            {packageInspection.importable ? 'Importable' : 'Needs fixes'}
+          </span>
+        </div>
+
+        {#if packageInspection.validation?.findings?.length}
+          <div class="validation-list">
+            {#each packageInspection.validation.findings as f}
+              <div class:ferr={f.severity === 'error'} class:fwarn={f.severity !== 'error'}>
+                <b>{f.severity}</b> {f.field}: {f.message}
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if packageInspection.requirements?.length}
+          <h3>Requirements</h3>
+          <div class="req-grid">
+            {#each packageInspection.requirements as r}
+              <div class="req-row">
+                <span>{r.kind}</span>
+                <b>{r.name}</b>
+                <em class:ok={['available','configured','built_in','packaged','declared'].includes(r.status)}
+                    class:warn={['verify','conflict'].includes(r.status)}
+                    class:bad={r.status === 'missing'}>
+                  {r.status}
+                </em>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if packageInspection.manifest?.eval_suites?.length || packageInspection.manifest?.sample_prompts?.length}
+          <h3>Validation Harness</h3>
+          <div class="req-grid">
+            {#each packageInspection.manifest?.eval_suites || [] as f}
+              <div class="req-row">
+                <span>eval</span>
+                <b>{f}</b>
+                <em class="ok">packaged</em>
+              </div>
+            {/each}
+            {#each packageInspection.manifest?.sample_prompts || [] as f}
+              <div class="req-row">
+                <span>sample</span>
+                <b>{f}</b>
+                <em class="ok">packaged</em>
+              </div>
+            {/each}
+          </div>
+        {/if}
+
+        {#if packageInspection.warnings?.length}
+          <h3>Warnings</h3>
+          <ul class="warn-list">
+            {#each packageInspection.warnings as w}
+              <li>{w}</li>
+            {/each}
+          </ul>
+        {/if}
+
+        <div class="check-row">
+          <label>
+            <input type="checkbox" bind:checked={packageImportDisabled} />
+            Import disabled so I can review before it runs
+          </label>
+          <label>
+            <input type="checkbox" bind:checked={packageImportOverwrite} />
+            Overwrite existing agent with the same ID
+          </label>
+        </div>
+      {/if}
+
+      {#if packageImportMsg}
+        <div class="banner ok">✓ {packageImportMsg}</div>
+      {/if}
+
+      <div class="modal-row" style="display:flex;justify-content:flex-end;gap:8px;">
+        <button class="btn-secondary" on:click={() => showPackageImport = false}>Cancel</button>
+        <button class="btn-primary"
+                on:click={importInspectedPackage}
+                disabled={!packageInspection?.importable || packageImporting}>
+          {packageImporting ? 'Importing…' : 'Import'}
+        </button>
       </div>
     </div>
   </div>
@@ -2265,6 +2728,16 @@ console.log(reply);` : ''
   .agent-card:hover, .agent-card.active { border-color: #6c63ff; }
   .agent-name  { font-weight: 500; font-size: .875rem; }
   .agent-meta  { color: #6b7294; font-size: .72rem; margin-top: .15rem; }
+  .tier-pill {
+    display: inline-flex; align-items: center; width: fit-content;
+    margin-top: .4rem; padding: .12rem .45rem; border-radius: 999px;
+    border: 1px solid #303656; background: #101426; color: #9aa2c9;
+    font-size: .64rem; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase;
+  }
+  .tier-pill.read { border-color: rgba(118,224,162,.35); color: #76e0a2; background: rgba(76,175,130,.08); }
+  .tier-pill.active-tier { border-color: rgba(139,133,255,.42); color: #aaa6ff; background: rgba(108,99,255,.1); }
+  .tier-pill.privileged { border-color: rgba(255,128,128,.45); color: #ff9b9b; background: rgba(255,90,90,.1); }
   .toggle      { background: none; font-size: 1rem; color: #6b7294; padding: .15rem; }
   .toggle.on   { color: #4caf82; }
   .empty       { color: #6b7294; text-align: center; padding: 2rem .5rem; font-size: .875rem; line-height: 1.6; }
@@ -2289,6 +2762,25 @@ console.log(reply);` : ''
     font-size: .72rem; color: #6b7294; text-transform: uppercase;
     letter-spacing: .06em; font-weight: 600;
   }
+  .tier-panel {
+    border-radius: 8px; padding: .8rem; display: flex; flex-direction: column; gap: .45rem;
+    background: #0e1020; border: 1px solid #2a2f4a; color: #c8cadf;
+  }
+  .tier-panel.read { border-color: rgba(76,175,130,.26); background: rgba(76,175,130,.05); }
+  .tier-panel.active-tier { border-color: rgba(108,99,255,.32); background: rgba(108,99,255,.06); }
+  .tier-panel.privileged { border-color: rgba(255,90,90,.34); background: rgba(255,90,90,.07); }
+  .tier-panel-head { display: flex; align-items: center; gap: .55rem; font-size: .84rem; }
+  .tier-panel .tier-pill { margin-top: 0; }
+  .tier-panel p { margin: 0; color: #9ca3c8; font-size: .78rem; line-height: 1.45; }
+  .tier-panel ul { margin: .1rem 0 0 1rem; padding: 0; color: #aeb4d5; font-size: .76rem; line-height: 1.45; }
+  .tier-muted { color: #737a9c !important; }
+  .save-audit {
+    border-radius: 8px; padding: .8rem; display: flex; flex-direction: column; gap: .35rem;
+    background: rgba(240,192,96,.08); border: 1px solid rgba(240,192,96,.36); color: #f2d18a;
+    font-size: .8rem; line-height: 1.45;
+  }
+  .save-audit.danger { background: rgba(240,96,96,.08); border-color: rgba(240,96,96,.38); color: #f1a0a0; }
+  .save-audit p { margin: 0; color: inherit; }
   .validation-panel {
     border-radius: 8px; padding: .8rem; display: flex; flex-direction: column; gap: .6rem;
     background: #0e1020; border: 1px solid #2a2f4a;
@@ -2336,6 +2828,29 @@ console.log(reply);` : ''
     font-size: .82rem; color: #c8cadf; cursor: pointer; user-select: none;
   }
   .radio-opt input[type="radio"] { width: auto; margin: 0; cursor: pointer; }
+  .peer-toggle {
+    background: rgba(45, 212, 191, .05); border: 1px solid rgba(45, 212, 191, .18);
+    border-radius: 6px; padding: .5rem .6rem; text-transform: none; letter-spacing: 0;
+  }
+  .safety-card {
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px;
+    padding: .8rem; display: flex; flex-direction: column; gap: .6rem;
+  }
+  .safety-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .safety-toggle {
+    background: rgba(108,99,255,.05); border: 1px solid rgba(108,99,255,.16);
+    border-radius: 6px; padding: .5rem .6rem; text-transform: none; letter-spacing: 0;
+  }
+  .safety-warn {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+    background: rgba(240,192,96,.08); border: 1px solid rgba(240,192,96,.28);
+    color: #d8c28a; border-radius: 6px; padding: .55rem .65rem;
+    font-size: .76rem; line-height: 1.45;
+  }
+  .safety-warn code {
+    color: #f0c060; background: rgba(240,192,96,.12);
+    border-radius: 4px; padding: .08rem .3rem; font-size: .7rem;
+  }
   .tools-empty {
     background: #0e1020; border: 1px dashed #2a2f4a; border-radius: 8px;
     padding: .8rem 1rem; color: #6b7294; font-size: .8rem; line-height: 1.55;
@@ -2346,6 +2861,14 @@ console.log(reply);` : ''
     padding: .8rem; display: flex; flex-direction: column; gap: .55rem;
   }
   .tool-hdr { display: flex; align-items: center; gap: .5rem; }
+  .tool-grid {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(90px, .45fr) minmax(130px, .6fr);
+    gap: .6rem;
+  }
+  @media (max-width: 900px) {
+    .tool-grid { grid-template-columns: 1fr; }
+  }
   .tool-idx { color: #555a7a; font-size: .72rem; font-weight: 600; }
   .tool-name-input { flex: 1; font-family: monospace; font-size: .85rem; }
   .tool-ops { display: flex; gap: .25rem; }
@@ -2723,5 +3246,101 @@ console.log(reply);` : ''
     color: #d8d4ad;
     font-size: .76rem;
     line-height: 1.5;
+  }
+  .pkg-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .85rem;
+    margin: .85rem 0;
+    padding: .75rem .85rem;
+    background: #111425;
+    border: 1px solid #242947;
+    border-radius: 8px;
+  }
+  .pkg-summary span {
+    border-radius: 999px;
+    padding: .18rem .55rem;
+    font-size: .72rem;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .ok { color: #76e0a2; }
+  .bad { color: #ff8080; }
+  .warn { color: #ffd27a; }
+  .validation-list {
+    display: flex;
+    flex-direction: column;
+    gap: .35rem;
+    margin: .65rem 0;
+  }
+  .validation-list > div {
+    padding: .5rem .65rem;
+    border-radius: 6px;
+    font-size: .78rem;
+    line-height: 1.35;
+  }
+  .validation-list .ferr {
+    background: rgba(255, 90, 90, .1);
+    border: 1px solid rgba(255, 90, 90, .28);
+    color: #ffc1c1;
+  }
+  .validation-list .fwarn {
+    background: rgba(255, 210, 122, .08);
+    border: 1px solid rgba(255, 210, 122, .22);
+    color: #ffe2a4;
+  }
+  .req-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: .3rem;
+    max-height: 260px;
+    overflow: auto;
+    margin: .45rem 0 .8rem;
+  }
+  .req-row {
+    display: grid;
+    grid-template-columns: 110px 1fr 92px;
+    gap: .6rem;
+    align-items: center;
+    padding: .42rem .55rem;
+    background: #0e1020;
+    border: 1px solid #202541;
+    border-radius: 6px;
+    font-size: .76rem;
+  }
+  .req-row span {
+    color: #7f86a6;
+    text-transform: uppercase;
+    font-size: .66rem;
+    letter-spacing: .04em;
+  }
+  .req-row b {
+    color: #dfe3ff;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .req-row em {
+    font-style: normal;
+    text-align: right;
+  }
+  .warn-list {
+    color: #d9c990;
+    font-size: .78rem;
+    line-height: 1.45;
+  }
+  .check-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .8rem 1rem;
+    margin: .8rem 0;
+    color: #aeb4d5;
+    font-size: .8rem;
+  }
+  .check-row label {
+    display: flex;
+    align-items: center;
+    gap: .42rem;
   }
 </style>

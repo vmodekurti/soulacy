@@ -102,3 +102,11 @@ config.*.yaml
 # agent-browser / letsfg runtime artifacts
 .edreams_chrome_data/
 *_pre_search.png
+
+# FUSE mount artifacts and local scratch (never source)
+.fuse_hidden*
+.cache/
+_mnt_writetest
+_valsuite_main.go
+sy-go-tmp-umask
+workspace/

@@ -118,11 +118,44 @@ func collectDoctorReport() doctorReport {
 	add(checkSandboxState())
 	add(checkKnowledgeDB(runtimeDir))
 	add(checkWorkspaceVersion(runtimeDir))
+	add(checkUpdateManifest())
 	add(checkGatewayHealth())
 	add(checkRecentErrors())
 	add(checkMCPStatus())
 
 	return report
+}
+
+func checkUpdateManifest() doctorCheck {
+	source := resolveUpdateManifestSource("")
+	if strings.TrimSpace(source) == "" {
+		return doctorCheck{
+			Name:   "updates",
+			Status: doctorWarn,
+			Detail: "no update manifest configured",
+			Remedy: "set updates.manifest_url in config.yaml or SOULACY_UPDATE_MANIFEST so sy update check/install work without extra flags",
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	res, err := checkForUpdate(ctx, source, config.Version)
+	if err != nil {
+		return doctorCheck{
+			Name:   "updates",
+			Status: doctorWarn,
+			Detail: "configured manifest could not be checked: " + err.Error(),
+			Remedy: "verify updates.manifest_url is reachable and points at a valid Soulacy release manifest",
+		}
+	}
+	status := doctorOK
+	if res.UpdateAvailable {
+		status = doctorWarn
+	}
+	detail := res.Message
+	if res.Artifact != nil {
+		detail += " artifact=" + res.Artifact.Name
+	}
+	return doctorCheck{Name: "updates", Status: status, Detail: detail}
 }
 
 // loadDoctorConfig unmarshals the viper-loaded configuration into a typed

@@ -172,9 +172,9 @@ func TestApplyPlaygroundOverrides_ToolChoiceOverride(t *testing.T) {
 // Table-driven omnibus test for all override fields
 func TestApplyPlaygroundOverrides_Table(t *testing.T) {
 	cases := []struct {
-		name   string
-		meta   map[string]string
-		check  func(t *testing.T, def *agent.Definition)
+		name  string
+		meta  map[string]string
+		check func(t *testing.T, def *agent.Definition)
 	}{
 		{
 			name: "whitespace-only model is ignored",
@@ -801,6 +801,56 @@ func TestRunTool_AgentToolPrefix_DelegatesViaPeer(t *testing.T) {
 	}
 }
 
+func TestRunTool_AgentToolPrefix_StructuredPeerResultEnvelope(t *testing.T) {
+	agentDir := t.TempDir()
+	loader := NewLoader([]string{agentDir})
+
+	callerDef := &agent.Definition{
+		ID:                    "caller-structured",
+		Enabled:               true,
+		Agents:                []string{"peer-structured"},
+		StructuredPeerResults: true,
+		LLM:                   agent.LLMConfig{Provider: "test", Model: "fake-model"},
+	}
+	peerDef := &agent.Definition{
+		ID:       "peer-structured",
+		Name:     "Peer Structured",
+		Enabled:  true,
+		MaxTurns: 1,
+		LLM:      agent.LLMConfig{Provider: "test", Model: "fake-model"},
+		Builtins: strListPtr(),
+	}
+	for _, d := range []*agent.Definition{callerDef, peerDef} {
+		if err := loader.Upsert(agentDir, d); err != nil {
+			t.Fatalf("upsert %s: %v", d.ID, err)
+		}
+	}
+
+	provider := &fakeHandleProvider{}
+	provider.responses = []llm.CompletionResponse{
+		{Content: `{"summary":"Paris","citations":["source-a"],"confidence":"high"}`},
+	}
+	router := llm.NewRouter("test")
+	router.Register(provider)
+
+	mem, _ := memory.NewFileStore(t.TempDir())
+	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
+
+	result, err := e.runTool(context.Background(), callerDef, "sess-structured", message.ToolCall{
+		ID:        "call-peer-structured",
+		Name:      AgentToolPrefix + "peer-structured",
+		Arguments: map[string]any{"message": "summarize"},
+	})
+	if err != nil {
+		t.Fatalf("runTool peer delegation: %v", err)
+	}
+	for _, want := range []string{"SOULACY_AGENT_RESULT", `"target_agent": "peer-structured"`, `"structured":`, `"confidence": "high"`} {
+		if !strings.Contains(result, want) {
+			t.Fatalf("structured result missing %q: %s", want, result)
+		}
+	}
+}
+
 // TestRunTool_SystemTool_RequiresDoubleOptIn ensures that system tools (like
 // shell_exec) are NOT dispatched when either allowSystemAgents or
 // def.SystemTools is false.
@@ -950,4 +1000,3 @@ func builtinNameSet(tools []BuiltinTool) map[string]bool {
 	}
 	return out
 }
-

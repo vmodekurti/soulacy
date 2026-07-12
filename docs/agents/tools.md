@@ -10,6 +10,8 @@ tools:
     description: Fetch the current weather for a location.
     python_file: tools/get_weather.py
     timeout: 30s
+    retries: 1
+    retry_backoff: 1s
     parameters:
       type: object
       properties:
@@ -40,6 +42,8 @@ Each entry under `tools:` needs:
 | `inline` | Alternative to `python_file`: a Python script embedded in YAML. |
 | `parameters` | JSON Schema object describing the arguments. |
 | `timeout` | Per-tool override of the global `runtime.tool_timeout`. Go duration syntax: `30s`, `5m`, `1h`. |
+| `retries` | Number of extra attempts after a Python tool fails. Defaults to `0`; capped at `5`. |
+| `retry_backoff` | Wait before each retry. Defaults to `1s`; capped at `30s`. |
 
 How a call executes:
 
@@ -56,6 +60,12 @@ How a call executes:
     Set `timeout` per tool instead of weakening the global default. A
     NotebookLM export that legitimately takes 20 minutes gets `timeout: 30m`;
     everything else keeps the safety net.
+
+!!! tip
+    Use `retries` only for idempotent, transient work such as fetching a URL,
+    parsing a flaky API response, or reading a remote document. Do not retry
+    tools that send messages, write durable records, place orders, or perform
+    any side effect that would be harmful if repeated.
 
 ## The Sandbox
 

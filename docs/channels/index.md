@@ -15,10 +15,11 @@ Channels are adapters that connect agents to messaging platforms. Each channel h
 
 ## How channels route to agents
 
-There are two related configuration layers:
+There are three related configuration layers:
 
 1. `config.yaml` chooses which agent a channel adapter routes inbound messages to.
 2. The agent's `SOUL.yaml` `channels:` list declares which channels that agent is intended to be reachable on.
+3. `default_output_to` gives scheduled or one-off sends a destination when the caller does not provide `to`.
 
 For a simple single-bot channel, `agent_id` is the routing target:
 
@@ -39,6 +40,19 @@ channels:
 ```
 
 At runtime, Telegram inbound messages become messages with `channel: telegram` and `agent_id: assistant`. The engine handles the message and the channel registry sends the reply back through the same adapter ID.
+
+Inbound replies and outbound reports are intentionally different:
+
+| Need | Configure | Result |
+| --- | --- | --- |
+| One default bot for cron/non-interactive reports | Top-level channel token plus `default_output_to`; optionally `outbound_only: true` | Schedules and `channel.send` can send when no per-run destination is supplied |
+| One interactive bot for one agent | A bot mapping with `agent_id` and platform credentials | Messages to that bot invoke exactly that agent |
+| Multiple interactive bots | Multiple bot mappings, one per agent | Each mapping gets its own adapter ID such as `telegram-weather-agent` |
+| One agent to answer in the same chat that triggered it | Agent `trigger: channel` and matching `channels:` entry | Soulacy replies to the inbound chat/thread automatically; no `channel.send` step is required |
+
+The default outbound sender is a fallback for delivery. It is not the same thing
+as an interactive bot mapping. Interactive mappings are what make a channel
+message invoke an agent.
 
 ## Activation safety
 
@@ -161,6 +175,12 @@ Tool input:
 `channel` is the adapter ID shown in **Channels**. `to` is the platform-native
 destination: Telegram chat ID, Slack channel/user ID, Discord channel ID,
 WhatsApp recipient, or a custom sidecar thread ID.
+
+If `to` is omitted, Soulacy can only infer it when the run came from an inbound
+chat/thread or the selected channel mapping has `default_output_to` configured.
+For interactive channel agents, prefer returning the final answer normally. Use
+`channel.send` only for out-of-band delivery, such as sending a second copy of a
+report to a team channel.
 
 ## Multi-channel agents
 

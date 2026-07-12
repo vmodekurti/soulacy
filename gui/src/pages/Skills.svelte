@@ -18,6 +18,7 @@
   // Skill sources modal (Story E26: review a URL → add as registry source)
   let srcModal   = false
   let srcURL     = ''
+  let srcAuthToken = ''
   let srcBusy    = false
   let srcError   = ''
   let srcSuccess = ''
@@ -30,6 +31,10 @@
   let findChecked = []
   let findSuggestions = []
   let findStatus = ''
+  let allowUnverifiedInstall = false
+  let installingSlug = ''
+  let installResult = ''
+  let installError = ''
 
   async function load() {
     loading = true
@@ -90,7 +95,8 @@
   }
 
   async function openSrcModal() {
-    srcURL = ''; srcError = ''; srcSuccess = ''; srcReport = null
+    srcURL = ''; srcAuthToken = ''; srcError = ''; srcSuccess = ''; srcReport = null
+    installResult = ''; installError = ''; installingSlug = ''
     srcModal = true
     try {
       const res = await api.registries.list()
@@ -116,9 +122,11 @@
     srcBusy = true; srcError = ''
     try {
       const s = srcReport.suggested
+      const auth = registryAuthHeaders(srcAuthToken)
       const res = await api.registries.add({
         id: s.ID || s.id, type: s.Type || s.type,
         base_url: s.BaseURL || s.base_url || '', priority: s.Priority || s.priority || 0,
+        ...(auth ? { auth_headers: auth } : {}),
       })
       srcSuccess = res.message || 'Source saved.'
       const list = await api.registries.list()
@@ -132,9 +140,16 @@
     }
   }
 
+  function registryAuthHeaders(token) {
+    token = String(token || '').trim()
+    if (!token) return null
+    return { Authorization: /^Bearer\s+/i.test(token) ? token : `Bearer ${token}` }
+  }
+
   async function findSkills() {
     if (!findQ.trim()) return
-    findBusy = true; srcError = ''; findResults = null; findWarnings = []; findChecked = []; findSuggestions = []; findStatus = ''
+    findBusy = true; srcError = ''; installError = ''; installResult = ''
+    findResults = null; findWarnings = []; findChecked = []; findSuggestions = []; findStatus = ''
     try {
       const res = await api.registries.search(findQ.trim())
       findResults = res.packages || []
@@ -149,6 +164,43 @@
     }
   }
 
+  async function installSkill(pkg) {
+    if (!pkg?.slug || pkg.provider === 'local' || pkg.manifest?.installed) return
+    installingSlug = pkg.slug
+    installError = ''
+    installResult = ''
+    try {
+      const res = await api.skills.install({
+        slug: pkg.slug,
+        allow_unverified: allowUnverifiedInstall,
+      })
+      installResult = res.message || `Installed ${pkg.slug}.`
+      await load()
+    } catch (e) {
+      if (e.body?.code === 'unverified_package') {
+        installError = [e.body.error, e.body.remedy].filter(Boolean).join(' ')
+      } else if (e.body?.code === 'danger_verdict') {
+        installError = `${e.message}: ${securitySummary(e.body.security_report)}`
+      } else {
+        installError = e.message
+      }
+    } finally {
+      installingSlug = ''
+    }
+  }
+
+  async function installDirectQuery() {
+    const slug = findQ.trim()
+    if (!slug) return
+    await installSkill({ slug, provider: 'direct' })
+  }
+
+  function securitySummary(report) {
+    const findings = report?.findings || []
+    if (!findings.length) return 'No detailed findings were returned.'
+    return findings.slice(0, 3).map((f) => f.message || f.title || f.kind || 'security finding').join('; ')
+  }
+
   const kindLabels = {
     skillssh: '📚 Skill directory (skills.sh-compatible)',
     http:     '📦 Soulacy package registry',
@@ -156,12 +208,17 @@
     unknown:  '❓ Not a recognisable registry',
   }
 
+  $: authWarning = (findWarnings || []).find((w) => /authentication_required|requires authentication|VERCEL_OIDC_TOKEN|401|unauthorized/i.test(String(w)))
+  $: noResultMessage = authWarning
+    ? 'The search source answered, but it requires authentication before it can return skills.'
+    : (findWarnings.length > 0 ? 'No installable results were returned by the available sources.' : 'No skills matched.')
+
   onMount(load)
 </script>
 
 <div class="page">
   <div class="page-header">
-    <h1>Agent Skills</h1>
+    <h1>Skills</h1>
     <div class="header-actions">
       <button class="btn-as" on:click={openSrcModal}>➕ Skill sources</button>
       <button class="btn-as" on:click={openASModal}>⚡ From AgenticSkills</button>
@@ -236,8 +293,31 @@
               </div>
             {/if}
             {#if findResults.length === 0}
-              <p>{findWarnings.length > 0 ? 'No installable results were returned by the available sources.' : 'No skills matched.'}</p>
+              <p>{noResultMessage}</p>
+              {#if authWarning}
+                <div class="src-auth-help">
+                  The public skills.sh API requires a Vercel OIDC bearer token. Add an auth header for the source, or set <code>VERCEL_OIDC_TOKEN</code> before starting Soulacy. You can also paste an exact GitHub source or full registry slug and try direct install below.
+                </div>
+              {/if}
+              <label class="unverified-toggle">
+                <input type="checkbox" bind:checked={allowUnverifiedInstall} />
+                <span>Allow unverified installs from sources I trust</span>
+              </label>
+              {#if installError}<div class="as-err">{installError}</div>{/if}
+              {#if installResult}<div class="as-ok">✓ {installResult}</div>{/if}
+              <div class="direct-install">
+                <code>{findQ.trim()}</code>
+                <button class="btn-install" on:click={installDirectQuery} disabled={installingSlug === findQ.trim()}>
+                  {installingSlug === findQ.trim() ? 'Installing…' : 'Try direct install'}
+                </button>
+              </div>
             {:else}
+              <label class="unverified-toggle">
+                <input type="checkbox" bind:checked={allowUnverifiedInstall} />
+                <span>Allow unverified installs from sources I trust</span>
+              </label>
+              {#if installError}<div class="as-err">{installError}</div>{/if}
+              {#if installResult}<div class="as-ok">✓ {installResult}</div>{/if}
               {#each findResults.slice(0, 10) as pkg}
                 <div class="find-row">
                   <code>{pkg.slug}</code>
@@ -245,7 +325,9 @@
                   {#if pkg.provider === 'local' || pkg.manifest?.installed}
                     <span class="find-install installed">already installed</span>
                   {:else}
-                    <span class="find-install">install: <code>sy skill install {pkg.slug}</code></span>
+                    <button class="btn-install" on:click={() => installSkill(pkg)} disabled={installingSlug === pkg.slug}>
+                      {installingSlug === pkg.slug ? 'Installing…' : 'Install'}
+                    </button>
                   {/if}
                 </div>
               {/each}
@@ -273,6 +355,17 @@
             {srcBusy ? 'Reviewing…' : '🔍 Review'}
           </button>
         </div>
+        <label class="src-auth-input">
+          <span>Auth token <em>optional</em></span>
+          <input
+            class="as-input"
+            type="password"
+            aria-label="Registry auth token"
+            placeholder="Paste Vercel OIDC token or Bearer token for protected sources"
+            bind:value={srcAuthToken}
+            disabled={srcBusy}
+          />
+        </label>
 
         {#if srcError}<div class="as-err">{srcError}</div>{/if}
         {#if srcSuccess}<div class="as-ok">✓ {srcSuccess}</div>{/if}
@@ -603,6 +696,13 @@
   .src-url { color: #6b7294; font-size: .75rem; overflow: hidden; text-overflow: ellipsis; }
   .src-probe-row { display: flex; gap: .5rem; align-items: stretch; }
   .src-probe-row .as-input { flex: 1; }
+  .src-auth-input {
+    display: flex; flex-direction: column; gap: .35rem; margin-top: .55rem;
+    font-size: .72rem; color: #8b91b3; text-transform: uppercase; letter-spacing: .06em;
+  }
+  .src-auth-input em {
+    color: #6b7294; font-style: normal; font-weight: 500; text-transform: none; letter-spacing: 0;
+  }
   .src-report {
     margin-top: .7rem; background: #0e1020; border: 1px solid #2a2f4a;
     border-radius: 8px; padding: .7rem .8rem; font-size: .83rem; color: #c8cadf;
@@ -625,15 +725,44 @@
   }
   .src-suggestions p { margin: 0 0 .35rem; }
   .src-suggestions p:last-child { margin-bottom: 0; }
+  .src-auth-help {
+    margin-top: .45rem; padding: .55rem .65rem; border-radius: 7px;
+    border: 1px solid rgba(76,175,130,.35); background: rgba(76,175,130,.08);
+    color: #8bd6b0; font-size: .78rem; line-height: 1.45;
+  }
+  .src-auth-help code {
+    background: rgba(76,175,130,.14); color: #c6f3d9;
+    padding: .05rem .25rem; border-radius: 4px;
+  }
+  .unverified-toggle {
+    display: flex; align-items: center; gap: .45rem; margin: .2rem 0 .65rem;
+    color: #9aa0c0; font-size: .78rem; line-height: 1.35;
+  }
+  .unverified-toggle input { accent-color: #6c63ff; }
   .find-row {
-    display: flex; flex-wrap: wrap; align-items: baseline; gap: .5rem;
+    display: flex; flex-wrap: wrap; align-items: center; gap: .5rem;
     padding: .3rem 0; border-bottom: 1px solid #1c2038; font-size: .8rem;
   }
   .find-row > code { color: #8b85ff; }
+  .direct-install {
+    display: flex; align-items: center; gap: .55rem; flex-wrap: wrap;
+    margin-top: .65rem; padding-top: .65rem; border-top: 1px solid #1c2038;
+  }
+  .direct-install code {
+    color: #8b85ff; background: rgba(108,99,255,.1);
+    border: 1px solid rgba(108,99,255,.2); border-radius: 5px;
+    padding: .18rem .45rem; word-break: break-all;
+  }
   .find-desc { color: #9aa0c0; flex: 1; min-width: 12rem; }
   .find-install { color: #6b7294; font-size: .72rem; }
   .find-install.installed { color: #4caf82; font-weight: 650; }
-  .find-install code { color: #4caf82; }
+  .btn-install {
+    border: 1px solid rgba(108,99,255,.45); background: rgba(108,99,255,.14);
+    color: #c8c5ff; border-radius: 6px; padding: .28rem .6rem;
+    font-size: .74rem; font-weight: 700; cursor: pointer;
+  }
+  .btn-install:hover { background: rgba(108,99,255,.22); }
+  .btn-install:disabled { opacity: .55; cursor: not-allowed; }
   .src-samples code {
     background: rgba(108,99,255,.12); border-radius: 4px;
     padding: .1rem .4rem; font-size: .72rem; color: #ada8ff;

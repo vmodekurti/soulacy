@@ -13,6 +13,7 @@ func validConfig() *Config {
 	c.Runtime.MaxConcurrentSessions = 100
 	c.Runtime.DefaultMaxTurns = 20
 	c.Runtime.MaxTurnsCeiling = 50
+	c.Runtime.MaxAgentCallDepth = 5
 	c.Runtime.MaxSessions = 10000
 	c.Runtime.MaxHistoryTurns = 100
 	c.Runtime.ToolTimeout = "120s"
@@ -47,6 +48,7 @@ func TestValidate_BadDuration(t *testing.T) {
 func TestValidate_RangeViolations(t *testing.T) {
 	cases := map[string]func(*Config){
 		"negative max_turns":     func(c *Config) { c.Runtime.DefaultMaxTurns = -1 },
+		"negative agent depth":   func(c *Config) { c.Runtime.MaxAgentCallDepth = -1 },
 		"port out of range":      func(c *Config) { c.Server.Port = 70000 },
 		"overlap >= chunk size":  func(c *Config) { c.Knowledge.ChunkOverlap = 1000 },
 		"default above ceiling":  func(c *Config) { c.Runtime.DefaultMaxTurns = 200 },

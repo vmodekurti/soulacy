@@ -48,6 +48,36 @@ memory:
 	}
 }
 
+func TestLoadCostsPricingConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(cfgPath, []byte(`
+costs:
+  pricing:
+    openai/gpt-test:
+      input_per_mtok: 1.5
+      output_per_mtok: 6
+    omniroute/*:
+      input_per_mtok: 0.25
+      output_per_mtok: 0.75
+`), 0600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := Load(cfgPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Costs.Pricing["openai/gpt-test"]; got.InputPerMTok != 1.5 || got.OutputPerMTok != 6 {
+		t.Fatalf("openai pricing = %+v", got)
+	}
+	if got := cfg.Costs.Pricing["omniroute/*"]; got.InputPerMTok != 0.25 || got.OutputPerMTok != 0.75 {
+		t.Fatalf("omniroute pricing = %+v", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Load — pure-defaults path (no config file, no env overrides)
 // ---------------------------------------------------------------------------
@@ -86,6 +116,9 @@ func TestLoadNoConfigFileUsesDefaults(t *testing.T) {
 	}
 	if cfg.Runtime.DefaultMaxTurns != 20 {
 		t.Errorf("runtime.default_max_turns = %d, want 20", cfg.Runtime.DefaultMaxTurns)
+	}
+	if cfg.Runtime.MaxAgentCallDepth != 5 {
+		t.Errorf("runtime.max_agent_call_depth = %d, want 5", cfg.Runtime.MaxAgentCallDepth)
 	}
 	if cfg.Runtime.PythonBin != "python3" {
 		t.Errorf("runtime.python_bin = %q, want python3", cfg.Runtime.PythonBin)

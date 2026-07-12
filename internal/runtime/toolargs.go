@@ -65,6 +65,15 @@ func argContentText(args map[string]any, key string) string {
 	return strings.TrimSpace(fmt.Sprintf("%v", v))
 }
 
+func argContentTextFirst(args map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if s := strings.TrimSpace(argContentText(args, key)); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 func stripMarkdownJSONFence(s string) string {
 	t := strings.TrimSpace(s)
 	if !strings.HasPrefix(t, "```") {

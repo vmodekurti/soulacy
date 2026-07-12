@@ -6,6 +6,7 @@
 
   let channels = []
   let agents   = []
+  let tiers    = {}
   let loading  = true
   let error    = ''
   let notice   = ''
@@ -13,6 +14,7 @@
   let restartNeeded = false
   let restarting = false
   let diagnosis = {}   // adapterId → { ok, category, reason, fix, detail, to }
+  let channelMetrics = { inbound: [], outbound: [], inbox_drops: [] }
 
   // Edit modal state
   let editing   = null   // the channel being edited
@@ -46,17 +48,34 @@
     loading = true
     error   = ''
     try {
-      const [channelRes, agentRes] = await Promise.all([
+      const [channelRes, agentRes, metricsRes] = await Promise.all([
         api.channels.list(),
         api.agents.list().catch(() => ({ agents })),
+        api.channels.metrics().catch(() => ({ inbound: [], outbound: [], inbox_drops: [] })),
       ])
       channels = channelRes.channels || []
       agents = agentRes.agents || []
+      channelMetrics = metricsRes || { inbound: [], outbound: [], inbox_drops: [] }
+      loadTiers(agents)
     } catch (e) {
       error = e.message
     } finally {
       loading = false
     }
+  }
+
+  async function loadTiers(list) {
+    const next = {}
+    await Promise.all((list || []).map(async (agent) => {
+      if (!agent?.id) return
+      try {
+        const res = await api.agents.tier(agent.id)
+        next[agent.id] = { tier: res?.tier || 'unknown', reasons: res?.reasons || [] }
+      } catch (_) {
+        next[agent.id] = { tier: 'unknown', reasons: [] }
+      }
+    }))
+    tiers = next
   }
 
   async function toggleChannel(ch) {
@@ -301,6 +320,7 @@
         outbound_only: isTruthy(bot.outbound_only),
         connected: bot._connected,
         detail: bot._detail,
+        _blocked_reason: bot._blocked_reason || '',
       })))
       return rows
     }
@@ -383,6 +403,52 @@
     return agent.name && agent.name !== agent.id ? `${agent.id} — ${agent.name}` : agent.id
   }
 
+  function mappingTier(row) {
+    if (!row || row.outbound_only) return null
+    const id = row.agent_id
+    if (!id || id === '—' || id === 'Send only' || id === 'Default sender') return null
+    return tiers[id] || { tier: 'unknown', reasons: [] }
+  }
+
+  function channelMetricIDs(ch) {
+    const ids = new Set([ch.id])
+    for (const row of mappingRows(ch)) {
+      if (row.adapter_id) ids.add(row.adapter_id)
+    }
+    return ids
+  }
+
+  function metricSum(rows = [], ids, outcome = '') {
+    return rows
+      .filter(row => ids.has(row.channel) && (!outcome || row.outcome === outcome))
+      .reduce((sum, row) => sum + Number(row.count || 0), 0)
+  }
+
+  function channelTraffic(ch) {
+    const ids = channelMetricIDs(ch)
+    return {
+      inbound: metricSum(channelMetrics.inbound, ids),
+      success: metricSum(channelMetrics.outbound, ids, 'success'),
+      error: metricSum(channelMetrics.outbound, ids, 'error'),
+      unregistered: metricSum(channelMetrics.outbound, ids, 'unregistered'),
+      drops: metricSum(channelMetrics.inbox_drops, ids),
+    }
+  }
+
+  function hasTraffic(ch) {
+    const t = channelTraffic(ch)
+    return t.inbound || t.success || t.error || t.unregistered || t.drops
+  }
+
+  function tierLabel(tier) {
+    switch (tier) {
+      case 'read_only': return 'Read-only'
+      case 'active': return 'Active'
+      case 'privileged': return 'Privileged'
+      default: return 'Unknown'
+    }
+  }
+
   async function restartGateway() {
     restarting = true
     error = ''
@@ -400,7 +466,7 @@
 
 <div class="page">
   <div class="page-header">
-    <h1>Channels</h1>
+    <h1>Delivery</h1>
     <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
   </div>
 
@@ -492,6 +558,11 @@
                     </div>
                     <div class="mapping-actions">
                       <strong class:send-only={row.outbound_only}>{row.agent_id}</strong>
+                      {#if mappingTier(row)}
+                        <span class="tier-chip" class:read={mappingTier(row).tier === 'read_only'} class:active-tier={mappingTier(row).tier === 'active'} class:privileged={mappingTier(row).tier === 'privileged'}>
+                          {tierLabel(mappingTier(row).tier)}
+                        </span>
+                      {/if}
                       {#if ch.id !== 'http'}
                         <button
                           class="btn-secondary tiny"
@@ -509,6 +580,15 @@
                         </button>
                       {/if}
                     </div>
+                    {#if row._blocked_reason}
+                      <div class="mapping-warning">
+                        This mapping is blocked because {row._blocked_reason}. Open settings, enable privileged exposure for this bot, save, then restart.
+                      </div>
+                    {:else if mappingTier(row)?.tier === 'privileged'}
+                      <div class="mapping-warning">
+                        This bot exposes a privileged agent. Keep allowlists and trigger phrases tight, and require explicit exposure approval before restart.
+                      </div>
+                    {/if}
                     {#if diagnosis[row.adapter_id]}
                       <div class="diag-result {diagnosis[row.adapter_id].ok ? 'ok' : 'bad'}">
                         <div class="diag-head">
@@ -522,6 +602,20 @@
                     {/if}
                   </div>
                 {/each}
+              </div>
+            {/if}
+
+            {#if hasTraffic(ch)}
+              {@const traffic = channelTraffic(ch)}
+              <div class="settings traffic">
+                <span class="settings-title">Traffic</span>
+                <div class="traffic-grid">
+                  <span title="Inbound messages accepted by Soulacy for this channel or its bot mappings."><strong>{traffic.inbound}</strong><em>in</em></span>
+                  <span title="Outbound messages sent successfully."><strong>{traffic.success}</strong><em>sent</em></span>
+                  <span class:bad={traffic.error > 0} title="Outbound sends that reached an adapter but failed."><strong>{traffic.error}</strong><em>errors</em></span>
+                  <span class:bad={traffic.unregistered > 0} title="Outbound sends attempted before a matching adapter was registered."><strong>{traffic.unregistered}</strong><em>unregistered</em></span>
+                  <span class:bad={traffic.drops > 0} title="Inbound messages dropped because the shared inbox was full."><strong>{traffic.drops}</strong><em>dropped</em></span>
+                </div>
               </div>
             {/if}
 
@@ -851,7 +945,7 @@
   .settings { margin-top: .35rem; padding-top: .5rem; border-top: 1px solid #1a1e36; display: flex; flex-direction: column; gap: .4rem; }
   .settings-title { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: #555a7a; font-weight: 600; }
   .mapping-row {
-    display: flex; align-items: center; justify-content: space-between; gap: .75rem;
+    display: flex; align-items: center; justify-content: space-between; gap: .55rem .75rem; flex-wrap: wrap;
     padding: .45rem .55rem; background: #101323; border: 1px solid #1a1e36; border-radius: 7px;
   }
   .mapping-row div { min-width: 0; display: flex; flex-direction: column; gap: .15rem; }
@@ -862,6 +956,61 @@
   .mapping-row strong.send-only { color: #4caf82; }
   .mapping-actions { display: flex; align-items: center; justify-content: flex-end; gap: .35rem; min-width: 7rem; }
   .mapping-actions strong { max-width: 9rem; }
+  .mapping-actions .tier-chip {
+    display: inline-flex; width: fit-content; padding: .1rem .4rem; border-radius: 999px;
+    border: 1px solid #303656; background: #0d1020; color: #9aa2c9;
+    font-size: .6rem; font-weight: 800; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .mapping-actions .tier-chip.read { border-color: rgba(118,224,162,.35); color: #76e0a2; background: rgba(76,175,130,.08); }
+  .mapping-actions .tier-chip.active-tier { border-color: rgba(139,133,255,.42); color: #aaa6ff; background: rgba(108,99,255,.1); }
+  .mapping-actions .tier-chip.privileged { border-color: rgba(255,128,128,.45); color: #ff9b9b; background: rgba(255,90,90,.1); }
+  .mapping-warning {
+    flex: 1 0 100%;
+    padding: .45rem .55rem;
+    border-radius: 6px;
+    border: 1px solid rgba(240,96,96,.32);
+    background: rgba(240,96,96,.08);
+    color: #ffb0b0;
+    font-size: .72rem;
+    line-height: 1.4;
+  }
+  .traffic-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: .35rem;
+  }
+  .traffic-grid span {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: .08rem;
+    padding: .35rem .25rem;
+    border: 1px solid #1a1e36;
+    border-radius: 6px;
+    background: #101323;
+  }
+  .traffic-grid strong {
+    color: #dfe2ff;
+    font-size: .82rem;
+    line-height: 1;
+  }
+  .traffic-grid em {
+    color: #6b7294;
+    font-size: .58rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+    font-style: normal;
+    text-align: center;
+  }
+  .traffic-grid span.bad {
+    border-color: rgba(240,96,96,.35);
+    background: rgba(240,96,96,.07);
+  }
+  .traffic-grid span.bad strong,
+  .traffic-grid span.bad em {
+    color: #ff9b9b;
+  }
   .diagnostics { margin-top: .35rem; padding-top: .5rem; border-top: 1px solid #1a1e36; display: flex; flex-direction: column; gap: .4rem; }
   .diag-row {
     display: grid; grid-template-columns: 3.8rem minmax(0,1fr); gap: .25rem .45rem;

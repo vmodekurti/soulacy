@@ -351,8 +351,8 @@
   <div class="page-header">
     <div class="title-row">
       <span class="page-icon">🧠</span>
-      <h1>Brain Memory</h1>
-      <span class="subtitle">Episodic · Procedural · Semantic</span>
+      <h1>Learning</h1>
+      <span class="subtitle">Memory · Procedures · Review queue</span>
     </div>
     <div class="hdr-actions">
       <select bind:value={selectedID} class="agent-select">
@@ -367,7 +367,7 @@
 
   {#if !brainEnabled}
     <div class="banner warn">
-      ⚠ Brain memory is not enabled. Set <code>SOULACY_MEMORY_DIR</code> and restart Soulacy.
+      ⚠ Learning memory is not enabled. Set <code>SOULACY_MEMORY_DIR</code> and restart Soulacy.
     </div>
   {/if}
   {#if error}  <div class="banner err">⚠ {error}</div>{/if}

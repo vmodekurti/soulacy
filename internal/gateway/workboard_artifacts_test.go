@@ -118,6 +118,19 @@ func (f *fakeTailBackend) Close() error                { return nil }
 func (f *fakeTailBackend) Tail(agentID string, limit int) ([]message.Event, error) {
 	return f.events, nil
 }
+func (f *fakeTailBackend) QueryFiltered(agentID string, limit int, allowed map[string]bool) ([]message.Event, error) {
+	out := make([]message.Event, 0, len(f.events))
+	for _, ev := range f.events {
+		if ev.AgentID != agentID {
+			continue
+		}
+		if len(allowed) > 0 && !allowed[ev.Type] {
+			continue
+		}
+		out = append(out, ev)
+	}
+	return out, nil
+}
 func (f *fakeTailBackend) IncompleteMessageIns(time.Time) ([][]byte, error) { return nil, nil }
 func (f *fakeTailBackend) CountMessageInAttempts(string, string, time.Time) (int, error) {
 	return 0, nil

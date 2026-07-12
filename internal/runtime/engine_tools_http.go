@@ -32,15 +32,27 @@ func (e *Engine) buildHTTPTools() []BuiltinTool {
 						"type":        "string",
 						"description": "The URL to fetch (http or https)",
 					},
+					"uri": map[string]any{
+						"type":        "string",
+						"description": "Compatibility alias for url.",
+					},
+					"link": map[string]any{
+						"type":        "string",
+						"description": "Compatibility alias for url.",
+					},
+					"href": map[string]any{
+						"type":        "string",
+						"description": "Compatibility alias for url.",
+					},
 					"max_bytes": map[string]any{
 						"type":        "integer",
 						"description": "Maximum response bytes to return (default 256 KB, max 1 MB)",
 					},
 				},
-				"required": []string{"url"},
+				"required": []string{},
 			},
 			Handler: func(ctx context.Context, args map[string]any) (string, error) {
-				rawURL := strings.TrimSpace(argString(args, "url"))
+				rawURL := strings.TrimSpace(argStringFirst(args, "url", "uri", "link", "href"))
 				if rawURL == "" {
 					return "", fmt.Errorf("fetch_url: url is required")
 				}

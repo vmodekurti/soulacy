@@ -81,6 +81,15 @@ func supportBundleOptions() supportbundle.Options {
 		LogDirs:    logDirs,
 		Workspace:  supportWorkspaceMap(ws),
 		Doctor:     collectDoctorReport(),
+		ExtraJSON: map[string]any{
+			"release": map[string]any{
+				"version":         config.Version,
+				"update_manifest": resolveUpdateManifestSource(""),
+				"updates_ready":   resolveUpdateManifestSource("") != "",
+				"dry_run_command": "sy update install --dry-run",
+				"install_command": "sy update install --yes",
+			},
+		},
 	}
 }
 

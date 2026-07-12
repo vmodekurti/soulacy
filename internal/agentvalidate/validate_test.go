@@ -101,6 +101,38 @@ func TestDefinitionWarnsWeakToolModel(t *testing.T) {
 	}
 }
 
+func TestDefinitionWarnsRiskyBuiltinsWithoutConfirmTools(t *testing.T) {
+	builtins := []string{"web_search", "shell_exec"}
+	def := &agent.Definition{
+		ID:       "risky-agent",
+		Trigger:  agent.TriggerChannel,
+		LLM:      agent.LLMConfig{Provider: "ollama", Model: "qwen2.5:72b"},
+		Builtins: &builtins,
+	}
+	report := Definition(def, "", Options{}, Report{})
+	if !report.Valid {
+		t.Fatalf("risky builtins should warn, not fail: %+v", report)
+	}
+	if !hasFinding(report, "high-risk built-in tool(s)") {
+		t.Fatalf("expected risky builtin confirmation warning, got %+v", report.Findings)
+	}
+}
+
+func TestDefinitionDoesNotWarnRiskyBuiltinsWhenConfirmAll(t *testing.T) {
+	builtins := []string{"web_search", "shell_exec"}
+	def := &agent.Definition{
+		ID:           "guarded-agent",
+		Trigger:      agent.TriggerChannel,
+		LLM:          agent.LLMConfig{Provider: "ollama", Model: "qwen2.5:72b"},
+		Builtins:     &builtins,
+		ConfirmTools: []string{"all"},
+	}
+	report := Definition(def, "", Options{}, Report{})
+	if hasFinding(report, "high-risk built-in tool(s)") {
+		t.Fatalf("confirm_tools: [all] should satisfy risky builtin warning, got %+v", report.Findings)
+	}
+}
+
 func TestBytesRejectsLegacyTopLevelModelShape(t *testing.T) {
 	report := Bytes([]byte(`
 id: legacy

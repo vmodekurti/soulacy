@@ -43,3 +43,19 @@ func TestTurnsCeiling(t *testing.T) {
 		t.Fatalf("ceiling = %d, want 12", got)
 	}
 }
+
+// TestAgentCallDepthLimit verifies the peer-agent recursion guard resolution.
+func TestAgentCallDepthLimit(t *testing.T) {
+	e := &Engine{}
+	if got := e.agentCallDepthLimit(); got != defaultMaxAgentCallDepth {
+		t.Fatalf("unset depth should default to %d, got %d", defaultMaxAgentCallDepth, got)
+	}
+	e.SetMaxAgentCallDepth(0)
+	if got := e.agentCallDepthLimit(); got != defaultMaxAgentCallDepth {
+		t.Fatalf("SetMaxAgentCallDepth(0) should default to %d, got %d", defaultMaxAgentCallDepth, got)
+	}
+	e.SetMaxAgentCallDepth(9)
+	if got := e.agentCallDepthLimit(); got != 9 {
+		t.Fatalf("depth limit = %d, want 9", got)
+	}
+}

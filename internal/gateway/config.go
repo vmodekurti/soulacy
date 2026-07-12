@@ -69,6 +69,7 @@ func (s *Server) safeConfigView() fiber.Map {
 		"runtime": fiber.Map{
 			"max_concurrent_sessions": cfg.Runtime.MaxConcurrentSessions,
 			"default_max_turns":       cfg.Runtime.DefaultMaxTurns,
+			"max_agent_call_depth":    cfg.Runtime.MaxAgentCallDepth,
 			"python_bin":              cfg.Runtime.PythonBin,
 			"tool_timeout":            cfg.Runtime.ToolTimeout,
 		},
@@ -99,6 +100,9 @@ func (s *Server) safeConfigView() fiber.Map {
 		"search": fiber.Map{
 			"provider": cfg.Search.Provider,
 			"api_key":  searchAPIKey,
+		},
+		"costs": fiber.Map{
+			"pricing": cfg.Costs.Pricing,
 		},
 		"agent_dirs":     cfg.AgentDirs,
 		"skill_dirs":     cfg.SkillDirs,
@@ -195,6 +199,7 @@ type PatchableConfig struct {
 	Runtime *struct {
 		MaxConcurrentSessions int    `json:"max_concurrent_sessions" yaml:"max_concurrent_sessions"`
 		DefaultMaxTurns       int    `json:"default_max_turns" yaml:"default_max_turns"`
+		MaxAgentCallDepth     int    `json:"max_agent_call_depth" yaml:"max_agent_call_depth"`
 		PythonBin             string `json:"python_bin" yaml:"python_bin"`
 		ToolTimeout           string `json:"tool_timeout" yaml:"tool_timeout"`
 	} `json:"runtime" yaml:"runtime"`
@@ -229,6 +234,13 @@ type PatchableConfig struct {
 		Provider string `json:"provider" yaml:"provider"`
 		APIKey   string `json:"api_key" yaml:"api_key"`
 	} `json:"search" yaml:"search"`
+
+	Costs *struct {
+		Pricing map[string]struct {
+			InputPerMTok  float64 `json:"input_per_mtok" yaml:"input_per_mtok"`
+			OutputPerMTok float64 `json:"output_per_mtok" yaml:"output_per_mtok"`
+		} `json:"pricing" yaml:"pricing"`
+	} `json:"costs" yaml:"costs"`
 
 	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDirs []string `json:"skill_dirs" yaml:"skill_dirs"`
@@ -377,6 +389,9 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		if patch.Runtime.DefaultMaxTurns != 0 {
 			rt["default_max_turns"] = patch.Runtime.DefaultMaxTurns
 		}
+		if patch.Runtime.MaxAgentCallDepth != 0 {
+			rt["max_agent_call_depth"] = patch.Runtime.MaxAgentCallDepth
+		}
 		if patch.Runtime.PythonBin != "" {
 			rt["python_bin"] = patch.Runtime.PythonBin
 		}
@@ -409,6 +424,21 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		if patch.Search.APIKey != "" && patch.Search.APIKey != "***" {
 			sr["api_key"] = patch.Search.APIKey
 		}
+	}
+	if patch.Costs != nil {
+		cs := getOrCreateMap(dst, "costs")
+		pricing := map[string]any{}
+		for selector, price := range patch.Costs.Pricing {
+			key := strings.TrimSpace(selector)
+			if key == "" {
+				continue
+			}
+			pricing[key] = map[string]any{
+				"input_per_mtok":  price.InputPerMTok,
+				"output_per_mtok": price.OutputPerMTok,
+			}
+		}
+		cs["pricing"] = pricing
 	}
 	if patch.Log != nil {
 		lg := getOrCreateMap(dst, "log")

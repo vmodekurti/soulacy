@@ -54,6 +54,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/pkg/agent"
+	"github.com/soulacy/soulacy/pkg/message"
 )
 
 // ── handleHealth degraded / provider list ────────────────────────────────────
@@ -1027,6 +1028,62 @@ func TestGatewayHandleUpdateAgent_BadJSON(t *testing.T) {
 	status, body := gatewayJSON(t, s, http.MethodPut, "/api/v1/agents/bad-json-agent", "secret", `{not json`)
 	if status != http.StatusBadRequest {
 		t.Fatalf("update bad json: status=%d body=%v", status, body)
+	}
+}
+
+type captureActionLog struct {
+	events []message.Event
+}
+
+func (c *captureActionLog) Append(ev message.Event) { c.events = append(c.events, ev) }
+func (c *captureActionLog) Tail(agentID string, limit int) ([]message.Event, error) {
+	return c.events, nil
+}
+func (c *captureActionLog) EventFilePath(string) string { return "" }
+func (c *captureActionLog) IncompleteMessageIns(time.Time) ([][]byte, error) {
+	return nil, nil
+}
+func (c *captureActionLog) CountMessageInAttempts(string, string, time.Time) (int, error) {
+	return 0, nil
+}
+func (c *captureActionLog) MarkDeadLetter(string, string, string) error { return nil }
+func (c *captureActionLog) Close() error                                { return nil }
+
+func TestGatewayHandleUpdateAgent_CapabilityAuditForChannelExposure(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	log := &captureActionLog{}
+	s.actions = log
+	s.cfg.Channels = map[string]map[string]any{
+		"telegram": {
+			"enabled": true,
+			"bots": []any{
+				map[string]any{"agent_id": "audit-agent", "bot_name": "Audit Bot", "token": "tok"},
+			},
+		},
+	}
+
+	createBody := `{"id":"audit-agent","name":"Audit Agent","trigger":"channel","channels":["http"],"llm":{"provider":"test","model":"m"},"system_prompt":"x","enabled":true}`
+	if st, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/agents", "secret", createBody); st != http.StatusCreated {
+		t.Fatalf("create status=%d body=%v", st, body)
+	}
+
+	updateBody := `{"id":"audit-agent","name":"Audit Agent","trigger":"channel","channels":["http"],"llm":{"provider":"test","model":"m"},"system_prompt":"x","enabled":true,"builtins":["write_file"]}`
+	status, body := gatewayJSON(t, s, http.MethodPut, "/api/v1/agents/audit-agent", "secret", updateBody)
+	if status != http.StatusOK {
+		t.Fatalf("update status=%d body=%v", status, body)
+	}
+	audit, ok := body["capability_audit"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing capability_audit: %v", body)
+	}
+	if audit["old_tier"] != "read_only" || audit["new_tier"] != "privileged" || audit["escalated"] != true {
+		t.Fatalf("unexpected audit: %#v", audit)
+	}
+	if audit["requires_ack"] != true {
+		t.Fatalf("expected requires_ack for interactive channel exposure: %#v", audit)
+	}
+	if len(log.events) == 0 || log.events[len(log.events)-1].Type != "agent.capability_tier_changed" {
+		t.Fatalf("expected capability tier action event, got %#v", log.events)
 	}
 }
 

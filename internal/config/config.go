@@ -104,6 +104,15 @@ type Config struct {
 	// Telemetry configures OpenTelemetry tracing.
 	Telemetry TelemetryConfig `mapstructure:"telemetry"`
 
+	// Costs configures token usage cost estimation. Usage is always recorded
+	// when the cost store is available; pricing entries are optional and only
+	// affect the estimated cost_usd fields.
+	Costs CostConfig `mapstructure:"costs"`
+
+	// Updates configures release manifest discovery for `sy update` and the
+	// launch-readiness checklist.
+	Updates UpdateConfig `mapstructure:"updates"`
+
 	// RateLimit configures per-user and per-agent rate limiting (Task #33).
 	RateLimit RateLimitConfig `mapstructure:"rate_limit"`
 
@@ -177,6 +186,38 @@ type TelemetryConfig struct {
 	ServiceName  string `mapstructure:"service_name"`  // default "soulacy"
 }
 
+// CostConfig controls estimated dollar costs for recorded token usage.
+//
+// Pricing keys are matched as provider/model, provider/*, then */model.
+// Values are USD per 1 million tokens. Unknown providers/models still record
+// token usage, but cost_usd remains 0 until an operator configures pricing.
+//
+//	costs:
+//	  pricing:
+//	    openai/gpt-4.1-mini:
+//	      input_per_mtok: 0.40
+//	      output_per_mtok: 1.60
+//	    omniroute/*:
+//	      input_per_mtok: 0.25
+//	      output_per_mtok: 0.75
+type CostConfig struct {
+	Pricing map[string]CostPricing `mapstructure:"pricing"`
+}
+
+// UpdateConfig points Soulacy at a signed or checksum-backed release manifest.
+//
+//	updates:
+//	  manifest_url: https://releases.example.com/soulacy/release-manifest.json
+type UpdateConfig struct {
+	ManifestURL string `mapstructure:"manifest_url"`
+}
+
+// CostPricing is the YAML face of internal/costs.Pricing.
+type CostPricing struct {
+	InputPerMTok  float64 `mapstructure:"input_per_mtok"`
+	OutputPerMTok float64 `mapstructure:"output_per_mtok"`
+}
+
 // CredentialsConfig holds credential vault settings.
 type CredentialsConfig struct {
 	KMSProvider    string `mapstructure:"kms_provider"` // "local" (default), "hashicorp", "awskms"
@@ -231,6 +272,12 @@ type RuntimeConfig struct {
 	// The engine clamps each agent's effective max_turns to this value.
 	// Zero/negative defaults to 50.
 	MaxTurnsCeiling int `mapstructure:"max_turns_ceiling"`
+
+	// MaxAgentCallDepth bounds recursive peer-agent chains such as
+	// orchestrator -> researcher -> reviewer. Zero defaults to the runtime
+	// default (5). Increase carefully for deeper team hierarchies; the
+	// chain-wide run_timeout still applies.
+	MaxAgentCallDepth int `mapstructure:"max_agent_call_depth"`
 
 	// Sandbox controls the per-Python-tool resource caps applied via the
 	// soulacy __exec-sandbox wrapper. Zero values mean "no limit for
@@ -612,6 +659,7 @@ func Load(cfgPath string) (*Config, string, error) {
 	v.SetDefault("runtime.max_concurrent_sessions", 100)
 	v.SetDefault("runtime.default_max_turns", 20)
 	v.SetDefault("runtime.max_turns_ceiling", 50)
+	v.SetDefault("runtime.max_agent_call_depth", 5)
 	v.SetDefault("runtime.python_bin", "python3")
 	// PRODUCTION_AUDIT → LOW/Config: NotebookLM-style tools regularly take
 	// minutes; the old 30s default silently SIGKILLed them unless every

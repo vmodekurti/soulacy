@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -39,6 +40,14 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 					"type":        "string",
 					"description": "Compatibility alias for to.",
 				},
+				"target": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for to.",
+				},
+				"recipient": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for to.",
+				},
 				"chat_id": map[string]any{
 					"type":        "string",
 					"description": "Compatibility alias for to, useful for Telegram chat ids.",
@@ -52,6 +61,10 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 					"description": "Message body to send",
 				},
 				"message": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for text",
+				},
+				"msg": map[string]any{
 					"type":        "string",
 					"description": "Compatibility alias for text",
 				},
@@ -71,15 +84,21 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 			"required": []string{},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			channelID := argStringFirst(args, "channel", "adapter", "adapter_id")
-			to := argStringFirst(args, "to", "destination", "chat_id", "channel_id", "thread_id", "user_id")
-			text := argStringFirst(args, "text", "message", "body", "content")
+			channelID := argStringFirst(args, "channel", "adapter", "adapter_id", "platform")
+			to := argStringFirst(args, "to", "destination", "target", "recipient", "chat_id", "channel_id", "thread_id", "user_id", "conversation", "room")
+			text := argStringFirst(args, "text", "message", "msg", "body", "content")
+			routeSource := "explicit"
+			if channelID == "" || to == "" {
+				routeSource = "partial-explicit"
+			}
 			if inbound, ok := ctx.Value(inboundMsgKey{}).(message.Message); ok {
 				if channelID == "" {
 					channelID = strings.TrimSpace(inbound.Channel)
+					routeSource = "inbound"
 				}
 				if to == "" {
 					to = strings.TrimSpace(inbound.ThreadID)
+					routeSource = "inbound"
 				}
 			}
 			defaultOut, hasDefault := e.channelDefaultOutput(channelID)
@@ -87,14 +106,19 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 				defaultOut, hasDefault = e.onlyChannelDefaultOutput()
 				if hasDefault {
 					channelID = strings.TrimSpace(defaultOut.Channel)
+					routeSource = "default"
 				}
 			}
 			if hasDefault {
 				if defaultOut.Channel != "" {
 					channelID = strings.TrimSpace(defaultOut.Channel)
+					if routeSource == "partial-explicit" {
+						routeSource = "default"
+					}
 				}
 				if to == "" {
 					to = strings.TrimSpace(defaultOut.To)
+					routeSource = "default"
 				}
 			}
 			if channelID == "" {
@@ -143,9 +167,12 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 				return "", fmt.Errorf("channel.send: send failed through channel %q to %q: %w", channelID, to, err)
 			}
 			b, _ := json.Marshal(map[string]any{
-				"ok":      true,
-				"channel": channelID,
-				"to":      to,
+				"ok":           true,
+				"delivered":    true,
+				"channel":      channelID,
+				"to":           to,
+				"route_source": routeSource,
+				"text_preview": previewText(text, 160),
 			})
 			return string(b), nil
 		},
@@ -168,6 +195,21 @@ func channelSendRequiresDestination(channelID string) bool {
 	default:
 		return true
 	}
+}
+
+func previewText(s string, max int) string {
+	s = strings.TrimSpace(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return s[:max]
+	}
+	prefix := s[:max-1]
+	for !utf8.ValidString(prefix) && len(prefix) > 0 {
+		prefix = prefix[:len(prefix)-1]
+	}
+	return prefix + "…"
 }
 
 func (e *Engine) channelDefaultOutput(channelID string) (agent.ScheduleOutput, bool) {

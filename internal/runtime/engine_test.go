@@ -970,6 +970,30 @@ func TestHandlePeerAgentDelegation(t *testing.T) {
 	}
 }
 
+func TestShouldParallelizePeerCallsRequiresOptInAndUniquePeerCalls(t *testing.T) {
+	calls := []message.ToolCall{
+		{ID: "a", Name: AgentToolPrefix + "research", Arguments: map[string]any{"message": "research"}},
+		{ID: "b", Name: AgentToolPrefix + "critic", Arguments: map[string]any{"message": "review"}},
+	}
+	if shouldParallelizePeerCalls(&agent.Definition{}, calls) {
+		t.Fatal("parallel peer calls must be opt-in")
+	}
+	if !shouldParallelizePeerCalls(&agent.Definition{ParallelPeerCalls: true}, calls) {
+		t.Fatal("two unique peer calls should parallelize when enabled")
+	}
+	dup := append(calls, calls[0])
+	if shouldParallelizePeerCalls(&agent.Definition{ParallelPeerCalls: true}, dup) {
+		t.Fatal("duplicate calls should fall back to sequential execution so the anti-loop cache stays deterministic")
+	}
+	mixed := []message.ToolCall{
+		{ID: "a", Name: AgentToolPrefix + "research", Arguments: map[string]any{"message": "research"}},
+		{ID: "b", Name: "web_search", Arguments: map[string]any{"query": "news"}},
+	}
+	if shouldParallelizePeerCalls(&agent.Definition{ParallelPeerCalls: true}, mixed) {
+		t.Fatal("one peer call is not a fan-out")
+	}
+}
+
 // TestHandleConfirmationApproved verifies that when a tool is listed in
 // ConfirmTools and the user approves via WithConfirmSender, the tool executes
 // normally and the engine produces its final answer.

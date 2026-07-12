@@ -113,6 +113,38 @@ type skillsShSkill struct {
 
 // Search implements pkgregistry.Provider.
 func (p *skillsShProvider) Search(ctx context.Context, query string) ([]sdkpkg.Package, error) {
+	queries := skillsShSearchQueries(query)
+	var out []sdkpkg.Package
+	var lastErr error
+	seen := map[string]bool{}
+	for i, q := range queries {
+		results, err := p.searchOnce(ctx, q)
+		if err != nil {
+			lastErr = err
+			if i == 0 {
+				return nil, err
+			}
+			continue
+		}
+		for _, pkg := range results {
+			key := strings.ToLower(pkg.Slug)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			out = append(out, pkg)
+		}
+		if len(out) > 0 {
+			return out, nil
+		}
+	}
+	if lastErr != nil && len(out) == 0 {
+		return nil, lastErr
+	}
+	return out, nil
+}
+
+func (p *skillsShProvider) searchOnce(ctx context.Context, query string) ([]sdkpkg.Package, error) {
 	var body struct {
 		Data []skillsShSkill `json:"data"`
 	}
@@ -135,6 +167,33 @@ func (p *skillsShProvider) Search(ctx context.Context, query string) ([]sdkpkg.P
 		})
 	}
 	return out, nil
+}
+
+func skillsShSearchQueries(query string) []string {
+	q := strings.TrimSpace(query)
+	if q == "" {
+		return nil
+	}
+	variantSet := map[string]bool{}
+	var variants []string
+	add := func(v string) {
+		v = strings.TrimSpace(v)
+		if v == "" || variantSet[strings.ToLower(v)] {
+			return
+		}
+		variantSet[strings.ToLower(v)] = true
+		variants = append(variants, v)
+	}
+	add(q)
+	if strings.ContainsAny(q, "-_") {
+		add(strings.NewReplacer("-", " ", "_", " ").Replace(q))
+	}
+	if strings.Contains(q, "/") {
+		parts := strings.Split(q, "/")
+		add(parts[len(parts)-1])
+		add(strings.NewReplacer("-", " ", "_", " ").Replace(parts[len(parts)-1]))
+	}
+	return variants
 }
 
 // skillsShDetail is the detail endpoint's shape.

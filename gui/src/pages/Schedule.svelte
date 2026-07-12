@@ -5,9 +5,14 @@
   import RunMetrics from '../lib/RunMetrics.svelte'
   import { catchupLabel, catchupTitle } from '../lib/schedutils.js'
 
-  function watchAgent(id) {
+  function watchAgent(id, sessionId = '') {
     activityAgent.set(id)
-    location.hash = 'activity'
+    if (sessionId) {
+      const q = new URLSearchParams({ agent_id: id, session_id: sessionId })
+      location.hash = `#activity?${q.toString()}`
+    } else {
+      location.hash = 'activity'
+    }
   }
 
   const IMMINENT_MS = 15 * 60 * 1000  // a scheduled run within 15 min is "about to run"
@@ -25,6 +30,9 @@
   let nextRuns    = {}      // agentId → ISO next scheduled fire
   let now         = Date.now()
   let promptedFires = new Set()  // "id@nextISO" already auto-prompted
+  let recentRuns = []
+  let recentLoading = false
+  let recentError = ''
 
   // Modals
   let editing  = null
@@ -78,14 +86,19 @@
       const outEv    = sorted.find(e => e.type === 'message.out')
       const errEv    = sorted.find(e => e.type === 'error')
       const inEv     = sorted.find(e => e.type === 'message.in')
+      const reasonEv = sorted.find(e => e.type === 'reasoning.result')
+      const deliveryEv = sorted.slice().reverse().find(e => e.type === 'schedule.output')
+      const delivery = deliveryEv?.payload || {}
       // A run is failed if any tool returned is_error:true, even when the LLM
       // still produced a message.out summarising the failure.
       const toolFailed = sorted.some(e => e.type === 'tool.result' && e.payload?.is_error === true)
+      const recovered = sorted.some(e => e.type === 'reasoning.step' && e.payload?.recovery === true)
 
       let status = 'unknown'
       if (outEv && !toolFailed && !errEv) status = 'success'
       else if (toolFailed || errEv)        status = 'failed'
       else if (outEv)                      status = 'success'
+      if (status === 'success' && (reasonEv?.payload?.confident === false || recovered)) status = 'degraded'
 
       let output = ''
       if (outEv) {
@@ -98,12 +111,60 @@
         status = 'failed'
       }
 
-      // channel from message.in payload
-      const channel = inEv?.payload?.channel || ''
+      const channel = inEv?.payload?.channel || delivery.trigger || ''
       const startTime = (inEv || sorted[0])?.timestamp
 
-      return { id: run.id, sessionId: sid, startTime, status, output, channel }
+      const agentId = sorted.find(e => e.agent_id)?.agent_id || ''
+      const deliveryStatus = deliveryEv ? (delivery.delivered === true ? 'delivered' : 'failed') : ''
+      const deliveryError = delivery.detail || delivery.reason || ''
+
+      return {
+        id: run.id,
+        sessionId: sid,
+        agentId,
+        startTime,
+        status,
+        output,
+        channel,
+        source: 'action-log',
+        deliveryStatus,
+        deliveryChannel: delivery.channel || '',
+        deliveryTo: delivery.to || '',
+        deliveryError,
+      }
     }).sort((a, b) => new Date(b.startTime) - new Date(a.startTime))
+  }
+
+  function runKey(run) {
+    return run.id || `${run.sessionId || ''}:${run.startTime || ''}:${run.source || ''}`
+  }
+
+  function mergeHistoryRuns(primary, fallback) {
+    const merged = []
+    const byKey = new Map()
+    for (const run of [...primary, ...fallback]) {
+      const key = runKey(run)
+      if (!key) continue
+      const existing = byKey.get(key)
+      if (!existing) {
+        const copy = { ...run, id: run.id || key }
+        byKey.set(key, copy)
+        merged.push(copy)
+        continue
+      }
+      existing.output ||= run.output || ''
+      existing.channel ||= run.channel || ''
+      existing.source = existing.source === run.source ? existing.source : `${existing.source || 'run-history'} + ${run.source || 'action-log'}`
+      existing.steps ||= run.steps || 0
+      existing.deliveryStatus ||= run.deliveryStatus || ''
+      existing.deliveryChannel ||= run.deliveryChannel || ''
+      existing.deliveryTo ||= run.deliveryTo || ''
+      existing.deliveryError ||= run.deliveryError || ''
+      if (existing.status === 'unknown' && run.status) existing.status = run.status
+      if (run.status === 'failed') existing.status = 'failed'
+      if (!existing.startTime || (run.startTime && new Date(run.startTime) < new Date(existing.startTime))) existing.startTime = run.startTime
+    }
+    return merged.sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
   }
 
   async function openHistory(a) {
@@ -113,24 +174,27 @@
     expandedRuns   = {}
     historyLoading = true
     try {
-      const hist = await api.studio.runHistory(a.id)
-      historyRuns = (hist.runs || []).map((r) => ({
-        id: r.runId,
-        sessionId: r.runId,
+      const hist = await api.studio.runHistory(a.id).catch(() => ({ runs: [] }))
+      const retainedRuns = (hist.runs || []).map((r) => ({
+        id: r.runId || r.sessionId,
+        sessionId: r.sessionId || r.runId,
         startTime: r.startedAt,
-        status: r.ok ? 'success' : 'failed',
-        output: r.error || '',
+        status: r.status || (r.ok ? 'success' : 'failed'),
+        output: r.output || r.error || '',
         channel: r.trigger || '',
         steps: r.steps || 0,
-        source: 'run-history',
+        source: r.source || 'run-history',
+        deliveryStatus: r.deliveryStatus || '',
+        deliveryChannel: r.deliveryChannel || '',
+        deliveryTo: r.deliveryTo || '',
+        deliveryError: r.deliveryError || '',
       }))
-      if (historyRuns.length === 0) {
-        // Fallback for classic/non-flow agents: request a large tail but filter
-        // to only run-summary event types so noisy tool.log lines do not hide
-        // older completed runs.
-        const res = await api.agents.actions(a.id, 5000, 'message.in,message.out,error,tool.result', { durable: true })
-        historyRuns = groupRuns(res.events || [])
+      let actionRuns = []
+      if (retainedRuns.length === 0) {
+        const actions = await api.agents.actions(a.id, 5000, 'message.in,message.out,error,tool.result,reasoning.step,reasoning.result,schedule.output', { durable: true }).catch(() => ({ events: [] }))
+        actionRuns = groupRuns(actions.events || [])
       }
+      historyRuns = mergeHistoryRuns(retainedRuns, actionRuns)
     } catch (e) {
       historyError = e.message
     } finally {
@@ -142,6 +206,22 @@
   function toggleRun(runId) { expandedRuns = { ...expandedRuns, [runId]: !expandedRuns[runId] } }
 
   let statusTimer, tick
+
+  async function loadRecentRuns() {
+    recentLoading = true
+    recentError = ''
+    try {
+      const res = await api.runs.events({
+        limit: 5000,
+        types: 'message.in,message.out,error,tool.result,reasoning.step,reasoning.result,schedule.output',
+      })
+      recentRuns = groupRuns(res.events || []).slice(0, 12)
+    } catch (e) {
+      recentError = e.message
+    } finally {
+      recentLoading = false
+    }
+  }
 
   async function load() {
     loading = true
@@ -161,6 +241,7 @@
       loading = false
     }
     await refreshStatus()
+    await loadRecentRuns()
   }
 
   async function refreshStatus() {
@@ -270,6 +351,7 @@
         ? ' 📤 Result was sent to the configured output channel.'
         : ' (Result shown here only — no output channel resolved; configure one under Edit → Scheduled output.)'
       notice = `▶ ${id} ran. ` + (res?.result ? `Result: ${truncate(res.result, 160)}` : 'Done.') + deliveryNote
+      await loadRecentRuns()
     } catch (e) {
       error = e.message   // includes "agent is already running" (409)
     } finally {
@@ -292,6 +374,7 @@
     try {
       const res = await api.agents.testScheduleOutput(a.id)
       notice = `Sent scheduled-output test for "${a.id}" via ${res.channel}.`
+      await loadRecentRuns()
     } catch (e) {
       error = e.message
     } finally {
@@ -370,6 +453,9 @@
     const a = agents.find(a => a.id === id)
     return a?.name || id
   }
+  function recentAgentName(run) {
+    return agentName(run.agentId || '')
+  }
   // hasDefaultSender mirrors Channels.svelte: a channel-level outbound sender
   // (base Telegram token, or an explicit default destination) that cron jobs use
   // when they don't target an agent-specific bot.
@@ -442,7 +528,7 @@
 
 <div class="page">
   <div class="page-header">
-    <h1>Schedule</h1>
+    <h1>Automations</h1>
     <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
   </div>
 
@@ -452,14 +538,14 @@
   <!-- Active scheduled jobs from API -->
   <section class="section">
     <div class="section-hdr">
-      <span>Active schedules</span>
+      <span>Active automations</span>
       <span class="pill">{schedule.length} entr{schedule.length === 1 ? 'y' : 'ies'}</span>
     </div>
 
     {#if loading}
       <div class="empty">Loading…</div>
     {:else if schedule.length === 0}
-      <div class="empty">No active schedules. Enable a cron agent below to register it with the scheduler.</div>
+      <div class="empty">No active automations. Enable a cron agent below to register it with the scheduler.</div>
     {:else}
       <table class="tbl">
         <thead>
@@ -490,10 +576,63 @@
     {/if}
   </section>
 
+  <section class="section">
+    <div class="section-hdr">
+      <span>Recent runs</span>
+      <span class="pill">{recentRuns.length}</span>
+      <button class="btn-secondary xs hdr-action" on:click={loadRecentRuns} disabled={recentLoading}>↺ Refresh</button>
+    </div>
+    {#if recentLoading}
+      <div class="empty">Loading run history…</div>
+    {:else if recentError}
+      <div class="empty err">{recentError}</div>
+    {:else if recentRuns.length === 0}
+      <div class="empty">No recent runs recorded in durable history yet.</div>
+    {:else}
+      <table class="tbl">
+        <thead>
+          <tr><th>Agent</th><th>Started</th><th>Trigger</th><th>Status</th><th>Delivery</th><th>Source</th><th class="td-action">Actions</th></tr>
+        </thead>
+        <tbody>
+          {#each recentRuns as run (run.id)}
+            <tr class:row-failed={run.status === 'failed'} class:row-degraded={run.status === 'degraded'}>
+              <td class="td-name">{recentAgentName(run) || 'Unknown agent'}</td>
+              <td class="td-hint">{run.startTime ? new Date(run.startTime).toLocaleString() : '—'}</td>
+              <td class="td-hint">{run.channel || '—'}</td>
+              <td>
+                <span class="run-badge inline" class:badge-ok={run.status === 'success'} class:badge-fail={run.status === 'failed'} class:badge-warn={run.status === 'degraded'} class:badge-unk={run.status === 'unknown'}>
+                  {run.status === 'success' ? 'success' : run.status === 'failed' ? 'failed' : run.status === 'degraded' ? 'degraded' : 'unknown'}
+                </span>
+              </td>
+              <td class="td-hint">
+                {#if run.deliveryStatus}
+                  <span class="delivery-mini" class:delivery-fail={run.deliveryStatus === 'failed'} title={run.deliveryError || ''}>
+                    {run.deliveryStatus === 'delivered' ? 'delivered' : 'failed'}
+                    {#if run.deliveryChannel} · {run.deliveryChannel}{/if}
+                  </span>
+                {:else}
+                  —
+                {/if}
+              </td>
+              <td class="td-hint">{run.source}</td>
+              <td class="td-action">
+                {#if run.agentId}
+                  <button class="btn-secondary xs" on:click={() => watchAgent(run.agentId, run.sessionId)}>Open Activity</button>
+                {:else}
+                  <button class="btn-secondary xs" on:click={() => location.hash = 'activity'}>Open Activity</button>
+                {/if}
+              </td>
+            </tr>
+          {/each}
+        </tbody>
+      </table>
+    {/if}
+  </section>
+
   <!-- Cron agents (manageable) -->
   <section class="section">
     <div class="section-hdr">
-      <span>Cron agents</span>
+      <span>Scheduled agents</span>
       <span class="pill">{cronAgents.length}</span>
     </div>
     {#if cronAgents.length === 0}
@@ -501,7 +640,7 @@
     {:else}
       <table class="tbl">
         <thead>
-          <tr><th>ID</th><th>Name</th><th>Schedule</th><th>Output bot</th><th>Enabled</th><th>Status</th><th class="td-action">Actions</th></tr>
+          <tr><th>ID</th><th>Name</th><th>Cron</th><th>Output bot</th><th>Enabled</th><th>Status</th><th class="td-action">Actions</th></tr>
         </thead>
         <tbody>
           {#each cronAgents as a}
@@ -615,7 +754,7 @@ schedule:
           {#if outputBotOptions.length === 0}<em>No channel bots configured</em>{/if}
         </div>
         <div class="field-help output-help">
-          Add or rotate Telegram output bot tokens in <a href="#channels">Channels</a>, then restart the gateway and select the bot here.
+          Add or rotate Telegram output bot tokens in <a href="#channels">Delivery</a>, then restart the gateway and select the bot here.
         </div>
         <label class="field">
           <span class="field-label">Bot</span>
@@ -672,7 +811,10 @@ schedule:
           <span class="panel-label">Run history</span>
           <span class="panel-agent">{historyAgent.name || historyAgent.id}</span>
         </div>
-        <button class="close-btn" on:click={closeHistory}>✕</button>
+        <div class="panel-actions">
+          <button class="btn-secondary xs" on:click={() => watchAgent(historyAgent.id)}>Open Activity</button>
+          <button class="close-btn" on:click={closeHistory}>✕</button>
+        </div>
       </div>
 
       <div class="panel-body">
@@ -684,14 +826,21 @@ schedule:
           <div class="panel-empty">No runs recorded yet.</div>
         {:else}
           {#each historyRuns as run (run.id)}
-            <div class="run" class:run-fail={run.status === 'failed'}>
+            <div class="run" class:run-fail={run.status === 'failed'} class:run-degraded={run.status === 'degraded'}>
               <button class="run-hdr" on:click={() => toggleRun(run.id)}>
-                <span class="run-badge" class:badge-ok={run.status === 'success'} class:badge-fail={run.status === 'failed'} class:badge-unk={run.status === 'unknown'}>
-                  {run.status === 'success' ? '✓ success' : run.status === 'failed' ? '✗ failed' : '? unknown'}
+                <span class="run-badge" class:badge-ok={run.status === 'success'} class:badge-fail={run.status === 'failed'} class:badge-warn={run.status === 'degraded'} class:badge-unk={run.status === 'unknown'}>
+                  {run.status === 'success' ? '✓ success' : run.status === 'failed' ? '✗ failed' : run.status === 'degraded' ? '⚠ degraded' : '? unknown'}
                 </span>
                 <span class="run-time">{run.startTime ? new Date(run.startTime).toLocaleString() : '—'}</span>
                 {#if run.channel}<span class="run-channel">{run.channel}</span>{/if}
+                {#if run.source}<span class="run-channel">{run.source}</span>{/if}
                 {#if run.steps}<span class="run-channel">{run.steps} step{run.steps === 1 ? '' : 's'}</span>{/if}
+                {#if run.deliveryStatus}
+                  <span class="run-channel" class:delivery-fail={run.deliveryStatus === 'failed'}>
+                    {run.deliveryStatus === 'delivered' ? 'delivered' : 'delivery failed'}
+                    {#if run.deliveryChannel} · {run.deliveryChannel}{/if}
+                  </span>
+                {/if}
                 <span class="run-chevron">{expandedRuns[run.id] ? '▲' : '▼'}</span>
               </button>
               {#if expandedRuns[run.id]}
@@ -699,6 +848,17 @@ schedule:
                   <div class="run-metrics-row">
                     <RunMetrics sessionId={run.sessionId} agentId={historyAgent.id} />
                   </div>
+                  <button class="activity-link" on:click={() => watchAgent(historyAgent.id, run.sessionId)}>
+                    Open this run in Activity
+                  </button>
+                  {#if run.deliveryStatus}
+                    <div class="delivery-line" class:delivery-fail={run.deliveryStatus === 'failed'}>
+                      Delivery: {run.deliveryStatus}
+                      {#if run.deliveryChannel} via {run.deliveryChannel}{/if}
+                      {#if run.deliveryTo} to {run.deliveryTo}{/if}
+                      {#if run.deliveryError} — {run.deliveryError}{/if}
+                    </div>
+                  {/if}
                   {#if run.output}
                     <pre>{run.output}</pre>
                   {:else}
@@ -756,6 +916,7 @@ schedule:
     padding: .8rem 1.25rem; border-bottom: 1px solid #1a1e36;
     font-size: .875rem; font-weight: 600;
   }
+  .hdr-action { margin-left: auto; }
   .pill    { font-size: .7rem; padding: .15rem .5rem; border-radius: 999px; background: #1c1f35; color: #6b7294; }
   .pill-ok { background: rgba(76,175,130,.15); color: #4caf82; }
 
@@ -771,6 +932,8 @@ schedule:
   .tbl tr:last-child td { border-bottom: none; }
   .tbl tr:hover td { background: rgba(255,255,255,.02); }
   .row-running td { background: rgba(76,175,130,.06); }
+  .row-failed td { background: rgba(240,96,96,.035); }
+  .row-degraded td { background: rgba(245,167,66,.035); }
 
   .td-name   { font-weight: 500; }
   .td-mono   { font-family: monospace; font-size: .8rem; color: #8b85ff; }
@@ -833,6 +996,7 @@ schedule:
     padding: 1rem 1.25rem; border-bottom: 1px solid #1a1e36; flex-shrink: 0;
   }
   .panel-title { display: flex; flex-direction: column; gap: .2rem; }
+  .panel-actions { display: flex; align-items: center; gap: .5rem; }
   .panel-label { font-size: .68rem; text-transform: uppercase; letter-spacing: .07em; color: #555a7a; font-weight: 600; }
   .panel-agent { font-size: .95rem; font-weight: 600; color: #e0e1f0; }
   .close-btn {
@@ -853,20 +1017,55 @@ schedule:
   }
   .run-hdr:hover { background: rgba(255,255,255,.03); }
   .run-fail .run-hdr { background: rgba(240,96,96,.04); }
+  .run-degraded .run-hdr { background: rgba(245,167,66,.04); }
   .run-badge {
     font-size: .7rem; font-weight: 600; padding: .15rem .55rem;
     border-radius: 999px; flex-shrink: 0;
   }
+  .run-badge.inline { display: inline-flex; align-items: center; }
+  .delivery-mini {
+    display: inline-flex;
+    align-items: center;
+    padding: .12rem .45rem;
+    border-radius: 999px;
+    background: rgba(76,175,130,.12);
+    color: #4caf82;
+    font-family: monospace;
+    font-size: .7rem;
+    white-space: nowrap;
+  }
+  .delivery-mini.delivery-fail {
+    background: rgba(240,96,96,.12);
+    color: #ff9292;
+  }
   .badge-ok  { background: rgba(76,175,130,.15); color: #4caf82; }
   .badge-fail{ background: rgba(240,96,96,.15);  color: #f06060; }
+  .badge-warn{ background: rgba(245,167,66,.15); color: #f5bd67; }
   .badge-unk { background: rgba(100,100,120,.15); color: #888; }
   .run-time    { font-size: .78rem; color: #7b82a8; flex: 1; }
   .run-channel { font-size: .7rem; color: #555a7a; font-family: monospace; }
+  .run-channel.delivery-fail, .delivery-line.delivery-fail { color: #ff9292; }
   .run-chevron { font-size: .65rem; color: #555a7a; margin-left: auto; }
   .run-output {
     padding: .75rem 1.25rem 1rem; background: #0e1020;
     border-top: 1px solid #1a1e36;
   }
+  .delivery-line {
+    color: #9aa2d8;
+    font-size: .76rem;
+    margin-bottom: .5rem;
+  }
+  .activity-link {
+    margin: 0 0 .55rem;
+    background: rgba(108,99,255,.12);
+    border: 1px solid rgba(108,99,255,.35);
+    color: #ada8ff;
+    border-radius: 6px;
+    padding: .25rem .55rem;
+    font-size: .72rem;
+    cursor: pointer;
+  }
+  .activity-link:hover { background: rgba(108,99,255,.2); }
   .run-output pre {
     font-family: monospace; font-size: .78rem; color: #b0b5d8;
     line-height: 1.65; white-space: pre-wrap; word-break: break-word; margin: 0;

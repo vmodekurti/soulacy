@@ -226,6 +226,91 @@ registries:
 	}
 }
 
+func TestInstallRegistrySkill_BlocksUnverifiedByDefault(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("SOULACY_WORKSPACE", workspace)
+	dir := fakeInstallableSkillsSh(t)
+	s := testRegistryInstallGateway(t, dir.URL)
+	s.skillLoader = &rescanSkillLoader{}
+
+	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/skills/install", "secret",
+		`{"slug":"acme/skills/web-audit"}`)
+	if status != http.StatusConflict {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	if body["code"] != "unverified_package" {
+		t.Fatalf("code = %v body=%v", body["code"], body)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "skills", "web-audit", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("skill should not have been installed, stat err=%v", err)
+	}
+}
+
+func TestInstallRegistrySkill_AllowUnverifiedInstallsAndRescans(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv("SOULACY_WORKSPACE", workspace)
+	dir := fakeInstallableSkillsSh(t)
+	s := testRegistryInstallGateway(t, dir.URL)
+	loader := &rescanSkillLoader{}
+	s.skillLoader = loader
+
+	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/skills/install", "secret",
+		`{"slug":"acme/skills/web-audit","allow_unverified":true}`)
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	if body["ok"] != true || body["name"] != "web-audit" || body["verified"] != false {
+		t.Fatalf("unexpected install body=%v", body)
+	}
+	if loader.scanned != 1 {
+		t.Fatalf("Scan called %d times, want 1", loader.scanned)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "skills", "web-audit", "SKILL.md")); err != nil {
+		t.Fatalf("installed skill missing: %v", err)
+	}
+}
+
+func fakeInstallableSkillsSh(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/acme/skills/web-audit", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"id":"acme/skills/web-audit",
+			"source":"acme/skills",
+			"slug":"web-audit",
+			"installs":12,
+			"hash":"abcdef1234567890",
+			"files":[
+				{"path":"SKILL.md","contents":"---\nname: Web Audit\ndescription: Audit a website.\n---\n\n# Web Audit\n\nAudit a website for product readiness.\n"}
+			]
+		}`))
+	})
+	mux.HandleFunc("/api/v1/skills/audit/acme/skills/web-audit", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"audits":[]}`))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func testRegistryInstallGateway(t *testing.T, baseURL string) *Server {
+	t.Helper()
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	seed := `
+server:
+  port: 18789
+registries:
+  - id: test-skills
+    type: skillssh
+    base_url: ` + baseURL + `
+    priority: 10
+`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	return newTestGatewayWithCfgPath(t, "secret", cfgPath)
+}
+
 func TestAddRegistry_AppendsAndValidates(t *testing.T) {
 	cfgPath, s := seedRegistriesConfig(t)
 
@@ -252,7 +337,7 @@ func TestAddRegistry_AppendsAndValidates(t *testing.T) {
 
 	// Valid add persists, preserving the existing entry + auth headers.
 	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/registries", "secret",
-		`{"id":"skills.sh","type":"skillssh","base_url":"https://skills.sh/","priority":50}`)
+		`{"id":"skills.sh","type":"skillssh","base_url":"https://skills.sh/","priority":50,"auth_headers":{"Authorization":"Bearer oidc_token"}}`)
 	if status != http.StatusOK {
 		t.Fatalf("add status = %d %v", status, body)
 	}
@@ -276,6 +361,9 @@ func TestAddRegistry_AppendsAndValidates(t *testing.T) {
 	added := regs[1].(map[string]any)
 	if added["type"] != "skillssh" || added["base_url"] != "https://skills.sh" {
 		t.Errorf("added = %v (trailing slash should be trimmed)", added)
+	}
+	if ah, _ := added["auth_headers"].(map[string]any); ah == nil || ah["Authorization"] != "Bearer oidc_token" {
+		t.Errorf("added auth headers missing: %v", added)
 	}
 	// Server section untouched.
 	if srv, _ := disk["server"].(map[string]any); srv == nil || srv["port"] != 18789 {

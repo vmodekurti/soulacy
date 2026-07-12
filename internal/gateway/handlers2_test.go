@@ -2,6 +2,9 @@ package gateway
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -263,6 +266,39 @@ func TestGatewayHandlePatchConfig_Happy(t *testing.T) {
 	}
 }
 
+func TestGatewayHandlePatchConfig_CostPricing(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	status, body := gatewayJSON(t, s, http.MethodPatch, "/api/v1/config", "secret",
+		`{"costs":{"pricing":{"openai/gpt-test":{"input_per_mtok":1.5,"output_per_mtok":6},"omniroute/*":{"input_per_mtok":0.25,"output_per_mtok":0.75}}}}`)
+	if status != http.StatusOK {
+		t.Fatalf("patch cost pricing status = %d body=%v", status, body)
+	}
+	disk, err := readRawConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	costsView, ok := disk["costs"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected costs object, config=%v", disk)
+	}
+	pricing, ok := costsView["pricing"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected pricing object, costs=%v", costsView)
+	}
+	openai, ok := pricing["openai/gpt-test"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected openai/gpt-test pricing, pricing=%v", pricing)
+	}
+	if got := openai["input_per_mtok"]; got != 1.5 {
+		t.Fatalf("input_per_mtok = %v, want 1.5", got)
+	}
+	cfgView := body["config"].(map[string]any)
+	if cfgView["costs"] == nil {
+		t.Fatalf("config response missing costs view: %v", cfgView)
+	}
+}
+
 func TestGatewayHandlePatchConfig_InvalidJSON(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
@@ -278,12 +314,232 @@ func TestGatewayHandlePatchConfig_RuntimeFields(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
 	status, body := gatewayJSON(t, s, http.MethodPatch, "/api/v1/config", "secret",
-		`{"runtime":{"max_concurrent_sessions":10,"default_max_turns":5}}`)
+		`{"runtime":{"max_concurrent_sessions":10,"default_max_turns":5,"max_agent_call_depth":3}}`)
 	if status != http.StatusOK {
 		t.Fatalf("patch runtime status = %d body=%v", status, body)
 	}
 	if body["ok"] != true {
 		t.Fatalf("expected ok=true, body=%v", body)
+	}
+	disk, err := readRawConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	runtimeView, ok := disk["runtime"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected runtime object, config=%v", disk)
+	}
+	if got := runtimeView["max_agent_call_depth"]; got != 3 {
+		t.Fatalf("max_agent_call_depth = %v, want 3", got)
+	}
+}
+
+func TestGatewayHandleGetAgentPackage(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/agents", "secret", `{
+		"id":"pkg-agent",
+		"name":"Package Agent",
+		"description":"agent package smoke",
+		"trigger":"channel",
+		"channels":["telegram"],
+		"system_prompt":"hello",
+		"llm":{"provider":"openai","model":"gpt-4o-mini","temperature":0.2,"max_tokens":100},
+		"tools":[{"name":"helper","description":"demo","python_file":"helper.py","parameters":{}}],
+		"skills":["sepa-strategy"],
+		"knowledge":["AI Docs"],
+		"agents":["researcher"],
+		"env":["DEMO_API_KEY"],
+		"security":{"passphrase":"super-secret"},
+		"max_turns":5,
+		"enabled":true
+	}`)
+	if status != http.StatusCreated {
+		t.Fatalf("create status = %d body=%v", status, body)
+	}
+	agentDir := filepath.Join(s.cfg.AgentDirs[0], "pkg-agent")
+	if err := os.MkdirAll(filepath.Join(agentDir, "evals"), 0755); err != nil {
+		t.Fatalf("mkdir evals: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(agentDir, "prompts"), 0755); err != nil {
+		t.Fatalf("mkdir prompts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "evals", "smoke.yaml"), []byte("name: smoke\ncases:\n  - name: hello\n    input: hi\n"), 0644); err != nil {
+		t.Fatalf("write eval: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(agentDir, "prompts", "starter.md"), []byte("# Starter\nAsk a concise question.\n"), 0644); err != nil {
+		t.Fatalf("write prompt: %v", err)
+	}
+
+	status, body = gatewayJSON(t, s, http.MethodGet, "/api/v1/agents/pkg-agent/package", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("package status = %d body=%v", status, body)
+	}
+	if body["schema_version"] != "soulacy.agent.package/v1" {
+		t.Fatalf("unexpected schema_version: %v", body["schema_version"])
+	}
+	manifest, ok := body["manifest"].(map[string]any)
+	if !ok {
+		t.Fatalf("manifest missing: %v", body)
+	}
+	if manifest["agent_id"] != "pkg-agent" {
+		t.Fatalf("agent_id = %v", manifest["agent_id"])
+	}
+	evals, ok := manifest["eval_suites"].([]any)
+	if !ok || len(evals) != 1 || evals[0] != "evals/smoke.yaml" {
+		t.Fatalf("expected packaged eval suite, manifest=%v", manifest)
+	}
+	samples, ok := manifest["sample_prompts"].([]any)
+	if !ok || len(samples) != 1 || samples[0] != "prompts/starter.md" {
+		t.Fatalf("expected packaged sample prompt, manifest=%v", manifest)
+	}
+	if strings.Contains(body["soul_yaml"].(string), "super-secret") {
+		t.Fatalf("package leaked passphrase: %s", body["soul_yaml"])
+	}
+	secrets, ok := manifest["secrets"].([]any)
+	if !ok || len(secrets) == 0 {
+		t.Fatalf("expected setup secrets checklist, manifest=%v", manifest)
+	}
+	integrity, ok := body["integrity"].(map[string]any)
+	if !ok || integrity["sha256"] == "" {
+		t.Fatalf("expected package integrity checksum, body=%v", body)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal exported package: %v", err)
+	}
+	status, inspectBody := gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/package/inspect", "secret", string(raw))
+	if status != http.StatusOK {
+		t.Fatalf("inspect exported package status = %d body=%v", status, inspectBody)
+	}
+	verifiedIntegrity, ok := inspectBody["integrity"].(map[string]any)
+	if !ok || verifiedIntegrity["sha256"] == "" {
+		t.Fatalf("inspect exported package missing integrity: %v", inspectBody)
+	}
+	body["soul_yaml"] = "id: tampered\nname: Tampered\ntrigger: manual\n"
+	tampered, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal tampered package: %v", err)
+	}
+	status, inspectBody = gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/package/inspect", "secret", string(tampered))
+	if status != http.StatusBadRequest {
+		t.Fatalf("tampered inspect status = %d body=%v", status, inspectBody)
+	}
+}
+
+func TestGatewayHandleInspectAndImportAgentPackage(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	pkg := agentPackageResponse{
+		SchemaVersion: "soulacy.agent.package/v1",
+		Manifest: agentPackageManifest{
+			AgentID:   "portable-agent",
+			Name:      "Portable Agent",
+			Trigger:   "channel",
+			Providers: []string{"test"},
+			Channels:  []string{"http"},
+		},
+		SOULYAML: strings.TrimSpace(`
+id: portable-agent
+name: Portable Agent
+trigger: channel
+channels: [http]
+system_prompt: portable
+llm:
+  provider: test
+  model: gpt-4o-mini
+tools:
+  - name: helper
+    description: helper
+    python_file: helper.py
+    parameters: {}
+`) + "\n",
+		Files: []agentPackageFile{{
+			Path:   "helper.py",
+			SHA256: "03e693d9f2f687e0f40e36a8df7fcb4d1c22974012b7c2a55c000eb30f305824",
+			Bytes:  15,
+			Text:   "print('hello')\n",
+		}, testPackageFile("evals/smoke.yaml", "name: smoke\ncases:\n  - name: portable\n    input: hi\n"), testPackageFile("prompts/example.md", "# Example\nSay hello.\n")},
+	}
+	pkg.Manifest.EvalSuites = []string{"evals/smoke.yaml"}
+	pkg.Manifest.SamplePrompts = []string{"prompts/example.md"}
+	raw, err := json.Marshal(pkg)
+	if err != nil {
+		t.Fatalf("marshal package: %v", err)
+	}
+	status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/package/inspect", "secret", string(raw))
+	if status != http.StatusOK {
+		t.Fatalf("inspect status = %d body=%v", status, body)
+	}
+	if body["importable"] != true {
+		t.Fatalf("expected package importable, body=%v", body)
+	}
+
+	req, err := json.Marshal(agentPackageImportRequest{Package: pkg, Disabled: true})
+	if err != nil {
+		t.Fatalf("marshal import: %v", err)
+	}
+	status, body = gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/package/import", "secret", string(req))
+	if status != http.StatusCreated {
+		t.Fatalf("import status = %d body=%v", status, body)
+	}
+	def := s.loader.Get("portable-agent")
+	if def == nil {
+		t.Fatal("imported agent not loaded")
+	}
+	if def.Enabled {
+		t.Fatal("imported agent should be disabled when disabled=true")
+	}
+	data, err := os.ReadFile(filepath.Join(s.cfg.AgentDirs[0], "portable-agent", "helper.py"))
+	if err != nil {
+		t.Fatalf("packaged tool file not restored: %v", err)
+	}
+	if string(data) != "print('hello')\n" {
+		t.Fatalf("restored helper.py = %q", string(data))
+	}
+	evalData, err := os.ReadFile(filepath.Join(s.cfg.AgentDirs[0], "portable-agent", "evals", "smoke.yaml"))
+	if err != nil {
+		t.Fatalf("packaged eval file not restored: %v", err)
+	}
+	if !strings.Contains(string(evalData), "portable") {
+		t.Fatalf("restored eval = %q", string(evalData))
+	}
+	promptData, err := os.ReadFile(filepath.Join(s.cfg.AgentDirs[0], "portable-agent", "prompts", "example.md"))
+	if err != nil {
+		t.Fatalf("packaged prompt file not restored: %v", err)
+	}
+	if !strings.Contains(string(promptData), "Say hello") {
+		t.Fatalf("restored prompt = %q", string(promptData))
+	}
+
+	status, body = gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/package/import", "secret", string(req))
+	if status != http.StatusConflict {
+		t.Fatalf("duplicate import status = %d body=%v", status, body)
+	}
+
+	pkg.SOULYAML = strings.Replace(pkg.SOULYAML, "system_prompt: portable", "system_prompt: portable updated", 1)
+	overwriteReq, err := json.Marshal(agentPackageImportRequest{Package: pkg, Disabled: true, Overwrite: true})
+	if err != nil {
+		t.Fatalf("marshal overwrite import: %v", err)
+	}
+	status, body = gatewayJSON(t, s, http.MethodPost, "/api/v1/agents/package/import", "secret", string(overwriteReq))
+	if status != http.StatusCreated {
+		t.Fatalf("overwrite import status = %d body=%v", status, body)
+	}
+	versions, err := s.loader.AgentVersions("portable-agent")
+	if err != nil {
+		t.Fatalf("list versions after overwrite: %v", err)
+	}
+	if len(versions) == 0 {
+		t.Fatalf("overwrite import should snapshot the previous agent version")
+	}
+}
+
+func testPackageFile(path, text string) agentPackageFile {
+	sum := sha256.Sum256([]byte(text))
+	return agentPackageFile{
+		Path:   path,
+		SHA256: hex.EncodeToString(sum[:]),
+		Bytes:  len(text),
+		Text:   text,
 	}
 }
 

@@ -1,29 +1,6 @@
 <script>
   import { onMount } from 'svelte'
   import { apiKey, connected, authRequired } from './lib/stores.js'
-  import Dashboard  from './pages/Dashboard.svelte'
-  import Onboarding from './pages/Onboarding.svelte'
-  import Studio     from './pages/Studio.svelte'
-  import Agents     from './pages/Agents.svelte'
-  import Chat       from './pages/Chat.svelte'
-  import Memory     from './pages/Memory.svelte'
-  import Knowledge  from './pages/Knowledge.svelte'
-  import Queues     from './pages/Queues.svelte'
-  import Channels   from './pages/Channels.svelte'
-  import Workboard  from './pages/Workboard.svelte'
-  import Templates  from './pages/Templates.svelte'
-  import Schedule   from './pages/Schedule.svelte'
-  import Skills     from './pages/Skills.svelte'
-  import Providers  from './pages/Providers.svelte'
-  import Secrets    from './pages/Secrets.svelte'
-  import MCP        from './pages/MCP.svelte'
-  import Activity   from './pages/Activity.svelte'
-  import BrowserTrace from './pages/BrowserTrace.svelte'
-  import Config     from './pages/Config.svelte'
-  import Logs       from './pages/Logs.svelte'
-  import Mobile     from './pages/Mobile.svelte'
-  import PluginFrame from './pages/PluginFrame.svelte'
-  import PluginManager from './pages/PluginManager.svelte'
   import ShareView from './pages/ShareView.svelte'
   import { pageTitle } from './lib/pagetitle.js'
   import { api } from './lib/api.js'
@@ -36,6 +13,10 @@
   let keyInput = ''
   let sidebarOpen = false   // mobile drawer state (≤768px)
   let navCollapsed = false   // desktop: collapse the left nav to an icon rail
+  let PageComponent = null
+  let loadedPage = ''
+  let pageLoadError = ''
+  let pageLoadSeq = 0
 
   function toggleNav() {
     navCollapsed = !navCollapsed
@@ -52,21 +33,21 @@
     { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'         },
     { id: 'onboarding', icon: '✓', label: 'First Run',  group: 'main'         },
     { id: 'studio',    icon: '🎬', label: 'Studio',      group: 'main'         },
-    { id: 'agents',    icon: '⊕', label: 'Agents',     group: 'main'         },
+    { id: 'agents',    icon: '⊕', label: 'Deployed',   group: 'main'         },
     { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'         },
     { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'         },
-    { id: 'memory',    icon: '🧠', label: 'Brain Mem',   group: 'capabilities' },
+    { id: 'memory',    icon: '🧠', label: 'Learning',    group: 'capabilities' },
     { id: 'knowledge', icon: '📚', label: 'Knowledge',   group: 'capabilities' },
     { id: 'queues',    icon: '☷', label: 'Queues',      group: 'capabilities' },
     { id: 'workboard', icon: '▦', label: 'Workboard',  group: 'capabilities' },
-    { id: 'channels',  icon: '📡', label: 'Channels',   group: 'integrations' },
-    { id: 'schedule',  icon: '⏱', label: 'Schedule',   group: 'integrations' },
+    { id: 'channels',  icon: '📡', label: 'Delivery',   group: 'integrations' },
+    { id: 'schedule',  icon: '⏱', label: 'Automations', group: 'integrations' },
     { id: 'skills',    icon: '🧩', label: 'Skills',     group: 'integrations' },
     { id: 'mcp',       icon: '🔌', label: 'MCP',        group: 'integrations' },
     { id: 'pluginmgr', icon: '🧱', label: 'Plugins',    group: 'integrations' },
     { id: 'providers', icon: '⚙', label: 'Providers',  group: 'integrations' },
     { id: 'secrets',   icon: '🔑', label: 'Secrets',    group: 'integrations' },
-    { id: 'activity',  icon: '📈', label: 'Activity',   group: 'system'       },
+    { id: 'activity',  icon: '📈', label: 'Runs',       group: 'system'       },
     { id: 'browser',   icon: '🕸', label: 'Browser',    group: 'system'       },
     { id: 'config',    icon: '≡', label: 'Config',      group: 'system'       },
     { id: 'mobile',    icon: '▣', label: 'Mobile',      group: 'system'       },
@@ -76,6 +57,31 @@
   const retiredPages = {
     builder: 'studio',
     build: 'studio',
+  }
+
+  const pageLoaders = {
+    dashboard: () => import('./pages/Dashboard.svelte'),
+    onboarding: () => import('./pages/Onboarding.svelte'),
+    studio: () => import('./pages/Studio.svelte'),
+    agents: () => import('./pages/Agents.svelte'),
+    templates: () => import('./pages/Templates.svelte'),
+    chat: () => import('./pages/Chat.svelte'),
+    memory: () => import('./pages/Memory.svelte'),
+    knowledge: () => import('./pages/Knowledge.svelte'),
+    queues: () => import('./pages/Queues.svelte'),
+    workboard: () => import('./pages/Workboard.svelte'),
+    channels: () => import('./pages/Channels.svelte'),
+    schedule: () => import('./pages/Schedule.svelte'),
+    skills: () => import('./pages/Skills.svelte'),
+    mcp: () => import('./pages/MCP.svelte'),
+    pluginmgr: () => import('./pages/PluginManager.svelte'),
+    providers: () => import('./pages/Providers.svelte'),
+    secrets: () => import('./pages/Secrets.svelte'),
+    activity: () => import('./pages/Activity.svelte'),
+    browser: () => import('./pages/BrowserTrace.svelte'),
+    config: () => import('./pages/Config.svelte'),
+    mobile: () => import('./pages/Mobile.svelte'),
+    logs: () => import('./pages/Logs.svelte'),
   }
 
   // Ordered nav sections with their (optional) uppercase headers, per wireframe.
@@ -88,6 +94,7 @@
 
   // Keep the browser tab title in sync with the active page (Story 15).
   $: if (typeof document !== 'undefined') document.title = pageTitle(page, pages, pluginPages)
+  $: if (!shareToken && !$authRequired && page !== loadedPage) loadPageComponent(page)
 
   function navigate(p) {
     p = retiredPages[p] || p
@@ -100,6 +107,23 @@
     restartError = ''
     showRestartModal = true
     sidebarOpen = false
+  }
+
+  async function loadPageComponent(nextPage) {
+    const seq = ++pageLoadSeq
+    loadedPage = nextPage
+    pageLoadError = ''
+    PageComponent = null
+    try {
+      const mod = isPluginPage(nextPage)
+        ? await import('./pages/PluginFrame.svelte')
+        : await (pageLoaders[nextPage] || pageLoaders.dashboard)()
+      if (seq !== pageLoadSeq) return
+      PageComponent = mod.default
+    } catch (e) {
+      if (seq !== pageLoadSeq) return
+      pageLoadError = e?.message || `Could not load ${nextPage}.`
+    }
   }
 
   async function restartGateway() {
@@ -141,15 +165,16 @@
   onMount(() => {
     const applyHash = () => {
       const h = location.hash.slice(1)
+      const route = h.split('?')[0]
       // Public read-only shared conversation: /#share/<token>. Rendered outside
       // the app shell and the login gate, so it needs no API key.
       if (h.startsWith('share/')) { shareToken = h.slice('share/'.length); return }
       shareToken = ''
-      if (retiredPages[h]) {
-        navigate(retiredPages[h])
+      if (retiredPages[route]) {
+        navigate(retiredPages[route])
         return
       }
-      if (h && (pages.find(p => p.id === h) || isPluginPage(h))) { page = h; return }
+      if (route && (pages.find(p => p.id === route) || isPluginPage(route))) { page = route; return }
       // Path-based entry (ARCH-6): the SPA fallback serves index.html for any
       // unmatched path, so a deep link / refresh on e.g. /studio lands here
       // with an empty hash. Map the last path segment to a page id when it
@@ -421,57 +446,20 @@
 
   <!-- Main content -->
   <main class="content">
-    {#if page === 'dashboard'}
-      <Dashboard />
-    {:else if page === 'onboarding'}
-      <Onboarding />
-    {:else if page === 'studio'}
-      <Studio />
-    {:else if page === 'agents'}
-      <Agents />
-    {:else if page === 'templates'}
-      <Templates />
-    {:else if page === 'chat'}
-      <Chat />
-    {:else if page === 'memory'}
-      <Memory />
-    {:else if page === 'knowledge'}
-      <Knowledge />
-    {:else if page === 'queues'}
-      <Queues />
-    {:else if page === 'workboard'}
-      <Workboard />
-    {:else if page === 'channels'}
-      <Channels />
-    {:else if page === 'schedule'}
-      <Schedule />
-    {:else if page === 'skills'}
-      <Skills />
-    {:else if page === 'providers'}
-      <Providers />
-    {:else if page === 'secrets'}
-      <Secrets />
-    {:else if page === 'mcp'}
-      <MCP />
-    {:else if page === 'pluginmgr'}
-      <PluginManager />
-    {:else if page === 'activity'}
-      <Activity />
-    {:else if page === 'browser'}
-      <BrowserTrace />
-    {:else if page === 'config'}
-      <Config />
-    {:else if page === 'mobile'}
-      <Mobile />
-    {:else if page === 'logs'}
-      <Logs />
-    {:else if isPluginPage(page)}
+    {#if pageLoadError}
+      <div class="page-loading err">{pageLoadError}</div>
+    {:else if PageComponent && isPluginPage(page)}
       {@const mount = pluginPages.find(p => p.id === page)}
-      <PluginFrame
+      <svelte:component
+        this={PageComponent}
         pluginId={pluginIdFromPage(page)}
         label={mount?.label || pluginIdFromPage(page)}
         url={mount?.url || ''}
       />
+    {:else if PageComponent}
+      <svelte:component this={PageComponent} />
+    {:else}
+      <div class="page-loading">Loading {pageTitle(page, pages, pluginPages)}…</div>
     {/if}
   </main>
 </div>
@@ -692,6 +680,20 @@
 
   /* ── Main content ────────────────────────────────────────────────── */
   .content { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
+  .page-loading {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #8f96bd;
+    font-size: 0.9rem;
+    letter-spacing: 0;
+  }
+  .page-loading.err {
+    color: #ff8c8c;
+    padding: 2rem;
+    text-align: center;
+  }
 
   /* ── Modal ───────────────────────────────────────────────────────── */
   .modal-bg {

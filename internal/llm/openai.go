@@ -200,37 +200,50 @@ func (p *OpenAIProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		return &CompletionResponse{Stream: ch}, nil
 	}
 
-	payload, _ := json.Marshal(body)
+	strippedOptional := map[string]bool{}
+	var bodyBytes []byte
+	for {
+		payload, _ := json.Marshal(body)
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
+			p.baseURL+"/chat/completions", bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(payload)), nil
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		if p.apiKey != "" {
+			httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+		}
+		if p.organization != "" {
+			httpReq.Header.Set("OpenAI-Organization", p.organization)
+		}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		p.baseURL+"/chat/completions", bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.GetBody = func() (io.ReadCloser, error) {
-		return io.NopCloser(bytes.NewReader(payload)), nil
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	if p.apiKey != "" {
-		httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
-	}
-	if p.organization != "" {
-		httpReq.Header.Set("OpenAI-Organization", p.organization)
-	}
+		// Retry on transient errors (429 / 5xx / network) — OpenAI's the most
+		// rate-limit-prone provider, and a single blip used to kill agent runs.
+		// PRODUCTION_AUDIT → HIGH/Reliability.
+		resp, err := DoWithRetry(ctx, p.client, httpReq, RetryConfig{})
+		if err != nil {
+			return nil, fmt.Errorf("%s: request failed: %w", p.id, err)
+		}
+		bodyBytes, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
-	// Retry on transient errors (429 / 5xx / network) — OpenAI's the most
-	// rate-limit-prone provider, and a single blip used to kill agent runs.
-	// PRODUCTION_AUDIT → HIGH/Reliability.
-	resp, err := DoWithRetry(ctx, p.client, httpReq, RetryConfig{})
-	if err != nil {
-		return nil, fmt.Errorf("%s: request failed: %w", p.id, err)
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, _ := io.ReadAll(resp.Body)
-
-	if resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("%s: http %d: %s", p.id, resp.StatusCode, string(bodyBytes))
+		if resp.StatusCode < 300 {
+			break
+		}
+		param := openAIUnsupportedOptionalParam(bodyBytes)
+		if param == "" || strippedOptional[param] {
+			return nil, fmt.Errorf("%s: http %d: %s", p.id, resp.StatusCode, string(bodyBytes))
+		}
+		if param == "max_tokens" {
+			if v, ok := body["max_tokens"]; ok && body["max_completion_tokens"] == nil {
+				body["max_completion_tokens"] = v
+			}
+		}
+		delete(body, param)
+		strippedOptional[param] = true
 	}
 
 	var result struct {
@@ -331,6 +344,40 @@ func (p *OpenAIProvider) Models(ctx context.Context) ([]string, error) {
 		ids = append(ids, m.ID)
 	}
 	return ids, nil
+}
+
+func openAIUnsupportedOptionalParam(body []byte) string {
+	msg := strings.ToLower(string(body))
+	if msg == "" {
+		return ""
+	}
+	if !(strings.Contains(msg, "unsupported") ||
+		strings.Contains(msg, "unrecognized") ||
+		strings.Contains(msg, "unknown") ||
+		strings.Contains(msg, "deprecated") ||
+		strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "cannot both") ||
+		strings.Contains(msg, "extra_forbidden") ||
+		strings.Contains(msg, "invalid_request_error") ||
+		strings.Contains(msg, "bad_request")) {
+		return ""
+	}
+	for _, name := range []string{
+		"parallel_tool_calls",
+		"reasoning_effort",
+		"response_format",
+		"presence_penalty",
+		"frequency_penalty",
+		"top_p",
+		"temperature",
+		"max_tokens",
+		"max_completion_tokens",
+	} {
+		if strings.Contains(msg, name) {
+			return name
+		}
+	}
+	return ""
 }
 
 // toolCallWithID builds a ToolCall preserving the provider-assigned id.

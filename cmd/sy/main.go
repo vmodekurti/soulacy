@@ -20,6 +20,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,6 +38,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/pkgregistry"
 )
 
 var (
@@ -116,15 +119,17 @@ Quick start:
 		buildLogsCmd(),
 		buildServerCmd(),
 		buildDoctorCmd(),
-		buildDaemonCmd(),    // sy daemon — install/uninstall/status/logs as a background service
+		buildDaemonCmd(),       // sy daemon — install/uninstall/status/logs as a background service
 		buildWorkspaceCmd(),    // sy workspace — soulspace info + migration
 		buildSeedExamplesCmd(), // sy seed-examples — copy example agents + scaffold tool files
 		buildSupportCmd(),      // sy support — redacted support bundles
-		buildPullCmd(),      // sy pull — agent marketplace
-		buildEvalCmd(),      // sy eval — evaluation framework
-		buildRegistryCmd(),  // sy registry — review + manage skill sources (E26)
-		buildSecretsCmd(),   // sy secrets — manage the gateway-global secrets store
-		buildMCPCmd(),       // sy mcp — manage MCP servers
+		buildPullCmd(),         // sy pull — agent marketplace
+		buildEvalCmd(),         // sy eval — evaluation framework
+		buildRegistryCmd(),     // sy registry — review + manage skill sources (E26)
+		buildSecretsCmd(),      // sy secrets — manage the gateway-global secrets store
+		buildMCPCmd(),          // sy mcp — manage MCP servers
+		buildLaunchCmd(),       // sy launch — production readiness checks
+		buildUpdateCmd(),       // sy update — release update checks
 		buildVersionCmd(),
 	)
 	return root
@@ -170,6 +175,7 @@ func buildAgentCmd() *cobra.Command {
 	cmd.AddCommand(createCmd)
 	cmd.AddCommand(buildAgentValidateCmd())
 	cmd.AddCommand(buildAgentTierCmd())
+	cmd.AddCommand(buildAgentPackageCmd())
 
 	// enable / disable
 	cmd.AddCommand(&cobra.Command{
@@ -206,6 +212,356 @@ func buildAgentCmd() *cobra.Command {
 	})
 
 	return cmd
+}
+
+func buildAgentPackageCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "package",
+		Aliases: []string{"pkg"},
+		Short:   "Export, inspect, and import shareable agent packages",
+		Long: `Export, inspect, and import .soulacy-agent.json packages.
+
+Packages include redacted SOUL.yaml, a setup requirements checklist, and safe
+local tool files when they can be bundled. Imported agents are disabled by
+default so they can be reviewed before running.`,
+	}
+
+	var outPath string
+	var signingKeyFile string
+	exportCmd := &cobra.Command{
+		Use:   "export <agent-id>",
+		Short: "Export an agent as a .soulacy-agent.json package",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return exportAgentPackage(args[0], outPath, signingKeyFile)
+		},
+	}
+	exportCmd.Flags().StringVarP(&outPath, "out", "o", "", "Output file path (default: <agent-id>.soulacy-agent.json)")
+	exportCmd.Flags().StringVar(&signingKeyFile, "signing-key-file", "", "Hex Ed25519 private key file used to sign the package checksum")
+	cmd.AddCommand(exportCmd)
+
+	inspectCmd := &cobra.Command{
+		Use:   "inspect <package.json>",
+		Short: "Inspect package requirements before importing",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return inspectAgentPackageFile(args[0])
+		},
+	}
+	cmd.AddCommand(inspectCmd)
+
+	var overwrite bool
+	var enable bool
+	var idOverride string
+	importCmd := &cobra.Command{
+		Use:   "import <package.json>",
+		Short: "Import an agent package",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return importAgentPackageFile(args[0], overwrite, enable, idOverride)
+		},
+	}
+	importCmd.Flags().BoolVar(&overwrite, "overwrite", false, "Overwrite an existing agent with the same ID")
+	importCmd.Flags().BoolVar(&enable, "enable", false, "Enable the imported agent immediately (default: import disabled for review)")
+	importCmd.Flags().StringVar(&idOverride, "id", "", "Import with a different agent ID")
+	cmd.AddCommand(importCmd)
+
+	return cmd
+}
+
+func exportAgentPackage(agentID, outPath, signingKeyFile string) error {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return fmt.Errorf("agent id is required")
+	}
+	data, err := apiCall("GET", "/agents/"+agentID+"/package", nil)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(signingKeyFile) != "" {
+		data, err = signAgentPackageBytes(data, signingKeyFile)
+		if err != nil {
+			return err
+		}
+	}
+	if outputJSON {
+		fmt.Println(string(data))
+		return nil
+	}
+	if strings.TrimSpace(outPath) == "" {
+		outPath = safeCLIFileName(agentID) + ".soulacy-agent.json"
+	}
+	if err := os.MkdirAll(filepath.Dir(filepath.Clean(outPath)), 0755); err != nil && filepath.Dir(filepath.Clean(outPath)) != "." {
+		return err
+	}
+	if err := os.WriteFile(outPath, data, 0644); err != nil {
+		return err
+	}
+	fmt.Printf("exported package: %s\n", outPath)
+	return nil
+}
+
+func signAgentPackageBytes(data []byte, signingKeyFile string) ([]byte, error) {
+	var pkg struct {
+		Integrity struct {
+			SHA256 string `json:"sha256"`
+		} `json:"integrity"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(pkg.Integrity.SHA256) == "" {
+		return nil, fmt.Errorf("package has no integrity.sha256 to sign")
+	}
+	priv, err := loadPackageSigningPrivateKey(signingKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	sig, err := pkgregistry.SignChecksum(priv, pkg.Integrity.SHA256)
+	if err != nil {
+		return nil, err
+	}
+	pub := priv.Public().(ed25519.PublicKey)
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil, err
+	}
+	integrity, _ := raw["integrity"].(map[string]any)
+	if integrity == nil {
+		integrity = map[string]any{}
+		raw["integrity"] = integrity
+	}
+	integrity["signature"] = sig
+	integrity["public_key"] = hex.EncodeToString(pub)
+	return json.MarshalIndent(raw, "", "  ")
+}
+
+func loadPackageSigningPrivateKey(path string) (ed25519.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := hex.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil {
+		return nil, fmt.Errorf("signing key must be hex: %w", err)
+	}
+	switch len(raw) {
+	case ed25519.SeedSize:
+		return ed25519.NewKeyFromSeed(raw), nil
+	case ed25519.PrivateKeySize:
+		return ed25519.PrivateKey(raw), nil
+	default:
+		return nil, fmt.Errorf("signing key must be %d-byte seed or %d-byte private key (got %d bytes)", ed25519.SeedSize, ed25519.PrivateKeySize, len(raw))
+	}
+}
+
+func inspectAgentPackageFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	resp, err := apiCall("POST", "/agents/package/inspect", data)
+	if err != nil {
+		return err
+	}
+	if outputJSON {
+		fmt.Println(string(resp))
+		return nil
+	}
+	var inspected agentPackageInspectCLI
+	if err := json.Unmarshal(resp, &inspected); err != nil {
+		fmt.Println(string(resp))
+		return nil
+	}
+	printAgentPackageInspection(inspected)
+	return nil
+}
+
+func importAgentPackageFile(path string, overwrite, enable bool, idOverride string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var raw json.RawMessage = data
+	body := map[string]any{
+		"package":   raw,
+		"overwrite": overwrite,
+		"disabled":  !enable,
+	}
+	if strings.TrimSpace(idOverride) != "" {
+		body["id_override"] = strings.TrimSpace(idOverride)
+	}
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	resp, err := apiCall("POST", "/agents/package/import", payload)
+	if err != nil {
+		return err
+	}
+	if outputJSON {
+		fmt.Println(string(resp))
+		return nil
+	}
+	var imported struct {
+		Agent struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Enabled bool   `json:"enabled"`
+		} `json:"agent"`
+		Warnings []string `json:"warnings"`
+	}
+	if err := json.Unmarshal(resp, &imported); err != nil {
+		fmt.Println(string(resp))
+		return nil
+	}
+	state := "disabled for review"
+	if imported.Agent.Enabled {
+		state = "enabled"
+	}
+	fmt.Printf("imported agent: %s (%s) - %s\n", imported.Agent.ID, imported.Agent.Name, state)
+	for _, warning := range imported.Warnings {
+		fmt.Printf("warning: %s\n", warning)
+	}
+	return nil
+}
+
+type agentPackageInspectCLI struct {
+	SchemaVersion string `json:"schema_version"`
+	Manifest      struct {
+		AgentID     string   `json:"agent_id"`
+		Name        string   `json:"name"`
+		Description string   `json:"description"`
+		Trigger     string   `json:"trigger"`
+		Surfaces    []string `json:"surfaces"`
+		Providers   []string `json:"providers"`
+		Models      []string `json:"models"`
+		Channels    []string `json:"channels"`
+		Skills      []string `json:"skills"`
+		Knowledge   []string `json:"knowledge"`
+		PeerAgents  []string `json:"peer_agents"`
+		Builtins    []string `json:"builtins"`
+		MCPServers  []string `json:"mcp_servers"`
+		Files       []string `json:"files_required"`
+		EvalSuites  []string `json:"eval_suites"`
+		Samples     []string `json:"sample_prompts"`
+	} `json:"manifest"`
+	Agent struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Trigger string `json:"trigger"`
+		LLM     struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"llm"`
+	} `json:"agent"`
+	Validation struct {
+		Valid    bool `json:"valid"`
+		Errors   int  `json:"errors"`
+		Warnings int  `json:"warnings"`
+		Findings []struct {
+			Severity string `json:"severity"`
+			Message  string `json:"message"`
+			Path     string `json:"path"`
+		} `json:"findings"`
+	} `json:"validation"`
+	Requirements []struct {
+		Kind        string `json:"kind"`
+		Name        string `json:"name"`
+		Status      string `json:"status"`
+		Description string `json:"description"`
+	} `json:"requirements"`
+	Warnings   []string `json:"warnings"`
+	Importable bool     `json:"importable"`
+	Integrity  struct {
+		SHA256    string `json:"sha256"`
+		Signature string `json:"signature"`
+		PublicKey string `json:"public_key"`
+		Verified  bool   `json:"verified"`
+	} `json:"integrity"`
+}
+
+func printAgentPackageInspection(inspected agentPackageInspectCLI) {
+	name := inspected.Manifest.Name
+	if name == "" {
+		name = inspected.Agent.Name
+	}
+	id := inspected.Manifest.AgentID
+	if id == "" {
+		id = inspected.Agent.ID
+	}
+	fmt.Printf("Agent package: %s (%s)\n", name, id)
+	fmt.Printf("  schema:     %s\n", inspected.SchemaVersion)
+	fmt.Printf("  trigger:    %s\n", firstNonEmpty(inspected.Manifest.Trigger, inspected.Agent.Trigger))
+	fmt.Printf("  llm:        %s/%s\n", firstNonEmpty(firstString(inspected.Manifest.Providers), inspected.Agent.LLM.Provider, "default"), firstNonEmpty(firstString(inspected.Manifest.Models), inspected.Agent.LLM.Model, "?"))
+	fmt.Printf("  importable: %v\n", inspected.Importable)
+	if inspected.Integrity.SHA256 != "" {
+		status := "checksum ok"
+		if inspected.Integrity.Signature != "" && inspected.Integrity.Verified {
+			status = "signed and verified"
+		} else if inspected.Integrity.Signature != "" {
+			status = "signed but not verified"
+		}
+		fmt.Printf("  integrity:  %s (%s)\n", status, inspected.Integrity.SHA256)
+	}
+	if len(inspected.Manifest.EvalSuites) > 0 || len(inspected.Manifest.Samples) > 0 {
+		fmt.Printf("  harness:    %d eval suite(s), %d sample prompt(s)\n", len(inspected.Manifest.EvalSuites), len(inspected.Manifest.Samples))
+	}
+	if inspected.Validation.Errors > 0 || inspected.Validation.Warnings > 0 {
+		fmt.Printf("  validation: %d error(s), %d warning(s)\n", inspected.Validation.Errors, inspected.Validation.Warnings)
+	}
+	if len(inspected.Validation.Findings) > 0 {
+		fmt.Println("\nValidation findings:")
+		for _, finding := range inspected.Validation.Findings {
+			loc := finding.Path
+			if loc != "" {
+				loc = " (" + loc + ")"
+			}
+			fmt.Printf("  - [%s] %s%s\n", finding.Severity, finding.Message, loc)
+		}
+	}
+	if len(inspected.Requirements) > 0 {
+		fmt.Println("\nRequirements:")
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+		fmt.Fprintln(w, "KIND\tNAME\tSTATUS\tNOTE")
+		for _, req := range inspected.Requirements {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", req.Kind, req.Name, req.Status, req.Description)
+		}
+		_ = w.Flush()
+	}
+	if len(inspected.Warnings) > 0 {
+		fmt.Println("\nWarnings:")
+		for _, warning := range inspected.Warnings {
+			fmt.Printf("  - %s\n", warning)
+		}
+	}
+}
+
+func safeCLIFileName(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "agent"
+	}
+	replacer := strings.NewReplacer("/", "-", "\\", "-", ":", "-", " ", "-")
+	return replacer.Replace(s)
+}
+
+func firstString(values []string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // ── Chat ────────────────────────────────────────────────────────────────────

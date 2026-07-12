@@ -221,6 +221,32 @@ func (i *interleavedBadThinkLLM) Reflect(_ context.Context, _ reasoning.ReflectR
 	return reasoning.ReflectResponse{Output: "Recovered from the last useful queue observation."}, nil
 }
 
+type interleavedBadThinkBadReflectLLM struct {
+	thinkCalls   int
+	reflectCalls int
+}
+
+func (i *interleavedBadThinkBadReflectLLM) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	i.thinkCalls++
+	if i.thinkCalls == 1 {
+		return reasoning.ThinkResponse{
+			Thought: "get queue",
+			IsDone:  false,
+			Action:  reasoning.ToolCall{Tool: "queue_list", Input: map[string]string{"queue": "pending_resources"}},
+		}, nil
+	}
+	return reasoning.ThinkResponse{}, errors.New("invalid reasoning JSON")
+}
+
+func (i *interleavedBadThinkBadReflectLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{}, errors.New("plan not scripted")
+}
+
+func (i *interleavedBadThinkBadReflectLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	i.reflectCalls++
+	return reasoning.ReflectResponse{Output: "I will continue processing the queue now."}, nil
+}
+
 type fallbackPlanLLM struct {
 	thinkCalls int
 }
@@ -464,6 +490,9 @@ func TestReActStopsAfterRepeatedThinkErrors(t *testing.T) {
 	if !strings.Contains(result.Output, "invalid ReAct JSON too many times") {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
+	if result.Confident {
+		t.Fatalf("repeated invalid Think output should mark the run not confident")
+	}
 }
 
 func TestReActReflectsAfterRepeatedThinkErrorsWithUsefulObservation(t *testing.T) {
@@ -479,8 +508,8 @@ func TestReActReflectsAfterRepeatedThinkErrorsWithUsefulObservation(t *testing.T
 
 	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
 
-	if llm.thinkCalls != 4 {
-		t.Fatalf("think calls = %d, want 4 before reflective recovery", llm.thinkCalls)
+	if llm.thinkCalls != 2 {
+		t.Fatalf("think calls = %d, want 2 before reflective recovery", llm.thinkCalls)
 	}
 	if llm.reflectCalls != 1 {
 		t.Fatalf("reflect calls = %d, want 1 recovery reflection", llm.reflectCalls)
@@ -490,6 +519,80 @@ func TestReActReflectsAfterRepeatedThinkErrorsWithUsefulObservation(t *testing.T
 	}
 	if !strings.Contains(result.Output, "Recovered from the last useful queue observation") {
 		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("reflective recovery after invalid Think output should mark the run not confident")
+	}
+}
+
+func TestReActFallsBackToUsefulObservationWhenThinkAndReflectAreInvalid(t *testing.T) {
+	llm := &interleavedBadThinkBadReflectLLM{}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     30,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_list"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
+
+	if llm.thinkCalls != 3 {
+		t.Fatalf("think calls = %d, want stop after two bad Think responses following a useful observation", llm.thinkCalls)
+	}
+	if llm.reflectCalls != 2 {
+		t.Fatalf("reflect calls = %d, want one failed recovery reflection per bad Think", llm.reflectCalls)
+	}
+	if !strings.Contains(result.Output, "best available result") || !strings.Contains(result.Output, "ok") {
+		t.Fatalf("unexpected fallback output: %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("invalid Think fallback should mark the run not confident")
+	}
+}
+
+func TestReActStopsRepeatingIdenticalFailedToolCall(t *testing.T) {
+	call := reasoning.ToolCall{Tool: "channel.send", Arguments: map[string]any{"channel": "telegram"}}
+	llm := &scriptedLLM{
+		responses: []reasoning.ThinkResponse{
+			{Thought: "send acknowledgement", IsDone: false, Action: call},
+			{Thought: "retry send", IsDone: false, Action: call},
+			{Thought: "retry send again", IsDone: false, Action: call},
+			{IsDone: true, FinalAnswer: "should not get here"},
+		},
+		reflectOut: "Telegram send failed repeatedly because the destination was missing.",
+	}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     10,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"channel.send"},
+	}, llm, &errorExecutor{})
+
+	result := loop.Run(context.Background(), "any-react-agent", "send a message")
+
+	if llm.thinkCalls != 3 {
+		t.Fatalf("think calls = %d, want stop after third identical failed tool call", llm.thinkCalls)
+	}
+	if llm.reflectCalls != 1 {
+		t.Fatalf("reflect calls = %d, want one recovery reflection", llm.reflectCalls)
+	}
+	if !strings.Contains(result.Output, "destination was missing") {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	controllerSteps := 0
+	for _, step := range result.Steps {
+		if step.Obs.Source == "controller" && strings.Contains(step.Obs.Content, "exact same") {
+			controllerSteps++
+		}
+	}
+	if controllerSteps != 2 {
+		t.Fatalf("controller repeated-failure steps = %d, want 2", controllerSteps)
+	}
+	if result.Confident {
+		t.Fatalf("repeated failed tool calls should mark the run not confident")
 	}
 }
 
@@ -554,10 +657,48 @@ func TestPlanExecuteFallsBackToReActForUnavailablePlanTool(t *testing.T) {
 	}
 }
 
+func TestPlanExecuteDoesNotCompleteFailedDependencies(t *testing.T) {
+	planSteps := []reasoning.PlannedStep{
+		{ID: "fetch", Description: "fetch source data", Tool: "fetch_url"},
+		{ID: "summarize", Description: "summarize fetched data", Tool: "agent_summarize", DependsOn: []string{"fetch"}},
+	}
+	llm := &stubLLM{planSteps: planSteps, reflectOut: "I will now summarize the fetched data."}
+	exec := &errorExecutor{}
+
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "planner", "fetch and summarize")
+
+	if len(result.Steps) != 2 {
+		t.Fatalf("steps = %d, want failed step plus skipped dependent step", len(result.Steps))
+	}
+	if result.Steps[0].Obs.Error == nil {
+		t.Fatalf("first step should record tool failure: %#v", result.Steps[0])
+	}
+	if got := result.Steps[1].Obs.Content; !strings.Contains(got, "skipped: dependency") {
+		t.Fatalf("dependent step should be skipped after failed prerequisite, got %q", got)
+	}
+	if strings.Contains(strings.ToLower(result.Output), "i will now") {
+		t.Fatalf("plan-execute returned progress prose instead of fallback: %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "failed") || !strings.Contains(result.Output, "skipped") {
+		t.Fatalf("fallback output should explain failed/skipped plan, got %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("failed plan-execute run should not be confident")
+	}
+}
+
 // ─── Scenario D — Tool failure resilience ────────────────────────────────────
 
-// Scenario D: errorExecutor always errors; loop must not panic, each step
-// records an error, and Run still returns a Result with non-empty Output.
+// Scenario D: errorExecutor always errors; loop must not panic, failed tool
+// calls are recorded, and repeated identical failures trigger controller
+// recovery instead of burning the whole step budget.
 func TestScenarioD_ToolFailureResilience(t *testing.T) {
 	llm := &stubLLM{doneOnStep: 99} // never done on its own → exhaust MaxSteps
 	exec := &errorExecutor{}
@@ -572,14 +713,26 @@ func TestScenarioD_ToolFailureResilience(t *testing.T) {
 	// Must not panic.
 	result := loop.Run(context.Background(), "research-agent", "failing task")
 
-	// All steps should record a tool error.
-	if len(result.Steps) != 3 {
-		t.Errorf("expected 3 steps (MaxSteps), got %d", len(result.Steps))
+	if len(result.Steps) != 5 {
+		t.Errorf("expected 3 tool failures plus 2 controller recovery steps, got %d", len(result.Steps))
 	}
+	toolErrorSteps := 0
+	controllerSteps := 0
 	for i, s := range result.Steps {
+		if s.Obs.Source == "controller" {
+			controllerSteps++
+			continue
+		}
 		if s.Obs.Error == nil && s.Obs.Content == "" {
 			t.Errorf("step %d: expected error observation, got empty", i)
 		}
+		toolErrorSteps++
+	}
+	if toolErrorSteps != 3 {
+		t.Errorf("expected 3 failed tool observations, got %d", toolErrorSteps)
+	}
+	if controllerSteps != 2 {
+		t.Errorf("expected 2 controller recovery observations, got %d", controllerSteps)
 	}
 
 	// Result must still have output from Reflect() (graceful degradation).

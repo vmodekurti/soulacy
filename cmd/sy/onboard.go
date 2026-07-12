@@ -65,7 +65,8 @@ func buildOnboardCmd() *cobra.Command {
   3. Pick an LLM provider (Ollama auto-detect / OpenAI / Anthropic / skip).
   4. Set up web search (Ollama / Tavily / Serper) for the web_search tool.
   5. Optionally adopt a starter agent so the GUI isn't empty on first open.
-  6. Optionally install a daemon so soulacy starts on login.
+  6. Optionally configure the release manifest used by update checks.
+  7. Optionally install a daemon so soulacy starts on login.
 
 Re-running ` + "`sy onboard`" + ` is safe: each step shows the current value and lets
 you skip without changing anything. The wizard never deletes data.`,
@@ -238,8 +239,35 @@ func runOnboardWizard() error {
 	}
 	fmt.Println()
 
-	// ── Step 6: Daemon install ─────────────────────────────────────────────
-	printStep(6, "Auto-start on login")
+	// ── Step 6: Production updates ─────────────────────────────────────────
+	printStep(6, "Production updates")
+	currentManifest := strings.TrimSpace(cfg.Updates.ManifestURL)
+	if currentManifest == "" {
+		fmt.Printf("  %s No update manifest configured yet.\n", yellow("⚠"))
+		fmt.Printf("  %s This is fine for development, but production installs should know where to check for verified release bundles.\n", gray("→"))
+	} else {
+		fmt.Printf("  %s %s\n", dim("Current manifest:"), cyan(currentManifest))
+	}
+	if confirm("  Configure update manifest?", currentManifest == "") {
+		defaultManifest := currentManifest
+		if defaultManifest == "" {
+			defaultManifest = "https://github.com/vmodekurti/soulacy/releases/latest/download/release-manifest.json"
+		}
+		manifest := prompt("  Manifest URL or local path", defaultManifest)
+		if strings.TrimSpace(manifest) == "" {
+			fmt.Printf("  %s No manifest entered. Nothing changed.\n", yellow("→"))
+		} else if err := patchUpdateManifestURL(cfgPath, manifest); err != nil {
+			fmt.Printf("  %s Couldn't write update manifest: %v\n", red("✗"), err)
+		} else {
+			cfg.Updates.ManifestURL = manifest
+			fmt.Printf("  %s Update manifest: %s\n", green("✓"), manifest)
+			fmt.Printf("  %s Verify later with: %s\n", gray("→"), bold("sy update check"))
+		}
+	}
+	fmt.Println()
+
+	// ── Step 7: Daemon install ─────────────────────────────────────────────
+	printStep(7, "Auto-start on login")
 	switch runtime.GOOS {
 	case "darwin":
 		fmt.Printf("  %s On macOS this installs a LaunchAgent.\n", gray("→"))
@@ -461,6 +489,18 @@ func patchSearchAPIKey(path, apiKey string) error {
 		return err
 	}
 	setScalar(ensureMapping(root, "search"), "api_key", apiKey, yaml.DoubleQuotedStyle)
+	return saveConfigDoc(path, doc)
+}
+
+// patchUpdateManifestURL upserts updates.manifest_url. It is intentionally
+// separate from provider/search setup because production update readiness is an
+// operator concern, not an agent/provider credential.
+func patchUpdateManifestURL(path, manifestURL string) error {
+	doc, root, err := loadConfigDoc(path)
+	if err != nil {
+		return err
+	}
+	setScalar(ensureMapping(root, "updates"), "manifest_url", strings.TrimSpace(manifestURL), yaml.DoubleQuotedStyle)
 	return saveConfigDoc(path, doc)
 }
 

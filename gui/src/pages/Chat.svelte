@@ -985,7 +985,9 @@
     const tools = thinking.events.filter(e => (e.type || '').startsWith('tool.')).length
     const llm = thinking.events.filter(e => (e.type || '').startsWith('llm.')).length
     const errors = thinking.events.filter(e => (e.type || '').includes('error')).length
-    return `${n} event${n === 1 ? '' : 's'} · ${llm} LLM · ${tools} tool${tools === 1 ? '' : 's'}${errors ? ` · ${errors} error${errors === 1 ? '' : 's'}` : ''}`
+    const recovery = thinking.events.filter(e => e.type === 'reasoning.step' && e.payload?.recovery).length
+    const degraded = thinking.events.some(e => e.type === 'reasoning.result' && e.payload?.confident === false)
+    return `${n} event${n === 1 ? '' : 's'} · ${llm} LLM · ${tools} tool${tools === 1 ? '' : 's'}${recovery ? ` · ${recovery} recovery` : ''}${errors ? ` · ${errors} error${errors === 1 ? '' : 's'}` : ''}${degraded ? ' · degraded' : ''}`
   }
 
   function eventTitle(ev) {
@@ -997,8 +999,8 @@
       case 'tool.result': return `Tool ${p.name || 'tool'} returned`
       case 'tool.log':    return `Tool log`
       case 'reasoning.start':  return `Reasoning loop started (${p.strategy || '?'})`
-      case 'reasoning.step':   return `Step ${p.index ?? '?'}${p.tool ? ` → ${p.tool}` : ''}`
-      case 'reasoning.result': return `Reasoning finished — ${p.steps ?? 0} step${p.steps === 1 ? '' : 's'}`
+      case 'reasoning.step':   return `${p.recovery ? 'Recovery step' : 'Step'} ${p.index ?? '?'}${p.tool ? ` → ${p.tool}` : ''}`
+      case 'reasoning.result': return `Reasoning finished — ${p.steps ?? 0} step${p.steps === 1 ? '' : 's'}${p.confident === false ? ' · degraded' : ''}`
       case 'error':       return `Error${p.stage ? ` in ${p.stage}` : ''}`
       default:            return ev.type || 'event'
     }
@@ -1011,12 +1013,14 @@
     if (ev.type === 'tool.log') return snippet(typeof p === 'string' ? p : p.line || JSON.stringify(p), 260)
     if (ev.type === 'error') return snippet(p.error || p.message || JSON.stringify(p), 260)
     if (ev.type === 'llm.result') return `${p.duration_ms ?? 0}ms · ${p.input_tokens ?? 0} in / ${p.output_tokens ?? 0} out`
-    if (ev.type === 'reasoning.step') return snippet(p.thought || '', 220)
+    if (ev.type === 'reasoning.step') return snippet(p.recovery ? (p.observation || p.thought || '') : (p.thought || ''), 260)
     if (ev.type === 'reasoning.result') return `${p.duration_ms ?? 0}ms · ${p.confident ? 'confident' : 'not confident'}`
     return ''
   }
 
-  function eventClass(type = '') {
+  function eventClass(type = '', ev = null) {
+    if (ev?.type === 'reasoning.step' && ev.payload?.recovery) return 'recovery'
+    if (ev?.type === 'reasoning.result' && ev.payload?.confident === false) return 'degraded'
     if (type.includes('error')) return 'err'
     if (type.startsWith('tool.')) return 'tool'
     if (type.startsWith('llm.')) return 'llm'
@@ -1555,7 +1559,7 @@
                       {:else}
                         {#each msg.thinking.events as ev}
                           {#if eventExpandable(ev)}
-                            <details class="think-event {eventClass(ev.type)}">
+                            <details class="think-event {eventClass(ev.type, ev)}">
                               <summary class="think-main">
                                 <span class="think-type">{ev.type}</span>
                                 <span class="think-text">{eventTitle(ev)}</span>
@@ -1579,7 +1583,7 @@
                               {/if}
                             </details>
                           {:else}
-                            <div class="think-event {eventClass(ev.type)}">
+                            <div class="think-event {eventClass(ev.type, ev)}">
                               <div class="think-main">
                                 <span class="think-type">{ev.type}</span>
                                 <span class="think-text">{eventTitle(ev)}</span>
@@ -1641,7 +1645,7 @@
                     <div class="thinking-body">
                       {#each activeThread.thinking.events as ev (ev)}
                         {#if eventExpandable(ev)}
-                          <details class="think-event {eventClass(ev.type)}" transition:slide|local={{ duration: 220 }}>
+                          <details class="think-event {eventClass(ev.type, ev)}" transition:slide|local={{ duration: 220 }}>
                             <summary class="think-main">
                               <span class="think-type">{ev.type}</span>
                               <span class="think-text">{eventTitle(ev)}</span>
@@ -1650,7 +1654,7 @@
                             <pre class="think-full">{fullEventDetail(ev)}</pre>
                           </details>
                         {:else}
-                          <div class="think-event {eventClass(ev.type)}" transition:slide|local={{ duration: 220 }}>
+                          <div class="think-event {eventClass(ev.type, ev)}" transition:slide|local={{ duration: 220 }}>
                             <div class="think-main">
                               <span class="think-type">{ev.type}</span>
                               <span class="think-text">{eventTitle(ev)}</span>
@@ -2187,6 +2191,14 @@
   .think-event.llm  { border-left-color: #8b85ff; }
   .think-event.tool { border-left-color: #f0a060; }
   .think-event.err  { border-left-color: #f06060; }
+  .think-event.recovery {
+    border-left-color: #f0c060;
+    background: rgba(240, 192, 96, .07);
+  }
+  .think-event.degraded {
+    border-left-color: #f09060;
+    background: rgba(240, 144, 96, .08);
+  }
   .think-main {
     display: flex;
     gap: .45rem;

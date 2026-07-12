@@ -69,6 +69,40 @@ You can configure this from the GUI: **Channels → Discord → Edit → Bot map
 
 ---
 
+## Default Outbound vs Interactive Bots
+
+Discord can be used in two ways:
+
+| Mode | Use it for | Configure |
+| --- | --- | --- |
+| Default outbound sender | Cron reports, one-off `channel.send`, non-interactive delivery | Top-level token plus `default_output_to` |
+| Interactive agent bot | DMs and server messages routed to one agent | A bot mapping with `agent_id`, token, guild/channel allowlists, and intents |
+
+The bot can be online while still unable to read or post in a specific server
+channel. Confirm the bot has `View Channels`, `Send Messages`, and `Read Message
+History` in the destination. For inbound messages, **Message Content Intent** is
+required unless the bot is only handling slash commands.
+
+For interactive mappings, the target agent must have `trigger: channel` and a
+matching `channels:` entry. In DMs, messages are processed directly. In server
+channels, mention the bot or use the configured trigger phrase.
+
+## Troubleshooting Discord Delivery
+
+Open **Channels -> Discord** and read **Delivery checks**:
+
+- `missing access`, `unknown channel`, or `missing permissions` means the bot is
+  not in the server/channel or lacks the needed channel permissions.
+- `unauthorized` means the token is invalid or revoked.
+- No inbound messages usually means **Message Content Intent** is off, the bot
+  is not mentioned in a server channel, or the agent is not mapped to the bot.
+- Long reports are split automatically to respect Discord's message length
+  limit.
+
+Use the channel card's delivery test before relying on scheduled agents.
+
+---
+
 ## Features
 
 | Feature | Support |

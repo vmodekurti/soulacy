@@ -6,9 +6,15 @@ cd "$ROOT"
 
 echo "== Go: product smoke packages =="
 go test \
+  ./internal/agentvalidate \
+  ./internal/introspect \
+  ./internal/pkgregistry \
+  ./internal/reasoning \
+  ./internal/runtime \
   ./internal/templates \
   ./internal/studio \
   ./internal/gateway \
+  ./internal/regression \
   ./internal/channels \
   ./internal/scheduler \
   ./internal/learning

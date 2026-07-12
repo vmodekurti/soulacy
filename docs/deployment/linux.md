@@ -12,11 +12,11 @@ Deploy Soulacy on a Linux VPS as a systemd service with a Caddy reverse proxy fo
 ## Install the binary
 
 ```bash
-# Download latest release
-curl -sL https://github.com/vmodekurti/soulacy/releases/latest/download/soulacy_linux_amd64.tar.gz \
+# Download a tagged release bundle
+curl -sL https://github.com/vmodekurti/soulacy/releases/download/v0.2.0/soulacy_v0.2.0_linux_amd64.tar.gz \
   | tar -xz -C /usr/local/bin/
 
-soulacy version
+soulacy --version
 ```
 
 ---
@@ -61,6 +61,9 @@ memory:
 
 agent_dirs:
   - /etc/soulacy/agents
+
+updates:
+  manifest_url: https://github.com/vmodekurti/soulacy/releases/latest/download/release-manifest.json
 EOF
 
 chown soulacy:soulacy /etc/soulacy/config.yaml
@@ -148,7 +151,9 @@ journalctl -u soulacy -f
 systemctl restart soulacy
 
 # Upgrade binary
-curl -sL .../soulacy_linux_amd64.tar.gz | tar -xz -C /usr/local/bin/
+sy update check
+sy update install --dry-run
+sy update install --yes
 systemctl restart soulacy
 ```
 

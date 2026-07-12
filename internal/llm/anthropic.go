@@ -265,7 +265,7 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 		}
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
-		param := anthropicDeprecatedParam(bodyBytes)
+		param := anthropicRetriableParam(bodyBytes)
 		if param == "" || strippedDeprecated[param] {
 			return nil, fmt.Errorf("anthropic: http %d: %s", resp.StatusCode, string(bodyBytes))
 		}
@@ -478,12 +478,19 @@ func anthropicSafeToolName(name string) string {
 	return out
 }
 
-func anthropicDeprecatedParam(body []byte) string {
+func anthropicRetriableParam(body []byte) string {
 	msg := strings.ToLower(string(body))
-	if !strings.Contains(msg, "deprecated") {
+	if !(strings.Contains(msg, "deprecated") ||
+		strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "unsupported") ||
+		strings.Contains(msg, "unrecognized") ||
+		strings.Contains(msg, "unknown") ||
+		strings.Contains(msg, "cannot both") ||
+		strings.Contains(msg, "invalid_request_error") ||
+		strings.Contains(msg, "bad_request")) {
 		return ""
 	}
-	for _, name := range []string{"temperature", "top_p"} {
+	for _, name := range []string{"top_p", "temperature"} {
 		if strings.Contains(msg, name) {
 			return name
 		}

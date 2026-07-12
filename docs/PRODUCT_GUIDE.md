@@ -33,7 +33,15 @@ Upgrades are non-destructive and reversible:
 ```
 make upgrade     # rebuild + install, backing up the prior build as *.prev
 make rollback    # restore the previous build if an upgrade misbehaves
+sy update check --manifest ./release-manifest.json
+sy update install --manifest ./release-manifest.json --dry-run
+sy update install --manifest ./release-manifest.json --yes
 ```
+
+For production workspaces, set `updates.manifest_url` in `config.yaml`
+or `SOULACY_UPDATE_MANIFEST`. Dashboard readiness and `sy launch check`
+will then show that the runtime has a verified upgrade path, and `sy update
+check/install` can run without repeating `--manifest`.
 
 ## Your first agent
 
@@ -78,14 +86,16 @@ Enable `learning.enabled` on an agent and successful runs produce reviewable pro
 
 The GUI is an installable PWA. On the **Mobile** page you can pair a phone (generate a code on one device, enter it on the other), enable push notifications, and review and resolve pending tool approvals. Pairing issues a scoped credential so the phone can reach the gateway.
 
+The companion page also works as a small operations console: active and recent runs link directly to Activity, scheduled agents can be started or have their output path tested, and Delivery Health shows each configured channel or bot mapping with a dry check and a live send-test action.
+
 ## Observability and repair
 
-The **Dashboard** streams a live event log and surfaces proactive suggestions (schedule a repeated manual task, review a flaky agent, enable learning). **Activity** shows every run; a failed run can be sent to **Studio**, which diagnoses it from the action log and proposes a verified fix. The **Browser** page replays an agent's web automation step by step.
+The **Dashboard** streams a live event log and surfaces proactive suggestions (schedule a repeated manual task, review a flaky agent, enable learning). **Activity** shows every run; a failed run can be sent to **Studio**, which diagnoses it from the action log and proposes a verified fix. The **Browser** page replays an agent's web automation step by step with action filters, screenshot gallery, shareable deep links, and JSON trace export.
 
 ## Troubleshooting
 
 - Something misconfigured? Run `make health` (or `sy doctor`) for provider, vault, and channel diagnostics.
-- Filing an issue? `make logs-bundle` (or `sy support bundle`) collects a redacted support bundle.
+- Filing an issue? `make logs-bundle` (or `sy support bundle`) collects a redacted support bundle with doctor output, release/update metadata, masked config, masked agent manifests, and recent log tails. The Dashboard/Config download also includes live launch readiness from the running gateway.
 - After an upgrade, `make which` confirms which binary your shell actually runs.
 
 ## Going deeper

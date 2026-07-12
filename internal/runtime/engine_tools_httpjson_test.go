@@ -35,6 +35,25 @@ func TestFetchURL_JSONReturnedClean(t *testing.T) {
 	}
 }
 
+func TestFetchURL_AcceptsURLAliases(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("alias-ok"))
+	}))
+	defer srv.Close()
+
+	e := newMinimalEngine(t)
+	e.SetSSRF(false, nil)
+	tool := systemTool(t, e, "fetch_url")
+	out, err := tool.Handler(context.Background(), map[string]any{"link": srv.URL})
+	if err != nil {
+		t.Fatalf("fetch_url: %v", err)
+	}
+	if !strings.Contains(out, "alias-ok") {
+		t.Fatalf("expected fetched body via link alias, got: %q", out)
+	}
+}
+
 // A non-JSON (HTML/text) response keeps the informative header block.
 func TestFetchURL_NonJSONKeepsHeaders(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

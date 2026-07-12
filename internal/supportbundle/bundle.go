@@ -29,6 +29,7 @@ type Options struct {
 	LogDirs      []string
 	Workspace    map[string]string
 	Doctor       any
+	ExtraJSON    map[string]any
 	LogTailBytes int64
 	Now          time.Time
 }
@@ -87,6 +88,10 @@ func Write(w io.Writer, opts Options) (Manifest, error) {
 		_ = zw.Close()
 		return manifest, err
 	}
+	if err := addExtraJSON(add, opts.ExtraJSON); err != nil {
+		_ = zw.Close()
+		return manifest, err
+	}
 
 	if opts.ConfigPath != "" {
 		if data, err := RedactedYAMLFile(opts.ConfigPath); err == nil {
@@ -112,6 +117,29 @@ func Write(w io.Writer, opts Options) (Manifest, error) {
 		return manifest, err
 	}
 	return manifest, zw.Close()
+}
+
+func addExtraJSON(add func(string, []byte) error, extra map[string]any) error {
+	if len(extra) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(extra))
+	for name := range extra {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		value := extra[name]
+		data, _ := json.MarshalIndent(value, "", "  ")
+		if len(bytes.TrimSpace(data)) == 0 || string(data) == "null" {
+			data = []byte("{}")
+		}
+		archiveName := safeArchiveName(strings.TrimSuffix(name, ".json")) + ".json"
+		if err := add(archiveName, []byte(RedactText(string(data)))); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func WriteFile(out string, opts Options) (string, Manifest, error) {

@@ -1,11 +1,19 @@
 <script>
   // Guided first-run wizard: provider → test → template → (optional) channel →
-  // create + launch. Reuses existing endpoints only; every failure is shown as a
-  // plain-language fix, never a raw error.
+  // production updates → create + launch. Reuses existing endpoints only; every
+  // failure is shown as a plain-language fix, never a raw error.
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
 
-  const STEPS = ['Provider', 'Test', 'Template', 'Channel', 'Launch']
+  const STEPS = ['Provider', 'Test', 'Template', 'Channel', 'Updates', 'Launch']
+  const DEFAULT_UPDATE_MANIFEST = 'https://github.com/vmodekurti/soulacy/releases/latest/download/release-manifest.json'
+  const FOCUS_OPTIONS = [
+    { id: 'research', label: 'Daily research', terms: ['research', 'brief', 'market', 'stock', 'monitor', 'weather', 'news'] },
+    { id: 'work', label: 'Inbox & meetings', terms: ['inbox', 'meeting', 'minutes', 'triage', 'action'] },
+    { id: 'docs', label: 'Docs & knowledge', terms: ['document', 'compliance', 'knowledge', 'rag', 'audit', 'policy'] },
+    { id: 'deals', label: 'Deals & monitors', terms: ['deal', 'flight', 'price', 'finder', 'monitor', 'alert'] },
+    { id: 'custom', label: 'Custom workflow', terms: ['basic', 'chat', 'starter', 'workflow'] },
+  ]
   let step = 0
   let loading = true
   let loadError = ''
@@ -30,6 +38,7 @@
   let templates = []
   let templateName = ''
   let templatesFix = ''
+  let assistantFocus = 'research'
 
   // Step 4 — channel (optional)
   let wantChannel = false
@@ -39,7 +48,14 @@
   let channelFix = ''
   let channelDone = false
 
-  // Step 5 — launch
+  // Step 5 — production updates
+  let currentUpdateManifest = ''
+  let updateManifest = DEFAULT_UPDATE_MANIFEST
+  let savingUpdates = false
+  let updateFix = ''
+  let updatesDone = false
+
+  // Step 6 — launch
   let launching = false
   let createdId = ''
   let launchFix = ''
@@ -50,18 +66,23 @@
   async function load() {
     loading = true; loadError = ''
     try {
-      const [p, t] = await Promise.all([
+      const [p, t, c] = await Promise.all([
         api.providers.list(),
         api.templates.list().catch(() => ({ templates: [] })),
+        api.config.get().catch(() => ({})),
       ])
       knownProviders = p.known || Object.keys(p.providers || {})
       configured = p.providers || {}
       templates = t.templates || []
+      currentUpdateManifest = c?.updates?.manifest_url || ''
+      updateManifest = currentUpdateManifest || DEFAULT_UPDATE_MANIFEST
+      updatesDone = !!currentUpdateManifest
       // Preselect a sensible default: an already-configured provider, else first known.
       const already = Object.keys(configured).find(id => configured[id]?.registered)
       providerId = already || knownProviders[0] || 'openai'
       syncProviderFields()
-      if (templates.length && !templateName) templateName = templates[0].name
+      try { assistantFocus = localStorage.getItem('soulacy-assistant-focus') || assistantFocus } catch (_) {}
+      pickRecommendedTemplate()
     } catch (e) {
       loadError = fixHint(e, 'load')
     } finally {
@@ -95,6 +116,7 @@
       return 'The provider took too long to respond. Check your connection and try again.'
     if (ctx === 'template') return 'Couldn’t install the template. ' + (raw || 'Please try another template.')
     if (ctx === 'channel') return 'Couldn’t save the channel. Check the bot token and destination ID.'
+    if (ctx === 'updates') return 'Couldn’t save the update manifest. Check that config.yaml is writable, or set SOULACY_UPDATE_MANIFEST before launch.'
     return raw || 'Something went wrong. Please try again.'
   }
 
@@ -160,6 +182,26 @@
     }
   }
 
+  async function saveUpdates() {
+    updateFix = ''
+    savingUpdates = true
+    try {
+      const value = (updateManifest || '').trim()
+      if (value) {
+        await api.config.patch({ updates: { manifest_url: value } })
+        currentUpdateManifest = value
+        updatesDone = true
+      } else {
+        updatesDone = false
+      }
+      step = 5
+    } catch (e) {
+      updateFix = fixHint(e, 'updates')
+    } finally {
+      savingUpdates = false
+    }
+  }
+
   async function launch(openIn) {
     launching = true; launchFix = ''
     try {
@@ -173,6 +215,7 @@
       // Hand the new agent to Chat so it opens already selected.
       try { if (createdId) localStorage.setItem('soulacy-preselect-agent', createdId) } catch (_) {}
       try { localStorage.setItem('soulacy-onboarding-seen', '1') } catch (_) {}
+      try { localStorage.setItem('soulacy-assistant-focus', assistantFocus) } catch (_) {}
       window.location.hash = '#' + (openIn || 'chat')
     } catch (e) {
       launchFix = fixHint(e, 'template')
@@ -182,9 +225,52 @@
   }
 
   function skipChannel() { wantChannel = false; step = 4 }
+  function skipUpdates() { updatesDone = false; step = 5 }
   function go(page) { if (page) window.location.hash = '#' + page }
 
+  function focusTerms() {
+    return (FOCUS_OPTIONS.find(x => x.id === assistantFocus)?.terms) || []
+  }
+
+  function templateText(t) {
+    return [
+      t?.name,
+      t?.display_name,
+      t?.description,
+      ...(t?.tags || []),
+    ].join(' ').toLowerCase()
+  }
+
+  function templateScore(t) {
+    const text = templateText(t)
+    let score = 0
+    for (const term of focusTerms()) {
+      if (text.includes(term)) score += 2
+    }
+    if ((t?.tags || []).includes('workflow')) score += 1
+    if (assistantFocus === 'custom' && !(t?.tags || []).includes('workflow')) score += 2
+    return score
+  }
+
+  function rankTemplates(list) {
+    return [...(list || [])].sort((a, b) => templateScore(b) - templateScore(a) || String(a.display_name || a.name).localeCompare(String(b.display_name || b.name)))
+  }
+
+  function pickRecommendedTemplate() {
+    const ranked = rankTemplates(templates)
+    if (ranked.length && (!templateName || !ranked.some(t => t.name === templateName))) {
+      templateName = ranked[0].name
+    }
+  }
+
+  function chooseFocus(id) {
+    assistantFocus = id
+    const ranked = rankTemplates(templates)
+    if (ranked.length) templateName = ranked[0].name
+  }
+
   $: selectedTemplate = templates.find(t => t.name === templateName)
+  $: recommendedTemplates = rankTemplates(templates)
   onMount(load)
 </script>
 
@@ -269,9 +355,14 @@
   {:else if step === 2}
     <div class="card">
       <h2>Pick a starter</h2>
-      <p class="muted">Start from a vetted agent. You can customize or add more later.</p>
+      <p class="muted">What should Soulacy help with first? I’ll sort the vetted starters around that goal.</p>
+      <div class="focus-row">
+        {#each FOCUS_OPTIONS as option}
+          <button class:sel={assistantFocus === option.id} on:click={() => chooseFocus(option.id)}>{option.label}</button>
+        {/each}
+      </div>
       <div class="tpl-grid">
-        {#each templates as t}
+        {#each recommendedTemplates as t}
           <button class="tpl {templateName === t.name ? 'sel' : ''}" on:click={() => (templateName = t.name)}>
             <strong>{t.display_name || t.name}</strong>
             <small>{t.description || ''}</small>
@@ -318,15 +409,41 @@
 
   {:else if step === 4}
     <div class="card">
+      <h2>Configure production updates</h2>
+      <p class="muted">
+        Soulacy can check a verified release manifest before installing updates. This keeps production installs upgradeable without guessing which bundle to use.
+      </p>
+      <label>Release manifest URL or local path
+        <input bind:value={updateManifest} placeholder={DEFAULT_UPDATE_MANIFEST} />
+      </label>
+      <p class="hint">
+        Default: <code>{DEFAULT_UPDATE_MANIFEST}</code>. Local/private deployments can point this at an internal manifest file or HTTPS URL.
+      </p>
+      {#if currentUpdateManifest}
+        <div class="banner ok">Current manifest saved: <code>{currentUpdateManifest}</code></div>
+      {/if}
+      {#if updateFix}<div class="banner err">{updateFix}</div>{/if}
+      <div class="actions">
+        <button class="link" on:click={() => (step = 3)}>← Back</button>
+        <button class="btn-primary" on:click={saveUpdates} disabled={savingUpdates}>
+          {savingUpdates ? 'Saving…' : 'Save updates & continue'}
+        </button>
+        <button class="btn-secondary" on:click={skipUpdates}>Skip for now</button>
+      </div>
+    </div>
+
+  {:else if step === 5}
+    <div class="card">
       <h2>Create & launch</h2>
       <p class="muted">
         We’ll create <strong>{selectedTemplate?.display_name || templateName}</strong>
-        on <strong>{providerId}</strong>{model ? ` (${model})` : ''}{wantChannel && channelDone ? ', wired to Telegram' : ''}.
+        on <strong>{providerId}</strong>{model ? ` (${model})` : ''}{wantChannel && channelDone ? ', wired to Telegram' : ''}{updatesDone ? ', update-ready' : ''}.
       </p>
       {#if channelDone}<div class="banner ok">Telegram saved — restart the gateway later for it to connect.</div>{/if}
+      {#if updatesDone}<div class="banner ok">Updates configured — verify any time with <code>sy update check</code>.</div>{/if}
       {#if launchFix}<div class="banner err">{launchFix}</div>{/if}
       <div class="actions">
-        <button class="link" on:click={() => (step = 3)}>← Back</button>
+        <button class="link" on:click={() => (step = 4)}>← Back</button>
         <button class="btn-primary" on:click={() => launch('chat')} disabled={launching}>
           {launching ? 'Creating…' : 'Create & open Chat'}
         </button>
@@ -366,6 +483,9 @@
   .banner.ok { color: #72d9aa; background: rgba(76,175,130,.12); }
   .link { background: none; border: none; color: #8b85ff; cursor: pointer; font-size: .82rem; padding: 0; }
   .tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; }
+  .focus-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .focus-row button { border: 1px solid #2a2f52; background: #0d0f1c; color: #b7bce0; border-radius: 999px; padding: .4rem .65rem; cursor: pointer; font-size: .78rem; }
+  .focus-row button.sel { border-color: #6c5cff; color: #f3f2ff; background: rgba(108,92,255,.12); }
   .tpl { text-align: left; padding: 12px; border-radius: 8px; background: #0d0f1c; border: 1px solid #232743; color: inherit; display: flex; flex-direction: column; gap: 4px; cursor: pointer; }
   .tpl.sel { border-color: #6c5cff; background: rgba(108,92,255,.08); }
   .tpl strong { font-size: .84rem; }
