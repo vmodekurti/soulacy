@@ -32,7 +32,12 @@ type launchReadiness struct {
 	} `json:"summary"`
 	Journey     []launchReadinessItem `json:"journey"`
 	NextActions []launchReadinessItem `json:"next_actions"`
-	Release     struct {
+	Parity      struct {
+		Score   int                `json:"score"`
+		Areas   []launchParityArea `json:"areas"`
+		TopGaps []launchParityArea `json:"top_gaps"`
+	} `json:"parity"`
+	Release struct {
 		Version        string `json:"version"`
 		UpdateManifest string `json:"update_manifest"`
 		UpdatesReady   bool   `json:"updates_ready"`
@@ -40,6 +45,17 @@ type launchReadiness struct {
 		DryRunCommand  string `json:"dry_run_command"`
 		InstallCommand string `json:"install_command"`
 	} `json:"release"`
+}
+
+type launchParityArea struct {
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Status    string `json:"status"`
+	Score     int    `json:"score"`
+	Detail    string `json:"detail"`
+	Next      string `json:"next"`
+	Benchmark string `json:"benchmark"`
+	Href      string `json:"href,omitempty"`
 }
 
 type launchReadinessItem struct {
@@ -229,6 +245,21 @@ func printLaunchReadiness(r launchReadiness) {
 		fmt.Fprintf(tw, "%s\t%s\t%s\n", item.Label, item.Status, item.Detail)
 	}
 	_ = tw.Flush()
+
+	if r.Parity.Score > 0 || len(r.Parity.TopGaps) > 0 {
+		fmt.Printf("\nCompetitive parity: %d%%", r.Parity.Score)
+		if len(r.Parity.TopGaps) == 0 {
+			fmt.Println(" · no reported gaps")
+		} else {
+			fmt.Println()
+			ptw := tabwriter.NewWriter(stdoutWriter{}, 0, 0, 2, ' ', 0)
+			fmt.Fprintln(ptw, "GAP\tSCORE\tBENCHMARK\tNEXT")
+			for _, gap := range r.Parity.TopGaps {
+				fmt.Fprintf(ptw, "%s\t%d%%\t%s\t%s\n", gap.Label, gap.Score, gap.Benchmark, gap.Next)
+			}
+			_ = ptw.Flush()
+		}
+	}
 
 	if len(r.NextActions) == 0 {
 		fmt.Println("\nNext actions: none. Core launch path is ready.")
