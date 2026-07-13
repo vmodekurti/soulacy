@@ -41,6 +41,8 @@
   let installingSlug = ''
   let installResult = ''
   let installError = ''
+  let marketplace = null
+  let marketplaceError = ''
 
   async function load() {
     loading = true
@@ -48,10 +50,20 @@
     try {
       const res = await api.skills.list()
       skills = res.skills || []
+      await loadMarketplace()
     } catch (e) {
       error = e.message
     } finally {
       loading = false
+    }
+  }
+
+  async function loadMarketplace() {
+    marketplaceError = ''
+    try {
+      marketplace = await api.marketplace.status()
+    } catch (e) {
+      marketplaceError = e.message
     }
   }
 
@@ -256,6 +268,7 @@
                 <span class="src-type">{s.type}</span>
                 {#if s.base_url}<span class="src-url">{s.base_url}</span>{/if}
                 {#if s.has_auth}<span class="src-auth" title="auth headers configured">🔑</span>{/if}
+                {#if s.signing_key}<span class="src-auth" title="signature verification configured">✓ signed</span>{/if}
               </div>
             {/each}
           </div>
@@ -454,6 +467,35 @@
   {#if error}
     <div class="banner err">{error}</div>
   {/if}
+  {#if marketplaceError}
+    <div class="banner err">Marketplace readiness unavailable: {marketplaceError}</div>
+  {:else if marketplace}
+    <section class="marketplace-card {marketplace.status}">
+      <div class="marketplace-score">
+        <strong>{marketplace.score}</strong>
+        <span>ecosystem score</span>
+      </div>
+      <div class="marketplace-main">
+        <div class="marketplace-title">
+          <h2>Skill ecosystem readiness</h2>
+          <p>
+            {marketplace.installed_skills} installed · {marketplace.registries} source{marketplace.registries === 1 ? '' : 's'} · {marketplace.searchable_sources} searchable · {marketplace.signed_sources} signed
+          </p>
+        </div>
+        <div class="marketplace-checks">
+          {#each marketplace.checks || [] as check}
+            <span class={check.status} title={check.detail}>{check.label}</span>
+          {/each}
+        </div>
+        {#if marketplace.next_actions?.length}
+          <div class="marketplace-next">
+            <strong>Next:</strong>
+            <span>{marketplace.next_actions[0]}</span>
+          </div>
+        {/if}
+      </div>
+    </section>
+  {/if}
 
   <div class="layout">
     <!-- Skill list -->
@@ -616,6 +658,36 @@
   .as-ok  { background: rgba(80,200,120,.1); border: 1px solid rgba(80,200,120,.3); color: #50c878; padding: .6rem .8rem; border-radius: 7px; font-size: .82rem; }
   .banner { padding: .7rem 1rem; border-radius: 8px; font-size: .85rem; flex-shrink: 0; }
   .err    { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.3); color: #f06060; }
+  .marketplace-card {
+    display: grid; grid-template-columns: 92px 1fr; gap: .85rem;
+    background: #141626; border: 1px solid #2a2f4a; border-radius: 10px;
+    padding: .85rem 1rem; flex-shrink: 0;
+  }
+  .marketplace-card.ok { border-color: rgba(76,175,130,.42); }
+  .marketplace-card.warn { border-color: rgba(240,160,96,.42); }
+  .marketplace-card.fail { border-color: rgba(240,96,96,.42); }
+  .marketplace-score {
+    min-height: 72px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: #0e1020; border: 1px solid #1f2440; border-radius: 8px;
+  }
+  .marketplace-score strong { font-size: 1.45rem; color: #f0f2ff; line-height: 1; }
+  .marketplace-score span { font-size: .66rem; color: #7b82a8; text-transform: uppercase; letter-spacing: .05em; margin-top: .25rem; }
+  .marketplace-main { min-width: 0; display: flex; flex-direction: column; gap: .55rem; }
+  .marketplace-title { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; flex-wrap: wrap; }
+  .marketplace-title h2 { margin: 0; font-size: .95rem; }
+  .marketplace-title p { margin: 0; color: #8b91b3; font-size: .78rem; }
+  .marketplace-checks { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .marketplace-checks span {
+    border: 1px solid #2a2f4a; border-radius: 999px; padding: .16rem .5rem;
+    font-size: .7rem; color: #b7bcda; background: #0e1020;
+  }
+  .marketplace-checks span.ok { border-color: rgba(76,175,130,.35); color: #8bd6b0; }
+  .marketplace-checks span.warn { border-color: rgba(240,160,96,.4); color: #f0c08a; }
+  .marketplace-checks span.fail { border-color: rgba(240,96,96,.4); color: #f09090; }
+  .marketplace-next {
+    display: flex; gap: .4rem; color: #9fa5ca; font-size: .78rem; line-height: 1.45;
+  }
+  .marketplace-next strong { color: #cdd1ef; }
 
   .layout { display: flex; gap: 1rem; flex: 1; min-height: 0; overflow: hidden; }
 
