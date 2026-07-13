@@ -219,6 +219,10 @@ func (b *AnthropicBackend) complete(ctx context.Context, model, system, userMsg 
 	} else if params.TopP > 0 {
 		payload.TopP = params.TopP
 	}
+	if anthropicReasoningModelDisallowsSampling(model) {
+		payload.Temperature = 0
+		payload.TopP = 0
+	}
 
 	var ar anthropicResponse
 	var raw []byte
@@ -350,4 +354,22 @@ func anthropicDeprecatedParam(message string) string {
 		}
 	}
 	return ""
+}
+
+func anthropicReasoningModelDisallowsSampling(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"claude-sonnet-5",
+		"claude-opus-5",
+		"claude-haiku-5",
+		"claude-5",
+	} {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
 }
