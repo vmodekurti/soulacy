@@ -3680,12 +3680,13 @@ deadline is preserved unchanged. Worst-case latency for a 5-level
 chain is bounded by Vasu OS's <code>run_timeout</code>, not the sum of
 per-level timeouts. This is the good news — it's already correct.
 <code>docs/CHANNEL_DESIGN.md</code> covered this and it shipped.</p>
-<p><strong>Sequential dispatch.</strong> No parallel peer calls. <code>runAgentCall</code> (line
-4331) is called synchronously from the tool handler; there's no
-errgroup wrapper. If Chief of Staff wants to fan out ("check calendar
-+ research this + draft email in parallel"), the engine serializes
-each <code>agent__X</code> call and waits for the reply before invoking
-<code>agent__Y</code>. Latency is additive down the chain.</p>
+<p><strong>Parallel peer dispatch.</strong> Orchestrators can set
+<code>parallel_peer_calls: true</code>. When the LLM emits two or more unique
+<code>agent__X</code> tool calls in the same turn, Soulacy runs those peer agents
+concurrently and then returns results to the coordinator in the original
+tool-call order. Normal tools remain sequential. This keeps the safe,
+isolated peer-session model while avoiding additive latency for
+independent fan-out.</p>
 <p><strong>Auto-delegate is single-peer only.</strong> The <code>tool_choice: agent__X</code>
 optimization at line 1970 skips turn 1 only for a single named peer.
 Multi-peer parallel dispatch would need different plumbing.</p>
@@ -3693,34 +3694,30 @@ Multi-peer parallel dispatch would need different plumbing.</p>
 <p>Prioritized by leverage-per-effort:</p>
 <ol>
 <li>
-<p><strong>Raise <code>maxAgentCallDepth</code> to 8 or 10</strong>, and expose it as
-   <code>runtime.max_agent_call_depth</code> in <code>config.yaml</code>. Two-line change
-   at <code>engine.go:4094</code>. Un-breaks 5-level hierarchies. Cost: minimal.
-   Risk: infinite-loop failures take slightly longer to manifest —
-   still bounded. Not a semantic change.</p>
+<p><strong>Configurable agent-call depth.</strong> Shipped as
+   <code>runtime.max_agent_call_depth</code> in <code>config.yaml</code> with default <code>5</code>.
+   Operators can raise it to <code>8</code> or <code>10</code> for deeper Vasu OS-style
+   hierarchies while keeping recursion bounded by the same chain-wide
+   run timeout. Risk: infinite-loop failures take slightly longer to
+   manifest when raised — still bounded.</p>
 </li>
 <li>
-<p><strong>Parallel peer dispatch with return-when semantics.</strong> The LLM
-   already emits multiple tool calls in one response; the engine
-   currently loops them sequentially. Wrapping the loop in an
-   <code>errgroup</code> (or <code>sync.WaitGroup</code> with per-peer contexts) is a
-   contained change to the tool-dispatch loop. New optional field:
-   <code>parallel_peer_calls: true</code> on the caller, or infer parallel
-   whenever the LLM emits ≥ 2 <code>agent__*</code> calls in one turn. Cost:
-   medium (requires thinking about deterministic ordering of
-   results in the tool result messages). Highest user-visible win —
-   turns "3-second head + 3-second peer + 3-second peer" from 9s
-   into 5s.</p>
+<p><strong>Parallel peer dispatch with deterministic result ordering.</strong> Shipped
+   as <code>parallel_peer_calls: true</code> on the caller. The engine parallelizes
+   only unique peer-agent calls, preserves the original result order, and
+   leaves ordinary tools sequential. This turns "3-second head +
+   3-second peer + 3-second peer" into roughly 5s without surprising
+   existing agents.</p>
 </li>
 <li>
-<p><strong>Structured payload channel between peers.</strong> Optional
-   <code>structured_reply</code> field on <code>RunAgentCall</code>'s tool result, so the
-   Chief of Staff can receive not just the researcher's summary but
-   also <code>{citations: [...], confidence: ..., raw_facts: [...]}</code>.
-   Backwards compatible — nil = current flat-text behavior. Cost:
-   larger — needs a schema, needs the LLM prompted to consume the
-   structured payload, and needs the peer template to know how to
-   emit it. Highest architectural leverage but the biggest surface.</p>
+<p><strong>Structured payload channel between peers.</strong> Shipped as
+   <code>structured_peer_results: true</code> on the coordinator agent. Peer
+   replies are returned in a <code>SOULACY_AGENT_RESULT</code> JSON envelope with
+   <code>target_agent</code>, <code>ok</code>, <code>content</code>, and parsed <code>structured</code> payload
+   when the peer itself returned JSON. Backwards compatible — absent
+   flag keeps the current flat-text behavior. Remaining work is richer
+   Studio affordance and packaged team templates that prompt reviewers
+   and researchers to emit citation/confidence JSON.</p>
 </li>
 <li>
 <p><strong><code>kind: coordinator</code></strong> — a new agent kind that's like a worker

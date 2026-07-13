@@ -739,10 +739,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-run-the-setup-wizard" class="md-nav__link">
+  <a href="#2-run-the-onboarding-wizard" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Run the setup wizard
+        2. Run the onboarding wizard
       
     </span>
   </a>
@@ -3606,10 +3606,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#2-run-the-setup-wizard" class="md-nav__link">
+  <a href="#2-run-the-onboarding-wizard" class="md-nav__link">
     <span class="md-ellipsis">
       
-        2. Run the setup wizard
+        2. Run the onboarding wizard
       
     </span>
   </a>
@@ -3761,10 +3761,14 @@
 </div>
 </div>
 <p>More options (Docker, VPS, launchd service): <a href="../installation/">Installation</a>.</p>
-<h2 id="2-run-the-setup-wizard">2. Run the setup wizard<a class="headerlink" href="#2-run-the-setup-wizard" title="Permanent link">&para;</a></h2>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sy<span class="w"> </span>setup
+<h2 id="2-run-the-onboarding-wizard">2. Run the onboarding wizard<a class="headerlink" href="#2-run-the-onboarding-wizard" title="Permanent link">&para;</a></h2>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sy<span class="w"> </span>onboard
 </span></code></pre></div>
-<p>The wizard creates your workspace (<code>~/.soulacy/soulspace</code> — the <a href="../../configuration/workspace/">soulspace layout</a>), asks which LLM provider to use, and can wire a channel.</p>
+<p>The wizard creates or updates your workspace (<code>~/.soulacy/soulspace</code> — the
+<a href="../../configuration/workspace/">soulspace layout</a>), asks which LLM provider to
+use, can wire web search and a starter agent, and can configure the release
+manifest used by <code>sy update check</code>. Use <code>sy setup</code> only when you want to write a
+fresh config from scratch.</p>
 <div class="admonition tip">
 <p class="admonition-title">No API key? Use Ollama.</p>
 <p>If you run <a href="https://ollama.com">Ollama</a> locally, pick it in the wizard and Soulacy works fully offline — no cloud account needed.</p>
@@ -3772,7 +3776,7 @@
 <h2 id="3-start-the-gateway">3. Start the gateway<a class="headerlink" href="#3-start-the-gateway" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>soulacy
 </span></code></pre></div>
-<p>The gateway starts on <strong>http://localhost:18789</strong> with the full web GUI: Dashboard, Agents, Chat, Workboard, Knowledge, Memory, Skills, Flow, Plugins, and more. Take the <a href="../gui-tour/">GUI tour</a>.</p>
+<p>The gateway starts on <strong>http://localhost:18789</strong> with the full web GUI: Dashboard, Studio, Agents, Chat, Workboard, Knowledge, Memory, Skills, integrations, and observability. Take the <a href="../gui-tour/">GUI tour</a>.</p>
 <h2 id="4-talk-to-an-agent">4. Talk to an agent<a class="headerlink" href="#4-talk-to-an-agent" title="Permanent link">&para;</a></h2>
 <div class="tabbed-set tabbed-alternate" data-tabs="2:3"><input checked="checked" id="__tabbed_2_1" name="__tabbed_2" type="radio" /><input id="__tabbed_2_2" name="__tabbed_2" type="radio" /><input id="__tabbed_2_3" name="__tabbed_2" type="radio" /><div class="tabbed-labels"><label for="__tabbed_2_1">GUI</label><label for="__tabbed_2_2">CLI</label><label for="__tabbed_2_3">HTTP</label></div>
 <div class="tabbed-content">
@@ -3816,7 +3820,7 @@ Watch the <em>Thinking</em> section show reasoning steps and tool calls live.</p
    Every install passes a <a href="../../extend/safety/">security review</a> before you consent. → <a href="../../extend/skill-sources/">Skill sources</a></li>
 <li><strong>Put it on Telegram</strong> — a bot token and two YAML lines. → <a href="../../channels/telegram/">Channels</a></li>
 <li><strong>Schedule it</strong> — run every morning, with automatic catch-up after downtime. → <a href="../../using/schedules/">Schedules</a></li>
-<li><strong>Start from a template</strong> — Meeting Minutes, Inbox Triage, Market Monitor, Compliance Auditor, ready in one click. → <a href="../../using/templates/">Templates</a></li>
+<li><strong>Start from a template</strong> — Meeting Minutes, Inbox Triage, Market Monitor, Compliance Auditor, with guided readiness checks and mock tests. → <a href="../../using/templates/">Templates</a></li>
 <li><strong>Talk to it</strong> — configure <code>voice:</code> and hold a realtime conversation in Chat. → <a href="../../using/voice/">Voice</a></li>
 </ol>
 <h2 id="where-everything-lives">Where everything lives<a class="headerlink" href="#where-everything-lives" title="Permanent link">&para;</a></h2>

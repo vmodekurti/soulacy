@@ -3814,9 +3814,13 @@ the GUI — the binary embeds the web UI at compile time, so use <code>make all<
 <p>Tagged releases publish <code>soulacy_&lt;version&gt;_&lt;os&gt;_&lt;arch&gt;.tar.gz</code> bundles
 (each contains both <code>soulacy</code> and <code>sy</code>) on
 <a href="https://github.com/vmodekurti/soulacy/releases">GitHub Releases</a>:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>soulacy_v0.2.0_darwin_arm64.tar.gz
-</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>sudo<span class="w"> </span>install<span class="w"> </span>-m755<span class="w"> </span>soulacy<span class="w"> </span>sy<span class="w"> </span>/usr/local/bin/
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>grep<span class="w"> </span><span class="s1">&#39;soulacy_v0.2.0_darwin_arm64.tar.gz&#39;</span><span class="w"> </span>SHA256SUMS<span class="w"> </span><span class="p">|</span><span class="w"> </span>shasum<span class="w"> </span>-a<span class="w"> </span><span class="m">256</span><span class="w"> </span>-c<span class="w"> </span>-
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>tar<span class="w"> </span>-xzf<span class="w"> </span>soulacy_v0.2.0_darwin_arm64.tar.gz
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>sudo<span class="w"> </span>install<span class="w"> </span>-m755<span class="w"> </span>soulacy<span class="w"> </span>sy<span class="w"> </span>/usr/local/bin/
 </span></code></pre></div>
+<p>Releases also include <code>release-manifest.json</code>, which records the release
+version, source commit, generation time, and every artifact's OS, architecture,
+byte size, and SHA-256 digest for installer and CI checks.</p>
 <p>If the releases page is empty, use the one-command installer above — it
 falls back to a source build automatically.</p>
 <h2 id="verify">Verify<a class="headerlink" href="#verify" title="Permanent link">&para;</a></h2>
@@ -3826,7 +3830,7 @@ falls back to a source build automatically.</p>
 <p>(<code>soulacy</code> itself takes no <code>version</code> subcommand — running it starts the gateway.)</p>
 <h2 id="whats-next">What's next?<a class="headerlink" href="#whats-next" title="Permanent link">&para;</a></h2>
 <ol>
-<li><code>sy setup</code> — the interactive wizard (provider, channel, first agent).</li>
+<li><code>sy onboard</code> — the guided first-run path for provider, search, starter agent, update manifest, and auto-start.</li>
 <li>Follow the <a href="../quickstart/">Quick Start</a>, then take the <a href="../gui-tour/">GUI tour</a>.</li>
 </ol>
 

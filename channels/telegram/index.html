@@ -2130,6 +2130,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#default-outbound-vs-interactive-bots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default Outbound vs Interactive Bots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#send-scheduled-output-to-telegram" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3690,6 +3701,17 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#default-outbound-vs-interactive-bots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default Outbound vs Interactive Bots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#send-scheduled-output-to-telegram" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3874,6 +3896,37 @@
 </table>
 <p>You can configure this from the GUI: <strong>Channels → Telegram → Edit → Bot mappings</strong>.</p>
 <hr />
+<h2 id="default-outbound-vs-interactive-bots">Default Outbound vs Interactive Bots<a class="headerlink" href="#default-outbound-vs-interactive-bots" title="Permanent link">&para;</a></h2>
+<p>Telegram can be used in two ways:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Use it for</th>
+<th>Configure</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default outbound sender</td>
+<td>Cron reports, one-off <code>channel.send</code>, non-interactive delivery</td>
+<td>Top-level token, <code>default_output_to</code>, and usually <code>outbound_only: true</code></td>
+</tr>
+<tr>
+<td>Interactive agent bot</td>
+<td>A Telegram bot that receives messages and invokes one agent</td>
+<td>A bot mapping with <code>agent_id</code>, token, and allowlists</td>
+</tr>
+</tbody>
+</table>
+<p>If the channel card says <code>OUTBOUND-ONLY</code>, that is expected for the default
+sender. It means the bot can send reports, but it will not poll inbound Telegram
+messages. Add a bot mapping when you want a user to chat with an agent.</p>
+<p>For interactive bot mappings, restart the gateway after saving, then send
+<code>/start</code> to that exact bot. If the bot is used in a group, set
+<code>ignore_groups: false</code>, add an allowlist if needed, and mention the bot or use
+the configured trigger phrase.</p>
+<hr />
 <h2 id="send-scheduled-output-to-telegram">Send Scheduled Output To Telegram<a class="headerlink" href="#send-scheduled-output-to-telegram" title="Permanent link">&para;</a></h2>
 <p>For cron agents that only need to post results, configure Telegram as
 <code>outbound_only</code>. In this mode Soulacy registers the bot for sends, but does not
@@ -3914,6 +3967,12 @@ or public handle, for example <code>@your_channel_name</code>, as <code>schedule
   channel-level <code>default_output_to</code>.</li>
 <li>A dedicated bot mapping must either select an <code>agent_id</code> for interactive use
   or be marked <code>outbound_only</code> for send-only use.</li>
+<li><code>chat not found</code> usually means <code>default_output_to</code> / <code>schedule.output.to</code> is
+  wrong, the bot is not in the target chat/channel, or a private chat has not
+  sent <code>/start</code> to that bot yet.</li>
+<li>If a mapped bot is listed as connected but never receives prompts, confirm the
+  agent has <code>trigger: channel</code> and includes the mapping adapter ID or
+  <code>telegram</code> in its <code>channels:</code> list.</li>
 </ul>
 <p>You can also call <code>GET /api/v1/doctor</code>; its <code>channels</code> section returns the
 same diagnostics for automated production checks.</p>

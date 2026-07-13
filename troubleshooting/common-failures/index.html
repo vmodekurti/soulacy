@@ -3758,6 +3758,16 @@ recent error rate, and prints a specific remedy for each failed check.</p>
 <td>Daemon not installed</td>
 <td><code>sy daemon install</code>, then <code>sy daemon status</code></td>
 </tr>
+<tr>
+<td><code>sy doctor</code> warns <code>no update manifest configured</code></td>
+<td>Production upgrade path is not wired</td>
+<td>Set <code>updates.manifest_url</code> in <code>config.yaml</code> or export <code>SOULACY_UPDATE_MANIFEST</code></td>
+</tr>
+<tr>
+<td><code>sy doctor</code> warns <code>update manifest could not be checked</code></td>
+<td>Manifest URL/file is unreachable or invalid</td>
+<td>Verify the URL/file path, JSON shape, and artifact links before launch</td>
+</tr>
 </tbody>
 </table>
 <h2 id="llm-providers">LLM providers<a class="headerlink" href="#llm-providers" title="Permanent link">&para;</a></h2>
@@ -3892,9 +3902,12 @@ fail silently on Telegram/Slack/Discord.</p>
 </tbody>
 </table>
 <h2 id="when-youre-stuck-support-bundle">When you're stuck: support bundle<a class="headerlink" href="#when-youre-stuck-support-bundle" title="Permanent link">&para;</a></h2>
-<p><code>sy doctor bundle</code> produces a redacted support bundle — config with secrets
-stripped, recent logs, <code>doctor</code> output, versions, and recent failures — safe to
-share when asking for help. It never includes secret values.</p>
+<p><code>sy support bundle</code> produces a redacted support bundle — config with secrets
+stripped, recent logs, <code>doctor</code> output, release/update metadata, versions, and
+recent failures — safe to share when asking for help. The same bundle can be
+downloaded from <strong>Dashboard → Launch Readiness</strong> or <strong>Config → Support</strong>; the
+live gateway bundle also includes launch-readiness state. It never includes
+secret values.</p>
 
 
 

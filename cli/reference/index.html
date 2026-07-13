@@ -3910,6 +3910,11 @@
 <p><code>sy doctor</code> exits nonzero only on hard failures; warnings flag suspicious
 but non-fatal configuration (relative <code>agent_dirs</code>, non-absolute
 <code>runtime.python_bin</code>, …).</p>
+<p>It also checks the production update path. If <code>updates.manifest_url</code> or
+<code>SOULACY_UPDATE_MANIFEST</code> is configured, the doctor fetches the release manifest
+and reports whether this install is current, upgradeable, or unable to reach the
+manifest. Missing or unreachable update manifests are warnings so local
+development is not blocked, but production workspaces should clear them.</p>
 <h2 id="managing-agents">Managing agents<a class="headerlink" href="#managing-agents" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>sy<span class="w"> </span>agent<span class="w"> </span>list
 </span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a>sy<span class="w"> </span>agent<span class="w"> </span>get<span class="w"> </span>support-bot
@@ -3919,10 +3924,23 @@ but non-fatal configuration (relative <code>agent_dirs</code>, non-absolute
 </span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a>sy<span class="w"> </span>agent<span class="w"> </span>disable<span class="w"> </span>support-bot
 </span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a>sy<span class="w"> </span>agent<span class="w"> </span>trigger<span class="w"> </span>daily-briefing<span class="w">      </span><span class="c1"># manually fire a scheduled agent</span>
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a>sy<span class="w"> </span>agent<span class="w"> </span>delete<span class="w"> </span>old-bot
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a>sy<span class="w"> </span>agent<span class="w"> </span>package<span class="w"> </span><span class="nb">export</span><span class="w"> </span>support-bot<span class="w"> </span>--out<span class="w"> </span>support-bot.soulacy-agent.json
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a>sy<span class="w"> </span>agent<span class="w"> </span>package<span class="w"> </span><span class="nb">export</span><span class="w"> </span>support-bot<span class="w"> </span>--signing-key-file<span class="w"> </span>./ed25519.hex
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a>sy<span class="w"> </span>agent<span class="w"> </span>package<span class="w"> </span>inspect<span class="w"> </span>support-bot.soulacy-agent.json
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a>sy<span class="w"> </span>agent<span class="w"> </span>package<span class="w"> </span>import<span class="w"> </span>support-bot.soulacy-agent.json<span class="w">      </span><span class="c1"># imports disabled for review</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a>sy<span class="w"> </span>agent<span class="w"> </span>package<span class="w"> </span>import<span class="w"> </span>support-bot.soulacy-agent.json<span class="w"> </span>--enable<span class="w"> </span>--overwrite
 </span></code></pre></div>
 <p><code>sy agent validate</code> checks YAML fields, trigger/schedule consistency,
 provider and model availability, tool paths, and MCP references — errors
 return nonzero, making it CI-friendly.</p>
+<p>Agent packages are portable <code>.soulacy-agent.json</code> bundles. They include
+redacted <code>SOUL.yaml</code>, safe local tool files when available, bundled
+<code>evals/</code>, <code>prompts/</code>, and <code>samples/</code> files, a setup requirements checklist,
+a content checksum, and optional Ed25519 signature metadata. <code>inspect</code>
+verifies package integrity and shows missing providers, channels, peer
+agents, skills, files, knowledge bases, and secrets before anything is
+imported.</p>
 <p>Pull a definition from a URL or the public registry:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sy<span class="w"> </span>pull<span class="w"> </span>my-agent<span class="w">                                   </span><span class="c1"># registry ID</span>
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>sy<span class="w"> </span>pull<span class="w"> </span>org/repo<span class="w">                                   </span><span class="c1"># GitHub shorthand (main/SOUL.yaml)</span>
@@ -3935,10 +3953,13 @@ return nonzero, making it CI-friendly.</p>
 </span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a>
 </span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>tests/smoke.json<span class="w">        </span><span class="c1"># pass/fail report</span>
 </span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>tests/smoke.json<span class="w"> </span>--json
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>evals/golden<span class="w"> </span>--tag<span class="w"> </span>weather<span class="w"> </span>--repeat<span class="w"> </span><span class="m">3</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>evals/golden<span class="w"> </span>--fail-fast
 </span></code></pre></div>
 <p>Eval suites are JSON:
 <code>{"name": "smoke", "cases": [{"name":"math","input":"2+2?","expected_contains":["4"]}]}</code>.
-A failing case makes the command exit nonzero.</p>
+A failing case makes the command exit nonzero. Reports include aggregate
+pass/fail/skip counts plus latency and token summaries when available.</p>
 <h2 id="channels">Channels<a class="headerlink" href="#channels" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sy<span class="w"> </span>channel<span class="w"> </span>list
 </span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>sy<span class="w"> </span>channel<span class="w"> </span>status<span class="w"> </span>whatsapp_web
@@ -4002,8 +4023,15 @@ API when it is reachable, otherwise appends directly to <code>config.yaml</code>
 <h2 id="gateway-control">Gateway control<a class="headerlink" href="#gateway-control" title="Permanent link">&para;</a></h2>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-11-1"><a id="__codelineno-11-1" name="__codelineno-11-1" href="#__codelineno-11-1"></a>sy<span class="w"> </span>server<span class="w"> </span>status<span class="w">     </span><span class="c1"># GET /health against the gateway</span>
 </span><span id="__span-11-2"><a id="__codelineno-11-2" name="__codelineno-11-2" href="#__codelineno-11-2"></a>sy<span class="w"> </span>server<span class="w"> </span>start<span class="w">      </span><span class="c1"># convenience hint — run the `soulacy` binary for production</span>
-</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>sy<span class="w"> </span>version<span class="w">           </span><span class="c1"># CLI version + resolved gateway URL</span>
+</span><span id="__span-11-3"><a id="__codelineno-11-3" name="__codelineno-11-3" href="#__codelineno-11-3"></a>sy<span class="w"> </span>update<span class="w"> </span>check<span class="w"> </span>--manifest<span class="w"> </span>./release-manifest.json
+</span><span id="__span-11-4"><a id="__codelineno-11-4" name="__codelineno-11-4" href="#__codelineno-11-4"></a>sy<span class="w"> </span>update<span class="w"> </span>install<span class="w"> </span>--manifest<span class="w"> </span>./release-manifest.json<span class="w"> </span>--dry-run
+</span><span id="__span-11-5"><a id="__codelineno-11-5" name="__codelineno-11-5" href="#__codelineno-11-5"></a>sy<span class="w"> </span>update<span class="w"> </span>install<span class="w"> </span>--manifest<span class="w"> </span>./release-manifest.json<span class="w"> </span>--yes
+</span><span id="__span-11-6"><a id="__codelineno-11-6" name="__codelineno-11-6" href="#__codelineno-11-6"></a>sy<span class="w"> </span>version<span class="w">           </span><span class="c1"># CLI version + resolved gateway URL</span>
 </span></code></pre></div>
+<p>When <code>updates.manifest_url</code> is configured in <code>config.yaml</code> or
+<code>SOULACY_UPDATE_MANIFEST</code>, <code>sy update check</code> and <code>sy update install</code> use it by
+default. <code>sy launch check</code> also reports whether that production upgrade path is
+configured.</p>
 <hr />
 <h2 id="the-soulacy-binary">The <code>soulacy</code> binary<a class="headerlink" href="#the-soulacy-binary" title="Permanent link">&para;</a></h2>
 <p>Running <code>soulacy</code> with no subcommand starts the gateway in the

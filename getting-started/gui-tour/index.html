@@ -795,10 +795,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#build" class="md-nav__link">
+  <a href="#first-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Build
+        First Run
       
     </span>
   </a>
@@ -806,10 +806,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#flow" class="md-nav__link">
+  <a href="#studio" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Flow
+        Studio
       
     </span>
   </a>
@@ -894,10 +894,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#schedule-ops" class="md-nav__link">
+  <a href="#automations-ops" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Schedule (ops)
+        Automations (ops)
       
     </span>
   </a>
@@ -3727,10 +3727,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#build" class="md-nav__link">
+  <a href="#first-run" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Build
+        First Run
       
     </span>
   </a>
@@ -3738,10 +3738,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#flow" class="md-nav__link">
+  <a href="#studio" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Flow
+        Studio
       
     </span>
   </a>
@@ -3826,10 +3826,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#schedule-ops" class="md-nav__link">
+  <a href="#automations-ops" class="md-nav__link">
     <span class="md-ellipsis">
       
-        Schedule (ops)
+        Automations (ops)
       
     </span>
   </a>
@@ -3996,12 +3996,12 @@
 <h2 id="dashboard">Dashboard<a class="headerlink" href="#dashboard" title="Permanent link">&para;</a></h2>
 <p>Your at-a-glance health view: gateway status and version, agent counts, and a <strong>Live Event Log</strong> streaming every runtime event over WebSocket, with filter presets (All / Errors / Tools / LLM / Messages).</p>
 <p><strong>Try first:</strong> send a chat message in another tab and watch the events appear live.</p>
-<h2 id="build">Build<a class="headerlink" href="#build" title="Permanent link">&para;</a></h2>
-<p>A conversational agent builder — describe what you want in plain language, answer its follow-up questions, and it generates a complete SOUL.yaml you can preview and deploy in one click.</p>
-<p><strong>Try first:</strong> type "an agent that summarizes RSS articles every morning" and see the blueprint form fill itself in.</p>
-<h2 id="flow">Flow<a class="headerlink" href="#flow" title="Permanent link">&para;</a></h2>
-<p>A visual canvas for each agent: trigger, system prompt, memory, LLM, tools, and output rendered as a connected graph. Click any node to open an editable inspector and hit <strong>Save Flow</strong>. Agents defined with <code>workflow.nodes</code> render as a read-only graph instead — see <a href="../../using/flow-view/">Flow view</a>.</p>
-<p><strong>Try first:</strong> pick an agent in the left rail and click its LLM node.</p>
+<h2 id="first-run">First Run<a class="headerlink" href="#first-run" title="Permanent link">&para;</a></h2>
+<p>The guided setup path for a fresh workspace. It helps you choose a first focus, configure the essentials, and points you toward a starter template or Studio flow that matches what you are trying to build.</p>
+<p><strong>Try first:</strong> pick the focus closest to your use case, then follow the suggested next action.</p>
+<h2 id="studio">Studio<a class="headerlink" href="#studio" title="Permanent link">&para;</a></h2>
+<p>The one-stop agent development surface. Describe an agent in plain language, let Studio draft the workflow, inspect the generated plan, edit nodes and connections on the canvas, run dry/live tests, validate integrity, and use self-heal when a real run fails. Studio can author Workflow, ReAct, and Plan-Execute agents, then save them as normal SOUL.yaml agents.</p>
+<p><strong>Try first:</strong> type "an agent that summarizes RSS articles every morning", generate a draft, run <strong>Dry run</strong>, then click any node to inspect its inputs and outputs.</p>
 <h2 id="agents">Agents<a class="headerlink" href="#agents" title="Permanent link">&para;</a></h2>
 <p>The full agent editor: identity, trigger, system prompt, LLM provider/model (with live model lists), memory scopes, reasoning strategy, brain memory layers, channels, tools, skills, knowledge bases, and peer agents.</p>
 <ul>
@@ -4012,8 +4012,8 @@
 </ul>
 <p><strong>Try first:</strong> select an agent, click <strong>Validate</strong>, then <strong>💬 Test</strong> and send it a message.</p>
 <h2 id="templates">Templates<a class="headerlink" href="#templates" title="Permanent link">&para;</a></h2>
-<p>A catalog of ready-made agents: four agentic workflows (Meeting Minutes &amp; Action Items, Smart Inbox Triage, Competitor &amp; Market Monitor, Document Compliance Auditor) plus starters. One click on <strong>⊕ Create agent</strong> instantiates a working agent. See <a href="../../using/templates/">Templates</a>.</p>
-<p><strong>Try first:</strong> create <strong>Meeting Minutes &amp; Action Items</strong> and paste a transcript into Chat.</p>
+<p>A catalog of ready-made agents: four agentic workflows (Meeting Minutes &amp; Action Items, Smart Inbox Triage, Competitor &amp; Market Monitor, Document Compliance Auditor) plus starters. <strong>Install</strong> opens a guided checklist with readiness checks, a mock test, and optional scheduled-output routing. See <a href="../../using/templates/">Templates</a>.</p>
+<p><strong>Try first:</strong> install <strong>Meeting Minutes &amp; Action Items</strong> and paste a transcript into Chat.</p>
 <h2 id="chat">Chat<a class="headerlink" href="#chat" title="Permanent link">&para;</a></h2>
 <p>The Chat Tester: pick an agent, send messages, and watch the <strong>Thinking</strong> panel narrate every LLM call, tool call, and reasoning step live. Each reply carries a per-turn token/cost delta. Hover any bubble to reveal <strong>⑂ Fork</strong> and branch the conversation from that point; the <strong>🎤</strong> button starts a realtime voice session. See <a href="../../using/chat/">Chat</a> and <a href="../../using/voice/">Voice</a>.</p>
 <p><strong>Try first:</strong> ask anything, then expand <strong>Thinking</strong> under the reply.</p>
@@ -4029,8 +4029,8 @@
 <h2 id="channels-ops">Channels (ops)<a class="headerlink" href="#channels-ops" title="Permanent link">&para;</a></h2>
 <p>Status and configuration for every channel adapter — Telegram, Discord, Slack, WhatsApp, WhatsApp Web (with QR pairing), and the always-on HTTP channel. Edit credentials, map bots to agents (multi-bot supported), and enable/disable adapters; a restart banner appears when changes need a gateway restart.</p>
 <p><strong>Try first:</strong> open a channel's <strong>Edit</strong> dialog to see which agent each bot routes to.</p>
-<h2 id="schedule-ops">Schedule (ops)<a class="headerlink" href="#schedule-ops" title="Permanent link">&para;</a></h2>
-<p>All cron agents in one table: next run, last run, missed-run policy, live "Running…" status, and countdowns. <strong>▶ Run</strong> triggers immediately, <strong>📋 History</strong> opens a slide-out of past runs with outputs, <strong>👁 Watch</strong> jumps to the live action log. See <a href="../../using/schedules/">Schedules</a>.</p>
+<h2 id="automations-ops">Automations (ops)<a class="headerlink" href="#automations-ops" title="Permanent link">&para;</a></h2>
+<p>All cron agents in one table: next run, last run, missed-run policy, live "Running…" status, and countdowns. <strong>▶ Run</strong> triggers immediately, <strong>📋 History</strong> opens a slide-out of past manual, channel, and scheduled runs with outputs and delivery status, <strong>👁 Watch</strong> jumps to the live action log. See <a href="../../using/schedules/">Schedules</a>.</p>
 <p><strong>Try first:</strong> click <strong>📋 History</strong> on any cron agent.</p>
 <h2 id="skills-ops">Skills (ops)<a class="headerlink" href="#skills-ops" title="Permanent link">&para;</a></h2>
 <p>Browse installed Agent Skills (SKILL.md instruction packs), read their full instructions and resources, and install new ones — <strong>⚡ From AgenticSkills</strong> installs directly from an agenticskills.io URL, and <strong>➕ Skill sources</strong> lets you paste any URL (a skills.sh-style directory, a Soulacy package registry, or a Git host), have it reviewed and identified, then add it as a registry source.</p>

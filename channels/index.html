@@ -3833,10 +3833,11 @@
 </tbody>
 </table>
 <h2 id="how-channels-route-to-agents">How channels route to agents<a class="headerlink" href="#how-channels-route-to-agents" title="Permanent link">&para;</a></h2>
-<p>There are two related configuration layers:</p>
+<p>There are three related configuration layers:</p>
 <ol>
 <li><code>config.yaml</code> chooses which agent a channel adapter routes inbound messages to.</li>
 <li>The agent's <code>SOUL.yaml</code> <code>channels:</code> list declares which channels that agent is intended to be reachable on.</li>
+<li><code>default_output_to</code> gives scheduled or one-off sends a destination when the caller does not provide <code>to</code>.</li>
 </ol>
 <p>For a simple single-bot channel, <code>agent_id</code> is the routing target:</p>
 <div class="language-yaml highlight"><span class="filename">config.yaml</span><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="nt">channels</span><span class="p">:</span>
@@ -3852,6 +3853,41 @@
 </span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">  </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">http</span>
 </span></code></pre></div>
 <p>At runtime, Telegram inbound messages become messages with <code>channel: telegram</code> and <code>agent_id: assistant</code>. The engine handles the message and the channel registry sends the reply back through the same adapter ID.</p>
+<p>Inbound replies and outbound reports are intentionally different:</p>
+<table>
+<thead>
+<tr>
+<th>Need</th>
+<th>Configure</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>One default bot for cron/non-interactive reports</td>
+<td>Top-level channel token plus <code>default_output_to</code>; optionally <code>outbound_only: true</code></td>
+<td>Schedules and <code>channel.send</code> can send when no per-run destination is supplied</td>
+</tr>
+<tr>
+<td>One interactive bot for one agent</td>
+<td>A bot mapping with <code>agent_id</code> and platform credentials</td>
+<td>Messages to that bot invoke exactly that agent</td>
+</tr>
+<tr>
+<td>Multiple interactive bots</td>
+<td>Multiple bot mappings, one per agent</td>
+<td>Each mapping gets its own adapter ID such as <code>telegram-weather-agent</code></td>
+</tr>
+<tr>
+<td>One agent to answer in the same chat that triggered it</td>
+<td>Agent <code>trigger: channel</code> and matching <code>channels:</code> entry</td>
+<td>Soulacy replies to the inbound chat/thread automatically; no <code>channel.send</code> step is required</td>
+</tr>
+</tbody>
+</table>
+<p>The default outbound sender is a fallback for delivery. It is not the same thing
+as an interactive bot mapping. Interactive mappings are what make a channel
+message invoke an agent.</p>
 <h2 id="activation-safety">Activation safety<a class="headerlink" href="#activation-safety" title="Permanent link">&para;</a></h2>
 <p>Message channels use explicit activation guardrails by default. Enabling a
 channel should not make every platform message an agent prompt.</p>
@@ -3962,6 +3998,11 @@ built-in <code>channel.send</code> tool:</p>
 <p><code>channel</code> is the adapter ID shown in <strong>Channels</strong>. <code>to</code> is the platform-native
 destination: Telegram chat ID, Slack channel/user ID, Discord channel ID,
 WhatsApp recipient, or a custom sidecar thread ID.</p>
+<p>If <code>to</code> is omitted, Soulacy can only infer it when the run came from an inbound
+chat/thread or the selected channel mapping has <code>default_output_to</code> configured.
+For interactive channel agents, prefer returning the final answer normally. Use
+<code>channel.send</code> only for out-of-band delivery, such as sending a second copy of a
+report to a team channel.</p>
 <h2 id="multi-channel-agents">Multi-channel agents<a class="headerlink" href="#multi-channel-agents" title="Permanent link">&para;</a></h2>
 <p>An agent can be available on multiple channels simultaneously:</p>
 <div class="language-yaml highlight"><span class="filename">agents/assistant/SOUL.yaml</span><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assistant</span>

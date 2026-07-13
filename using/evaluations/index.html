@@ -1159,6 +1159,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#benchmark-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#secret-backed-cases" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3624,6 +3635,17 @@
 </li>
         
           <li class="md-nav__item">
+  <a href="#benchmark-mode" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Benchmark mode
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
   <a href="#secret-backed-cases" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3747,8 +3769,19 @@ YAML, and a set of <strong>golden suites</strong> ships with Soulacy under <code
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a>
 </span><span id="__span-0-7"><a id="__codelineno-0-7" name="__codelineno-0-7" href="#__codelineno-0-7"></a><span class="c1"># machine-readable output</span>
 </span><span id="__span-0-8"><a id="__codelineno-0-8" name="__codelineno-0-8" href="#__codelineno-0-8"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>evals/golden<span class="w"> </span>--json
+</span><span id="__span-0-9"><a id="__codelineno-0-9" name="__codelineno-0-9" href="#__codelineno-0-9"></a>
+</span><span id="__span-0-10"><a id="__codelineno-0-10" name="__codelineno-0-10" href="#__codelineno-0-10"></a><span class="c1"># run only matching tags</span>
+</span><span id="__span-0-11"><a id="__codelineno-0-11" name="__codelineno-0-11" href="#__codelineno-0-11"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>evals/golden<span class="w"> </span>--tag<span class="w"> </span>weather
+</span><span id="__span-0-12"><a id="__codelineno-0-12" name="__codelineno-0-12" href="#__codelineno-0-12"></a>
+</span><span id="__span-0-13"><a id="__codelineno-0-13" name="__codelineno-0-13" href="#__codelineno-0-13"></a><span class="c1"># repeat cases to catch flaky behavior and collect latency variance</span>
+</span><span id="__span-0-14"><a id="__codelineno-0-14" name="__codelineno-0-14" href="#__codelineno-0-14"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>evals/golden/weather.yaml<span class="w"> </span>--repeat<span class="w"> </span><span class="m">3</span>
+</span><span id="__span-0-15"><a id="__codelineno-0-15" name="__codelineno-0-15" href="#__codelineno-0-15"></a>
+</span><span id="__span-0-16"><a id="__codelineno-0-16" name="__codelineno-0-16" href="#__codelineno-0-16"></a><span class="c1"># stop as soon as the first failure appears</span>
+</span><span id="__span-0-17"><a id="__codelineno-0-17" name="__codelineno-0-17" href="#__codelineno-0-17"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>my-agent<span class="w"> </span>--suite<span class="w"> </span>evals/golden<span class="w"> </span>--fail-fast
 </span></code></pre></div>
-<p><code>sy eval</code> exits non-zero if any case fails, so it drops straight into CI.</p>
+<p><code>sy eval</code> exits non-zero if any case fails, so it drops straight into CI.
+The table report includes aggregate pass/fail/skip counts, latency
+avg/p50/p95, and token totals when the gateway reports token usage.</p>
 <h2 id="writing-cases">Writing cases<a class="headerlink" href="#writing-cases" title="Permanent link">&para;</a></h2>
 <p>Each case sends an input to the agent and asserts on the reply:</p>
 <div class="language-yaml highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">name</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">weather</span>
@@ -3761,9 +3794,10 @@ YAML, and a set of <strong>golden suites</strong> ships with Soulacy under <code
 </span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">expected_not_regex</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;(?i)error&quot;</span><span class="p p-Indicator">]</span><span class="w">        </span><span class="c1"># none may match</span>
 </span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">max_tokens</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">800</span><span class="w">                          </span><span class="c1"># token budget</span>
 </span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">max_latency_ms</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">45000</span><span class="w">                    </span><span class="c1"># latency budget</span>
-</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">expect_tool_success</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;get_weather&quot;</span><span class="p p-Indicator">]</span><span class="w">     </span><span class="c1"># named tool ran and succeeded</span>
-</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">expect_delivered</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">                   </span><span class="c1"># channel delivery confirmed</span>
-</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">requires_secret</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;WEATHER_API_KEY&quot;</span><span class="p p-Indicator">]</span><span class="w">     </span><span class="c1"># skip (not fail) if unset</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">    </span><span class="nt">tags</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;weather&quot;</span><span class="p p-Indicator">,</span><span class="w"> </span><span class="s">&quot;smoke&quot;</span><span class="p p-Indicator">]</span><span class="w">               </span><span class="c1"># selectable with --tag</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">    </span><span class="nt">expect_tool_success</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;get_weather&quot;</span><span class="p p-Indicator">]</span><span class="w">     </span><span class="c1"># named tool ran and succeeded</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">expect_delivered</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span><span class="w">                   </span><span class="c1"># channel delivery confirmed</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nt">requires_secret</span><span class="p">:</span><span class="w"> </span><span class="p p-Indicator">[</span><span class="s">&quot;WEATHER_API_KEY&quot;</span><span class="p p-Indicator">]</span><span class="w">     </span><span class="c1"># skip (not fail) if unset</span>
 </span></code></pre></div>
 <h3 id="assertion-types">Assertion types<a class="headerlink" href="#assertion-types" title="Permanent link">&para;</a></h3>
 <table>
@@ -3791,6 +3825,10 @@ YAML, and a set of <strong>golden suites</strong> ships with Soulacy under <code
 <td>Response latency is within budget</td>
 </tr>
 <tr>
+<td><code>tags</code></td>
+<td>Case labels used by <code>sy eval --tag</code>; suite-level tags select every case in that suite</td>
+</tr>
+<tr>
 <td><code>expect_tool_success</code></td>
 <td>Each named tool was called and succeeded (asserted when the gateway returns a tool trace)</td>
 </tr>
@@ -3800,6 +3838,13 @@ YAML, and a set of <strong>golden suites</strong> ships with Soulacy under <code
 </tr>
 </tbody>
 </table>
+<h3 id="benchmark-mode">Benchmark mode<a class="headerlink" href="#benchmark-mode" title="Permanent link">&para;</a></h3>
+<p>Use <code>--repeat N</code> to run each selected case multiple times. This is useful for
+spotting flaky agents, prompt drift, provider variance, and regressions where a
+single pass hides a slow p95. Combine it with <code>max_latency_ms</code>, <code>max_tokens</code>,
+and <code>--tag</code> for focused release checks:</p>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>weather<span class="w"> </span>--suite<span class="w"> </span>evals/golden/weather.yaml<span class="w"> </span>--tag<span class="w"> </span>weather<span class="w"> </span>--repeat<span class="w"> </span><span class="m">5</span>
+</span></code></pre></div>
 <h3 id="secret-backed-cases">Secret-backed cases<a class="headerlink" href="#secret-backed-cases" title="Permanent link">&para;</a></h3>
 <p>A case that needs credentials lists them in <code>requires_secret</code>. If any named
 environment variable is unset, the case is <strong>skipped with a clear reason</strong>
@@ -3816,11 +3861,11 @@ secret-backed and skip cleanly when their tokens aren't present.</p>
 <h2 id="in-ci">In CI<a class="headerlink" href="#in-ci" title="Permanent link">&para;</a></h2>
 <p>Run the non-secret subset on every push — cases needing secrets skip themselves,
 so no configuration is required:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>ci-smoke<span class="w"> </span>--suite<span class="w"> </span>evals/golden<span class="w"> </span>--json
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>--agent<span class="w"> </span>ci-smoke<span class="w"> </span>--suite<span class="w"> </span>evals/golden<span class="w"> </span>--json
 </span></code></pre></div>
 <p>For the deterministic, offline Studio generation-robustness corpus (no gateway or
 LLM needed), use:</p>
-<div class="language-bash highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>generation
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>sy<span class="w"> </span><span class="nb">eval</span><span class="w"> </span>generation
 </span></code></pre></div>
 
 

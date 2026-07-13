@@ -2208,6 +2208,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#default-outbound-vs-interactive-bots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default Outbound vs Interactive Bots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-discord-delivery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting Discord Delivery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#features" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3706,6 +3728,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#default-outbound-vs-interactive-bots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default Outbound vs Interactive Bots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-discord-delivery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting Discord Delivery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#features" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3865,6 +3909,49 @@
 </tbody>
 </table>
 <p>You can configure this from the GUI: <strong>Channels → Discord → Edit → Bot mappings</strong>.</p>
+<hr />
+<h2 id="default-outbound-vs-interactive-bots">Default Outbound vs Interactive Bots<a class="headerlink" href="#default-outbound-vs-interactive-bots" title="Permanent link">&para;</a></h2>
+<p>Discord can be used in two ways:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Use it for</th>
+<th>Configure</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default outbound sender</td>
+<td>Cron reports, one-off <code>channel.send</code>, non-interactive delivery</td>
+<td>Top-level token plus <code>default_output_to</code></td>
+</tr>
+<tr>
+<td>Interactive agent bot</td>
+<td>DMs and server messages routed to one agent</td>
+<td>A bot mapping with <code>agent_id</code>, token, guild/channel allowlists, and intents</td>
+</tr>
+</tbody>
+</table>
+<p>The bot can be online while still unable to read or post in a specific server
+channel. Confirm the bot has <code>View Channels</code>, <code>Send Messages</code>, and <code>Read Message
+History</code> in the destination. For inbound messages, <strong>Message Content Intent</strong> is
+required unless the bot is only handling slash commands.</p>
+<p>For interactive mappings, the target agent must have <code>trigger: channel</code> and a
+matching <code>channels:</code> entry. In DMs, messages are processed directly. In server
+channels, mention the bot or use the configured trigger phrase.</p>
+<h2 id="troubleshooting-discord-delivery">Troubleshooting Discord Delivery<a class="headerlink" href="#troubleshooting-discord-delivery" title="Permanent link">&para;</a></h2>
+<p>Open <strong>Channels -&gt; Discord</strong> and read <strong>Delivery checks</strong>:</p>
+<ul>
+<li><code>missing access</code>, <code>unknown channel</code>, or <code>missing permissions</code> means the bot is
+  not in the server/channel or lacks the needed channel permissions.</li>
+<li><code>unauthorized</code> means the token is invalid or revoked.</li>
+<li>No inbound messages usually means <strong>Message Content Intent</strong> is off, the bot
+  is not mentioned in a server channel, or the agent is not mapped to the bot.</li>
+<li>Long reports are split automatically to respect Discord's message length
+  limit.</li>
+</ul>
+<p>Use the channel card's delivery test before relying on scheduled agents.</p>
 <hr />
 <h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
 <table>

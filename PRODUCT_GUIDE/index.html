@@ -3637,7 +3637,14 @@
 <p>Upgrades are non-destructive and reversible:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>make upgrade     # rebuild + install, backing up the prior build as *.prev
 </span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>make rollback    # restore the previous build if an upgrade misbehaves
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>sy update check --manifest ./release-manifest.json
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>sy update install --manifest ./release-manifest.json --dry-run
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>sy update install --manifest ./release-manifest.json --yes
 </span></code></pre></div>
+<p>For production workspaces, set <code>updates.manifest_url</code> in <code>config.yaml</code>
+or <code>SOULACY_UPDATE_MANIFEST</code>. Dashboard readiness and <code>sy launch check</code>
+will then show that the runtime has a verified upgrade path, and <code>sy update
+check/install</code> can run without repeating <code>--manifest</code>.</p>
 <h2 id="your-first-agent">Your first agent<a class="headerlink" href="#your-first-agent" title="Permanent link">&para;</a></h2>
 <p>Open the GUI (the gateway prints its URL on start) and go to <strong>Templates</strong>. Each template shows a setup checklist — required API keys, schedule, and delivery channel — derived automatically from the agent definition. Good first picks:</p>
 <ul>
@@ -3670,12 +3677,13 @@
 <p>Enable <code>learning.enabled</code> on an agent and successful runs produce reviewable proposals — memories, procedures, and installable skills — that you accept or reject in <strong>Brain Memory</strong>. The “Is it working?” panel there shows longitudinal evidence: how often accepted skills get reused and whether recurring errors decline after learning is switched on.</p>
 <h2 id="the-mobile-companion">The mobile companion<a class="headerlink" href="#the-mobile-companion" title="Permanent link">&para;</a></h2>
 <p>The GUI is an installable PWA. On the <strong>Mobile</strong> page you can pair a phone (generate a code on one device, enter it on the other), enable push notifications, and review and resolve pending tool approvals. Pairing issues a scoped credential so the phone can reach the gateway.</p>
+<p>The companion page also works as a small operations console: active and recent runs link directly to Activity, scheduled agents can be started or have their output path tested, and Delivery Health shows each configured channel or bot mapping with a dry check and a live send-test action.</p>
 <h2 id="observability-and-repair">Observability and repair<a class="headerlink" href="#observability-and-repair" title="Permanent link">&para;</a></h2>
-<p>The <strong>Dashboard</strong> streams a live event log and surfaces proactive suggestions (schedule a repeated manual task, review a flaky agent, enable learning). <strong>Activity</strong> shows every run; a failed run can be sent to <strong>Studio</strong>, which diagnoses it from the action log and proposes a verified fix. The <strong>Browser</strong> page replays an agent's web automation step by step.</p>
+<p>The <strong>Dashboard</strong> streams a live event log and surfaces proactive suggestions (schedule a repeated manual task, review a flaky agent, enable learning). <strong>Activity</strong> shows every run; a failed run can be sent to <strong>Studio</strong>, which diagnoses it from the action log and proposes a verified fix. The <strong>Browser</strong> page replays an agent's web automation step by step with action filters, screenshot gallery, shareable deep links, and JSON trace export.</p>
 <h2 id="troubleshooting">Troubleshooting<a class="headerlink" href="#troubleshooting" title="Permanent link">&para;</a></h2>
 <ul>
 <li>Something misconfigured? Run <code>make health</code> (or <code>sy doctor</code>) for provider, vault, and channel diagnostics.</li>
-<li>Filing an issue? <code>make logs-bundle</code> (or <code>sy support bundle</code>) collects a redacted support bundle.</li>
+<li>Filing an issue? <code>make logs-bundle</code> (or <code>sy support bundle</code>) collects a redacted support bundle with doctor output, release/update metadata, masked config, masked agent manifests, and recent log tails. The Dashboard/Config download also includes live launch readiness from the running gateway.</li>
 <li>After an upgrade, <code>make which</code> confirms which binary your shell actually runs.</li>
 </ul>
 <h2 id="going-deeper">Going deeper<a class="headerlink" href="#going-deeper" title="Permanent link">&para;</a></h2>

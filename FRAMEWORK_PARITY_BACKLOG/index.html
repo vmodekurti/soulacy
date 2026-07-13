@@ -3521,15 +3521,15 @@
 with mature agent frameworks such as OpenClaw and Hermes.</p>
 <h2 id="major-pending-feature-areas">Major Pending Feature Areas<a class="headerlink" href="#major-pending-feature-areas" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Agent evals and benchmark harness</strong></li>
+<li><strong>Agent evals and benchmark harness</strong> — MVP closed; keep expanding coverage</li>
 <li>
-<p>Reusable eval suites for prompt quality, tool-call correctness, workflow success, latency, cost, and recovery.</p>
+<p><code>sy eval</code> now supports reusable suites, golden cases, tags, repeats, fail-fast, secret skips, latency/token summaries, tool assertions, and delivery assertions. Remaining work is more domain coverage and cost accounting when providers expose cost metadata.</p>
 </li>
 <li>
-<p><strong>First-class multi-agent orchestration</strong></p>
+<p><strong>First-class multi-agent orchestration</strong> — MVP partially closed</p>
 </li>
 <li>
-<p>Agent teams, roles, delegation graphs, handoffs, critic/reviewer loops, shared workspace, and supervision.</p>
+<p>Peer agents, router agents, auto-delegate, transitive safety tiers, configurable delegation depth, opt-in structured peer-result envelopes, and opt-in parallel peer fan-out now exist. Remaining work is richer team templates, reviewer/critic packaged patterns, and shared workspace semantics beyond queue/KB handoffs.</p>
 </li>
 <li>
 <p><strong>Production deployment and tenancy</strong></p>
@@ -3586,9 +3586,9 @@ with mature agent frameworks such as OpenClaw and Hermes.</p>
 </ul>
 </li>
 <li>
-<p><strong>Agent publishing and sharing</strong></p>
+<p><strong>Agent publishing and sharing</strong> — MVP partially closed</p>
 <ul>
-<li>Agent packages with requirements, secrets checklist, tests, sample prompts, version history, changelog, and rollback.</li>
+<li>Agents can now be exported as <code>.soulacy-agent.json</code> packages with redacted SOUL.yaml, packaged local tool files, bundled eval suites/sample prompts, setup requirements, integrity checksums, optional Ed25519 signatures, and a secrets checklist. The Agents GUI can inspect/import a package, surface missing providers/channels/skills/peer agents/files, show packaged validation harness files, restore packaged files, and import disabled for review. The CLI can export, inspect, import, and sign packages. Remaining work is changelog/version promotion and rollback across imported versions.</li>
 </ul>
 </li>
 </ol>

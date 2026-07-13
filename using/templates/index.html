@@ -1180,10 +1180,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-click-creation" class="md-nav__link">
+  <a href="#guided-install" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One-click creation
+        Guided Install
       
     </span>
   </a>
@@ -3717,10 +3717,10 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#one-click-creation" class="md-nav__link">
+  <a href="#guided-install" class="md-nav__link">
     <span class="md-ellipsis">
       
-        One-click creation
+        Guided Install
       
     </span>
   </a>
@@ -3823,12 +3823,13 @@
 
 
 <h1 id="templates">Templates<a class="headerlink" href="#templates" title="Permanent link">&para;</a></h1>
-<p>The Templates tab turns a one-line click into a working agent: pick a shipped workflow or starter, hit <strong>⊕ Create agent</strong>, and chat with it immediately.</p>
+<p>The Templates tab turns a known-good starter into a working agent: pick a shipped workflow or starter, open <strong>Install</strong>, check readiness, run a mock test, choose optional schedule delivery, then deploy it as a normal agent.</p>
 <h2 id="quick-start">Quick start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
 <ol>
 <li>Open <strong>📋 Templates</strong> in the GUI.</li>
-<li>Under <strong>Agentic workflows</strong>, find <strong>Meeting Minutes &amp; Action Items</strong> and click <strong>⊕ Create agent</strong>.</li>
-<li>Go to <strong>Chat</strong>, select the new agent, and paste any meeting transcript.</li>
+<li>Under <strong>Agentic workflows</strong>, find <strong>Meeting Minutes &amp; Action Items</strong> and click <strong>Install</strong>.</li>
+<li>Review the readiness checks, keep or edit the suggested agent ID, and click <strong>Mock test</strong>.</li>
+<li>Click <strong>Install agent</strong>, then go to <strong>Chat</strong>, select the new agent, and paste any meeting transcript.</li>
 </ol>
 <p>API equivalents:</p>
 <div class="language-bash highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>curl<span class="w"> </span>http://localhost:18789/api/v1/templates<span class="w"> </span><span class="se">\</span>
@@ -3849,8 +3850,16 @@
 <p>Audits draft text against your reference policies using a knowledge base (RAG). Setup: create a KB on the Knowledge page, upload your policies/style guides/contracts, set the agent's <strong>Knowledge bases</strong> field to that KB, then paste any draft into Chat for a clause-by-clause compliance report with citations to the exact policy passages. See <a href="../knowledge/">Knowledge bases</a>.</p>
 <h2 id="starters">Starters<a class="headerlink" href="#starters" title="Permanent link">&para;</a></h2>
 <p>Below the workflows sit simpler starting points — including <strong>Basic Chat</strong> (one LLM, one prompt, no tools), <strong>RAG over your docs</strong>, <strong>Scheduled briefing</strong> (daily cron at 7 AM), and <strong>Web researcher</strong>. Use them as skeletons for your own agents.</p>
-<h2 id="one-click-creation">One-click creation<a class="headerlink" href="#one-click-creation" title="Permanent link">&para;</a></h2>
-<p><strong>⊕ Create agent</strong> instantiates the template as a real agent (its SOUL.yaml lands in your agents directory) and tells you its ID — find it on the <strong>Agents</strong> page. Each template card shows a source badge:</p>
+<h2 id="guided-install">Guided Install<a class="headerlink" href="#guided-install" title="Permanent link">&para;</a></h2>
+<p><strong>Install</strong> opens a guided wizard instead of writing YAML immediately. The wizard:</p>
+<ul>
+<li>checks live provider, secret, channel, and MCP readiness;</li>
+<li>previews what the agent would do with a no-side-effect mock test;</li>
+<li>lets cron/scheduled templates choose an output bot from configured Telegram, Slack, Discord, WhatsApp, or webhook mappings;</li>
+<li>auto-fills the destination and template when a channel mapping has defaults;</li>
+<li>creates a real agent whose <code>SOUL.yaml</code> lands in your agents directory.</li>
+</ul>
+<p>Each template card shows a source badge:</p>
 <ul>
 <li><code>embedded</code> — ships with the gateway,</li>
 <li><code>user</code> — your own template from <code>~/.soulacy/templates/</code>.</li>
@@ -3860,7 +3869,7 @@
 <p>A template-created agent is a completely normal agent — nothing stays linked to the template:</p>
 <ul>
 <li><strong>Agents</strong> page → edit the system prompt (e.g. the Market Monitor's WATCHLIST, the Inbox Triage classification rules), swap the LLM provider/model, attach knowledge bases, tools, or channels.</li>
-<li><strong>Schedule</strong> page → change cron expressions, set the output bot, enable/disable.</li>
+<li><strong>Schedule</strong> page → change cron expressions, set the output bot, enable/disable, and send a delivery smoke test.</li>
 <li>Click <strong>Validate</strong> in the editor after substantial edits to catch problems before they hit a live run.</li>
 </ul>
 <div class="admonition tip">
@@ -3878,7 +3887,7 @@
 <p>Drop agent-definition <code>*.yaml</code> files into <code>~/.soulacy/templates/</code> — they appear in the catalog with a <code>user</code> badge. Tag one <code>workflow</code> to have it listed in the Agentic workflows section.</p>
 <div class="admonition note">
 <p class="admonition-title">Note</p>
-<p>Templates and the <strong>Build</strong> page solve different problems: Templates instantiate a known-good design in one click; Build interviews you and generates a bespoke SOUL.yaml from scratch. Start with a template when one is close to what you need.</p>
+<p>Templates and <strong>Studio</strong> solve different problems: Templates install a known-good design; Studio generates or repairs a bespoke workflow from intent. Start with a template when one is close to what you need, and use Studio when the automation needs custom steps.</p>
 </div>
 
 

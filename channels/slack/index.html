@@ -2191,6 +2191,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#default-outbound-vs-interactive-bots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default Outbound vs Interactive Bots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-slack-delivery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting Slack Delivery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#features" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3717,6 +3739,28 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#default-outbound-vs-interactive-bots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Default Outbound vs Interactive Bots
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#troubleshooting-slack-delivery" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Troubleshooting Slack Delivery
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#features" class="md-nav__link">
     <span class="md-ellipsis">
       
@@ -3840,19 +3884,25 @@
 </span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">    </span><span class="nt">app_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xapp-...&quot;</span><span class="w">        </span><span class="c1"># Socket Mode token</span>
 </span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="w">    </span><span class="nt">agent_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assistant</span>
 </span></code></pre></div>
+<p>For channel messages, invite the app to the Slack channel first:</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a>/invite @YourSoulacyApp
+</span></code></pre></div>
+<p>Use the Slack channel ID (for example <code>C0123...</code>) as <code>default_output_to</code> or
+<code>schedule.output.to</code> for outbound delivery. A visible channel name is convenient
+for humans, but the API destination should be the ID.</p>
 <hr />
 <h2 id="multiple-slack-bots">Multiple Slack bots<a class="headerlink" href="#multiple-slack-bots" title="Permanent link">&para;</a></h2>
 <p>Use <code>bots:</code> when you want separate Slack bot credentials mapped to separate agents:</p>
-<div class="language-yaml highlight"><span class="filename">config.yaml</span><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="nt">channels</span><span class="p">:</span>
-</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">slack</span><span class="p">:</span>
-</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
-</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">bots</span><span class="p">:</span>
-</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">bot_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xoxb-assistant&quot;</span>
-</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">        </span><span class="nt">app_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xapp-assistant&quot;</span>
-</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">        </span><span class="nt">agent_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assistant</span>
-</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">bot_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xoxb-support&quot;</span>
-</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">        </span><span class="nt">app_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xapp-support&quot;</span>
-</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">        </span><span class="nt">agent_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">support-agent</span>
+<div class="language-yaml highlight"><span class="filename">config.yaml</span><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a><span class="nt">channels</span><span class="p">:</span>
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a><span class="w">  </span><span class="nt">slack</span><span class="p">:</span>
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a><span class="w">    </span><span class="nt">enabled</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">true</span>
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a><span class="w">    </span><span class="nt">bots</span><span class="p">:</span>
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">bot_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xoxb-assistant&quot;</span>
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a><span class="w">        </span><span class="nt">app_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xapp-assistant&quot;</span>
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a><span class="w">        </span><span class="nt">agent_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">assistant</span>
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a><span class="w">      </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="nt">bot_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xoxb-support&quot;</span>
+</span><span id="__span-2-9"><a id="__codelineno-2-9" name="__codelineno-2-9" href="#__codelineno-2-9"></a><span class="w">        </span><span class="nt">app_token</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;xapp-support&quot;</span>
+</span><span id="__span-2-10"><a id="__codelineno-2-10" name="__codelineno-2-10" href="#__codelineno-2-10"></a><span class="w">        </span><span class="nt">agent_id</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">support-agent</span>
 </span></code></pre></div>
 <p>This registers two adapter IDs:</p>
 <table>
@@ -3875,6 +3925,49 @@
 </table>
 <p>You can configure this from the GUI: <strong>Channels → Slack → Edit → Bot mappings</strong>.</p>
 <hr />
+<h2 id="default-outbound-vs-interactive-bots">Default Outbound vs Interactive Bots<a class="headerlink" href="#default-outbound-vs-interactive-bots" title="Permanent link">&para;</a></h2>
+<p>Slack can be used in two ways:</p>
+<table>
+<thead>
+<tr>
+<th>Mode</th>
+<th>Use it for</th>
+<th>Configure</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Default outbound sender</td>
+<td>Cron reports, one-off <code>channel.send</code>, non-interactive delivery</td>
+<td>Top-level <code>bot_token</code>, <code>app_token</code>, and <code>default_output_to</code></td>
+</tr>
+<tr>
+<td>Interactive agent bot</td>
+<td>DMs and app mentions routed to one agent</td>
+<td>A bot mapping with <code>agent_id</code>, bot token, app token, and optional allowlists</td>
+</tr>
+</tbody>
+</table>
+<p>Socket Mode being <code>Live</code> means Soulacy can connect to Slack. It does not prove
+the app can post to every channel. Posting also requires <code>chat:write</code>, the app
+being installed in the workspace, and the app being invited to private channels
+or channels where it is expected to answer.</p>
+<p>For interactive mappings, the target agent must have <code>trigger: channel</code> and a
+matching <code>channels:</code> entry. In DMs, messages are processed directly. In channels,
+mention the app or use the configured trigger phrase.</p>
+<h2 id="troubleshooting-slack-delivery">Troubleshooting Slack Delivery<a class="headerlink" href="#troubleshooting-slack-delivery" title="Permanent link">&para;</a></h2>
+<p>Open <strong>Channels -&gt; Slack</strong> and read <strong>Delivery checks</strong>:</p>
+<ul>
+<li><code>missing scope</code> means the Slack app is missing a required OAuth scope. Add the
+  scope, reinstall the app, then restart Soulacy.</li>
+<li><code>not_in_channel</code>, <code>channel_not_found</code>, or <code>unknown_channel</code> means the app is
+  not invited to the destination or the destination ID is wrong.</li>
+<li><code>invalid_auth</code> means the bot token is wrong, revoked, or from another Slack
+  app/workspace.</li>
+<li><code>adapter disabled</code> or <code>restart required</code> means the gateway has not reconnected
+  after a config change.</li>
+</ul>
+<p>Use the channel card's delivery test before relying on scheduled agents.</p>
 <h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
 <table>
 <thead>

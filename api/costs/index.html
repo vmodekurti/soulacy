@@ -3825,7 +3825,7 @@
 
 
 <h1 id="costs-api">Costs API<a class="headerlink" href="#costs-api" title="Permanent link">&para;</a></h1>
-<p>Soulacy records LLM token usage and estimated cost for every agent invocation. Use this API to monitor spend by agent, user, or time period.</p>
+<p>Soulacy records LLM token usage for every agent invocation. Estimated <code>cost_usd</code> is populated when <code>costs.pricing</code> is configured for the provider/model; unknown prices remain <code>0</code> rather than guessed. Use this API to monitor spend by agent, user, or time period.</p>
 <h2 id="cost-summary">Cost summary<a class="headerlink" href="#cost-summary" title="Permanent link">&para;</a></h2>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>GET /v1/costs
 </span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>Authorization: Bearer &lt;token&gt;

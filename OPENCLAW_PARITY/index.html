@@ -3562,6 +3562,7 @@
 <li>Browser automation can be mounted through MCP with a headless Playwright quick-start.</li>
 <li>Queues, Knowledge, Workboard, schedules, and agents are exposed through platform tools.</li>
 <li>Studio now has validation, autowiring, runtime diagnosis, and build-until-it-works repair loops.</li>
+<li>Verified update checks and installs exist through <code>sy update check/install</code>, and launch readiness reports whether a production update manifest is configured.</li>
 </ul>
 <p>The remaining parity work is not "add more primitives." It is productization: mobile companion polish, release packaging, launch documentation, regression suites, and broader channel/community polish.</p>
 <h2 id="updated-parity-matrix">Updated Parity Matrix<a class="headerlink" href="#updated-parity-matrix" title="Permanent link">&para;</a></h2>
@@ -3578,7 +3579,7 @@
 <tr>
 <td>Install</td>
 <td>Node/npm based install</td>
-<td>Go binary with GUI embed; <code>make install</code> installs <code>soulacy</code> and <code>sy</code></td>
+<td>Go binary with GUI embed; <code>make install</code> installs <code>soulacy</code> and <code>sy</code>; release packaging emits combined tarballs, checksums, manifest, <code>sy update check</code>, and verified <code>sy update install</code></td>
 <td>Strong once release binaries are published</td>
 </tr>
 <tr>
@@ -3596,7 +3597,7 @@
 <tr>
 <td>Doctor</td>
 <td>Broad doctor checks</td>
-<td><code>sy doctor</code>, GUI/API provider and channel doctor, support bundle</td>
+<td><code>sy doctor</code>, GUI/API provider and channel doctor, support bundle, mobile delivery checks</td>
 <td>Mostly closed; keep expanding from real failures</td>
 </tr>
 <tr>
@@ -3620,8 +3621,14 @@
 <tr>
 <td>Browser automation</td>
 <td>Native/plugin browser control</td>
-<td>Playwright MCP sidecar, headless template, process cleanup</td>
+<td>Playwright MCP sidecar, headless template, process cleanup, per-agent domain policy docs, Browser trace page/API pinned in UAT</td>
 <td>Closed for MVP</td>
+</tr>
+<tr>
+<td>Multi-agent orchestration</td>
+<td>Agent handoffs / teams</td>
+<td>Peer agents, router agents, auto-delegate, transitive safety tiers, and opt-in parallel peer fan-out with deterministic result ordering</td>
+<td>Strong for MVP</td>
 </tr>
 <tr>
 <td>Studio/canvas</td>
@@ -3644,8 +3651,8 @@
 <tr>
 <td>Mobile companion</td>
 <td>Native apps</td>
-<td>Responsive Mobile operations page</td>
-<td>Partial</td>
+<td>Responsive Mobile operations page with approvals, active runs, retained run history, schedule actions, and delivery checks</td>
+<td>MVP closed; native app remains deferred</td>
 </tr>
 <tr>
 <td>Voice</td>
@@ -3656,8 +3663,8 @@
 <tr>
 <td>Auto-update</td>
 <td>npm/Sparkle-style update story</td>
-<td>No release updater yet</td>
-<td>Open</td>
+<td>Manifest-backed <code>sy update check/install</code>, checksum verification, dry-run, backups, rollback docs, and readiness/support-bundle visibility</td>
+<td>MVP closed; signed/notarized distribution remains</td>
 </tr>
 </tbody>
 </table>
@@ -3672,16 +3679,16 @@
 </ul>
 <h2 id="remaining-launch-gaps">Remaining Launch Gaps<a class="headerlink" href="#remaining-launch-gaps" title="Permanent link">&para;</a></h2>
 <ol>
-<li><strong>Release packaging:</strong> Signed/notarized builds, release archives, install smoke tests, and an update/rollback story.</li>
-<li><strong>Regression suite:</strong> Golden UAT agents for weather, stock screening, document ingestion, scheduled channel delivery, queue processing, Slack/Telegram/Discord, Studio build/repair, and MCP sidecars.</li>
-<li><strong>Mobile/PWA companion:</strong> Better phone-sized operations, activity, approval, schedule, and chat flows.</li>
-<li><strong>Channel polish:</strong> Clear default outbound routing, agent-specific bot mappings, delivery tests, and onboarding copy for Telegram/Slack/Discord.</li>
+<li><strong>Release packaging:</strong> Signed/notarized builds remain open; release archives, install smoke tests, checksums, manifest, update check, verified <code>sy update install</code>, launch-readiness update-manifest checks, support-bundle release metadata, upgrade docs, and rollback now exist.</li>
+<li><strong>Regression suite:</strong> Clean-runtime UAT now covers launch readiness, GUI/PWA, golden template presence/instantiation, queues, schedule, support bundles, update checks, Browser trace wiring, and opt-in live-model Studio build/repair traces. <code>sy eval</code> now supports reusable golden suites, tag filtering, repeat-based benchmark runs, fail-fast, secret-aware skips, latency p50/p95, token summaries, tool assertions, and channel-delivery assertions. Opt-in golden smokes now prove real Slack/Telegram/Discord delivery and Playwright MCP browser sidecar startup/tool discovery when credentials or local sidecar dependencies are available.</li>
+<li><strong>Mobile/PWA companion:</strong> Core phone-sized operations are now usable: approvals, active run links, recent run history, schedule run/test actions, and delivery health checks. Remaining work is richer mobile chat polish and native push packaging.</li>
+<li><strong>Channel polish:</strong> Default outbound routing, agent-specific bot mappings, dry diagnosis, live delivery tests, companion-surface checks, and opt-in credential-backed golden delivery smoke exist. Remaining work is sharper setup docs and collecting more real-world failure signatures into the doctor.</li>
 <li><strong>Public docs:</strong> A hosted docs site, quickstarts, production deployment guide, channel setup guides, and troubleshooting playbooks.</li>
-<li><strong>Browser control hardening:</strong> Domain policies, capture artifacts, screenshots/traces in Activity, and per-agent browser permissions.</li>
+<li><strong>Browser control hardening:</strong> Domain policies, Browser trace wiring, action filters, trace export, screenshot gallery, and deep links exist. Remaining work is richer artifact capture from sidecars and more Activity-to-Browser affordances.</li>
 <li><strong>Voice/product narrative:</strong> Decide whether voice is a launch requirement or a post-launch differentiator.</li>
 </ol>
 <h2 id="current-recommendation">Current Recommendation<a class="headerlink" href="#current-recommendation" title="Permanent link">&para;</a></h2>
-<p>Do not add new architectural primitives until the UAT suite is in place. The platform now has enough core machinery; the next competitive leap is proving that generated agents run reliably across real workflows, restart cleanly, deliver to channels, and can be debugged by ordinary users from Studio.</p>
+<p>Do not add new architectural primitives unless they directly improve reliability or launch polish. The platform now has enough core machinery; the next competitive leap is polishing mobile chat/activity, proving live model repair loops, and making every failure explainable and recoverable from Studio or Activity.</p>
 
 
 
