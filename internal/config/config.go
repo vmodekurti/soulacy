@@ -109,6 +109,9 @@ type Config struct {
 	// affect the estimated cost_usd fields.
 	Costs CostConfig `mapstructure:"costs"`
 
+	// Ops configures production reliability guardrails for recent runs.
+	Ops OpsConfig `mapstructure:"ops"`
+
 	// Updates configures release manifest discovery for `sy update` and the
 	// launch-readiness checklist.
 	Updates UpdateConfig `mapstructure:"updates"`
@@ -208,6 +211,22 @@ type CostConfig struct {
 	MonthlyBudgetUSD float64                `mapstructure:"monthly_budget_usd"`
 	AlertThreshold   float64                `mapstructure:"alert_threshold"`
 	Pricing          map[string]CostPricing `mapstructure:"pricing"`
+}
+
+// OpsConfig controls launch-readiness SLO checks over the durable action log.
+//
+//	ops:
+//	  slo_window: 24h
+//	  max_failure_rate: 0.1
+//	  max_incomplete_rate: 0.05
+//	  max_p95_run_duration: 5m
+//	  min_runs_for_signal: 3
+type OpsConfig struct {
+	SLOWindow         string  `mapstructure:"slo_window"`
+	MaxFailureRate    float64 `mapstructure:"max_failure_rate"`
+	MaxIncompleteRate float64 `mapstructure:"max_incomplete_rate"`
+	MaxP95RunDuration string  `mapstructure:"max_p95_run_duration"`
+	MinRunsForSignal  int     `mapstructure:"min_runs_for_signal"`
 }
 
 // UpdateConfig points Soulacy at a signed or checksum-backed release manifest.

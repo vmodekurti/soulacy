@@ -299,6 +299,31 @@ func TestGatewayHandlePatchConfig_CostPricing(t *testing.T) {
 	}
 }
 
+func TestGatewayHandlePatchConfig_OpsSLOs(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	status, body := gatewayJSON(t, s, http.MethodPatch, "/api/v1/config", "secret",
+		`{"ops":{"slo_window":"12h","max_failure_rate":0.2,"max_incomplete_rate":0.03,"max_p95_run_duration":"2m","min_runs_for_signal":5}}`)
+	if status != http.StatusOK {
+		t.Fatalf("patch ops slo status = %d body=%v", status, body)
+	}
+	disk, err := readRawConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	opsView, ok := disk["ops"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected ops object, config=%v", disk)
+	}
+	if opsView["slo_window"] != "12h" || opsView["max_failure_rate"] != 0.2 || opsView["max_incomplete_rate"] != 0.03 || opsView["max_p95_run_duration"] != "2m" || opsView["min_runs_for_signal"] != 5 {
+		t.Fatalf("ops config = %#v", opsView)
+	}
+	cfgView := body["config"].(map[string]any)
+	if cfgView["ops"] == nil {
+		t.Fatalf("config response missing ops view: %v", cfgView)
+	}
+}
+
 func TestGatewayHandlePatchConfig_InvalidJSON(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
