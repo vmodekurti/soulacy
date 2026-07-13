@@ -3,6 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -66,7 +69,100 @@ status=ready.`,
 		},
 	})
 	cmd.Commands()[0].Flags().BoolVar(&strict, "strict", false, "Exit non-zero unless launch readiness is ready")
+	cmd.AddCommand(buildLaunchCertifyCmd())
 	return cmd
+}
+
+type launchCertifyOptions struct {
+	ReportDir     string
+	Quick         bool
+	LiveChannels  bool
+	BrowserMCP    bool
+	BrowserRender bool
+	StudioLive    bool
+}
+
+func buildLaunchCertifyCmd() *cobra.Command {
+	var opts launchCertifyOptions
+	cmd := &cobra.Command{
+		Use:   "certify",
+		Short: "Run the production parity certification harness",
+		Long: `Run Soulacy's production certification harness and write JSON/Markdown
+reports under .cache/production-parity by default.
+
+Use --quick for a daily confidence run. Omit it for the full release gate,
+including full Go/GUI tests, vulnerability checks, docs, SDK checks, and race
+testing. Optional live checks stay off unless explicitly enabled.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runLaunchCertify(opts)
+		},
+	}
+	cmd.Flags().StringVar(&opts.ReportDir, "report-dir", "", "Directory where certification reports should be written")
+	cmd.Flags().BoolVar(&opts.Quick, "quick", false, "Run the shorter daily certification profile")
+	cmd.Flags().BoolVar(&opts.LiveChannels, "live-channels", false, "Run live Telegram/Slack/Discord delivery checks")
+	cmd.Flags().BoolVar(&opts.BrowserMCP, "browser-mcp", false, "Run browser MCP sidecar checks")
+	cmd.Flags().BoolVar(&opts.BrowserRender, "browser-render", false, "Run browser route screenshot/render checks")
+	cmd.Flags().BoolVar(&opts.StudioLive, "studio-live", false, "Run optional Studio build/live workflow UAT")
+	return cmd
+}
+
+func runLaunchCertify(opts launchCertifyOptions) error {
+	root, err := findProjectRootForCertify()
+	if err != nil {
+		return err
+	}
+	script := filepath.Join(root, "scripts", "production-parity.sh")
+	if _, err := os.Stat(script); err != nil {
+		return fmt.Errorf("production certification script not found at %s; run this command from a Soulacy source checkout", script)
+	}
+	cmd := exec.Command("bash", script)
+	cmd.Dir = root
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), launchCertifyEnv(opts)...)
+	return cmd.Run()
+}
+
+func findProjectRootForCertify() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for dir := wd; ; dir = filepath.Dir(dir) {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			if _, err := os.Stat(filepath.Join(dir, "scripts", "production-parity.sh")); err == nil {
+				return dir, nil
+			}
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+	}
+	return "", fmt.Errorf("could not find Soulacy project root from %s", wd)
+}
+
+func launchCertifyEnv(opts launchCertifyOptions) []string {
+	var env []string
+	if strings.TrimSpace(opts.ReportDir) != "" {
+		env = append(env, "SOULACY_PARITY_REPORT_DIR="+opts.ReportDir)
+	}
+	if opts.Quick {
+		env = append(env, "SOULACY_PARITY_QUICK=1")
+	}
+	if opts.LiveChannels {
+		env = append(env, "SOULACY_PARITY_LIVE_CHANNELS=1")
+	}
+	if opts.BrowserMCP {
+		env = append(env, "SOULACY_PARITY_BROWSER_MCP=1")
+	}
+	if opts.BrowserRender {
+		env = append(env, "SOULACY_PARITY_BROWSER_RENDER=1")
+	}
+	if opts.StudioLive {
+		env = append(env, "SOULACY_PARITY_STUDIO_LIVE=1")
+	}
+	return env
 }
 
 func runLaunchCheck(strict bool) error {
