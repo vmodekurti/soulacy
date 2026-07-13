@@ -237,6 +237,10 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 	// save time instead of at run time.
 	checkTemplates(draft, add)
 
+	// Output-variable contracts: every published flow var must be unique,
+	// referenceable, and not collide with runtime-provided values.
+	checkOutputContracts(draft, add)
+
 	// Cross-step data-flow dependencies (Story #3): referenced flow vars must be
 	// produced by an earlier step.
 	checkDataFlow(draft, add)

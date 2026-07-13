@@ -276,6 +276,12 @@ func Validate(draft Draft) ValidateResult {
 	res.Warnings = append(res.Warnings, triggerWarnings(draft.Trigger)...)
 	res.Warnings = append(res.Warnings, nodeTimeoutWarnings(draft.Flow)...)
 	res.Warnings = append(res.Warnings, systemToolWarnings(draft.Flow)...)
+	outputErrors, outputWarnings := outputContractValidateIssues(draft)
+	if len(outputErrors) > 0 {
+		res.Ok = false
+		res.Errors = append(res.Errors, outputErrors...)
+	}
+	res.Warnings = append(res.Warnings, outputWarnings...)
 	// "Python is for data glue, not for calling tools": a python step shelling out
 	// to a CLI is a blocker when an MCP is available (use the tool), else a warning.
 	shellBlocks, shellWarns := shellSmellIssues(draft)
@@ -297,6 +303,19 @@ func Validate(draft Draft) ValidateResult {
 		}
 	}
 	return res
+}
+
+func outputContractValidateIssues(draft Draft) ([]ValidateError, []ValidateWarning) {
+	var errs []ValidateError
+	var warns []ValidateWarning
+	checkOutputContracts(draft, func(sev, kind, node, msg, fix string) {
+		if sev == "block" {
+			errs = append(errs, ValidateError{NodeID: node, Message: msg})
+			return
+		}
+		warns = append(warns, ValidateWarning{NodeID: node, Message: msg})
+	})
+	return errs, warns
 }
 
 // gatedSystemTools are the SEC-3 "SYSTEM" built-ins (arbitrary code / host

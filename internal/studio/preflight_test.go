@@ -202,6 +202,20 @@ func TestPreflight_ChannelSendRequiresSomeTextBody(t *testing.T) {
 	}
 }
 
+func TestPreflight_BlocksAmbiguousOutputContract(t *testing.T) {
+	d := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+		{ID: "a", Kind: "tool", Tool: "web_search", Input: `{"query":"a"}`, Output: "same"},
+		{ID: "b", Kind: "agent", Agent: "summarizer", Output: "same"},
+	}}}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"web_search"}, Agents: []string{"summarizer"}}})
+	if r.OK {
+		t.Fatal("duplicate output vars should block preflight")
+	}
+	if blockKinds(r)["dependency"] == 0 {
+		t.Fatalf("expected dependency blocker for duplicate output vars, got %+v", r.Blockers)
+	}
+}
+
 func TestPreflight_BlocksWriteFileForKnowledgeIngestion(t *testing.T) {
 	d := Draft{
 		Name:   "AI Docs ingestion",

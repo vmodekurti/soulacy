@@ -154,6 +154,34 @@ func TestValidate_UnreachableNodeWarning(t *testing.T) {
 	}
 }
 
+func TestValidate_DuplicateOutputVarError(t *testing.T) {
+	d := Draft{
+		Name:    "Duplicate vars",
+		Trigger: Trigger{Type: "manual"},
+		Flow: Flow{
+			Entry: "a",
+			Nodes: []sdkr.FlowNode{
+				{ID: "a", Kind: "tool", Tool: "http_get", Input: "{}", Output: "shared"},
+				{ID: "b", Kind: "agent", Agent: "summarizer", Input: "go", Output: "shared"},
+			},
+			Edges: []sdkr.FlowEdge{{From: "a", To: "b"}},
+		},
+	}
+	res := Validate(d)
+	if res.Ok {
+		t.Fatalf("expected ok=false for duplicate output vars")
+	}
+	found := false
+	for _, e := range res.Errors {
+		if e.NodeID == "b" && strings.Contains(e.Message, "produced by both") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected duplicate output-var error on b, got %+v", res.Errors)
+	}
+}
+
 // TestValidate_UnknownTriggerWarning (Story M3): an unrecognized trigger type
 // is a soft warning, not an error.
 func TestValidate_UnknownTriggerWarning(t *testing.T) {
