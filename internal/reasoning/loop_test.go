@@ -736,6 +736,49 @@ func TestPlanExecutePassesStructuredArguments(t *testing.T) {
 	}
 }
 
+func TestPlanExecuteResolvesPriorStepPlaceholders(t *testing.T) {
+	llm := &stubLLM{planSteps: []reasoning.PlannedStep{
+		{
+			ID:          "fetch",
+			Description: "fetch source",
+			Tool:        "fetch_url",
+			Arguments:   map[string]any{"url": "https://example.com"},
+		},
+		{
+			ID:          "summarize",
+			Description: "summarize source",
+			Tool:        "summarize",
+			DependsOn:   []string{"fetch"},
+			Arguments: map[string]any{
+				"content": "{{fetch.output}}",
+				"meta":    map[string]any{"source": "{{fetch.content}}"},
+			},
+		},
+	}}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"fetch_url", "summarize"},
+	}, llm, exec)
+
+	_ = loop.Run(context.Background(), "planner", "fetch and summarize")
+
+	if len(exec.calls) != 2 {
+		t.Fatalf("tool calls = %d, want 2", len(exec.calls))
+	}
+	summarize := exec.calls[1]
+	if summarize.Tool != "summarize" || summarize.Input["content"] != "ok" {
+		t.Fatalf("placeholder not resolved in input: %#v", summarize)
+	}
+	meta, ok := summarize.Arguments["meta"].(map[string]any)
+	if !ok || meta["source"] != "ok" {
+		t.Fatalf("nested placeholder not resolved: %#v", summarize.Arguments)
+	}
+}
+
 func TestPlanExecuteDoesNotCompleteFailedDependencies(t *testing.T) {
 	planSteps := []reasoning.PlannedStep{
 		{ID: "fetch", Description: "fetch source data", Tool: "fetch_url"},
