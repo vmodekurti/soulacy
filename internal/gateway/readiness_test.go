@@ -140,3 +140,29 @@ func TestParityGapsPrioritizeLowestScores(t *testing.T) {
 		t.Fatalf("parityScore = %d, want 55", got)
 	}
 }
+
+func TestParityEnterpriseReflectsConfiguredControls(t *testing.T) {
+	area := parityEnterprise(enterpriseParityPosture{
+		Controls: []string{"authenticated API", "RBAC policies", "managed API keys", "encrypted credential vault", "audit log directory"},
+		Missing:  nil,
+		Score:    78,
+		Status:   "warn",
+	})
+	if area.Status != "warn" || area.Score != 78 {
+		t.Fatalf("enterprise area = %#v, want warn/78", area)
+	}
+	if area.Detail == "" || area.Next == "" {
+		t.Fatalf("enterprise area should explain current controls and next step: %#v", area)
+	}
+}
+
+func TestParityEnterpriseFailsWhenControlsAreAbsent(t *testing.T) {
+	area := parityEnterprise(enterpriseParityPosture{
+		Missing: []string{"authenticated API", "RBAC policies"},
+		Score:   25,
+		Status:  "fail",
+	})
+	if area.Status != "fail" || area.Score != 25 {
+		t.Fatalf("enterprise area = %#v, want fail/25", area)
+	}
+}
