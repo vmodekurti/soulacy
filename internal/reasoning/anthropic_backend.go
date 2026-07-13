@@ -134,11 +134,11 @@ Decompose the task into at most %d ordered steps. Respond ONLY with a JSON objec
 {
   "goal": "one-sentence goal",
   "steps": [
-    { "id": "step-1", "description": "...", "tool": "<tool_name>", "depends_on": [] },
-    { "id": "step-2", "description": "...", "tool": "<tool_name>", "depends_on": ["step-1"] }
+    { "id": "step-1", "description": "...", "tool": "<tool_name>", "arguments": { "<arg>": "<value>" }, "depends_on": [] },
+    { "id": "step-2", "description": "...", "tool": "<tool_name>", "arguments": { "<arg>": "<value>" }, "depends_on": ["step-1"] }
   ]
 }
-No markdown fences. List steps in execution order. Use depends_on to express dependencies.`
+No markdown fences. List steps in execution order. Use only exact Available tools when listed. Put concise JSON tool arguments in "arguments"; use "{{step-id.output}}" style placeholders when a later step needs an earlier result. Use depends_on to express dependencies.`
 
 // ─── Reflect ──────────────────────────────────────────────────────────────────
 

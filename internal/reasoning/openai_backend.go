@@ -124,7 +124,8 @@ func (b *OpenAIBackend) Plan(ctx context.Context, systemPrompt, taskInput string
 const openaiPlanInstructions = `
 
 Respond with ONLY a JSON object. Max %d steps.
-Schema: {"goal":"...","steps":[{"id":"step-1","description":"...","tool":"name","depends_on":[]},...]}`
+Schema: {"goal":"...","steps":[{"id":"step-1","description":"...","tool":"name","arguments":{"arg":"value"},"depends_on":[]},...]}
+Use only exact Available tools when listed. Put concise JSON tool arguments in "arguments"; use "{{step-id.output}}" placeholders for earlier results.`
 
 // ─── Reflect ──────────────────────────────────────────────────────────────────
 
