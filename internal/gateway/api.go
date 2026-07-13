@@ -2268,7 +2268,7 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	// an ad-hoc run of a plain chat agent.
 	delivered := false
 	if s.scheduler != nil && strings.TrimSpace(replyText) != "" &&
-		(def.Trigger == agent.TriggerCron || s.scheduler.HasScheduledOutputTarget(def)) {
+		(def.AppearsOn(agent.SurfaceSchedule) || s.scheduler.HasScheduledOutputTarget(def)) {
 		s.scheduler.DeliverScheduledOutput(ctx, def, msg, replyText, "manual")
 		delivered = s.scheduler.HasScheduledOutputTarget(def)
 	}

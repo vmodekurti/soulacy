@@ -308,6 +308,26 @@ func TestAddCronRegistersEntry(t *testing.T) {
 	}
 }
 
+func TestRegisterAgentSchedulesExplicitScheduleSurface(t *testing.T) {
+	s := New(nil, nil, zap.NewNop(), context.Background())
+	def := &agent.Definition{
+		ID:       "multi-surface-digest",
+		Enabled:  true,
+		Trigger:  agent.TriggerChannel,
+		Surfaces: []string{agent.SurfaceSchedule, agent.SurfaceChat, "slack"},
+		Schedule: &agent.Schedule{Cron: "0 9 * * *"},
+	}
+	if err := s.RegisterAgent(def); err != nil {
+		t.Fatalf("RegisterAgent multi-surface cron: %v", err)
+	}
+	s.mu.Lock()
+	_, registered := s.entries["multi-surface-digest"]
+	s.mu.Unlock()
+	if !registered {
+		t.Error("explicit schedule surface with cron should register a cron entry")
+	}
+}
+
 // TestAddCronRejectsInvalidExpression verifies that a malformed cron expression
 // returns an error and does not add an entry.
 func TestAddCronRejectsInvalidExpression(t *testing.T) {
@@ -375,6 +395,26 @@ func TestAddOneShotRegistersGoroutine(t *testing.T) {
 	s.mu.Unlock()
 	if !registered {
 		t.Error("expected oneshot goroutine to be registered")
+	}
+}
+
+func TestRegisterAgentSchedulesExplicitOneShotSurface(t *testing.T) {
+	s := New(nil, nil, zap.NewNop(), context.Background())
+	def := &agent.Definition{
+		ID:       "multi-surface-shot",
+		Enabled:  true,
+		Trigger:  agent.TriggerInternal,
+		Surfaces: []string{agent.SurfaceSchedule, agent.SurfaceChat},
+		Schedule: &agent.Schedule{At: time.Now().Add(time.Hour)},
+	}
+	if err := s.RegisterAgent(def); err != nil {
+		t.Fatalf("RegisterAgent multi-surface oneshot: %v", err)
+	}
+	s.mu.Lock()
+	_, registered := s.oneshot["multi-surface-shot"]
+	s.mu.Unlock()
+	if !registered {
+		t.Error("explicit schedule surface with schedule.at should register a one-shot")
 	}
 }
 
