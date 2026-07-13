@@ -172,6 +172,49 @@ func TestSkillsSh_SearchReturnsHTTPErrorMessage(t *testing.T) {
 	}
 }
 
+func TestSkillsSh_SearchFallsBackToPublicCatalog(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"authentication_required","message":"token required"}`))
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<script>self.__next_f.push([1,"{\"source\":\"acme/options\",\"skillId\":\"options-strategy-advisor\",\"name\":\"Options Strategy Advisor\",\"installs\":42}"])</script>`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p, err := newSkillsShProvider(map[string]any{
+		"id":       "skills-sh",
+		"base_url": srv.URL + "/skills.sh-proxy",
+	})
+	if err != nil {
+		t.Fatalf("newSkillsShProvider: %v", err)
+	}
+	// Point the provider at the test server while still exercising the
+	// skills.sh-only fallback gate above.
+	p.baseURL = srv.URL + "/skills.sh"
+
+	pkgs, err := p.Search(context.Background(), "options-strategy-advisor")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
+		t.Fatalf("pkgs = %+v", pkgs)
+	}
+	if !strings.Contains(pkgs[0].Description, "public catalog fallback") {
+		t.Fatalf("description = %q", pkgs[0].Description)
+	}
+}
+
+func TestSkillsShCatalogMatchesNormalizesQuery(t *testing.T) {
+	catalog := `"source":"acme/options","skillId":"options-strategy-advisor","name":"Options Strategy Advisor","installs":42`
+	pkgs := skillsShCatalogMatches(catalog, "strategy advisor", "skills-sh")
+	if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
+		t.Fatalf("pkgs = %+v", pkgs)
+	}
+}
+
 func TestSkillsSh_ResolveKnownAndUnknown(t *testing.T) {
 	srv := fakeSkillsSh(t)
 	p := newTestSkillsShProvider(t, srv.URL)
