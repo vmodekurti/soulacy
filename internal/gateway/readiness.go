@@ -119,7 +119,8 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	}
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest)
+	enterprise := s.enterpriseParityPosture()
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -178,7 +179,14 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	}
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string) []parityArea {
+type enterpriseParityPosture struct {
+	Controls []string
+	Missing  []string
+	Score    int
+	Status   string
+}
+
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -227,18 +235,90 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chat
 			Benchmark: "OpenClaw/Hermes",
 			Href:      "#skills",
 		},
-		{
-			Key:       "enterprise",
-			Label:     "Enterprise Tenancy",
-			Status:    "fail",
-			Score:     25,
-			Detail:    "Single-workspace local operation is strong; orgs, roles, environments, hosted mode, and audit governance are not productized.",
-			Next:      "Introduce workspaces/orgs, role policies, environment separation, and admin audit views.",
-			Benchmark: "Commercial launch",
-			Href:      "#config",
-		},
+		parityEnterprise(enterprise),
 	}
 	return areas
+}
+
+func (s *Server) enterpriseParityPosture() enterpriseParityPosture {
+	controls := make([]string, 0, 5)
+	missing := make([]string, 0, 5)
+
+	authReady := s != nil && s.authEngine != nil
+	if !authReady && s != nil && s.cfg != nil {
+		authReady = strings.TrimSpace(s.cfg.Server.APIKey) != ""
+	}
+	if authReady {
+		controls = append(controls, "authenticated API")
+	} else {
+		missing = append(missing, "authenticated API")
+	}
+
+	if s != nil && s.rbacManager != nil {
+		controls = append(controls, "RBAC policies")
+	} else {
+		missing = append(missing, "RBAC policies")
+	}
+
+	if s != nil && s.apiKeyStore != nil {
+		controls = append(controls, "managed API keys")
+	} else {
+		missing = append(missing, "managed API keys")
+	}
+
+	if s != nil && s.credVault != nil {
+		controls = append(controls, "encrypted credential vault")
+	} else {
+		missing = append(missing, "encrypted credential vault")
+	}
+
+	auditReady := false
+	if s != nil && s.cfg != nil {
+		auditReady = strings.TrimSpace(s.cfg.Runtime.AuditDir) != ""
+	}
+	if auditReady {
+		controls = append(controls, "audit log directory")
+	} else {
+		missing = append(missing, "audit log directory")
+	}
+
+	score := 25 + len(controls)*10
+	status := "fail"
+	if len(controls) >= 2 {
+		status = "warn"
+	}
+	if len(controls) >= 5 {
+		score = 78
+		status = "warn"
+	}
+
+	return enterpriseParityPosture{
+		Controls: controls,
+		Missing:  missing,
+		Score:    score,
+		Status:   status,
+	}
+}
+
+func parityEnterprise(posture enterpriseParityPosture) parityArea {
+	detail := "Single-workspace local operation is strong, but enterprise controls are not yet configured."
+	if len(posture.Controls) > 0 {
+		detail = "Enterprise foundations present: " + strings.Join(posture.Controls, ", ") + ". Multi-org tenancy is still not productized."
+	}
+	next := "Introduce workspaces/orgs, environment separation, admin audit views, and deployment profiles."
+	if len(posture.Missing) > 0 {
+		next = "Complete " + strings.Join(posture.Missing, ", ") + "; then add workspaces/orgs, environment separation, and admin audit views."
+	}
+	return parityArea{
+		Key:       "enterprise",
+		Label:     "Enterprise Tenancy",
+		Status:    posture.Status,
+		Score:     posture.Score,
+		Detail:    detail,
+		Next:      next,
+		Benchmark: "Commercial launch",
+		Href:      "#config",
+	}
 }
 
 func parityOnboarding(providersReady, enabledAgents, templates int, updateManifest string) parityArea {
