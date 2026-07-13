@@ -5,6 +5,7 @@
   import { pageTitle } from './lib/pagetitle.js'
   import { api } from './lib/api.js'
   import { pluginNavEntries, isPluginPage, pluginIdFromPage } from './lib/pluginui.js'
+  import { looksLikeStaleAssetError, recoverFromStaleAssets } from './lib/stalerecovery.js'
 
   let page = 'dashboard'
   let shareToken = ''   // set from #share/<token> — renders the public read-only view
@@ -16,6 +17,7 @@
   let PageComponent = null
   let loadedPage = ''
   let pageLoadError = ''
+  let pageLoadStale = false
   let pageLoadSeq = 0
 
   function toggleNav() {
@@ -113,6 +115,7 @@
     const seq = ++pageLoadSeq
     loadedPage = nextPage
     pageLoadError = ''
+    pageLoadStale = false
     PageComponent = null
     try {
       const mod = isPluginPage(nextPage)
@@ -122,6 +125,10 @@
       PageComponent = mod.default
     } catch (e) {
       if (seq !== pageLoadSeq) return
+      if (looksLikeStaleAssetError(e)) {
+        pageLoadStale = true
+        recoverFromStaleAssets()
+      }
       pageLoadError = e?.message || `Could not load ${nextPage}.`
     }
   }
@@ -447,7 +454,13 @@
   <!-- Main content -->
   <main class="content">
     {#if pageLoadError}
-      <div class="page-loading err">{pageLoadError}</div>
+      <div class="page-loading err">
+        <strong>{pageLoadStale ? 'Soulacy updated while this tab was open.' : 'Could not load this page.'}</strong>
+        <span>{pageLoadError}</span>
+        {#if pageLoadStale}
+          <button class="btn-primary" on:click={() => recoverFromStaleAssets({ force: true })}>Reload fresh UI</button>
+        {/if}
+      </div>
     {:else if PageComponent && isPluginPage(page)}
       {@const mount = pluginPages.find(p => p.id === page)}
       <svelte:component
