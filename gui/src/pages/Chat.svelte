@@ -9,6 +9,7 @@
   import { parseMarkdown, richRenderer } from '../lib/markdown.js'
   import { explainConfirmRequest } from '../lib/explainCommand.js'
   import { searchSkills, parseSlashQuery, applySkillChoice } from '../lib/skillsearch.js'
+  import { modelAvailability } from '../lib/agentmodel.js'
   import {
     filterThreads, suggestedPrompts, buildOverrides,
     lastUserText, truncateForRerun, isLongOutput,
@@ -50,6 +51,10 @@
     toolChoice: 'Constrains the first tool call. Use auto for normal routing, or a specific tool name to force the opening move.',
   }
   let controls = { provider: '', model: '', temperature: '', topP: '', maxTokens: '', responseFormat: '', reasoningEffort: '', presencePenalty: '', frequencyPenalty: '', toolChoice: '' }
+  let providers = []
+  let modelsByProv = {}
+  let modelsLoading = {}
+  let modelsError = {}
   let expanded = {}            // messageKey -> bool (collapse long outputs)
   let editingMsg = -1          // index of a user message being edited
   let editText = ''
@@ -73,6 +78,25 @@
   $: visibleMessages = activeThread?.messages || []
   $: isSending = !!activeThread?.sending
   $: currentArtifacts = activeThread ? (artifactsByThread[activeThread.id] || []) : []
+  $: enabledProviders = providers.filter(p => p.registered)
+  $: activeAgentConfig = agents.find(a => a.id === activeThread?.agentId) || null
+  $: activeAgentLLM = activeAgentConfig?.llm || {}
+  $: effectiveProvider = String(controls.provider || activeAgentLLM.provider || '').trim()
+  $: effectiveModel = String(controls.model || activeAgentLLM.model || '').trim()
+  $: if (effectiveProvider) loadModels(effectiveProvider)
+  $: chatModelOptions = (() => {
+    const list = (modelsByProv[effectiveProvider] || [])
+    const cur = controls.model || ''
+    const others = list.filter(m => m !== cur && m !== '__custom__')
+    return cur ? [cur, ...others] : others
+  })()
+  $: chatModelStatus = modelAvailability({
+    provider: effectiveProvider,
+    model: effectiveModel,
+    models: modelsByProv[effectiveProvider] || [],
+    loading: !!modelsLoading[effectiveProvider],
+    error: modelsError[effectiveProvider] || '',
+  })
 
   function newChatSessionId() {
     return `gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -378,6 +402,48 @@
         startThread(defaultAgentId())
       }
     } catch (e) { error = e.message }
+  }
+
+  async function loadProviders() {
+    try {
+      const res = await api.providers.list()
+      const registered = res.registered || []
+      const ids = new Set([...registered, ...(res.known || []), ...Object.keys(res.providers || {})])
+      providers = [...ids].map(id => ({
+        id,
+        registered: registered.includes(id),
+        configured: (res.providers || {})[id] != null,
+        defaultModel: (res.providers || {})[id]?.model || '',
+      })).sort((a, b) => a.id.localeCompare(b.id))
+    } catch (_) {
+      providers = []
+    }
+  }
+
+  async function loadModels(providerId, force = false) {
+    if (!providerId) return
+    if (!force && (modelsByProv[providerId] || modelsLoading[providerId])) return
+    modelsLoading = { ...modelsLoading, [providerId]: true }
+    try {
+      const res = await api.providers.models(providerId)
+      modelsByProv = { ...modelsByProv, [providerId]: res.models || [] }
+      modelsError = { ...modelsError, [providerId]: '' }
+    } catch (e) {
+      modelsByProv = { ...modelsByProv, [providerId]: [] }
+      modelsError = { ...modelsError, [providerId]: e.message }
+    } finally {
+      modelsLoading = { ...modelsLoading, [providerId]: false }
+    }
+  }
+
+  function onControlProviderChange() {
+    const prov = providers.find(p => p.id === controls.provider)
+    controls.model = prov?.defaultModel || ''
+  }
+
+  function refreshControlModels() {
+    if (!effectiveProvider) return
+    loadModels(effectiveProvider, true)
   }
 
   // ── send a message ───────────────────────────────────────────────────
@@ -1267,7 +1333,7 @@
     try { chatListHidden = localStorage.getItem('soulacy-chatlist-hidden') === '1' } catch (_) {}
     restoreThreads()      // repopulate the chat list from a previous session
     hydrated = true       // now persist future changes
-    await loadAgents()
+    await Promise.all([loadAgents(), loadProviders()])
     // First-run wizard hands off the freshly created agent so Chat opens with it
     // already selected ("land in Chat with a working agent"). One-shot: consumed
     // then cleared so normal navigation isn't affected.
@@ -1433,9 +1499,27 @@
     <div class="controls-panel" transition:slide|local={{ duration: 160 }}>
       <div class="cp-row">
         <label class="cp-field" title={controlTips.provider}><span>Provider</span>
-          <input bind:value={controls.provider} placeholder="agent default" title={controlTips.provider} /></label>
+          <select bind:value={controls.provider} on:change={onControlProviderChange} title={controlTips.provider}>
+            <option value="">agent default{activeAgentLLM.provider ? ` (${activeAgentLLM.provider})` : ''}</option>
+            {#if controls.provider && !enabledProviders.some(p => p.id === controls.provider)}
+              <option value={controls.provider}>{controls.provider} (unregistered)</option>
+            {/if}
+            {#each enabledProviders as p}
+              <option value={p.id}>{p.id}</option>
+            {/each}
+          </select></label>
         <label class="cp-field" title={controlTips.model}><span>Model</span>
-          <input bind:value={controls.model} placeholder="agent default" title={controlTips.model} /></label>
+          <select bind:value={controls.model} title={controlTips.model}>
+            <option value="">agent default{activeAgentLLM.model ? ` (${activeAgentLLM.model})` : ''}</option>
+            {#if controls.model && !chatModelOptions.includes(controls.model)}
+              <option value={controls.model}>{controls.model} (custom)</option>
+            {/if}
+            {#each chatModelOptions as m (m)}
+              <option value={m}>{m}</option>
+            {/each}
+          </select>
+          <input class="model-custom" bind:value={controls.model} placeholder="custom model override" title="Optional custom model name; leave blank to use the agent default." />
+        </label>
         <label class="cp-field" title={controlTips.temperature}><span>Temperature</span>
           <input type="number" step="0.1" min="0" max="2" bind:value={controls.temperature} placeholder="—" title={controlTips.temperature} /></label>
         <label class="cp-field" title={controlTips.topP}><span>Top P</span>
@@ -1463,6 +1547,15 @@
           <input bind:value={controls.toolChoice} placeholder="auto" title={controlTips.toolChoice} /></label>
         <button class="mini-btn" on:click={() => controls = { provider:'', model:'', temperature:'', topP:'', maxTokens:'', responseFormat:'', reasoningEffort:'', presencePenalty:'', frequencyPenalty:'', toolChoice:'' }}>Reset</button>
       </div>
+      {#if effectiveProvider || effectiveModel}
+        <div class="cp-status {chatModelStatus.kind}" title={chatModelStatus.detail}>
+          <strong>{chatModelStatus.label}</strong>
+          <span>{chatModelStatus.detail}</span>
+          {#if effectiveProvider}
+            <button class="mini-link" on:click={refreshControlModels} disabled={!!modelsLoading[effectiveProvider]}>Refresh models</button>
+          {/if}
+        </div>
+      {/if}
       <p class="cp-hint">Blank fields use the agent's own config. Overrides apply to new messages and per-message “Retry”.</p>
     </div>
   {/if}
@@ -2672,9 +2765,43 @@
   .cp-row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-end; }
   .cp-field { display: flex; flex-direction: column; gap: .2rem; font-size: .7rem; color: #8a90b0; }
   .cp-field span { text-transform: uppercase; letter-spacing: .03em; }
-  .cp-field input { width: 130px; padding: .35rem .5rem; border-radius: 7px;
+  .cp-field input,
+  .cp-field select { width: 150px; padding: .35rem .5rem; border-radius: 7px;
     background: #0f1120; border: 1px solid #2a2f4a; color: #e6e8f4; font-size: .82rem; }
+  .cp-field select { cursor: pointer; }
+  .cp-field .model-custom { width: 180px; }
   .cp-field input[type=number] { width: 90px; }
+  .cp-status {
+    margin-top: .65rem;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .45rem;
+    border-radius: 8px;
+    padding: .45rem .55rem;
+    font-size: .74rem;
+    border: 1px solid #2a2f4a;
+    background: rgba(15, 17, 32, .72);
+    color: #aeb3d4;
+  }
+  .cp-status strong { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; }
+  .cp-status.ok { border-color: rgba(96, 200, 120, .35); background: rgba(96, 200, 120, .07); }
+  .cp-status.ok strong { color: #60c878; }
+  .cp-status.warn { border-color: rgba(240, 192, 96, .35); background: rgba(240, 192, 96, .08); }
+  .cp-status.warn strong { color: #f0c060; }
+  .cp-status.info { border-color: rgba(108, 153, 255, .32); background: rgba(108, 153, 255, .08); }
+  .cp-status.info strong { color: #8fb0ff; }
+  .mini-link {
+    margin-left: auto;
+    border: 0;
+    background: transparent;
+    color: #b3adff;
+    font-size: .72rem;
+    cursor: pointer;
+    padding: .15rem .25rem;
+  }
+  .mini-link:hover:not(:disabled) { color: #fff; text-decoration: underline; }
+  .mini-link:disabled { opacity: .55; cursor: default; }
   .cp-hint { margin: .5rem 0 0; font-size: .72rem; color: #6b7294; }
 
   /* Thread search bar */
@@ -2769,7 +2896,7 @@
     .controls { justify-content: flex-start; }
     .msg-row, .msg-row.user .bubble { max-width: 100%; }
     .bubble { max-width: 100%; }
-    .cp-field input, .cp-field input[type=number] { width: 100%; }
+    .cp-field input, .cp-field select, .cp-field .model-custom, .cp-field input[type=number] { width: 100%; }
     .cp-field { flex: 1 1 45%; }
     .thread-search { max-width: none; }
   }
