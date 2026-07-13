@@ -72,6 +72,8 @@
   let historyResults = []
   let historySearching = false
   let historySearchError = ''
+  let chatStatus = null
+  let chatStatusOpen = false
 
   $: activeThread = $chatActiveThreadId ? ($chatThreads[$chatActiveThreadId] || null) : null
   $: threads = filterThreads(Object.values($chatThreads), threadSearch, showArchived, agentName)
@@ -97,6 +99,19 @@
     loading: !!modelsLoading[effectiveProvider],
     error: modelsError[effectiveProvider] || '',
   })
+
+  async function loadChatStatus() {
+    try {
+      chatStatus = await api.chatStatus()
+    } catch (_) {
+      chatStatus = null
+    }
+  }
+
+  function chatStatusTitle(status) {
+    if (!status) return 'Chat readiness'
+    return `${status.ready || 0}/${status.total || 0} chat capabilities ready`
+  }
 
   function newChatSessionId() {
     return `gui-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
@@ -1347,7 +1362,7 @@
     if (activeThread?.agentId && activeThread?.sessionId) {
       loadArtifacts(activeThread.id, activeThread.agentId, activeThread.sessionId)
     }
-    await loadVoiceStatus()
+    await Promise.all([loadVoiceStatus(), loadChatStatus()])
     connectEvents()
     window.addEventListener('keydown', onGlobalKey)
     // Scroll to bottom when returning to a conversation already in progress
@@ -1467,6 +1482,11 @@
       </select>
       <button class="btn-secondary" on:click={toggleChatList} title={chatListHidden ? 'Show chat list' : 'Hide chat list'} aria-pressed={chatListHidden}>{chatListHidden ? '☰' : '⟨'} Chats</button>
       <button class="btn-secondary" on:click={() => startThread()} disabled={!agents.length} title="New chat (⌘J)">New chat</button>
+      {#if chatStatus}
+        <button class="btn-secondary chat-status-pill {chatStatus.status || 'warn'}" class:on={chatStatusOpen} on:click={() => chatStatusOpen = !chatStatusOpen} title={chatStatusTitle(chatStatus)}>
+          {chatStatus.score || 0}% Chat
+        </button>
+      {/if}
       <button class="btn-secondary" class:on={controlsOpen} on:click={() => controlsOpen = !controlsOpen} title="Model & generation controls">⚙ Controls</button>
       <button class="btn-secondary" class:on={artifactPanelOpen} on:click={() => { artifactPanelOpen = !artifactPanelOpen; if (artifactPanelOpen && activeThread) loadArtifacts(activeThread.id, activeThread.agentId, activeThread.sessionId) }} disabled={!activeThread?.agentId} title="Show files produced by this chat">
         Artifacts {currentArtifacts.length ? `(${currentArtifacts.length})` : ''}
@@ -1493,6 +1513,33 @@
 
   {#if error}
     <div class="banner err">⚠ {error}</div>
+  {/if}
+
+  {#if chatStatusOpen && chatStatus}
+    <div class="chat-status-panel" transition:slide|local={{ duration: 160 }}>
+      <div class="chat-status-head">
+        <div>
+          <strong>Chat Experience</strong>
+          <span>{chatStatus.ready}/{chatStatus.total} ready · {chatStatus.chat_agents} agent(s) · {chatStatus.providers} provider(s)</span>
+        </div>
+        <button class="mini-link" on:click={loadChatStatus}>Re-check</button>
+      </div>
+      <div class="chat-status-grid">
+        {#each (chatStatus.checks || []) as check}
+          <div class="chat-check {check.status}">
+            <span>{check.label}</span>
+            <strong>{check.status}</strong>
+            <p>{check.detail}</p>
+          </div>
+        {/each}
+      </div>
+      {#if chatStatus.next_actions?.length}
+        <div class="chat-next">
+          <strong>Next</strong>
+          <span>{chatStatus.next_actions[0]}</span>
+        </div>
+      {/if}
+    </div>
   {/if}
 
   {#if controlsOpen}
@@ -2756,6 +2803,43 @@
 
   /* Header control toggles */
   .btn-secondary.on { background: rgba(108,99,255,.18); border-color: rgba(108,99,255,.5); color: #b3adff; }
+  .chat-status-pill.ok { border-color: rgba(96, 200, 120, .45); color: #8ee2a2; }
+  .chat-status-pill.warn { border-color: rgba(240, 192, 96, .45); color: #f0c060; }
+  .chat-status-pill.fail { border-color: rgba(255, 107, 129, .45); color: #ff8c9d; }
+  .chat-status-panel {
+    background: #171a2c; border: 1px solid #2a2f4a; border-radius: 12px;
+    padding: .75rem .9rem; flex-shrink: 0;
+  }
+  .chat-status-head {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    margin-bottom: .65rem;
+  }
+  .chat-status-head div { display: flex; flex-direction: column; gap: .18rem; }
+  .chat-status-head strong { color: #f2f3fb; font-size: .9rem; }
+  .chat-status-head span { color: #8a90b0; font-size: .75rem; }
+  .chat-status-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .55rem;
+  }
+  .chat-check {
+    border: 1px solid #2a2f4a; border-radius: 8px; padding: .55rem .65rem;
+    background: rgba(15, 17, 32, .72);
+  }
+  .chat-check span { color: #cfd2e8; font-size: .78rem; font-weight: 600; }
+  .chat-check strong {
+    float: right; font-size: .65rem; text-transform: uppercase; letter-spacing: .05em;
+  }
+  .chat-check p { clear: both; margin: .35rem 0 0; color: #8a90b0; font-size: .72rem; line-height: 1.35; }
+  .chat-check.ok { border-color: rgba(96, 200, 120, .3); }
+  .chat-check.ok strong { color: #60c878; }
+  .chat-check.warn { border-color: rgba(240, 192, 96, .34); }
+  .chat-check.warn strong { color: #f0c060; }
+  .chat-check.fail { border-color: rgba(255, 107, 129, .38); }
+  .chat-check.fail strong { color: #ff6b81; }
+  .chat-next {
+    margin-top: .65rem; display: flex; gap: .45rem; align-items: baseline;
+    font-size: .75rem; color: #aeb3d4;
+  }
+  .chat-next strong { color: #f0c060; text-transform: uppercase; letter-spacing: .04em; font-size: .66rem; }
 
   /* Model controls panel */
   .controls-panel {

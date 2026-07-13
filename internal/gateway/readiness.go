@@ -73,6 +73,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	browser := s.browserAutomationReadiness()
 	marketplace := s.marketplaceReadiness()
 	mobile := s.mobileCompanionReadiness()
+	chat := s.chatExperienceReadiness(c)
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -124,7 +125,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -171,6 +172,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"browser":      browser,
 		"marketplace":  marketplace,
 		"mobile":       mobile,
+		"chat":         chat,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -194,12 +196,12 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
 		parityStudio(templates),
-		parityChat(chatAgents),
+		parityChat(chat),
 		parityLearning(learningAgents, enabledAgents),
 		parityAutomation(scheduledAgents, usableOutbound),
 		parityOps(providersReady, enabledAgents, updateManifest),
@@ -334,13 +336,6 @@ func parityStudio(templates int) parityArea {
 		return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "ok", Score: 82, Detail: "Studio has plan/canvas views, integrity checks, repair, local-model guardrails, templates, and build-until-it-works.", Next: "Make graph editing feel secondary to the guided plan and plain-English run evidence.", Benchmark: "Soulacy differentiator", Href: "#studio"}
 	}
 	return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "warn", Score: 62, Detail: "Studio exists, but starter templates are missing, which weakens guided authoring.", Next: "Restore templates and keep the plan-first authoring path front and center.", Benchmark: "Soulacy differentiator", Href: "#studio"}
-}
-
-func parityChat(chatAgents int) parityArea {
-	if chatAgents > 0 {
-		return parityArea{Key: "chat", Label: "Chat Experience", Status: "warn", Score: 68, Detail: plural(chatAgents, "chat-ready agent") + " available; artifacts/search/branching exist, but polish still trails ChatGPT/Claude.", Next: "Tighten citations, file previews, inline tool cards, keyboard flows, and project context.", Benchmark: "ChatGPT/Claude", Href: "#chat"}
-	}
-	return parityArea{Key: "chat", Label: "Chat Experience", Status: "fail", Score: 35, Detail: "No chat-ready user agent is enabled.", Next: "Install or create one chat-surface assistant and verify attachments, artifacts, and retries.", Benchmark: "ChatGPT/Claude", Href: "#chat"}
 }
 
 func parityLearning(learningAgents, enabledAgents int) parityArea {

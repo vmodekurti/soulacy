@@ -164,6 +164,7 @@ export const api = {
   // shareChat stores a read-only snapshot of a conversation and returns
   // { token, path } where path is the shareable "/#share/<token>".
   shareChat: (body) => apiFetch('/chat/share', { method: 'POST', body: JSON.stringify(body) }),
+  chatStatus: () => apiFetch('/chat/status'),
 
   chatArtifacts: (agentId, sessionId) =>
     apiFetch(`/chat/artifacts?agent_id=${encodeURIComponent(agentId)}&session_id=${encodeURIComponent(sessionId)}`),
