@@ -5,6 +5,7 @@
 package regression
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -16,10 +17,19 @@ import (
 	"github.com/soulacy/soulacy/internal/pairing"
 	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/proactive"
+	"github.com/soulacy/soulacy/internal/studio"
 	"github.com/soulacy/soulacy/internal/templates"
 	"github.com/soulacy/soulacy/internal/webpush"
 	"github.com/soulacy/soulacy/pkg/message"
 )
+
+type fakeStudioLLM struct {
+	out string
+}
+
+func (f fakeStudioLLM) Complete(context.Context, string) (string, error) {
+	return f.out, nil
+}
 
 // Workflow 1: a locked-down agent's shell tool is denied, its network tool is
 // confined to an allow-list, and a benign read tool is untouched.
@@ -153,5 +163,49 @@ func TestWorkflow_TemplatesLoad(t *testing.T) {
 		if !seen {
 			t.Fatalf("expected template %q to be present", id)
 		}
+	}
+}
+
+// Workflow 9: Studio-generated reasoning agents are not saved with brittle
+// one-shot tool allowlists. Delivery, queue, and KB workflows get their small
+// diagnostic/inspection companion tools before they reach production.
+func TestWorkflow_StudioAgentCompanionTools(t *testing.T) {
+	out := `{
+	  "name": "Research Intake",
+	  "system_prompt": "Capture incoming URLs, queue them, process them into the KB, verify storage, and send a concise acknowledgement.",
+	  "trigger": {"type":"channel"},
+	  "channels": ["slack"],
+	  "tools": ["queue_put","kb_write","channel.send"],
+	  "skills": [],
+	  "knowledge": ["AI Docs"],
+	  "rationale": "A reasoning agent can switch between capture and processing modes."
+	}`
+	cat := studio.Catalog{Tools: []string{
+		"queue_put", "queue_create", "queue_names",
+		"kb_write", "kb_search",
+		"channel.send", "channel.status",
+	}}
+	res, err := studio.CompileAgent(context.Background(), fakeStudioLLM{out: out}, "capture URLs into AI Docs and notify Slack", cat, "react", nil)
+	if err != nil {
+		t.Fatalf("compile agent: %v", err)
+	}
+	def, err := studio.ToAgentDefinition(res.Workflow, false)
+	if err != nil {
+		t.Fatalf("to definition: %v", err)
+	}
+	if def.Builtins == nil {
+		t.Fatal("compiled agent should have builtin tools")
+	}
+	have := map[string]bool{}
+	for _, tool := range *def.Builtins {
+		have[tool] = true
+	}
+	for _, want := range []string{"queue_put", "queue_create", "queue_names", "kb_write", "kb_search", "channel.send", "channel.status"} {
+		if !have[want] {
+			t.Fatalf("missing tool %q in builtins %v", want, *def.Builtins)
+		}
+	}
+	if !strings.Contains(def.SystemPrompt, "never assume a step succeeded") {
+		t.Fatalf("reasoning guardrail missing from system prompt: %q", def.SystemPrompt)
 	}
 }
