@@ -257,6 +257,10 @@ export const api = {
     test: () => apiFetch('/push/test', { method: 'POST' }),
   },
 
+  mobile: {
+    status: () => apiFetch('/mobile/status'),
+  },
+
   browserTrace: (agentId, sessionId = '') => {
     const p = new URLSearchParams({ agent_id: agentId })
     if (sessionId) p.set('session_id', sessionId)

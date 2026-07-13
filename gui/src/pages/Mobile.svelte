@@ -12,6 +12,7 @@
   let learning = null
   let queues = []
   let readiness = null
+  let companionStatus = null
   let channels = []
   let recentErrors = []
   let refreshingError = ''
@@ -145,7 +146,7 @@
     error = ''
     refreshingError = ''
     try {
-      const [h, s, a, d, l, q, r, ch] = await Promise.allSettled([
+      const [h, s, a, d, l, q, r, ch, m] = await Promise.allSettled([
         api.health(),
         api.schedule.list(),
         api.agents.list(),
@@ -154,6 +155,7 @@
         api.queues.names(),
         api.readiness(),
         api.channels.list(),
+        api.mobile.status(),
       ])
       if (h.status === 'fulfilled') health = h.value
       if (s.status === 'fulfilled') schedule = s.value?.schedule || []
@@ -163,7 +165,8 @@
       if (q.status === 'fulfilled') queues = q.value?.queues || []
       if (r.status === 'fulfilled') readiness = r.value
       if (ch.status === 'fulfilled') channels = ch.value?.channels || []
-      const failed = [h, s, a, d, l, q, r, ch].find(x => x.status === 'rejected')
+      if (m.status === 'fulfilled') companionStatus = m.value
+      const failed = [h, s, a, d, l, q, r, ch, m].find(x => x.status === 'rejected')
       if (failed) error = failed.reason?.message || 'Some mobile data could not be loaded'
       const loadedAgents = a.status === 'fulfilled' ? (a.value?.agents || []) : agents
       await Promise.all([loadRecentErrors(loadedAgents), loadRecentRuns(loadedAgents)])
@@ -412,6 +415,35 @@
   {/if}
 
   {#if companionMsg}<button class="companion-note" type="button" on:click={() => companionMsg = ''}>{companionMsg}</button>{/if}
+
+  {#if companionStatus}
+    <section class="companion-readiness {companionStatus.status || 'warn'}">
+      <div class="companion-readiness-top">
+        <div>
+          <span class="kicker">Companion Readiness</span>
+          <h2>{companionStatus.score || 0}% · {companionStatus.ready || 0}/{companionStatus.total || 0} checks ready</h2>
+        </div>
+        <button class="btn-secondary small" on:click={() => go('channels')}>Delivery</button>
+      </div>
+      <div class="companion-pills">
+        <span>{companionStatus.push_subscriptions || 0} devices</span>
+        <span>{companionStatus.chat_agents || 0} chat agents</span>
+        <span>{companionStatus.scheduled_agents || 0} schedules</span>
+        <span>{companionStatus.delivery_channels || 0} channels</span>
+      </div>
+      {#if companionStatus.next_actions?.length}
+        <div class="companion-next">{companionStatus.next_actions[0]}</div>
+      {/if}
+      <div class="companion-checks">
+        {#each (companionStatus.checks || []).slice(0, 4) as check}
+          <button class="companion-check {check.status}" type="button" on:click={() => check.key === 'delivery' ? go('channels') : check.key === 'schedules' ? go('schedule') : check.key === 'chat_agents' ? go('agents') : null}>
+            <span>{check.label}</span>
+            <small>{check.detail}</small>
+          </button>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
   <!-- Active runs -->
   <section class="m-card" class:active={activeRuns.length}>
@@ -718,6 +750,23 @@
 <style>
   .mobile-page { max-width: 760px; margin: 0 auto; display: flex; flex-direction: column; gap: 14px; }
   .companion-note { display: block; width: 100%; text-align: left; background: rgba(108,99,255,.12); border: 1px solid rgba(108,99,255,.35); color: #b9bcf0; border-radius: 9px; padding: .55rem .8rem; font-size: .82rem; cursor: pointer; }
+  .companion-readiness { border: 1px solid #20243d; background: #10121f; border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: .65rem; }
+  .companion-readiness.ok { border-color: rgba(96,200,120,.38); }
+  .companion-readiness.warn { border-color: rgba(240,176,112,.35); }
+  .companion-readiness.fail { border-color: rgba(255,90,90,.4); }
+  .companion-readiness-top { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; }
+  .companion-readiness-top h2 { margin: .15rem 0 0; font-size: 1rem; }
+  .companion-pills { display: flex; flex-wrap: wrap; gap: .4rem; }
+  .companion-pills span { border: 1px solid #252a46; background: #15182a; color: #b9bcf0; border-radius: 999px; padding: .2rem .55rem; font-size: .72rem; }
+  .companion-next { border-left: 3px solid #8b85ff; background: rgba(108,99,255,.1); color: #c5c9e8; border-radius: 6px; padding: .45rem .6rem; font-size: .78rem; }
+  .companion-checks { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .5rem; }
+  .companion-check { text-align: left; border: 1px solid #252a46; background: #15182a; border-radius: 8px; padding: .55rem .65rem; color: inherit; cursor: pointer; }
+  .companion-check.ok { border-color: rgba(96,200,120,.28); }
+  .companion-check.warn { border-color: rgba(240,176,112,.3); }
+  .companion-check.fail { border-color: rgba(255,90,90,.35); }
+  .companion-check span, .companion-check small { display: block; }
+  .companion-check span { color: #dfe2f5; font-size: .8rem; font-weight: 700; }
+  .companion-check small { color: #8a91b8; margin-top: .2rem; font-size: .72rem; line-height: 1.35; }
   .m-card { background: #141626; border: 1px solid #1a1e36; border-radius: 12px; padding: .8rem .95rem; }
   .m-card.active { border-color: rgba(240,160,96,.4); }
   .m-card-hd { display: flex; align-items: center; gap: .5rem; font-size: .8rem; font-weight: 700; color: #c5c9e8; margin-bottom: .6rem; }
@@ -814,6 +863,7 @@
   .schedule-actions button { white-space: nowrap; font-size: .74rem; }
   @media (max-width: 540px) {
     .quick-grid { grid-template-columns: repeat(2, 1fr); }
+    .companion-checks { grid-template-columns: 1fr; }
     .metrics { grid-template-columns: 1fr; }
     .schedule-row { grid-template-columns: 1fr; }
     .schedule-actions { display: grid; grid-template-columns: 1fr 1fr; }

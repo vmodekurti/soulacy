@@ -72,6 +72,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	executors := s.executorReadiness()
 	browser := s.browserAutomationReadiness()
 	marketplace := s.marketplaceReadiness()
+	mobile := s.mobileCompanionReadiness()
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -123,7 +124,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -169,6 +170,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"executors":    executors,
 		"browser":      browser,
 		"marketplace":  marketplace,
+		"mobile":       mobile,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -192,7 +194,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -203,16 +205,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chat
 		parityOps(providersReady, enabledAgents, updateManifest),
 		parityBrowserAutomation(browser),
 		parityRemoteExecution(executors),
-		{
-			Key:       "mobile_companion",
-			Label:     "Native/Mobile Companion",
-			Status:    "warn",
-			Score:     50,
-			Detail:    "Mobile pairing, approvals, and push foundations exist, but the companion does not yet feel like a native daily assistant.",
-			Next:      "Turn Mobile into the default approvals, alerts, schedule, and lightweight chat surface.",
-			Benchmark: "OpenClaw",
-			Href:      "#mobile",
-		},
+		parityMobileCompanion(mobile),
 		parityMarketplace(marketplace),
 		parityEnterprise(enterprise),
 	}
