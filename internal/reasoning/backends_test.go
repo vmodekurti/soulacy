@@ -162,6 +162,37 @@ func TestAnthropicBackend_Think_RetriesWithoutDeprecatedSamplingParams(t *testin
 	}
 }
 
+func TestAnthropicBackend_Think_OmitsSamplingForClaudeFiveAliases(t *testing.T) {
+	thinkJSON := `{"thought":"done","is_done":true,"final_answer":"ok"}`
+	var calls int
+	ft := &fakeTransport{fn: func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, ok := got["temperature"]; ok {
+			t.Fatalf("temperature should be omitted for sampling-free Anthropic models: %#v", got)
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("top_p should be omitted for sampling-free Anthropic models: %#v", got)
+		}
+		return jsonResponse(200, anthropicOKBody(thinkJSON)), nil
+	}}
+	b := newAnthropicWithTransport(ft)
+	b.ThinkModel = "claude-sonnet-5"
+	b.ThinkParams.Temperature = 0.1
+	b.ThinkParams.TopP = 0.8
+
+	resp, err := b.Think(context.Background(), reasoning.ThinkRequest{TaskInput: "x"})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if calls != 1 || !resp.IsDone {
+		t.Fatalf("calls=%d resp=%+v", calls, resp)
+	}
+}
+
 func TestAnthropicBackend_Think_RetriesWhenSamplingParamsCannotBothBeSpecified(t *testing.T) {
 	thinkJSON := `{"thought":"done","is_done":true,"final_answer":"ok"}`
 	var calls int

@@ -167,7 +167,9 @@ func (p *AnthropicProvider) Complete(ctx context.Context, req CompletionRequest)
 	} else if req.Temperature > 0 {
 		body["temperature"] = req.Temperature
 	}
-	if req.TopP > 0 && body["temperature"] == nil {
+	if anthropicModelDisallowsSampling(model) && !p.extendedThinking {
+		delete(body, "temperature")
+	} else if req.TopP > 0 && body["temperature"] == nil {
 		body["top_p"] = req.TopP
 	}
 
@@ -496,4 +498,25 @@ func anthropicRetriableParam(body []byte) string {
 		}
 	}
 	return ""
+}
+
+func anthropicModelDisallowsSampling(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return false
+	}
+	// Anthropic has started deprecating sampling controls on newer Claude
+	// families. Avoid sending them proactively for forward-versioned aliases so
+	// users don't see a recoverable 400 before the retry path strips the field.
+	for _, marker := range []string{
+		"claude-sonnet-5",
+		"claude-opus-5",
+		"claude-haiku-5",
+		"claude-5",
+	} {
+		if strings.Contains(m, marker) {
+			return true
+		}
+	}
+	return false
 }

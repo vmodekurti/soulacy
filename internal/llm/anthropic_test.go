@@ -256,6 +256,43 @@ func TestAnthropicCompleteRetriesWithoutDeprecatedSamplingParams(t *testing.T) {
 	}
 }
 
+func TestAnthropicCompleteOmitsSamplingForClaudeFiveAliases(t *testing.T) {
+	var calls int
+	provider := NewAnthropicProvider("http://anthropic.test", "sk-ant", "claude-sonnet-5")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if _, ok := got["temperature"]; ok {
+			t.Fatalf("temperature should be omitted for sampling-free Anthropic models: %#v", got)
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("top_p should be omitted for sampling-free Anthropic models: %#v", got)
+		}
+		return jsonResponse(200, `{
+			"content": [{"type": "text", "text": "ok"}],
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.7,
+		TopP:        0.9,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+}
+
 func TestAnthropicCompleteUsesTopPWhenTemperatureUnsetAndRetriesIfDeprecated(t *testing.T) {
 	var calls int
 	provider := NewAnthropicProvider("http://anthropic.test", "sk-ant", "claude-test")
