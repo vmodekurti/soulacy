@@ -193,6 +193,7 @@ type reasoningToolExecutor struct {
 	e         *Engine
 	def       *agent.Definition
 	sessionID string
+	schemas   map[string]llm.ToolSchema
 }
 
 func (x reasoningToolExecutor) Execute(ctx context.Context, call reasoning.ToolCall) reasoning.Observation {
@@ -235,9 +236,74 @@ func (x reasoningToolExecutor) Execute(ctx context.Context, call reasoning.ToolC
 	})
 
 	if err != nil {
-		return reasoning.Observation{Error: err, Source: tc.Name}
+		return reasoning.Observation{
+			Error:   err,
+			Source:  tc.Name,
+			Content: x.toolErrorObservation(tc, err),
+		}
 	}
 	return reasoning.Observation{Content: result, Source: tc.Name}
+}
+
+func (x reasoningToolExecutor) toolErrorObservation(call message.ToolCall, err error) string {
+	msg := fmt.Sprintf("tool error: %s", err)
+	if x.schemas == nil {
+		return msg
+	}
+	schema, ok := x.schemas[call.Name]
+	if !ok {
+		return msg
+	}
+	hint := toolSchemaHint(schema)
+	if strings.TrimSpace(hint) == "" {
+		return msg
+	}
+	return msg + "\n\nExpected arguments for " + call.Name + ": " + hint + ". Retry once with corrected arguments, choose another available tool, or finish with the useful result already gathered."
+}
+
+func toolSchemaHint(schema llm.ToolSchema) string {
+	params := schema.Parameters
+	if len(params) == 0 {
+		return ""
+	}
+	props, _ := params["properties"].(map[string]any)
+	required := requiredSchemaFields(params["required"])
+	parts := make([]string, 0, len(props))
+	for name, raw := range props {
+		label := name
+		if required[name] {
+			label += "*"
+		}
+		if m, ok := raw.(map[string]any); ok {
+			if typ := strings.TrimSpace(fmt.Sprint(m["type"])); typ != "" && typ != "<nil>" {
+				label += ":" + typ
+			}
+		}
+		parts = append(parts, label)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ", ")
+}
+
+func requiredSchemaFields(raw any) map[string]bool {
+	out := map[string]bool{}
+	switch v := raw.(type) {
+	case []string:
+		for _, s := range v {
+			if s = strings.TrimSpace(s); s != "" {
+				out[s] = true
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if s := strings.TrimSpace(fmt.Sprint(item)); s != "" {
+				out[s] = true
+			}
+		}
+	}
+	return out
 }
 
 // handleWithReasoning runs one task through the reasoning Loop and finishes
@@ -253,7 +319,10 @@ func (e *Engine) handleWithReasoning(ctx context.Context, def *agent.Definition,
 	for _, n := range loopCfg.ToolNames {
 		have[n] = struct{}{}
 	}
-	for _, s := range e.allToolSchemas(def, msg.Channel) {
+	toolSchemas := e.allToolSchemas(def, msg.Channel)
+	schemaByName := make(map[string]llm.ToolSchema, len(toolSchemas))
+	for _, s := range toolSchemas {
+		schemaByName[s.Name] = s
 		if _, dup := have[s.Name]; !dup {
 			loopCfg.ToolNames = append(loopCfg.ToolNames, s.Name)
 			have[s.Name] = struct{}{}
@@ -261,7 +330,7 @@ func (e *Engine) handleWithReasoning(ctx context.Context, def *agent.Definition,
 	}
 
 	backend := &captureBackend{inner: e.reasoningBackendFor(def)}
-	executor := reasoningToolExecutor{e: e, def: def, sessionID: msg.SessionID}
+	executor := reasoningToolExecutor{e: e, def: def, sessionID: msg.SessionID, schemas: schemaByName}
 	loop := reasoning.New(loopCfg, backend, executor)
 
 	e.sink.Emit(message.Event{

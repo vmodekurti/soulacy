@@ -3445,8 +3445,29 @@ func isAgentToolCall(name string) bool {
 
 func normalizeToolCall(call message.ToolCall) message.ToolCall {
 	call.Name = normalizeToolCallName(call.Name)
-	if call.Name == "web_search" {
+	switch call.Name {
+	case "channel.send":
+		call.Arguments = normalizeChannelSendArgs(call.Arguments)
+	case "fetch_url":
+		call.Arguments = normalizeAliasArgs(call.Arguments, map[string][]string{
+			"url": {"source_url", "link", "href", "uri"},
+		})
+	case "web_search":
 		call.Arguments = normalizeWebSearchArgs(call.Arguments)
+	case "kb_search":
+		call.Arguments = normalizeAliasArgs(call.Arguments, map[string][]string{
+			"kb":    {"knowledge_base", "kb_name", "collection", "store"},
+			"query": {"q", "text", "input", "prompt"},
+			"top_k": {"limit", "count", "k"},
+		})
+	case "kb_write":
+		call.Arguments = normalizeAliasArgs(call.Arguments, map[string][]string{
+			"kb":      {"knowledge_base", "kb_name", "collection", "store"},
+			"content": {"text", "document", "artifact", "data", "body", "markdown"},
+			"source":  {"source_url", "url", "file", "file_path"},
+		})
+	case "queue_create", "queue_put", "queue_take", "queue_list", "queue_clear":
+		call.Arguments = normalizeQueueArgs(call.Name, call.Arguments)
 	}
 	return call
 }
@@ -3493,6 +3514,46 @@ func normalizeWebSearchArgs(args map[string]any) map[string]any {
 			args["query"] = strings.Join(parts, " ")
 		default:
 			args["query"] = fmt.Sprint(v)
+		}
+	}
+	return args
+}
+
+func normalizeChannelSendArgs(args map[string]any) map[string]any {
+	return normalizeAliasArgs(args, map[string][]string{
+		"channel": {"adapter", "adapter_id", "platform"},
+		"to":      {"destination", "target", "recipient", "chat_id", "channel_id", "thread_id", "user_id", "conversation", "room"},
+		"text":    {"message", "msg", "body", "content"},
+	})
+}
+
+func normalizeQueueArgs(tool string, args map[string]any) map[string]any {
+	args = normalizeAliasArgs(args, map[string][]string{
+		"queue":       {"name", "queue_name", "topic"},
+		"ttl_seconds": {"ttl", "ttl_sec", "expires_in"},
+		"limit":       {"count", "max", "max_items"},
+	})
+	if tool == "queue_put" {
+		args = normalizeAliasArgs(args, map[string][]string{
+			"item": {"value", "payload", "data", "content", "document", "resource", "url"},
+		})
+	}
+	return args
+}
+
+func normalizeAliasArgs(args map[string]any, aliases map[string][]string) map[string]any {
+	if args == nil {
+		return args
+	}
+	for canonical, names := range aliases {
+		if _, ok := args[canonical]; ok {
+			continue
+		}
+		for _, alias := range names {
+			if v, ok := args[alias]; ok {
+				args[canonical] = v
+				break
+			}
 		}
 	}
 	return args
