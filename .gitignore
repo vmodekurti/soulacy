@@ -106,6 +106,9 @@ config.*.yaml
 # FUSE mount artifacts and local scratch (never source)
 .fuse_hidden*
 .cache/
+tmp/
+__pycache__/
+*.py[cod]
 _mnt_writetest
 _valsuite_main.go
 sy-go-tmp-umask

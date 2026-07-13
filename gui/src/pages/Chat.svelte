@@ -8,6 +8,7 @@
   import { deltaMetrics, deltaLabel, deltaTitle } from '../lib/chatmetrics.js'
   import { parseMarkdown, richRenderer } from '../lib/markdown.js'
   import { explainConfirmRequest } from '../lib/explainCommand.js'
+  import { searchSkills, parseSlashQuery, applySkillChoice } from '../lib/skillsearch.js'
   import {
     filterThreads, suggestedPrompts, buildOverrides,
     lastUserText, truncateForRerun, isLongOutput,
@@ -739,7 +740,63 @@
     if (msgListEl) msgListEl.scrollTop = msgListEl.scrollHeight
   }
 
+  // ── inline "/" skill picker ──────────────────────────────────────────
+  // Typing "/" at the start of the composer opens an autocomplete over the
+  // installed skills. Mirrors the existing @agent mention convention.
+  let skillList     = []      // installed skills, loaded lazily on first "/"
+  let skillsLoaded  = false
+  let skillQuery    = null    // null = picker closed
+  let skillIndex    = 0
+
+  $: skillMatches = skillQuery === null ? [] : searchSkills(skillList, skillQuery, { limit: 8 })
+  $: skillOpen    = skillQuery !== null && skillMatches.length > 0
+
+  async function loadSkillsOnce() {
+    if (skillsLoaded) return
+    skillsLoaded = true // set first: a failed fetch must not retry on every keystroke
+    try {
+      const res = await api.skills.list()
+      skillList = res.skills || []
+    } catch (_) {
+      skillList = [] // no skills endpoint / no skills installed → picker simply never opens
+    }
+  }
+
+  function onComposerInput(e) {
+    const el = e.target
+    const q = parseSlashQuery(el.value, el.selectionStart)
+    if (q !== null) loadSkillsOnce()
+    if (q !== skillQuery) skillIndex = 0
+    skillQuery = q
+  }
+
+  async function chooseSkill(sk) {
+    input = applySkillChoice(input, sk.name)
+    skillQuery = null
+    skillIndex = 0
+    await tick()
+    composerEl?.focus()
+    // Park the caret at the end so the user just keeps typing their request.
+    composerEl?.setSelectionRange(input.length, input.length)
+  }
+
   function onKeydown(e) {
+    // While the picker is open it owns the navigation keys — otherwise Enter
+    // would fire the message off half-typed instead of choosing a skill.
+    if (skillOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault(); skillIndex = (skillIndex + 1) % skillMatches.length; return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault(); skillIndex = (skillIndex - 1 + skillMatches.length) % skillMatches.length; return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault(); chooseSkill(skillMatches[skillIndex]); return
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault(); skillQuery = null; return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
   }
 
@@ -1698,11 +1755,33 @@
         {uploadingAttachment ? '…' : '+'}
       </button>
       <button class="attach-btn" on:click={() => promptsOpen = !promptsOpen} title="Saved prompts (⌘K for commands)">≣</button>
+      {#if skillOpen}
+        <div class="skill-pop" role="listbox" aria-label="Skills">
+          <div class="skill-pop-head">Skills · ↑↓ to move, Enter to insert, Esc to dismiss</div>
+          {#each skillMatches as sk, i}
+            <button
+              class="skill-pop-row"
+              class:sel={i === skillIndex}
+              role="option"
+              aria-selected={i === skillIndex}
+              on:mouseenter={() => skillIndex = i}
+              on:click={() => chooseSkill(sk)}
+            >
+              <span class="skill-pop-name">/{sk.name}</span>
+              {#if sk.description}
+                <span class="skill-pop-desc">{sk.description}</span>
+              {/if}
+            </button>
+          {/each}
+        </div>
+      {/if}
       <textarea
         bind:this={composerEl}
         bind:value={input}
         on:keydown={onKeydown}
-        placeholder="Message {activeThread?.agentId ? agentName(activeThread.agentId) : 'the agent'}…  (Enter to send, Shift+Enter for newline)"
+        on:input={onComposerInput}
+        on:blur={() => setTimeout(() => skillQuery = null, 120)}
+        placeholder="Message {activeThread?.agentId ? agentName(activeThread.agentId) : 'the agent'}…  (Enter to send, / for skills)"
         rows="2"
         disabled={isSending || !activeThread?.agentId}
       ></textarea>
@@ -2345,8 +2424,34 @@
   .input-row {
     display: flex; gap: .65rem; align-items: flex-end;
     padding: .7rem; border-top: 1px solid #1a1e36; flex-shrink: 0;
+    position: relative; /* anchors the "/" skill popup */
   }
   .input-row textarea { flex: 1; resize: none; }
+
+  /* Inline "/" skill picker. Sits ABOVE the composer: the composer is at the
+     bottom of the viewport, so a dropdown below it would be off-screen. */
+  .skill-pop {
+    position: absolute; bottom: calc(100% - .2rem); left: .7rem; right: .7rem;
+    max-height: 260px; overflow-y: auto; z-index: 20;
+    background: #0e1020; border: 1px solid #2a2f4a; border-radius: 10px;
+    box-shadow: 0 -8px 28px rgba(0,0,0,.45);
+    display: flex; flex-direction: column;
+  }
+  .skill-pop-head {
+    padding: .45rem .7rem; font-size: .7rem; color: #6b7294;
+    border-bottom: 1px solid #1a1e36; position: sticky; top: 0; background: #0e1020;
+  }
+  .skill-pop-row {
+    display: flex; flex-direction: column; gap: .15rem; align-items: flex-start;
+    width: 100%; text-align: left; background: none; border: none; border-radius: 0;
+    padding: .5rem .7rem; cursor: pointer; color: #c8cadf;
+  }
+  .skill-pop-row.sel { background: rgba(108,99,255,.16); }
+  .skill-pop-name { font-size: .84rem; font-weight: 600; color: #a6a0ff; }
+  .skill-pop-desc {
+    font-size: .74rem; color: #6b7294;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;
+  }
   .send-btn { height: 40px; padding: 0 1rem; font-size: 1rem; align-self: flex-end; flex-shrink: 0; }
   .file-input { display: none; }
   .attach-btn {
