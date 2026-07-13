@@ -69,6 +69,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	channelsReady := countDoctorChannels(channels, "ok", "warn")
 	usableOutbound := countUsableOutboundChannels(channels)
 	updateManifest := s.updateManifestSource()
+	executors := s.executorReadiness()
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -120,7 +121,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -163,6 +164,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"next_actions": next,
 		"providers":    providers,
 		"channels":     channels,
+		"executors":    executors,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -186,7 +188,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -205,16 +207,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chat
 			Benchmark: "OpenClaw/Hermes",
 			Href:      "#browser",
 		},
-		{
-			Key:       "remote_execution",
-			Label:     "Remote Execution",
-			Status:    "warn",
-			Score:     65,
-			Detail:    "Local, Docker, SSH, and queue foundations exist; remote worker enrollment and cloud presets are still not a guided experience.",
-			Next:      "Add a guided remote-worker setup with health, logs, secrets handoff, and artifact return.",
-			Benchmark: "Hermes",
-			Href:      "#config",
-		},
+		parityRemoteExecution(executors),
 		{
 			Key:       "mobile_companion",
 			Label:     "Native/Mobile Companion",

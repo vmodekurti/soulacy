@@ -93,6 +93,7 @@ export async function streamSSE(path, body, onEvent) {
 export const api = {
   health: () => apiFetch('/health'),
   readiness: () => apiFetch('/readiness'),
+  executors: () => apiFetch('/executors'),
   opsSummary: (window = '24h') => apiFetch('/runs/ops-summary?window=' + encodeURIComponent(window)),
 
   agents: {

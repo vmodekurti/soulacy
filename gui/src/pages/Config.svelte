@@ -18,6 +18,22 @@
   let logFile   = ''
   let pythonBin = 'python3'
   let toolTimeout = '30s'
+  let executorBackend = 'process'
+  let executorWorkers = 4
+  let dockerImage = 'python:3.12-slim'
+  let dockerNetwork = 'none'
+  let dockerVolumes = ''
+  let sshHost = ''
+  let sshUser = ''
+  let sshPythonBin = 'python3'
+  let sshIdentity = ''
+  let sshIdentityCredential = ''
+  let cloudPreset = ''
+  let cloudTarget = ''
+  let cloudCLI = ''
+  let executorReadiness = null
+  let executorError = ''
+  let executorLoading = false
   let maxTurns    = 20
   let maxSessions = 100
   let maxAgentCallDepth = 5
@@ -161,6 +177,19 @@
     if (providerId && providerDefaults[providerId]) setter(providerDefaults[providerId])
   }
 
+  async function loadExecutors() {
+    executorLoading = true
+    executorError = ''
+    try {
+      executorReadiness = await api.executors()
+    } catch (e) {
+      executorReadiness = null
+      executorError = e.message
+    } finally {
+      executorLoading = false
+    }
+  }
+
   async function load() {
     loading = true
     error   = ''
@@ -173,6 +202,19 @@
       logFile         = config.log?.file       || ''
       pythonBin       = config.runtime?.python_bin    || 'python3'
       toolTimeout     = config.runtime?.tool_timeout  || '30s'
+      executorBackend = config.executor?.backend || 'process'
+      executorWorkers = config.executor?.workers || 4
+      dockerImage     = config.executor?.docker_image || 'python:3.12-slim'
+      dockerNetwork   = config.executor?.docker_network || 'none'
+      dockerVolumes   = (config.executor?.docker_volumes || []).join('\n')
+      sshHost         = config.executor?.ssh_host || ''
+      sshUser         = config.executor?.ssh_user || ''
+      sshPythonBin    = config.executor?.ssh_python_bin || 'python3'
+      sshIdentity     = config.executor?.ssh_identity || ''
+      sshIdentityCredential = config.executor?.ssh_identity_credential || ''
+      cloudPreset     = config.executor?.cloud_preset || ''
+      cloudTarget     = config.executor?.cloud_target || ''
+      cloudCLI        = config.executor?.cloud_cli || ''
       maxTurns        = config.runtime?.default_max_turns       || 20
       maxSessions     = config.runtime?.max_concurrent_sessions || 100
       maxAgentCallDepth = config.runtime?.max_agent_call_depth || 5
@@ -194,6 +236,7 @@
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
       seedPluginEditor(config.plugins_config)
+      await loadExecutors()
     } catch (e) {
       error = e.message
     } finally {
@@ -214,6 +257,21 @@
           max_concurrent_sessions: Number(maxSessions),
           max_agent_call_depth:    Number(maxAgentCallDepth),
         },
+        executor: {
+          backend: executorBackend,
+          workers: Number(executorWorkers || 0),
+          docker_image: dockerImage,
+          docker_network: dockerNetwork,
+          docker_volumes: dockerVolumes.split('\n').map(s => s.trim()).filter(Boolean),
+          ssh_host: sshHost,
+          ssh_user: sshUser,
+          ssh_python_bin: sshPythonBin,
+          ssh_identity: sshIdentity,
+          ssh_identity_credential: sshIdentityCredential,
+          cloud_preset: cloudPreset,
+          cloud_target: cloudTarget,
+          cloud_cli: cloudCLI,
+        },
         llm: {
           default_provider: defaultProvider,
           // Empty provider/model = fall back to the default (server-side).
@@ -233,6 +291,7 @@
       const res = await api.config.patch(patch)
       config = res.config
       seedPluginEditor(config.plugins_config)
+      await loadExecutors()
       saved  = true
       setTimeout(() => { saved = false }, 3000)
     } catch (e) {
@@ -489,6 +548,109 @@
         </div>
 
         <div class="section">
+          <div class="section-heading">
+            <h2 class="section-title">Executors</h2>
+            <button class="btn-secondary tiny-btn" on:click={loadExecutors} disabled={executorLoading}>
+              {executorLoading ? 'Checking…' : 'Re-check'}
+            </button>
+          </div>
+          <p class="hint">
+            Choose where Python tools run. Local process is simplest, pool is faster for chat,
+            Docker isolates code, SSH/cloud move heavy work off this machine. Restart after changes.
+          </p>
+          {#if executorError}
+            <div class="mini-warn">{executorError}</div>
+          {/if}
+          {#if executorReadiness}
+            <div class="executor-grid">
+              {#each executorReadiness.backends || [] as backend (backend.key)}
+                <div class:active={backend.active} class={`executor-card ${backend.status}`}>
+                  <div class="executor-top">
+                    <strong>{backend.label}</strong>
+                    <span>{backend.status}</span>
+                  </div>
+                  <p>{backend.detail}</p>
+                  {#if backend.next}<small>{backend.next}</small>{/if}
+                  {#if backend.command}<code>{backend.command}</code>{/if}
+                </div>
+              {/each}
+            </div>
+          {/if}
+
+          <div class="field-row">
+            <div class="field">
+              <label for="executor-backend" title="Default backend for Python tools. Agents can override it per tool with execution.backend when needed.">Default backend</label>
+              <select id="executor-backend" bind:value={executorBackend} disabled={!writable}>
+                <option value="process">process — fresh local process</option>
+                <option value="pool">pool — warm local workers</option>
+                <option value="docker">docker — isolated container</option>
+                <option value="ssh">ssh — remote worker</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="executor-workers" title="Number of warm local Python workers used by pool mode. Higher values improve concurrency but consume memory.">Pool workers</label>
+              <input id="executor-workers" type="number" bind:value={executorWorkers} min="1" max="64" disabled={!writable} />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="docker-image" title="Container image used by docker execution. Keep it pinned for production repeatability.">Docker image</label>
+              <input id="docker-image" bind:value={dockerImage} placeholder="python:3.12-slim" disabled={!writable} />
+            </div>
+            <div class="field">
+              <label for="docker-network" title="Docker network mode. Use none for safer sandboxing, bridge only when tools need outbound network access.">Docker network</label>
+              <input id="docker-network" bind:value={dockerNetwork} placeholder="none" disabled={!writable} />
+            </div>
+          </div>
+          <div class="field">
+            <label for="docker-volumes" title="Explicit Docker volume allowlist, one mount per line as host:container[:ro]. Empty means no host paths are mounted.">Docker volume allowlist</label>
+            <textarea id="docker-volumes" bind:value={dockerVolumes} rows="2" placeholder="/safe/data:/data:ro" disabled={!writable}></textarea>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="ssh-host" title="Remote host for SSH execution. Use host or user@host.">SSH host</label>
+              <input id="ssh-host" bind:value={sshHost} placeholder="worker.example.com" disabled={!writable} />
+            </div>
+            <div class="field">
+              <label for="ssh-user" title="Optional SSH username when it is not included in SSH host.">SSH user</label>
+              <input id="ssh-user" bind:value={sshUser} placeholder="ubuntu" disabled={!writable} />
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="ssh-python-bin" title="Python executable on the remote host.">SSH Python binary</label>
+              <input id="ssh-python-bin" bind:value={sshPythonBin} placeholder="python3" disabled={!writable} />
+            </div>
+            <div class="field">
+              <label for="ssh-identity-credential" title="Name of a vault secret containing the SSH private key. Prefer this over raw key paths.">SSH identity credential</label>
+              <input id="ssh-identity-credential" bind:value={sshIdentityCredential} placeholder="remote-worker-key" disabled={!writable} />
+            </div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <label for="cloud-preset" title="Optional cloud execution preset. The provider CLI must already be installed and authenticated on this host.">Cloud preset</label>
+              <select id="cloud-preset" bind:value={cloudPreset} disabled={!writable}>
+                <option value="">— none —</option>
+                <option value="modal">modal</option>
+                <option value="runpod">runpod</option>
+                <option value="daytona">daytona</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="cloud-target" title="Provider-specific cloud target such as a workspace, app, image, or pod id.">Cloud target</label>
+              <input id="cloud-target" bind:value={cloudTarget} placeholder="workspace/app/pod id" disabled={!writable} />
+            </div>
+          </div>
+          <div class="field">
+            <label for="cloud-cli" title="Optional CLI binary override for the selected cloud preset. Leave blank to use the default CLI name.">Cloud CLI override</label>
+            <input id="cloud-cli" bind:value={cloudCLI} placeholder="modal, runpodctl, or daytona" disabled={!writable} />
+          </div>
+        </div>
+
+        <div class="section">
           <h2 class="section-title">Logging</h2>
           <div class="field-row">
             <div class="field">
@@ -651,6 +813,7 @@
   .form-col { display: flex; flex-direction: column; gap: 1rem; }
 
   .section { background: #141626; border: 1px solid #1a1e36; border-radius: 10px; padding: 1.1rem 1.25rem; display: flex; flex-direction: column; gap: .85rem; }
+  .section-heading { display: flex; align-items: center; justify-content: space-between; gap: .75rem; }
   .section-title { font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: #555a7a; margin-bottom: .1rem; }
 
   .field { display: flex; flex-direction: column; gap: .35rem; }
@@ -658,6 +821,20 @@
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
   .inline-status { margin-left: .35rem; color: #8b85ff; font-size: .72rem; font-weight: 500; }
   .inline-error { margin-left: .35rem; color: #f0a060; font-size: .72rem; font-weight: 500; cursor: help; }
+  .tiny-btn { font-size: .72rem; padding: .25rem .55rem; }
+  .mini-warn { padding: .5rem .65rem; border-radius: 8px; background: rgba(240,160,96,.1); border: 1px solid rgba(240,160,96,.25); color: #f0a060; font-size: .75rem; }
+  .executor-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .55rem; }
+  .executor-card { padding: .65rem; border: 1px solid #202542; border-radius: 8px; background: #10121f; display: flex; flex-direction: column; gap: .4rem; min-height: 132px; }
+  .executor-card.active { border-color: #7567ff; box-shadow: 0 0 0 1px rgba(117,103,255,.25); }
+  .executor-card.ok { border-color: rgba(76,175,130,.32); }
+  .executor-card.warn { border-color: rgba(240,160,96,.35); }
+  .executor-card.fail { border-color: rgba(240,96,96,.4); }
+  .executor-top { display: flex; align-items: center; justify-content: space-between; gap: .5rem; }
+  .executor-top strong { font-size: .78rem; color: #c5c8e8; }
+  .executor-top span { font-size: .65rem; text-transform: uppercase; letter-spacing: .05em; color: #8b85ff; }
+  .executor-card p { margin: 0; color: #9aa1c6; font-size: .74rem; line-height: 1.45; }
+  .executor-card small { color: #6b7294; font-size: .7rem; line-height: 1.35; }
+  .executor-card code { margin-top: auto; background: #0b0d19; border: 1px solid #1a1e36; padding: .35rem; border-radius: 6px; color: #8b85ff; font-size: .68rem; overflow-wrap: anywhere; }
 
   /* JSON column */
   .json-col {
