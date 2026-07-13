@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -121,6 +123,17 @@ func (p *skillsShProvider) Search(ctx context.Context, query string) ([]sdkpkg.P
 		results, err := p.searchOnce(ctx, q)
 		if err != nil {
 			lastErr = err
+			if fallback := p.searchPublicCatalog(ctx, q); len(fallback) > 0 {
+				for _, pkg := range fallback {
+					key := strings.ToLower(pkg.Slug)
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
+					out = append(out, pkg)
+				}
+				return out, nil
+			}
 			if i == 0 {
 				return nil, err
 			}
@@ -137,11 +150,90 @@ func (p *skillsShProvider) Search(ctx context.Context, query string) ([]sdkpkg.P
 		if len(out) > 0 {
 			return out, nil
 		}
+		if fallback := p.searchPublicCatalog(ctx, q); len(fallback) > 0 {
+			for _, pkg := range fallback {
+				key := strings.ToLower(pkg.Slug)
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				out = append(out, pkg)
+			}
+			return out, nil
+		}
 	}
 	if lastErr != nil && len(out) == 0 {
 		return nil, lastErr
 	}
 	return out, nil
+}
+
+func (p *skillsShProvider) searchPublicCatalog(ctx context.Context, query string) []sdkpkg.Package {
+	if !strings.Contains(p.baseURL, "skills.sh") {
+		return nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/", nil)
+	if err != nil {
+		return nil
+	}
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+	if err != nil {
+		return nil
+	}
+	text := html.UnescapeString(string(raw))
+	text = strings.ReplaceAll(text, `\"`, `"`)
+	text = strings.ReplaceAll(text, `\u0026`, "&")
+	return skillsShCatalogMatches(text, query, p.id)
+}
+
+var skillsShCatalogEntryRE = regexp.MustCompile(`"source":"([^"]+)","skillId":"([^"]+)","name":"([^"]+)","installs":([0-9]+)`)
+
+func skillsShCatalogMatches(catalog, query, providerID string) []sdkpkg.Package {
+	q := normalizeSkillsShQuery(query)
+	if q == "" {
+		return nil
+	}
+	matches := skillsShCatalogEntryRE.FindAllStringSubmatch(catalog, -1)
+	out := make([]sdkpkg.Package, 0, 10)
+	seen := map[string]bool{}
+	for _, m := range matches {
+		source, skillID, name, installs := m[1], m[2], m[3], m[4]
+		slug := source + "/" + skillID
+		haystack := normalizeSkillsShQuery(strings.Join([]string{source, skillID, name, slug}, " "))
+		if !strings.Contains(haystack, q) {
+			continue
+		}
+		key := strings.ToLower(slug)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, sdkpkg.Package{
+			Slug:        slug,
+			Version:     "latest",
+			Source:      slug,
+			Description: fmt.Sprintf("%s — %s installs (%s, public catalog fallback)", name, installs, source),
+			Provider:    providerID,
+		})
+		if len(out) >= 25 {
+			break
+		}
+	}
+	return out
+}
+
+func normalizeSkillsShQuery(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.NewReplacer("-", " ", "_", " ", "/", " ", ".", " ").Replace(s)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func (p *skillsShProvider) searchOnce(ctx context.Context, query string) ([]sdkpkg.Package, error) {
