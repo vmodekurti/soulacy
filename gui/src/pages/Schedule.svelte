@@ -52,6 +52,7 @@
   let historyRuns    = []     // [{id, sessionId, startTime, status, output}]
   let historyLoading = false
   let historyError   = ''
+  let historySourceSummary = ''
   let expandedRuns   = {}     // run id → true (output expanded)
 
   function partsText(payload) {
@@ -171,6 +172,7 @@
     historyAgent   = a
     historyRuns    = []
     historyError   = ''
+    historySourceSummary = ''
     expandedRuns   = {}
     historyLoading = true
     try {
@@ -189,12 +191,10 @@
         deliveryTo: r.deliveryTo || '',
         deliveryError: r.deliveryError || '',
       }))
-      let actionRuns = []
-      if (retainedRuns.length === 0) {
-        const actions = await api.agents.actions(a.id, 5000, 'message.in,message.out,error,tool.result,reasoning.step,reasoning.result,schedule.output', { durable: true }).catch(() => ({ events: [] }))
-        actionRuns = groupRuns(actions.events || [])
-      }
+      const actions = await api.agents.actions(a.id, 10000, 'message.in,message.out,error,tool.result,reasoning.step,reasoning.result,schedule.output', { durable: true }).catch(() => ({ events: [] }))
+      const actionRuns = groupRuns(actions.events || [])
       historyRuns = mergeHistoryRuns(retainedRuns, actionRuns)
+      historySourceSummary = `${historyRuns.length} shown · ${retainedRuns.length} retained · ${actionRuns.length} reconstructed from action log`
     } catch (e) {
       historyError = e.message
     } finally {
@@ -825,6 +825,9 @@ schedule:
         {:else if historyRuns.length === 0}
           <div class="panel-empty">No runs recorded yet.</div>
         {:else}
+          {#if historySourceSummary}
+            <div class="history-note">{historySourceSummary}</div>
+          {/if}
           {#each historyRuns as run (run.id)}
             <div class="run" class:run-fail={run.status === 'failed'} class:run-degraded={run.status === 'degraded'}>
               <button class="run-hdr" on:click={() => toggleRun(run.id)}>
@@ -1007,6 +1010,11 @@ schedule:
   .panel-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; }
   .panel-empty { padding: 3rem 1.5rem; color: #555a7a; font-size: .85rem; text-align: center; }
   .panel-empty.err { color: #f06060; }
+  .history-note {
+    margin: .8rem 1.25rem .35rem; padding: .45rem .6rem; border-radius: 7px;
+    background: rgba(108,99,255,.08); border: 1px solid rgba(108,99,255,.22);
+    color: #aeb3dc; font-size: .72rem; line-height: 1.35;
+  }
 
   .run { border-bottom: 1px solid #1a1e36; }
   .run:last-child { border-bottom: none; }
