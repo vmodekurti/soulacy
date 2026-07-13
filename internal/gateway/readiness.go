@@ -75,6 +75,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	mobile := s.mobileCompanionReadiness()
 	chat := s.chatExperienceReadiness(c)
 	costs := s.costReadiness(c)
+	slo := s.sloReadiness(c)
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -126,7 +127,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -175,6 +176,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"mobile":       mobile,
 		"chat":         chat,
 		"costs":        costs,
+		"slo":          slo,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -198,7 +200,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness, slo sloReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -206,7 +208,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, sche
 		parityChat(chat),
 		parityLearning(learningAgents, enabledAgents),
 		parityAutomation(scheduledAgents, usableOutbound),
-		parityOps(providersReady, enabledAgents, updateManifest, costs),
+		parityOps(providersReady, enabledAgents, updateManifest, costs, slo),
 		parityBrowserAutomation(browser),
 		parityRemoteExecution(executors),
 		parityMobileCompanion(mobile),

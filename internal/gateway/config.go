@@ -107,6 +107,13 @@ func (s *Server) safeConfigView() fiber.Map {
 			"alert_threshold":    cfg.Costs.AlertThreshold,
 			"pricing":            cfg.Costs.Pricing,
 		},
+		"ops": fiber.Map{
+			"slo_window":           cfg.Ops.SLOWindow,
+			"max_failure_rate":     cfg.Ops.MaxFailureRate,
+			"max_incomplete_rate":  cfg.Ops.MaxIncompleteRate,
+			"max_p95_run_duration": cfg.Ops.MaxP95RunDuration,
+			"min_runs_for_signal":  cfg.Ops.MinRunsForSignal,
+		},
 		"agent_dirs":     cfg.AgentDirs,
 		"skill_dirs":     cfg.SkillDirs,
 		"channels":       safeChannelsView(cfg.Channels),
@@ -263,6 +270,14 @@ type PatchableConfig struct {
 			OutputPerMTok float64 `json:"output_per_mtok" yaml:"output_per_mtok"`
 		} `json:"pricing" yaml:"pricing"`
 	} `json:"costs" yaml:"costs"`
+
+	Ops *struct {
+		SLOWindow         string  `json:"slo_window" yaml:"slo_window"`
+		MaxFailureRate    float64 `json:"max_failure_rate" yaml:"max_failure_rate"`
+		MaxIncompleteRate float64 `json:"max_incomplete_rate" yaml:"max_incomplete_rate"`
+		MaxP95RunDuration string  `json:"max_p95_run_duration" yaml:"max_p95_run_duration"`
+		MinRunsForSignal  int     `json:"min_runs_for_signal" yaml:"min_runs_for_signal"`
+	} `json:"ops" yaml:"ops"`
 
 	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDirs []string `json:"skill_dirs" yaml:"skill_dirs"`
@@ -484,6 +499,14 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 			}
 		}
 		cs["pricing"] = pricing
+	}
+	if patch.Ops != nil {
+		ops := getOrCreateMap(dst, "ops")
+		ops["slo_window"] = patch.Ops.SLOWindow
+		ops["max_failure_rate"] = patch.Ops.MaxFailureRate
+		ops["max_incomplete_rate"] = patch.Ops.MaxIncompleteRate
+		ops["max_p95_run_duration"] = patch.Ops.MaxP95RunDuration
+		ops["min_runs_for_signal"] = patch.Ops.MinRunsForSignal
 	}
 	if patch.Log != nil {
 		lg := getOrCreateMap(dst, "log")

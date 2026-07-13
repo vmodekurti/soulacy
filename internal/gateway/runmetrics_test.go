@@ -184,6 +184,12 @@ func TestOpsSummary_CombinedActionLogAndCosts(t *testing.T) {
 	if body["tool_calls"] != float64(1) {
 		t.Fatalf("tool_calls = %v, want 1", body["tool_calls"])
 	}
+	if body["incomplete_rate"] != float64(0) {
+		t.Fatalf("incomplete_rate = %v, want 0", body["incomplete_rate"])
+	}
+	if body["avg_duration_ms"] != float64(10000) || body["p95_duration_ms"] != float64(10000) || body["max_duration_ms"] != float64(10000) {
+		t.Fatalf("duration rollup = avg %v p95 %v max %v", body["avg_duration_ms"], body["p95_duration_ms"], body["max_duration_ms"])
+	}
 	if body["total_tokens"] != float64(400) {
 		t.Fatalf("total_tokens = %v, want 400", body["total_tokens"])
 	}
@@ -193,6 +199,63 @@ func TestOpsSummary_CombinedActionLogAndCosts(t *testing.T) {
 	failures, _ := body["recent_failures"].([]any)
 	if len(failures) != 1 {
 		t.Fatalf("recent_failures = %#v", body["recent_failures"])
+	}
+}
+
+func TestSLOStatusReportsRunHealth(t *testing.T) {
+	s := newTestGatewayWithMetrics(t)
+	s.cfg.Ops.SLOWindow = "2026-01-01"
+	s.cfg.Ops.MaxFailureRate = 0.25
+	s.cfg.Ops.MaxIncompleteRate = 0.1
+	s.cfg.Ops.MaxP95RunDuration = "1s"
+	s.cfg.Ops.MinRunsForSignal = 1
+
+	status, body := gatewayJSON(t, s, http.MethodGet,
+		"/api/v1/runs/slo-status?window=2026-01-01", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	if body["status"] != "fail" {
+		t.Fatalf("slo status = %v, want fail: %v", body["status"], body)
+	}
+	if body["window"] != "2026-01-01" {
+		t.Fatalf("window = %v", body["window"])
+	}
+	summary, _ := body["summary"].(map[string]any)
+	if summary["total_runs"] != float64(1) || summary["failure_rate"] != float64(1) {
+		t.Fatalf("summary = %#v", summary)
+	}
+	checks, _ := body["checks"].([]any)
+	if len(checks) < 5 {
+		t.Fatalf("checks = %#v", body["checks"])
+	}
+	actions, _ := body["next_actions"].([]any)
+	if len(actions) == 0 {
+		t.Fatalf("next_actions missing: %v", body)
+	}
+}
+
+func TestReadinessIncludesSLOPosture(t *testing.T) {
+	s := newTestGatewayWithMetrics(t)
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/readiness", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	if body["slo"] == nil {
+		t.Fatalf("readiness missing slo: %v", body)
+	}
+	parity, _ := body["parity"].(map[string]any)
+	areas, _ := parity["areas"].([]any)
+	foundOps := false
+	for _, item := range areas {
+		area, _ := item.(map[string]any)
+		if area["key"] == "ops" {
+			foundOps = true
+			break
+		}
+	}
+	if !foundOps {
+		t.Fatalf("parity areas missing ops: %v", parity["areas"])
 	}
 }
 

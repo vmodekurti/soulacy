@@ -65,6 +65,12 @@ costs:
     omniroute/*:
       input_per_mtok: 0.25
       output_per_mtok: 0.75
+ops:
+  slo_window: 12h
+  max_failure_rate: 0.2
+  max_incomplete_rate: 0.03
+  max_p95_run_duration: 2m
+  min_runs_for_signal: 5
 `), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -81,6 +87,9 @@ costs:
 	}
 	if cfg.Costs.DailyBudgetUSD != 12.5 || cfg.Costs.MonthlyBudgetUSD != 250 || cfg.Costs.AlertThreshold != 0.75 {
 		t.Fatalf("cost budgets = daily %.2f monthly %.2f threshold %.2f", cfg.Costs.DailyBudgetUSD, cfg.Costs.MonthlyBudgetUSD, cfg.Costs.AlertThreshold)
+	}
+	if cfg.Ops.SLOWindow != "12h" || cfg.Ops.MaxFailureRate != 0.2 || cfg.Ops.MaxIncompleteRate != 0.03 || cfg.Ops.MaxP95RunDuration != "2m" || cfg.Ops.MinRunsForSignal != 5 {
+		t.Fatalf("ops slo config = %+v", cfg.Ops)
 	}
 }
 

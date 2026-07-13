@@ -166,6 +166,15 @@
     return `$${n.toFixed(2)}`
   }
 
+  function fmtMs(ms) {
+    ms = Number(ms || 0)
+    if (!ms) return 'n/a'
+    if (ms < 1000) return `${ms}ms`
+    const sec = ms / 1000
+    if (sec < 60) return `${sec.toFixed(sec < 10 ? 1 : 0)}s`
+    return `${(sec / 60).toFixed(1)}m`
+  }
+
   function shortError(s) {
     s = String(s || '').trim()
     return s.length > 110 ? s.slice(0, 110) + '…' : s
@@ -235,6 +244,21 @@
         <button class="btn-secondary" on:click={() => openHref('#activity')}>Open Runs</button>
       </div>
       {#if ops}
+        {#if readiness?.slo}
+          <div class="slo-strip {readiness.slo.status}">
+            <div>
+              <div class="ops-label">Production SLO</div>
+              <strong>{readiness.slo.score || 0}% · {statusLabel(readiness.slo.status)}</strong>
+              <span>
+                {readiness.slo.summary?.total_runs || 0} runs in {readiness.slo.window || '24h'} ·
+                fail {pct(readiness.slo.summary?.failure_rate || 0)} ·
+                incomplete {pct(readiness.slo.summary?.incomplete_rate || 0)} ·
+                P95 {fmtMs(readiness.slo.summary?.p95_duration_ms)}
+              </span>
+            </div>
+            <button class="btn-secondary" on:click={() => openHref('#config')}>Tune SLOs</button>
+          </div>
+        {/if}
         <div class="ops-grid">
           <div class="ops-panel">
             <div class="ops-label">Top Failing Agents</div>
@@ -500,6 +524,18 @@
   .ops-grid {
     display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: .65rem;
   }
+  .slo-strip {
+    display: flex; justify-content: space-between; align-items: center; gap: .75rem;
+    border: 1px solid #252a4a; background: #101322; border-radius: 8px;
+    padding: .7rem .8rem; margin-bottom: .75rem;
+  }
+  .slo-strip.ok { border-color: rgba(76,175,130,.35); }
+  .slo-strip.warn { border-color: rgba(240,160,96,.42); }
+  .slo-strip.fail { border-color: rgba(240,96,96,.45); }
+  .slo-strip strong {
+    display: block; color: #e8ebff; font-size: .86rem; margin-bottom: .2rem;
+  }
+  .slo-strip span { color: #8a91b8; font-size: .74rem; }
   .ops-panel {
     background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
   }
@@ -676,6 +712,7 @@
     .readiness-actions { justify-content: flex-start; }
     .parity-head { flex-direction: column; }
     .release-strip { flex-direction: column; }
+    .slo-strip { flex-direction: column; align-items: flex-start; }
     .release-cmds { align-items: flex-start; min-width: 0; width: 100%; }
     .action-row { grid-template-columns: 1fr; gap: .25rem; }
   }

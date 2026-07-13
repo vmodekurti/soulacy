@@ -20,6 +20,10 @@ type OpsSummary struct {
 	TotalEvents    int                   `json:"total_events"`
 	ToolCalls      int                   `json:"tool_calls"`
 	FailureRate    float64               `json:"failure_rate"`
+	IncompleteRate float64               `json:"incomplete_rate"`
+	AvgDurationMS  int64                 `json:"avg_duration_ms"`
+	P95DurationMS  int64                 `json:"p95_duration_ms"`
+	MaxDurationMS  int64                 `json:"max_duration_ms"`
 	TopFailing     []AgentFailureSummary `json:"top_failing_agents"`
 	TopErrors      []ErrorSignature      `json:"top_errors"`
 	RecentFailures []RunFailure          `json:"recent_failures"`
@@ -77,10 +81,19 @@ func (l *Logger) OpsSummary(since time.Time, window string, limit int) (OpsSumma
 	}
 
 	byAgent := map[string]*AgentFailureSummary{}
+	durations := make([]int64, 0, len(runs))
 	for _, r := range runs {
 		summary.TotalRuns++
 		summary.TotalEvents += r.Events
 		summary.ToolCalls += r.ToolCalls
+		if !r.FirstEventAt.IsZero() && !r.LastEventAt.IsZero() && !r.LastEventAt.Before(r.FirstEventAt) {
+			ms := r.LastEventAt.Sub(r.FirstEventAt).Milliseconds()
+			durations = append(durations, ms)
+			summary.AvgDurationMS += ms
+			if ms > summary.MaxDurationMS {
+				summary.MaxDurationMS = ms
+			}
+		}
 		row := byAgent[r.AgentID]
 		if row == nil {
 			row = &AgentFailureSummary{AgentID: r.AgentID}
@@ -99,6 +112,19 @@ func (l *Logger) OpsSummary(since time.Time, window string, limit int) (OpsSumma
 	}
 	if summary.TotalRuns > 0 {
 		summary.FailureRate = float64(summary.FailedRuns) / float64(summary.TotalRuns)
+		summary.IncompleteRate = float64(summary.IncompleteRuns) / float64(summary.TotalRuns)
+	}
+	if len(durations) > 0 {
+		sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+		summary.AvgDurationMS = summary.AvgDurationMS / int64(len(durations))
+		idx := int(float64(len(durations))*0.95+0.999999) - 1
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(durations) {
+			idx = len(durations) - 1
+		}
+		summary.P95DurationMS = durations[idx]
 	}
 	for _, row := range byAgent {
 		if row.Runs > 0 {

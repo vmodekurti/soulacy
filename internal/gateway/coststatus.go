@@ -145,9 +145,9 @@ func (s *Server) sumCostSince(c *fiber.Ctx, since time.Time) float64 {
 	return total
 }
 
-func parityOps(providersReady, enabledAgents int, updateManifest string, cost costReadiness) parityArea {
-	if providersReady > 0 && enabledAgents > 0 && updateManifest != "" && cost.Status == "ok" {
-		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 88, Detail: "Readiness, doctor, support bundles, action logs, parity harness, updates, and cost guardrails are wired.", Next: "Add service SLO alerts and production deployment profiles.", Benchmark: "Commercial launch", Href: "#dashboard"}
+func parityOps(providersReady, enabledAgents int, updateManifest string, cost costReadiness, slo sloReadiness) parityArea {
+	if providersReady > 0 && enabledAgents > 0 && updateManifest != "" && cost.Status == "ok" && slo.Status == "ok" {
+		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 92, Detail: "Readiness, doctor, support bundles, action logs, parity harness, updates, cost guardrails, and SLO checks are wired.", Next: "Add deployment profiles and alert delivery for SLO breaches.", Benchmark: "Commercial launch", Href: "#dashboard"}
 	}
 	status := "warn"
 	score := 62
@@ -155,14 +155,21 @@ func parityOps(providersReady, enabledAgents int, updateManifest string, cost co
 		status = "fail"
 		score = 38
 	}
-	if cost.Status == "ok" && providersReady > 0 && enabledAgents > 0 {
+	if cost.Status == "fail" || slo.Status == "fail" {
+		status = "fail"
+		score = 45
+	}
+	if cost.Status == "ok" && slo.Status == "ok" && providersReady > 0 && enabledAgents > 0 {
 		score = 72
 	}
 	next := "Run launch checks, configure update manifest, and keep support-bundle download visible."
 	if len(cost.NextActions) > 0 {
 		next = cost.NextActions[0]
 	}
-	return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: status, Score: score, Detail: fmt.Sprintf("Diagnostics, run metrics, and support bundles exist; cost guardrails are %s.", cost.Status), Next: next, Benchmark: "Commercial launch", Href: "#dashboard"}
+	if len(slo.NextActions) > 0 && (slo.Status == "fail" || cost.Status == "ok") {
+		next = slo.NextActions[0]
+	}
+	return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: status, Score: score, Detail: fmt.Sprintf("Diagnostics, run metrics, and support bundles exist; cost guardrails are %s and SLO status is %s.", cost.Status, slo.Status), Next: next, Benchmark: "Commercial launch", Href: "#dashboard"}
 }
 
 func costBudgetDetail(daily, monthly, threshold float64) string {

@@ -53,6 +53,11 @@
   let monthlyBudgetUSD = ''
   let costAlertThreshold = 0.8
   let costRows = []
+  let sloWindow = '24h'
+  let sloMaxFailureRate = 0.1
+  let sloMaxIncompleteRate = 0.05
+  let sloMaxP95RunDuration = '5m'
+  let sloMinRunsForSignal = 3
   let agentDirs = ''
   let skillDirs = ''
 
@@ -243,6 +248,11 @@
       dailyBudgetUSD = config.costs?.daily_budget_usd || ''
       monthlyBudgetUSD = config.costs?.monthly_budget_usd || ''
       costAlertThreshold = config.costs?.alert_threshold || 0.8
+      sloWindow = config.ops?.slo_window || '24h'
+      sloMaxFailureRate = config.ops?.max_failure_rate || 0.1
+      sloMaxIncompleteRate = config.ops?.max_incomplete_rate || 0.05
+      sloMaxP95RunDuration = config.ops?.max_p95_run_duration || '5m'
+      sloMinRunsForSignal = config.ops?.min_runs_for_signal || 3
       seedCostEditor(config.costs?.pricing)
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
@@ -293,6 +303,13 @@
         // saving without retyping the key never clobbers the real one on disk.
         search: { provider: searchProvider, api_key: searchApiKey },
         costs: costsPatch(),
+        ops: {
+          slo_window: sloWindow,
+          max_failure_rate: Number(sloMaxFailureRate || 0),
+          max_incomplete_rate: Number(sloMaxIncompleteRate || 0),
+          max_p95_run_duration: sloMaxP95RunDuration,
+          min_runs_for_signal: Number(sloMinRunsForSignal || 0),
+        },
         log: { level: logLevel, format: logFormat, file: logFile },
         agent_dirs: agentDirs.split('\n').map(s => s.trim()).filter(Boolean),
         skill_dirs: skillDirs.split('\n').map(s => s.trim()).filter(Boolean),
@@ -542,6 +559,38 @@
           {#if writable}
             <button class="btn-secondary kv-add" on:click={addCostRow}>+ Add pricing row</button>
           {/if}
+        </div>
+
+        <div class="section">
+          <h2 class="section-title">Production SLOs</h2>
+          <p class="hint">
+            Launch guardrails for recent agent runs. These thresholds power Dashboard readiness and
+            <code>/api/v1/runs/slo-status</code> so slow or flaky agents are visible before users depend on them.
+          </p>
+          <div class="slo-row">
+            <label class="field">
+              <span title="Durable run-history window used for SLO checks. Examples: 24h, 7d, or 2026-07-01.">Window</span>
+              <input bind:value={sloWindow} placeholder="24h" disabled={!writable} />
+            </label>
+            <label class="field">
+              <span title="Maximum allowed failed-run percentage in the SLO window. 0.10 means 10%.">Max failure rate</span>
+              <input type="number" min="0" max="1" step="0.01" bind:value={sloMaxFailureRate} disabled={!writable} />
+            </label>
+            <label class="field">
+              <span title="Maximum allowed incomplete-run percentage in the SLO window. Incomplete runs usually mean timeouts, crashes, or missing final replies.">Max incomplete rate</span>
+              <input type="number" min="0" max="1" step="0.01" bind:value={sloMaxIncompleteRate} disabled={!writable} />
+            </label>
+          </div>
+          <div class="slo-row compact">
+            <label class="field">
+              <span title="Maximum acceptable P95 run duration. Use Go duration syntax such as 90s, 5m, or 1h.">P95 run duration</span>
+              <input bind:value={sloMaxP95RunDuration} placeholder="5m" disabled={!writable} />
+            </label>
+            <label class="field">
+              <span title="Minimum number of recent runs before the SLO signal is treated as reliable instead of sample-starved.">Minimum runs</span>
+              <input type="number" min="1" max="1000" step="1" bind:value={sloMinRunsForSignal} disabled={!writable} />
+            </label>
+          </div>
         </div>
 
         <div class="section">
@@ -913,9 +962,20 @@
     align-items: end;
     margin: .65rem 0 .85rem;
   }
+  .slo-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(130px, 1fr));
+    gap: .6rem;
+    align-items: end;
+    margin: .65rem 0 .85rem;
+  }
+  .slo-row.compact {
+    grid-template-columns: repeat(2, minmax(130px, 220px));
+  }
   @media (max-width: 640px) {
     .cost-row { grid-template-columns: 1fr; }
     .budget-row { grid-template-columns: 1fr; }
+    .slo-row, .slo-row.compact { grid-template-columns: 1fr; }
     .cost-rate input { text-align: left; }
   }
 </style>

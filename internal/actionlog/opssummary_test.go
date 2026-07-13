@@ -44,6 +44,12 @@ func TestOpsSummaryAggregatesRunsAndFailures(t *testing.T) {
 	if got.FailureRate != 0.5 {
 		t.Fatalf("failure_rate = %v, want 0.5", got.FailureRate)
 	}
+	if got.IncompleteRate != 0.25 {
+		t.Fatalf("incomplete_rate = %v, want 0.25", got.IncompleteRate)
+	}
+	if got.AvgDurationMS != 1000 || got.P95DurationMS != 2000 || got.MaxDurationMS != 2000 {
+		t.Fatalf("duration rollup = avg %d p95 %d max %d", got.AvgDurationMS, got.P95DurationMS, got.MaxDurationMS)
+	}
 	if len(got.TopFailing) != 2 || got.TopFailing[0].Failures != 1 || got.TopFailing[1].Failures != 1 {
 		t.Fatalf("top failing = %#v", got.TopFailing)
 	}
