@@ -32,7 +32,7 @@ under "Tier 2" so the builder knows each tool's real shape.
 - R11. Prefer typed ports or JSON-safe {{ toJson .var }} handoffs. Never put a free-form or structured upstream value inside quotes like "content": "{{ .agent_reply }}"; quotes/newlines in the reply will break JSON.
 - R12. For "ingest documents/URLs into KB" tasks, build a safe Knowledge Ingestion flow: extract source(s) -> fetch/read content -> classify/tag/summarize -> kb_write -> optional verification search. Store the cleaned artifact record and metadata, not raw HTML dumps, activity traces, or arbitrary host files.
 - R13. For temporary workflow state, queues, buffers, or cross-step handoffs, use queue_create/queue_put/queue_take/queue_list instead of write_file. Queue tools are in-memory and do not require system authorization. Use an explicit queue name when the workflow has multiple buffers; otherwise the runtime uses the "default" queue. Use kb_write only for durable searchable knowledge.
-- R14. channel.send uses the exact JSON arguments {"channel":"telegram|slack|discord|whatsapp","to":"destination id or chat/thread id","text":"message text"}. The field is text, not message. If the channel has a default outbound destination or the run arrived from an inbound channel, "to" may be omitted; otherwise include it.
+- R14. channel.send uses the exact JSON arguments {"channel":"telegram|slack|discord|whatsapp","to":"destination id or chat/thread id","text":"message text"}. The field is text, not message. If the channel has a default outbound destination or the run arrived from an inbound channel, "to" may be omitted; otherwise include it. If delivery routing is uncertain or a send fails, call channel.status once and follow its diagnosis instead of guessing alternate argument names.
 
 ### Scheduling & Delivery
 - R15. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
@@ -49,6 +49,7 @@ builder automatically from the live catalog; add OUTPUT shapes here.)
 - fetch_url — input {url, max_bytes}; output is fetched page text. Always pass a JSON object such as {"url":"{{ .url }}"}.
 - kb_write — input {kb, content, title, source, mime_type}; requires kb and content. Use it for knowledge ingestion. content may be a string, object, or array; pass structured artifacts unquoted with {"kb":"KB Name","content":{{ toJson .tagged_artifact }},"title":"...","source":"..."}. Do not use write_file for KB ingestion.
 - kb_search — input {kb, query, top_k}; output is search results text.
+- channel.status — input {channel, to, include_channels}; output {ok, channel, to, route_source, registered, connected, requires_destination, diagnosis:{category,reason,fix}}. Use before channel.send when the route/default destination is uncertain, or after a send failure.
 - queue_create — input {queue}; output {ok,queue,created}. Creates a named in-memory queue; queue defaults to "default".
 - queue_names — input {}; output {ok,count,queues:[{queue,count}]}. Lists current in-memory queues.
 - queue_put — input {queue, item, ttl_seconds}; output {ok,id,queue,expires_at}. Use for temporary handoffs only; item must be valid JSON. queue defaults to "default".

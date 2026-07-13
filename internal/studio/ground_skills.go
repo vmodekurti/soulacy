@@ -4,12 +4,12 @@
 // with a description) and asks it to match the intent to real capabilities. This
 // pass makes that selection TRUSTWORTHY instead of taking the model at its word:
 //
-//	1. VERIFY + CORRECT — every skill/tool the model chose is checked against the
-//	   index. An exact hit is canonicalised; an obvious near-miss is fuzzy-mapped
-//	   to the real installed name; anything with no match is dropped with a note.
-//	2. INJECT — installed skills the intent clearly references (by name, or by a
-//	   strong overlap with the skill's description) but the model failed to list
-//	   are added, so the agent actually gets the capability.
+//  1. VERIFY + CORRECT — every skill/tool the model chose is checked against the
+//     index. An exact hit is canonicalised; an obvious near-miss is fuzzy-mapped
+//     to the real installed name; anything with no match is dropped with a note.
+//  2. INJECT — installed skills the intent clearly references (by name, or by a
+//     strong overlap with the skill's description) but the model failed to list
+//     are added, so the agent actually gets the capability.
 //
 // It mutates the draft in place and returns human-readable notes describing every
 // change. Pure + deterministic (no LLM, no I/O) so it is fully unit-testable.
@@ -31,6 +31,7 @@ func GroundAgentCapabilities(draft *Draft, cat Catalog) []string {
 	var notes []string
 	notes = append(notes, groundSkills(draft, cat)...)
 	notes = append(notes, groundTools(draft, cat)...)
+	notes = append(notes, ensureCompanionTools(draft)...)
 	return notes
 }
 
@@ -302,6 +303,68 @@ func groundTools(draft *Draft, cat Catalog) []string {
 		}
 	}
 	draft.Tools = kept
+	return notes
+}
+
+// ensureCompanionTools adds small, deterministic support tools next to tools the
+// agent already selected. This is intentionally NOT broad auto-injection: these
+// companions only let an agent inspect or prepare the same surface it already
+// asked to use, which prevents common brittle loops without widening scope.
+func ensureCompanionTools(draft *Draft) []string {
+	if draft == nil || len(draft.Tools) == 0 {
+		return nil
+	}
+	have := map[string]bool{}
+	for _, t := range draft.Tools {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			have[t] = true
+		}
+	}
+	added := map[string]bool{}
+	add := func(tool string) {
+		if tool == "" || have[tool] || added[tool] || !isBuiltinContractTool(tool) {
+			return
+		}
+		draft.Tools = append(draft.Tools, tool)
+		have[tool] = true
+		added[tool] = true
+	}
+
+	if have["channel.send"] {
+		add("channel.status")
+	}
+
+	usesQueue := have["queue_put"] || have["queue_take"] || have["queue_list"] || have["queue_clear"]
+	if usesQueue {
+		add("queue_create")
+		add("queue_names")
+	}
+
+	if have["kb_write"] {
+		add("kb_search")
+	}
+
+	if len(added) == 0 {
+		return nil
+	}
+	var notes []string
+	if added["channel.status"] {
+		notes = append(notes, "Added companion tool \"channel.status\" so the agent can diagnose delivery routes before retrying channel sends.")
+	}
+	if added["queue_create"] || added["queue_names"] {
+		var tools []string
+		if added["queue_create"] {
+			tools = append(tools, "queue_create")
+		}
+		if added["queue_names"] {
+			tools = append(tools, "queue_names")
+		}
+		notes = append(notes, "Added companion queue tool(s) \""+strings.Join(tools, "\", \"")+"\" so the agent can create and inspect in-memory queues.")
+	}
+	if added["kb_search"] {
+		notes = append(notes, "Added companion tool \"kb_search\" so the agent can verify KB writes.")
+	}
 	return notes
 }
 

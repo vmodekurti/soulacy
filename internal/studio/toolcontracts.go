@@ -67,6 +67,13 @@ func builtinToolParams() map[string][]ToolParam {
 			{Name: "chat_id", Type: "string"},
 			{Name: "channel_id", Type: "string"},
 		},
+		"channel.status": {
+			{Name: "channel", Type: "string"},
+			{Name: "to", Type: "string"},
+			{Name: "include_channels", Type: "boolean"},
+			{Name: "adapter", Type: "string"},
+			{Name: "destination", Type: "string"},
+		},
 	}
 }
 
