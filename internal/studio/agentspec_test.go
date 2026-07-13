@@ -63,11 +63,12 @@ func TestCompileAgent_PreservesAutoStrategy(t *testing.T) {
 
 func TestBuildAgentPromptIncludesChannelSendContract(t *testing.T) {
 	p := BuildAgentPrompt("capture telegram URLs and acknowledge", Catalog{
-		Tools: []string{"channel.send", "queue_put"},
+		Tools: []string{"channel.send", "channel.status", "queue_put"},
 	}, "auto", nil)
 	for _, want := range []string{
 		`"text":"message text"`,
 		"The field is `text`, not `message`",
+		"call channel.status once",
 		"do not call channel.send just to answer the user",
 	} {
 		if !strings.Contains(p, want) {
@@ -127,6 +128,41 @@ func TestCompileAgent_GroundsSkillsEndToEnd(t *testing.T) {
 	}
 	if !flaggedMissing {
 		t.Errorf("uninstalled named skill should surface as a Needs-setup suggestion; got %+v", res.Suggestions)
+	}
+}
+
+func TestCompileAgent_AddsCompanionTools(t *testing.T) {
+	out := `{
+	  "name": "Research Librarian",
+	  "system_prompt": "Capture URLs into a queue, process them into the KB, verify storage, and notify the user.",
+	  "trigger": {"type":"channel"},
+	  "channels": ["telegram"],
+	  "tools": ["queue_put","kb_write","channel.send"],
+	  "skills": [],
+	  "knowledge": ["AI Docs"],
+	  "rationale": "Dynamic capture and notification fits a reasoning agent."
+	}`
+	cat := Catalog{Tools: []string{
+		"queue_put", "queue_create", "queue_names",
+		"kb_write", "kb_search",
+		"channel.send", "channel.status",
+	}}
+	res, err := CompileAgent(context.Background(), fakeLLM{out: out}, "capture URLs, store in AI Docs, and notify telegram", cat, "react", nil)
+	if err != nil {
+		t.Fatalf("CompileAgent: %v", err)
+	}
+	has := func(want string) bool {
+		for _, t := range res.Workflow.Tools {
+			if t == want {
+				return true
+			}
+		}
+		return false
+	}
+	for _, want := range []string{"queue_put", "queue_create", "queue_names", "kb_write", "kb_search", "channel.send", "channel.status"} {
+		if !has(want) {
+			t.Fatalf("compiled agent missing companion or original tool %q; tools=%v notes=%v", want, res.Workflow.Tools, res.Notes)
+		}
 	}
 }
 
