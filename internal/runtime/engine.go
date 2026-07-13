@@ -1022,6 +1022,7 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 	// adapter. Studio already emits this for Deliver steps; backing it with the
 	// registry makes generated workflows executable instead of merely plausible.
 	tools = append(tools, e.buildChannelSendBuiltin())
+	tools = append(tools, e.buildChannelStatusBuiltin())
 
 	// queue_* — safe, in-memory handoff for interactive agents and Studio
 	// workflows. These tools avoid write_file/system access for ephemeral
@@ -3447,7 +3448,7 @@ func normalizeToolCall(call message.ToolCall) message.ToolCall {
 	call.Name = normalizeToolCallName(call.Name)
 	call.Arguments = unwrapToolArguments(call.Name, call.Arguments)
 	switch call.Name {
-	case "channel.send":
+	case "channel.send", "channel.status":
 		call.Arguments = normalizeChannelSendArgs(call.Arguments)
 	case "fetch_url":
 		call.Arguments = normalizeAliasArgs(call.Arguments, map[string][]string{
@@ -3486,6 +3487,8 @@ func normalizeToolCallName(name string) string {
 		return "web_search"
 	case "send_message", "send.notification", "send_notification", "notify", "notification.send", "channel_send", "channel-send", "send_channel", "send.channel", "telegram_send", "telegram.send", "slack_send", "slack.send", "discord_send", "discord.send":
 		return "channel.send"
+	case "channel_status", "channel.status", "channel_diagnose", "channel.diagnose", "channel_doctor", "channel.doctor", "diagnose_channel", "delivery_doctor", "delivery.doctor":
+		return "channel.status"
 	case "read_url", "open_url", "get_url", "url_fetch", "fetch-url", "http_get", "http.get":
 		return "fetch_url"
 	case "search_kb", "kb.search", "knowledge_search", "knowledge.search", "rag_search", "rag.search":
