@@ -330,6 +330,42 @@
         </div>
       {/if}
 
+      {#if readiness.parity}
+        <div class="parity-cockpit">
+          <div class="parity-head">
+            <div>
+              <div class="eyebrow">Framework Parity</div>
+              <h3>{readiness.parity.score || 0}% · OpenClaw / Hermes comparison</h3>
+              <p>Live score across onboarding, channels, Studio, chat, learning, automation, remote execution, companion, ecosystem, and enterprise readiness.</p>
+            </div>
+            <button class="btn-secondary" on:click={() => openHref('#studio')}>Improve in Studio</button>
+          </div>
+          <div class="parity-grid">
+            {#each readiness.parity.areas || [] as area}
+              <button class="parity-card {area.status}" type="button" on:click={() => openHref(area.href)}>
+                <div class="parity-card-top">
+                  <span>{area.label}</span>
+                  <strong>{area.score}%</strong>
+                </div>
+                <small>{area.detail}</small>
+                <em>{area.benchmark}</em>
+              </button>
+            {/each}
+          </div>
+          {#if readiness.parity.top_gaps?.length}
+            <div class="parity-gaps">
+              <div class="ops-label">Biggest parity gaps</div>
+              {#each readiness.parity.top_gaps as gap}
+                <button class="ops-row" type="button" on:click={() => openHref(gap.href)}>
+                  <strong>{gap.label}</strong>
+                  <span>{gap.next}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
       <div class="journey-grid">
         {#each readiness.journey || [] as item}
           <button class="journey-card {item.status}" type="button" on:click={() => openHref(item.href)}>
@@ -514,6 +550,42 @@
   .release-cmds {
     display: flex; flex-direction: column; gap: .25rem; min-width: 230px; align-items: flex-end;
   }
+  .parity-cockpit {
+    background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px;
+    padding: .85rem; display: flex; flex-direction: column; gap: .8rem;
+  }
+  .parity-head {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+  }
+  .parity-head h3 { margin: 0; font-size: 1rem; }
+  .parity-head p { margin: .3rem 0 0; max-width: 850px; }
+  .parity-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .55rem;
+  }
+  .parity-card {
+    background: #14182c; border: 1px solid #252a4a; border-radius: 8px;
+    color: #dfe2ff; padding: .7rem; text-align: left; cursor: pointer;
+    min-height: 132px; display: flex; flex-direction: column; gap: .45rem;
+  }
+  .parity-card:hover { border-color: #6c63ff; }
+  .parity-card.ok { border-color: rgba(76,175,130,.35); }
+  .parity-card.warn { border-color: rgba(240,160,96,.42); }
+  .parity-card.fail { border-color: rgba(240,96,96,.45); }
+  .parity-card-top {
+    display: flex; justify-content: space-between; gap: .6rem; align-items: baseline;
+  }
+  .parity-card-top span { font-weight: 750; font-size: .78rem; }
+  .parity-card-top strong { color: #f0f2ff; font-size: .82rem; }
+  .parity-card small {
+    color: #8a91b8; font-size: .7rem; line-height: 1.35; flex: 1;
+  }
+  .parity-card em {
+    color: #6f76a3; font-style: normal; font-size: .66rem; text-transform: uppercase;
+    letter-spacing: .06em; font-weight: 700;
+  }
+  .parity-gaps {
+    border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
+  }
   .ok-note,
   .err-note {
     border-radius: 8px; padding: .55rem .75rem; font-size: .75rem;
@@ -602,6 +674,7 @@
     .section-hdr { flex-wrap: wrap; }
     .readiness-top { align-items: flex-start; flex-direction: column; }
     .readiness-actions { justify-content: flex-start; }
+    .parity-head { flex-direction: column; }
     .release-strip { flex-direction: column; }
     .release-cmds { align-items: flex-start; min-width: 0; width: 100%; }
     .action-row { grid-template-columns: 1fr; gap: .25rem; }

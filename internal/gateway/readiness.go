@@ -39,6 +39,17 @@ type readinessSummary struct {
 	UpdatesReady    bool   `json:"updates_ready"`
 }
 
+type parityArea struct {
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Status    string `json:"status"`
+	Score     int    `json:"score"`
+	Detail    string `json:"detail"`
+	Next      string `json:"next"`
+	Benchmark string `json:"benchmark"`
+	Href      string `json:"href,omitempty"`
+}
+
 // handleReadiness returns Soulacy's product journey state in one place:
 // setup, build, delivery, monitoring, learning, and release readiness. It is
 // intentionally platform-wide, not tied to one agent, so every agent type gets
@@ -108,6 +119,9 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	}
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest)
+	parityScore := parityScore(parityAreas)
+	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
 		return next[i].Priority < next[j].Priority
 	})
@@ -148,6 +162,11 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"next_actions": next,
 		"providers":    providers,
 		"channels":     channels,
+		"parity": fiber.Map{
+			"score":    parityScore,
+			"areas":    parityAreas,
+			"top_gaps": parityGaps,
+		},
 		"release": fiber.Map{
 			"version":         strings.TrimSpace(config.Version),
 			"update_manifest": updateManifest,
@@ -157,6 +176,173 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 			"dry_run_command": "sy update install --dry-run",
 		},
 	}
+}
+
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string) []parityArea {
+	areas := []parityArea{
+		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
+		parityChannels(usableOutbound),
+		parityStudio(templates),
+		parityChat(chatAgents),
+		parityLearning(learningAgents, enabledAgents),
+		parityAutomation(scheduledAgents, usableOutbound),
+		parityOps(providersReady, enabledAgents, updateManifest),
+		{
+			Key:       "browser",
+			Label:     "Browser Automation",
+			Status:    "warn",
+			Score:     60,
+			Detail:    "MCP/browser sidecar foundations exist, but production parity needs a live viewer, domain policy, and trace replay.",
+			Next:      "Productize browser session viewing, approvals, and recorded trace artifacts.",
+			Benchmark: "OpenClaw/Hermes",
+			Href:      "#browser",
+		},
+		{
+			Key:       "remote_execution",
+			Label:     "Remote Execution",
+			Status:    "warn",
+			Score:     65,
+			Detail:    "Local, Docker, SSH, and queue foundations exist; remote worker enrollment and cloud presets are still not a guided experience.",
+			Next:      "Add a guided remote-worker setup with health, logs, secrets handoff, and artifact return.",
+			Benchmark: "Hermes",
+			Href:      "#config",
+		},
+		{
+			Key:       "mobile_companion",
+			Label:     "Native/Mobile Companion",
+			Status:    "warn",
+			Score:     50,
+			Detail:    "Mobile pairing, approvals, and push foundations exist, but the companion does not yet feel like a native daily assistant.",
+			Next:      "Turn Mobile into the default approvals, alerts, schedule, and lightweight chat surface.",
+			Benchmark: "OpenClaw",
+			Href:      "#mobile",
+		},
+		{
+			Key:       "marketplace",
+			Label:     "Marketplace Ecosystem",
+			Status:    "warn",
+			Score:     55,
+			Detail:    "Skills, plugins, templates, packages, and registries exist; trust signals, verified packs, and version promotion still need polish.",
+			Next:      "Add verified-source badges, compatibility checks, changelog/version promotion, and safer one-click install flows.",
+			Benchmark: "OpenClaw/Hermes",
+			Href:      "#skills",
+		},
+		{
+			Key:       "enterprise",
+			Label:     "Enterprise Tenancy",
+			Status:    "fail",
+			Score:     25,
+			Detail:    "Single-workspace local operation is strong; orgs, roles, environments, hosted mode, and audit governance are not productized.",
+			Next:      "Introduce workspaces/orgs, role policies, environment separation, and admin audit views.",
+			Benchmark: "Commercial launch",
+			Href:      "#config",
+		},
+	}
+	return areas
+}
+
+func parityOnboarding(providersReady, enabledAgents, templates int, updateManifest string) parityArea {
+	score := 35
+	status := "fail"
+	detail := "First-run setup exists, but launch readiness still needs a tested provider, template, and enabled agent."
+	if providersReady > 0 && templates > 0 {
+		score = 70
+		status = "warn"
+		detail = "Guided setup can create useful agents; finish with an enabled agent and production update manifest."
+	}
+	if providersReady > 0 && enabledAgents > 0 && templates > 0 && strings.TrimSpace(updateManifest) != "" {
+		score = 90
+		status = "ok"
+		detail = "First-run path is credible: provider, template, enabled agent, and update manifest are present."
+	}
+	return parityArea{
+		Key:       "onboarding",
+		Label:     "Onboarding & Cohesion",
+		Status:    status,
+		Score:     score,
+		Detail:    detail,
+		Next:      "Keep reducing setup choices until a new user reaches a working assistant in under ten minutes.",
+		Benchmark: "OpenClaw",
+		Href:      "#onboarding",
+	}
+}
+
+func parityChannels(usableOutbound int) parityArea {
+	if usableOutbound >= 3 {
+		return parityArea{Key: "channels", Label: "Channel Reach", Status: "ok", Score: 80, Detail: plural(usableOutbound, "outbound channel") + " configured; reliability and generic sidecars are now the main work.", Next: "Add generic sidecar packs for Signal, Matrix, Google Chat, iMessage, and Teams.", Benchmark: "OpenClaw", Href: "#channels"}
+	}
+	if usableOutbound > 0 {
+		return parityArea{Key: "channels", Label: "Channel Reach", Status: "warn", Score: 55, Detail: plural(usableOutbound, "outbound channel") + " configured; OpenClaw still wins broad reach.", Next: "Add guided setup and delivery tests for more channel adapters and sidecars.", Benchmark: "OpenClaw", Href: "#channels"}
+	}
+	return parityArea{Key: "channels", Label: "Channel Reach", Status: "fail", Score: 25, Detail: "No outbound messaging channel is production-ready.", Next: "Configure at least one default outbound channel, then expand with Slack/Discord/WhatsApp sidecars.", Benchmark: "OpenClaw", Href: "#channels"}
+}
+
+func parityStudio(templates int) parityArea {
+	if templates > 0 {
+		return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "ok", Score: 82, Detail: "Studio has plan/canvas views, integrity checks, repair, local-model guardrails, templates, and build-until-it-works.", Next: "Make graph editing feel secondary to the guided plan and plain-English run evidence.", Benchmark: "Soulacy differentiator", Href: "#studio"}
+	}
+	return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "warn", Score: 62, Detail: "Studio exists, but starter templates are missing, which weakens guided authoring.", Next: "Restore templates and keep the plan-first authoring path front and center.", Benchmark: "Soulacy differentiator", Href: "#studio"}
+}
+
+func parityChat(chatAgents int) parityArea {
+	if chatAgents > 0 {
+		return parityArea{Key: "chat", Label: "Chat Experience", Status: "warn", Score: 68, Detail: plural(chatAgents, "chat-ready agent") + " available; artifacts/search/branching exist, but polish still trails ChatGPT/Claude.", Next: "Tighten citations, file previews, inline tool cards, keyboard flows, and project context.", Benchmark: "ChatGPT/Claude", Href: "#chat"}
+	}
+	return parityArea{Key: "chat", Label: "Chat Experience", Status: "fail", Score: 35, Detail: "No chat-ready user agent is enabled.", Next: "Install or create one chat-surface assistant and verify attachments, artifacts, and retries.", Benchmark: "ChatGPT/Claude", Href: "#chat"}
+}
+
+func parityLearning(learningAgents, enabledAgents int) parityArea {
+	if learningAgents > 0 {
+		return parityArea{Key: "learning", Label: "Learning Loop", Status: "ok", Score: 78, Detail: plural(learningAgents, "agent") + " can create reviewable lessons; evidence panels make improvement visible.", Next: "Broaden learning evidence across agents and turn repeated successes into installable skills automatically.", Benchmark: "Hermes", Href: "#memory"}
+	}
+	status := "warn"
+	score := 50
+	if enabledAgents == 0 {
+		status = "fail"
+		score = 35
+	}
+	return parityArea{Key: "learning", Label: "Learning Loop", Status: status, Score: score, Detail: "Learning infrastructure exists, but no enabled agent is using it yet.", Next: "Enable learning on production agents and review accepted/rejected proposals weekly.", Benchmark: "Hermes", Href: "#memory"}
+}
+
+func parityAutomation(scheduledAgents, usableOutbound int) parityArea {
+	if scheduledAgents > 0 && usableOutbound > 0 {
+		return parityArea{Key: "automation", Label: "Scheduled Automations", Status: "ok", Score: 84, Detail: plural(scheduledAgents, "scheduled agent") + " can deliver through configured channels.", Next: "Add schedule reliability alerts and missed-run remediation defaults.", Benchmark: "OpenClaw/Hermes", Href: "#schedule"}
+	}
+	return parityArea{Key: "automation", Label: "Scheduled Automations", Status: "warn", Score: 58, Detail: "Scheduler exists, but production value needs scheduled agents paired with delivery channels.", Next: "Create one scheduled agent, run a manual test, then verify outbound delivery.", Benchmark: "OpenClaw/Hermes", Href: "#schedule"}
+}
+
+func parityOps(providersReady, enabledAgents int, updateManifest string) parityArea {
+	if providersReady > 0 && enabledAgents > 0 && strings.TrimSpace(updateManifest) != "" {
+		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 82, Detail: "Readiness, doctor, support bundles, action logs, parity harness, and updates are wired.", Next: "Add cost budgets, service SLO alerts, and production deployment profiles.", Benchmark: "Commercial launch", Href: "#dashboard"}
+	}
+	return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "warn", Score: 62, Detail: "Diagnostics and support bundles exist; complete provider/agent/update setup before a production launch.", Next: "Run launch checks, configure update manifest, and keep support-bundle download visible.", Benchmark: "Commercial launch", Href: "#dashboard"}
+}
+
+func parityScore(areas []parityArea) int {
+	if len(areas) == 0 {
+		return 0
+	}
+	total := 0
+	for _, area := range areas {
+		total += area.Score
+	}
+	return total / len(areas)
+}
+
+func topParityGaps(areas []parityArea, limit int) []parityArea {
+	out := make([]parityArea, 0, len(areas))
+	for _, area := range areas {
+		if area.Status != "ok" {
+			out = append(out, area)
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return out[i].Score < out[j].Score
+	})
+	if limit > 0 && len(out) > limit {
+		return out[:limit]
+	}
+	return out
 }
 
 func (s *Server) updateManifestSource() string {
