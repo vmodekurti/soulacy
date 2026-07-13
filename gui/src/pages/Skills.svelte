@@ -1,12 +1,18 @@
 <script>
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
+  import { searchSkills } from '../lib/skillsearch.js'
 
   let skills        = []
   let selected      = null
   let loading       = true
   let detailLoading = false
   let error         = ''
+
+  // Filter over INSTALLED skills. Distinct from the registry search further up
+  // the page, which looks for skills you do not have yet.
+  let filterQ = ''
+  $: visibleSkills = searchSkills(skills, filterQ)
 
   // AgenticSkills provisioner modal
   let asModal    = false
@@ -461,7 +467,30 @@
           <p class="hint">Install skills into <code>~/.soulacy/skills/</code> or use <code>sy skill install &lt;path&gt;</code>.</p>
         </div>
       {:else}
-        {#each skills as sk}
+        <div class="skill-filter">
+          <input
+            class="skill-filter-input"
+            type="search"
+            placeholder="Search installed skills…"
+            aria-label="Search installed skills"
+            bind:value={filterQ}
+          />
+          {#if filterQ.trim()}
+            <span class="skill-filter-count">
+              {visibleSkills.length} of {skills.length}
+            </span>
+          {/if}
+        </div>
+
+        {#if visibleSkills.length === 0}
+          <div class="empty-state">
+            <div class="empty-icon">🔍</div>
+            <p>No installed skill matches “{filterQ.trim()}”.</p>
+            <p class="hint">Searches skill names and descriptions. To find skills you don’t have yet, use the registry search above.</p>
+          </div>
+        {/if}
+
+        {#each visibleSkills as sk}
           <button class="skill-row" class:active={selected?.name === sk.name} on:click={() => select(sk)}>
             <div class="skill-row-top">
               <span class="skill-name">{sk.name}</span>
@@ -604,6 +633,26 @@
   .empty-icon { font-size: 2rem; }
   .hint { font-size: .78rem; }
   .hint code { background: #1c1f35; padding: .1rem .3rem; border-radius: 4px; color: #8b85ff; }
+
+  /* Filter over installed skills. Sticky so it stays reachable while the list
+     scrolls — the list is the thing you are searching. */
+  .skill-filter {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; gap: .5rem;
+    padding: .6rem .7rem;
+    background: #0e1020; border-bottom: 1px solid #1a1e36;
+  }
+  .skill-filter-input {
+    flex: 1; min-width: 0;
+    padding: .45rem .6rem; border-radius: 6px; font-size: .82rem;
+    background: #141626; border: 1px solid #2a2f4a; color: #c8cadf;
+    outline: none; box-sizing: border-box;
+  }
+  .skill-filter-input:focus { border-color: #6c63ff; }
+  .skill-filter-input::placeholder { color: #6b7294; }
+  .skill-filter-count {
+    font-size: .72rem; color: #6b7294; white-space: nowrap;
+  }
 
   .skill-row {
     width: 100%; text-align: left; background: none; padding: .85rem 1rem;
