@@ -59,6 +59,9 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if areas, ok := parity["areas"].([]any); !ok || len(areas) < 8 {
 		t.Fatalf("parity areas = %#v", parity["areas"])
 	}
+	if _, ok := body["executors"].(map[string]any); !ok {
+		t.Fatalf("missing executors readiness: %#v", body)
+	}
 	if gaps, ok := parity["top_gaps"].([]any); !ok || len(gaps) == 0 {
 		t.Fatalf("parity top gaps = %#v", parity["top_gaps"])
 	}

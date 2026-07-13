@@ -204,6 +204,22 @@ type PatchableConfig struct {
 		ToolTimeout           string `json:"tool_timeout" yaml:"tool_timeout"`
 	} `json:"runtime" yaml:"runtime"`
 
+	Executor *struct {
+		Backend               string   `json:"backend" yaml:"backend"`
+		Workers               int      `json:"workers" yaml:"workers"`
+		DockerImage           string   `json:"docker_image" yaml:"docker_image"`
+		DockerNetwork         string   `json:"docker_network" yaml:"docker_network"`
+		DockerVolumes         []string `json:"docker_volumes" yaml:"docker_volumes"`
+		SSHHost               string   `json:"ssh_host" yaml:"ssh_host"`
+		SSHUser               string   `json:"ssh_user" yaml:"ssh_user"`
+		SSHPythonBin          string   `json:"ssh_python_bin" yaml:"ssh_python_bin"`
+		SSHIdentity           string   `json:"ssh_identity" yaml:"ssh_identity"`
+		SSHIdentityCredential string   `json:"ssh_identity_credential" yaml:"ssh_identity_credential"`
+		CloudPreset           string   `json:"cloud_preset" yaml:"cloud_preset"`
+		CloudTarget           string   `json:"cloud_target" yaml:"cloud_target"`
+		CloudCLI              string   `json:"cloud_cli" yaml:"cloud_cli"`
+	} `json:"executor" yaml:"executor"`
+
 	LLM *struct {
 		DefaultProvider string `json:"default_provider" yaml:"default_provider"`
 		// Studio overrides the provider/model used for Studio reasoning + code
@@ -398,6 +414,26 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		if patch.Runtime.ToolTimeout != "" {
 			rt["tool_timeout"] = patch.Runtime.ToolTimeout
 		}
+	}
+	if patch.Executor != nil {
+		ex := getOrCreateMap(dst, "executor")
+		ex["backend"] = patch.Executor.Backend
+		if patch.Executor.Workers != 0 {
+			ex["workers"] = patch.Executor.Workers
+		}
+		ex["docker_image"] = patch.Executor.DockerImage
+		ex["docker_network"] = patch.Executor.DockerNetwork
+		ex["docker_volumes"] = patch.Executor.DockerVolumes
+		ex["ssh_host"] = patch.Executor.SSHHost
+		ex["ssh_user"] = patch.Executor.SSHUser
+		ex["ssh_python_bin"] = patch.Executor.SSHPythonBin
+		if patch.Executor.SSHIdentity != "" && patch.Executor.SSHIdentity != "***" {
+			ex["ssh_identity"] = patch.Executor.SSHIdentity
+		}
+		ex["ssh_identity_credential"] = patch.Executor.SSHIdentityCredential
+		ex["cloud_preset"] = patch.Executor.CloudPreset
+		ex["cloud_target"] = patch.Executor.CloudTarget
+		ex["cloud_cli"] = patch.Executor.CloudCLI
 	}
 	if patch.LLM != nil {
 		llm := getOrCreateMap(dst, "llm")
