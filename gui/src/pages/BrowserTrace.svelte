@@ -7,6 +7,8 @@
   let sessionId = ''
   let trace = null
   let policy = null
+  let status = null
+  let statusError = ''
   let loading = false
   let error = ''
   let routeAgentId = ''
@@ -40,6 +42,16 @@
       }
       if (agentId) await load()
     } catch (e) { error = e.message }
+  }
+
+  async function loadStatus() {
+    statusError = ''
+    try {
+      status = await api.browserStatus()
+    } catch (e) {
+      status = null
+      statusError = e.message
+    }
   }
 
   async function load() {
@@ -108,6 +120,7 @@
     const params = routeParams()
     routeAgentId = params.get('agent_id') || ''
     sessionId = params.get('session_id') || ''
+    loadStatus()
     loadAgents()
   })
 </script>
@@ -123,6 +136,25 @@
     screenshot, reconstructed from the action log. Per-domain navigation is enforced
     by each agent's tool policy.
   </p>
+
+  {#if status}
+    <section class="readiness" class:ok={status.status === 'ok'} class:warn={status.status === 'warn'} class:fail={status.status === 'fail'}>
+      <div class="ready-main">
+        <div class="ready-score">{status.score}</div>
+        <div>
+          <strong>Automation readiness</strong>
+          <p>{status.ready}/{status.total} checks ready. {status.sidecars?.length || 0} browser sidecar{(status.sidecars?.length || 0) === 1 ? '' : 's'} detected.</p>
+        </div>
+      </div>
+      <div class="ready-checks">
+        {#each status.checks || [] as check}
+          <span class={check.status} title={check.detail}>{check.label}</span>
+        {/each}
+      </div>
+    </section>
+  {:else if statusError}
+    <div class="banner err">⚠ Browser readiness unavailable: {statusError}</div>
+  {/if}
 
   <div class="controls">
     <label>
@@ -264,6 +296,22 @@
   .controls label { display: flex; flex-direction: column; gap: .3rem; font-size: .72rem; color: #6b7294; }
   .controls select, .controls input { background: #0e1020; color: #d7dcf5; border: 1px solid #1a1e36; border-radius: 7px; padding: .4rem .55rem; font-size: .82rem; min-width: 220px; }
   .banner.err { background: rgba(240,96,96,.08); border: 1px solid rgba(240,96,96,.4); color: #f0a0a0; border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1rem; }
+  .readiness {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    background: #111426; border: 1px solid #20243d; border-radius: 9px; padding: .8rem; margin-bottom: 1rem;
+  }
+  .readiness.ok { border-color: rgba(69, 217, 139, .28); }
+  .readiness.warn { border-color: rgba(240, 188, 96, .32); }
+  .readiness.fail { border-color: rgba(240, 96, 96, .35); }
+  .ready-main { display: flex; align-items: center; gap: .75rem; min-width: min(100%, 320px); }
+  .ready-score { width: 2.7rem; height: 2.7rem; display: grid; place-items: center; border-radius: 8px; background: #171a2d; color: #d7dcf5; font-weight: 800; }
+  .ready-main strong { display: block; color: #c5c9e8; font-size: .86rem; }
+  .ready-main p { margin: .18rem 0 0; color: #8a91b8; font-size: .74rem; }
+  .ready-checks { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .ready-checks span { border: 1px solid #2b3152; border-radius: 999px; padding: .16rem .48rem; font-size: .68rem; color: #9aa0c8; cursor: help; }
+  .ready-checks span.ok { color: #71e3a1; background: rgba(69, 217, 139, .08); border-color: rgba(69, 217, 139, .28); }
+  .ready-checks span.warn { color: #f0c778; background: rgba(240, 188, 96, .08); border-color: rgba(240, 188, 96, .3); }
+  .ready-checks span.fail { color: #f0a0a0; background: rgba(240, 96, 96, .08); border-color: rgba(240, 96, 96, .35); }
   .policy-panel {
     display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1.25fr); gap: 1rem;
     background: #111426; border: 1px solid #20243d; border-radius: 9px; padding: .85rem; margin-bottom: 1rem;
