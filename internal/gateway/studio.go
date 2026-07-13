@@ -275,6 +275,23 @@ func (s *Server) groundCatalog(cat *studio.Catalog) {
 	}
 }
 
+// groundGenerationProfile stamps the compile request with the actual builder
+// provider/model from server config. The GUI may send a compact catalog, but
+// generation quality mode must be authoritative: it decides whether Studio uses
+// compact-local guardrails and what confidence it reports back.
+func (s *Server) groundGenerationProfile(cat *studio.Catalog, intent string) {
+	if cat == nil {
+		return
+	}
+	provider, model := s.studioProviderModel()
+	baseURL := ""
+	if pc, ok := s.cfg.LLM.Providers[provider]; ok {
+		baseURL = pc.BaseURL
+	}
+	gp := studio.BuildGenerationProfile(provider, model, baseURL, intent, *cat)
+	cat.Generation = &gp
+}
+
 // groundedChannels returns the output channels available to a workflow: the
 // always-on ones plus any configured-and-enabled channel. Mirrors the
 // enabled/configured logic in handleListChannels but distilled to the names
@@ -1733,6 +1750,7 @@ func (s *Server) handleStudioCompileAgent(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
 	}
 	s.groundCatalog(&req.Catalog)
+	s.groundGenerationProfile(&req.Catalog, req.Intent)
 	res, err := studio.CompileAgent(c.Context(), model, req.Intent, req.Catalog, req.Strategy, req.Answers)
 	if err != nil {
 		return s.errMsg(c, fiber.StatusUnprocessableEntity, s.studioGenerationHint(err))
@@ -1772,6 +1790,7 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	// (authoritative, server-side) so it maps loose references to actual
 	// capabilities and wires real MCP tools instead of inventing names.
 	s.groundCatalog(&req.Catalog)
+	s.groundGenerationProfile(&req.Catalog, strings.TrimSpace(req.Intent+" "+req.RawIntent))
 
 	// SINGLE authoritative architecture decision, evaluated over the raw + refined
 	// text (the SAME input refine used) so it can't diverge by entry path. A

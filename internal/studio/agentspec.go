@@ -65,6 +65,7 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	sb.WriteString("- Invent a peer agent ONLY if needed, and give it a full reusable system_prompt in new_agents.\n")
 	sb.WriteString("- Pull concrete values from the user's words (queries, counts, schedule cadence, target channel).\n\n")
 
+	sb.WriteString(GenerationProfilePromptBlock(catalog.Generation))
 	writeCatalogGrounding(&sb, catalog)
 	writePatternGrounding(&sb, intent, catalog)
 
@@ -105,11 +106,22 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 		strategy = "react"
 	}
 
-	raw, err := llm.Complete(ctx, BuildAgentPrompt(intent, catalog, strategy, answers))
+	prompt := BuildAgentPrompt(intent, catalog, strategy, answers)
+	raw, err := llm.Complete(ctx, prompt)
 	if err != nil {
 		return Result{}, fmt.Errorf("studio: llm complete: %w", err)
 	}
 	payload, perr := parseAgentSpec(raw)
+	if perr != nil {
+		if shouldRepairMalformedDraft(catalog.Generation) {
+			if repairedRaw, repairErr := repairMalformedDraft(ctx, llm, prompt, raw, perr); repairErr == nil {
+				if repairedPayload, parseErr := parseAgentSpec(repairedRaw); parseErr == nil {
+					payload = repairedPayload
+					perr = nil
+				}
+			}
+		}
+	}
 	if perr != nil {
 		return Result{}, perr
 	}
@@ -159,15 +171,26 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 
 	explanation := ExplainDraft(draft)
 	notes := []string{"Generated a " + recoLabelGo(strategy) + " agent — it reasons over its tools rather than running a fixed graph."}
+	if catalog.Generation != nil && catalog.Generation.Local && catalog.Generation.Compact {
+		notes = append(notes, "Local-model Studio mode: used stricter JSON repair and catalog-grounded tool selection because the builder is a compact local model.")
+	}
 	if sk := draft.Skills; len(sk) > 0 {
 		notes = append(notes, "Enables skill(s): "+strings.Join(sk, ", ")+".")
 	}
 	notes = append(notes, groundNotes...)
+	if catalog.Generation != nil {
+		gp := *catalog.Generation
+		gp.PatternMatched = len(MatchPatterns(intent, catalog, 1)) > 0
+		gp.LessonsApplied = len(catalog.Lessons)
+		gp.Confidence, gp.NextAction = generationConfidence(gp)
+		catalog.Generation = &gp
+	}
 	return Result{
 		Workflow:    draft,
 		Notes:       notes,
 		Suggestions: append(suggestMissingAgent(draft, catalog), missingSkills...),
 		Explanation: &explanation,
+		Generation:  catalog.Generation,
 	}, nil
 }
 
