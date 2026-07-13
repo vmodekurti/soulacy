@@ -439,6 +439,9 @@ export const api = {
     probe: (url)   => apiFetch('/registries/probe', { method: 'POST', body: JSON.stringify({ url }) }),
     add:   (entry) => apiFetch('/registries', { method: 'POST', body: JSON.stringify(entry) }),
   },
+  marketplace: {
+    status: () => apiFetch('/marketplace/status'),
+  },
 
   mcp: {
     list:   ()        => apiFetch('/mcp'),

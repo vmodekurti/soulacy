@@ -71,6 +71,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	updateManifest := s.updateManifestSource()
 	executors := s.executorReadiness()
 	browser := s.browserAutomationReadiness()
+	marketplace := s.marketplaceReadiness()
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -122,7 +123,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -167,6 +168,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"channels":     channels,
 		"executors":    executors,
 		"browser":      browser,
+		"marketplace":  marketplace,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -190,7 +192,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -211,16 +213,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chat
 			Benchmark: "OpenClaw",
 			Href:      "#mobile",
 		},
-		{
-			Key:       "marketplace",
-			Label:     "Marketplace Ecosystem",
-			Status:    "warn",
-			Score:     55,
-			Detail:    "Skills, plugins, templates, packages, and registries exist; trust signals, verified packs, and version promotion still need polish.",
-			Next:      "Add verified-source badges, compatibility checks, changelog/version promotion, and safer one-click install flows.",
-			Benchmark: "OpenClaw/Hermes",
-			Href:      "#skills",
-		},
+		parityMarketplace(marketplace),
 		parityEnterprise(enterprise),
 	}
 	return areas
