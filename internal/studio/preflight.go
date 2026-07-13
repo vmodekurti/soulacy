@@ -171,7 +171,7 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 					continue
 				}
 				for _, want := range reqs {
-					if argFilled(n.Input, want) || nodeSuppliesViaPort(draft.Flow, n, want) {
+					if builtinArgFilled(draft.Flow, n, want) {
 						continue
 					}
 					add("block", "dependency", n.ID, "Required argument \""+want+"\" for \""+tool+"\" is empty or a placeholder.", "Provide a real value, or feed it from an upstream step's output.")
@@ -396,6 +396,23 @@ func nodeSuppliesViaPort(flow Flow, n sdkr.FlowNode, arg string) bool {
 		}
 	}
 	return false
+}
+
+// builtinArgFilled reports whether a built-in tool's required argument is
+// satisfied, including runtime-supported aliases. Studio teaches canonical
+// names, but the engine intentionally accepts common variants so ReAct agents
+// do not waste turns recovering from harmless field-name drift.
+func builtinArgFilled(flow Flow, n sdkr.FlowNode, arg string) bool {
+	tool := strings.TrimSpace(n.Tool)
+	if tool == "channel.send" && arg == "text" {
+		for _, k := range []string{"text", "message", "msg", "body", "content"} {
+			if argFilled(n.Input, k) || nodeSuppliesViaPort(flow, n, k) {
+				return true
+			}
+		}
+		return false
+	}
+	return argFilled(n.Input, arg) || nodeSuppliesViaPort(flow, n, arg)
 }
 
 // argFilled reports whether the node's Input (a JSON object template) contains a

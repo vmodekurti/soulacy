@@ -55,10 +55,17 @@ func builtinToolParams() map[string][]ToolParam {
 		"queue_clear": {
 			{Name: "queue", Type: "string"},
 		},
-		"channel_send": {
-			{Name: "channel", Type: "string", Required: true},
-			{Name: "message", Type: "string", Required: true},
+		"channel.send": {
+			{Name: "channel", Type: "string"},
 			{Name: "to", Type: "string"},
+			{Name: "text", Type: "string", Required: true},
+			{Name: "message", Type: "string"},
+			{Name: "adapter", Type: "string"},
+			{Name: "destination", Type: "string"},
+			{Name: "target", Type: "string"},
+			{Name: "recipient", Type: "string"},
+			{Name: "chat_id", Type: "string"},
+			{Name: "channel_id", Type: "string"},
 		},
 	}
 }
