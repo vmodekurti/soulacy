@@ -1,6 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte'
   import { api } from '../lib/api.js'
+  import { modelAvailability } from '../lib/agentmodel.js'
   import { parseMarkdown, richRenderer } from '../lib/markdown.js'
   import { apiKey, editAgent } from '../lib/stores.js'
   import ChipPicker from '../lib/ChipPicker.svelte'
@@ -518,9 +519,9 @@
 
   // Lazy-fetch the model list for one provider (cached). Called whenever the
   // user selects a provider in the LLM section.
-  async function loadModels(providerId) {
+  async function loadModels(providerId, force = false) {
     if (!providerId) return
-    if (modelsByProv[providerId] || modelsLoading[providerId]) return
+    if (!force && (modelsByProv[providerId] || modelsLoading[providerId])) return
     modelsLoading = { ...modelsLoading, [providerId]: true }
     try {
       const res = await api.providers.models(providerId)
@@ -532,6 +533,11 @@
     } finally {
       modelsLoading = { ...modelsLoading, [providerId]: false }
     }
+  }
+
+  function refreshModels(providerId) {
+    if (!providerId) return
+    loadModels(providerId, true)
   }
 
   // Reactive: any time the editor's provider changes, pull its model list.
@@ -562,6 +568,14 @@
     const others = list.filter(m => m !== cur && m !== '__custom__')
     return cur ? [cur, ...others] : others
   })()
+
+  $: modelStatus = modelAvailability({
+    provider: editing?.llm?.provider,
+    model: editing?.llm?.model,
+    models: modelsByProv[editing?.llm?.provider] || [],
+    loading: !!modelsLoading[editing?.llm?.provider],
+    error: modelsError[editing?.llm?.provider] || '',
+  })
 
   // ── Tools editing ─────────────────────────────────────────────────────────
   function addTool() {
@@ -1619,15 +1633,23 @@ console.log(reply);` : ''
                 </select>
               </div>
               <div class="field">
-                <span class="field-label" title={llmTips.model}>
-                  Model
-                  {#if modelsLoading[editing.llm.provider]}
-                    <span class="mloading">loading…</span>
-                  {:else if modelsError[editing.llm.provider]}
-                    <span class="merror" title={modelsError[editing.llm.provider]}>(can't reach provider)</span>
-                  {:else if modelOptions.length > 0}
-                    <span class="mhint">{modelOptions.length} options</span>
-                  {/if}
+                <span class="field-label field-label-row" title={llmTips.model}>
+                  <span>
+                    Model
+                    {#if modelsLoading[editing.llm.provider]}
+                      <span class="mloading">loading…</span>
+                    {:else if modelsError[editing.llm.provider]}
+                      <span class="merror" title={modelsError[editing.llm.provider]}>(can't reach provider)</span>
+                    {:else if modelOptions.length > 0}
+                      <span class="mhint">{modelOptions.length} options</span>
+                    {/if}
+                  </span>
+                  <button type="button"
+                          class="mini-link"
+                          title="Reload this provider's model list after changing credentials, OmniRoute routing, or provider settings."
+                          on:click={() => refreshModels(editing.llm.provider)}>
+                    Refresh
+                  </button>
                 </span>
                 <!-- Keyed {#each (m)} prevents Svelte from mutating <option> values
                      in-place during list updates. Current model is always at [0]
@@ -1646,6 +1668,16 @@ console.log(reply);` : ''
                   <input bind:value={editing.llm.model}
                          placeholder="Enter model name"
                          on:focus={() => editing.llm.model = ''} />
+                {/if}
+                {#if modelStatus}
+                  <div class:ok={modelStatus.kind === 'ok'}
+                       class:warn={modelStatus.kind === 'warn'}
+                       class:info={modelStatus.kind === 'info'}
+                       class="model-status"
+                       title={modelStatus.detail}>
+                    <b>{modelStatus.label}</b>
+                    <span>{modelStatus.detail}</span>
+                  </div>
                 {/if}
               </div>
               <div class="field">
@@ -2762,6 +2794,12 @@ console.log(reply);` : ''
     font-size: .72rem; color: #6b7294; text-transform: uppercase;
     letter-spacing: .06em; font-weight: 600;
   }
+  .field-label-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: .55rem;
+  }
   .tier-panel {
     border-radius: 8px; padding: .8rem; display: flex; flex-direction: column; gap: .45rem;
     background: #0e1020; border: 1px solid #2a2f4a; color: #c8cadf;
@@ -2805,6 +2843,45 @@ console.log(reply);` : ''
   .mloading { color: #8b85ff; text-transform: none; font-weight: 500; margin-left: .35rem; }
   .merror   { color: #f0c060; text-transform: none; font-weight: 500; margin-left: .35rem; cursor: help; }
   .mhint    { color: #4caf82; text-transform: none; font-weight: 500; margin-left: .35rem; }
+  .mini-link {
+    background: transparent;
+    border: 0;
+    color: #8b85ff;
+    cursor: pointer;
+    font-size: .68rem;
+    font-weight: 700;
+    letter-spacing: 0;
+    padding: 0;
+    text-transform: none;
+  }
+  .mini-link:hover { color: #b7b3ff; text-decoration: underline; }
+  .model-status {
+    border: 1px solid #252b49;
+    border-radius: 6px;
+    padding: .42rem .52rem;
+    background: #101324;
+    color: #8f96ba;
+    display: flex;
+    flex-direction: column;
+    gap: .18rem;
+    line-height: 1.35;
+  }
+  .model-status b {
+    color: #cfd3ee;
+    font-size: .72rem;
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .model-status span {
+    font-size: .72rem;
+    color: #8f96ba;
+  }
+  .model-status.ok { border-color: rgba(76,175,130,.28); background: rgba(76,175,130,.06); }
+  .model-status.ok b { color: #76e0a2; }
+  .model-status.warn { border-color: rgba(240,192,96,.3); background: rgba(240,192,96,.07); }
+  .model-status.warn b { color: #f0c060; }
+  .model-status.info { border-color: rgba(139,133,255,.25); background: rgba(139,133,255,.07); }
+  .model-status.info b { color: #aaa6ff; }
   .optional { color: #555a7a; text-transform: none; font-weight: 400; font-size: .68rem; letter-spacing: 0; margin-left: .25rem; }
   .req     { color: #f06060; }
   .row-2   { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
