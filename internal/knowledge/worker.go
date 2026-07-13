@@ -46,6 +46,9 @@ type WorkerOptions struct {
 	BaseBackoff time.Duration
 	// MaxBackoff caps the retry delay.
 	MaxBackoff time.Duration
+	// MaxDocumentBytes rejects oversized spooled jobs before reading them into
+	// memory. 0 means the production default.
+	MaxDocumentBytes int64
 }
 
 func (o WorkerOptions) withDefaults() WorkerOptions {
@@ -60,6 +63,9 @@ func (o WorkerOptions) withDefaults() WorkerOptions {
 	}
 	if o.MaxBackoff <= 0 {
 		o.MaxBackoff = 60 * time.Second
+	}
+	if o.MaxDocumentBytes <= 0 {
+		o.MaxDocumentBytes = DefaultMaxDocumentBytes
 	}
 	return o
 }
@@ -210,6 +216,12 @@ func (w *Worker) step(ctx context.Context) (bool, error) {
 
 // run streams the spooled bytes through the ingestion pipeline.
 func (w *Worker) run(ctx context.Context, job IngestJob) (*Document, error) {
+	if w.opts.MaxDocumentBytes > 0 && job.ByteSize > w.opts.MaxDocumentBytes {
+		return nil, fmt.Errorf("document is %s, over the configured knowledge.max_document_bytes limit of %s", formatBytes(job.ByteSize), formatBytes(w.opts.MaxDocumentBytes))
+	}
+	if st, err := os.Stat(job.SpoolPath); err == nil && w.opts.MaxDocumentBytes > 0 && st.Size() > w.opts.MaxDocumentBytes {
+		return nil, fmt.Errorf("spooled document is %s, over the configured knowledge.max_document_bytes limit of %s", formatBytes(st.Size()), formatBytes(w.opts.MaxDocumentBytes))
+	}
 	data, err := os.ReadFile(job.SpoolPath)
 	if err != nil {
 		return nil, fmt.Errorf("read spooled upload: %w", err)
@@ -260,4 +272,17 @@ func docID(d *Document) string {
 		return ""
 	}
 	return d.ID
+}
+
+func formatBytes(n int64) string {
+	const unit = int64(1024)
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := unit, 0
+	for v := n / unit; v >= unit && exp < 4; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

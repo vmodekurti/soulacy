@@ -8,6 +8,8 @@
 package gateway
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -43,7 +45,7 @@ func ingestSpoolDir() (string, error) {
 }
 
 // enqueueIngest spools the upload and records a durable job.
-func (s *Server) enqueueIngest(kbName, title, source, mimeType string, data []byte) (knowledge.IngestJob, error) {
+func (s *Server) enqueueIngest(kbName, title, source, mimeType string, r io.Reader, size int64) (knowledge.IngestJob, error) {
 	svc := s.engine.Knowledge()
 	dir, err := ingestSpoolDir()
 	if err != nil {
@@ -51,8 +53,27 @@ func (s *Server) enqueueIngest(kbName, title, source, mimeType string, data []by
 	}
 	id := uuid.New().String()
 	spool := filepath.Join(dir, id+".bin")
-	if err := os.WriteFile(spool, data, 0o600); err != nil {
+	f, err := os.OpenFile(spool, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o600)
+	if err != nil {
 		return knowledge.IngestJob{}, err
+	}
+	limit := s.knowledgeMaxDocumentBytes()
+	n, copyErr := io.Copy(f, io.LimitReader(r, limit+1))
+	closeErr := f.Close()
+	if copyErr != nil {
+		_ = os.Remove(spool)
+		return knowledge.IngestJob{}, copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(spool)
+		return knowledge.IngestJob{}, closeErr
+	}
+	if limit > 0 && n > limit {
+		_ = os.Remove(spool)
+		return knowledge.IngestJob{}, fmt.Errorf("document is %s, over the configured knowledge.max_document_bytes limit of %s", formatBytes(n), formatBytes(limit))
+	}
+	if size <= 0 {
+		size = n
 	}
 
 	job, err := svc.Store.EnqueueIngest(knowledge.IngestJob{
@@ -62,7 +83,7 @@ func (s *Server) enqueueIngest(kbName, title, source, mimeType string, data []by
 		Source:    source,
 		MIMEType:  mimeType,
 		SpoolPath: spool,
-		ByteSize:  int64(len(data)),
+		ByteSize:  size,
 	})
 	if err != nil {
 		_ = os.Remove(spool) // don't leave an orphaned spool file behind
@@ -169,4 +190,17 @@ func (s *Server) emitIngestJob(job knowledge.IngestJob) {
 			"doc_id":   job.DocID,
 		},
 	})
+}
+
+func formatBytes(n int64) string {
+	const unit = int64(1024)
+	if n < unit {
+		return strconv.FormatInt(n, 10) + " B"
+	}
+	div, exp := unit, 0
+	for v := n / unit; v >= unit && exp < 4; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %ciB", float64(n)/float64(div), "KMGTPE"[exp])
 }

@@ -42,6 +42,11 @@ const (
 // being briefly unreachable) before the job is parked as failed.
 const DefaultMaxAttempts = 3
 
+// DefaultMaxDocumentBytes caps one document ingestion payload. It matches the
+// config default and keeps the extractor/embedder path from pinning arbitrary
+// large files in process memory.
+const DefaultMaxDocumentBytes int64 = 50 << 20
+
 // IngestJob is one queued document waiting to be (or being) ingested.
 type IngestJob struct {
 	ID       string `json:"id"`

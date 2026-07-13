@@ -589,12 +589,14 @@ type ProviderConfig struct {
 //	embedding_model        "nomic-embed-text"
 //	chunk_size             1000 characters
 //	chunk_overlap          200 characters
+//	max_document_bytes     52428800 (50 MiB)
 type KnowledgeConfig struct {
 	DBPath            string `mapstructure:"db_path"`
 	EmbeddingProvider string `mapstructure:"embedding_provider"`
 	EmbeddingModel    string `mapstructure:"embedding_model"`
 	ChunkSize         int    `mapstructure:"chunk_size"`
 	ChunkOverlap      int    `mapstructure:"chunk_overlap"`
+	MaxDocumentBytes  int64  `mapstructure:"max_document_bytes"`
 }
 
 type LogConfig struct {
@@ -709,6 +711,7 @@ func Load(cfgPath string) (*Config, string, error) {
 	v.SetDefault("knowledge.embedding_model", "nomic-embed-text")
 	v.SetDefault("knowledge.chunk_size", 1000)
 	v.SetDefault("knowledge.chunk_overlap", 200)
+	v.SetDefault("knowledge.max_document_bytes", int64(50<<20))
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.format", "console")
 

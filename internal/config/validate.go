@@ -115,6 +115,9 @@ func (c *Config) Validate() error {
 			"knowledge.chunk_overlap (%d) must be smaller than knowledge.chunk_size (%d)",
 			c.Knowledge.ChunkOverlap, c.Knowledge.ChunkSize))
 	}
+	if c.Knowledge.MaxDocumentBytes < 0 {
+		errs = append(errs, fmt.Errorf("knowledge.max_document_bytes: %d must not be negative", c.Knowledge.MaxDocumentBytes))
+	}
 
 	if len(errs) > 0 {
 		return fmt.Errorf("invalid configuration:\n  - %s",

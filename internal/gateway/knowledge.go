@@ -14,6 +14,7 @@
 package gateway
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/url"
@@ -290,7 +291,8 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		title    string
 		source   string
 		mimeType string
-		data     []byte
+		reader   io.Reader
+		size     int64
 	)
 
 	ctype := strings.ToLower(c.Get("Content-Type"))
@@ -304,12 +306,12 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		if oerr != nil {
 			return s.errMsg(c, fiber.StatusBadRequest, oerr.Error())
 		}
-		raw, rerr := io.ReadAll(f)
-		f.Close()
-		if rerr != nil {
-			return s.errMsg(c, fiber.StatusBadRequest, rerr.Error())
+		defer f.Close()
+		size = fh.Size
+		if err := s.rejectOversizedKnowledgePayload(c, size); err != nil {
+			return err
 		}
-		data = raw
+		reader = f
 		title = c.FormValue("title")
 		if title == "" {
 			title = fh.Filename
@@ -335,7 +337,11 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		title = body.Title
 		source = body.Source
 		mimeType = body.MIMEType
-		data = []byte(body.Content)
+		size = int64(len(body.Content))
+		if err := s.rejectOversizedKnowledgePayload(c, size); err != nil {
+			return err
+		}
+		reader = bytes.NewReader([]byte(body.Content))
 	}
 
 	if title == "" {
@@ -348,7 +354,7 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 	// progress, and the work lost on a restart or a transient embedder error.
 	// Now the request only records the job durably and returns 202 Accepted; the
 	// background worker performs the ingestion and reports live progress.
-	job, err := s.enqueueIngest(kb.Name, title, source, mimeType, data)
+	job, err := s.enqueueIngest(kb.Name, title, source, mimeType, reader, size)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -356,9 +362,26 @@ func (s *Server) handleIngestDocument(c *fiber.Ctx) error {
 		zap.String("kb", kb.Name),
 		zap.String("title", title),
 		zap.String("job", job.ID),
-		zap.Int("bytes", len(data)),
+		zap.Int64("bytes", size),
 	)
 	return c.Status(fiber.StatusAccepted).JSON(job)
+}
+
+func (s *Server) knowledgeMaxDocumentBytes() int64 {
+	if s != nil && s.cfg != nil && s.cfg.Knowledge.MaxDocumentBytes > 0 {
+		return s.cfg.Knowledge.MaxDocumentBytes
+	}
+	return knowledge.DefaultMaxDocumentBytes
+}
+
+func (s *Server) rejectOversizedKnowledgePayload(c *fiber.Ctx, size int64) error {
+	limit := s.knowledgeMaxDocumentBytes()
+	if limit > 0 && size > limit {
+		return c.Status(fiber.StatusRequestEntityTooLarge).JSON(fiber.Map{
+			"error": fmt.Sprintf("document is %s, over the configured knowledge.max_document_bytes limit of %s", formatBytes(size), formatBytes(limit)),
+		})
+	}
+	return nil
 }
 
 // handleDeleteKnowledgeDocument removes a single document and its chunks.

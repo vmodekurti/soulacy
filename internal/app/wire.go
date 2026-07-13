@@ -363,7 +363,9 @@ func (a *App) Run(parent context.Context) error {
 	// failures with bounded backoff. On startup it also requeues any job a crash
 	// left mid-flight, so a document can't silently go missing.
 	if knowledgeSvc != nil {
-		ingestWorker := knowledge.NewWorker(knowledgeSvc, knowledge.WorkerOptions{}, log)
+		ingestWorker := knowledge.NewWorker(knowledgeSvc, knowledge.WorkerOptions{
+			MaxDocumentBytes: cfg.Knowledge.MaxDocumentBytes,
+		}, log)
 		ingestWorker.SetProgressSink(srv.IngestProgressSink())
 		srv.SetIngestWorker(ingestWorker)
 		ingestWorker.Start(ctx)
