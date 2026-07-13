@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -898,6 +899,8 @@ func firstNonEmpty(values ...string) string {
 // failure falls back to ReAct.
 type planExecuteStrategy struct{}
 
+var planStepPlaceholderRe = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_.:-]+)\.(?:output|result|content|observation)\s*\}\}`)
+
 func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step, ReflectResponse) {
 	plan, err := env.LLM.Plan(ctx, planSystemPrompt(env.Config.SystemPrompt, env.Config.ToolNames), taskInput, env.Config.MaxPlanSteps)
 	if err != nil || planHasUnavailableTool(plan, env.Config.ToolNames) {
@@ -937,7 +940,7 @@ func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) (
 		stepCtx, cancel := context.WithTimeout(ctx, env.Config.StepTimeout)
 		stepStart := time.Now()
 
-		call := plannedStepToolCall(ps)
+		call := plannedStepToolCall(ps, steps)
 		obs := env.Tools.Execute(stepCtx, call)
 		obs = boundObservation(obs)
 
@@ -1005,20 +1008,76 @@ func planSystemPrompt(systemPrompt string, toolNames []string) string {
 	return system + "\n\n" + toolList
 }
 
-func plannedStepToolCall(ps PlannedStep) ToolCall {
+func plannedStepToolCall(ps PlannedStep, prior []Step) ToolCall {
 	if len(ps.Arguments) > 0 {
-		input := stringifyArgs(ps.Arguments)
-		return ToolCall{Tool: ps.Tool, Input: input, Arguments: ps.Arguments}
+		args := resolvePlanArgumentPlaceholders(ps.Arguments, prior)
+		input := stringifyArgs(args)
+		return ToolCall{Tool: ps.Tool, Input: input, Arguments: args}
 	}
 	if len(ps.Input) > 0 {
 		args := make(map[string]any, len(ps.Input))
 		for k, v := range ps.Input {
 			args[k] = v
 		}
-		return ToolCall{Tool: ps.Tool, Input: ps.Input, Arguments: args}
+		args = resolvePlanArgumentPlaceholders(args, prior)
+		return ToolCall{Tool: ps.Tool, Input: stringifyArgs(args), Arguments: args}
 	}
 	args := map[string]any{"task": ps.Description}
 	return ToolCall{Tool: ps.Tool, Input: map[string]string{"task": ps.Description}, Arguments: args}
+}
+
+func resolvePlanArgumentPlaceholders(args map[string]any, prior []Step) map[string]any {
+	if len(args) == 0 {
+		return args
+	}
+	lookup := make(map[string]string, len(prior))
+	for _, step := range prior {
+		content := strings.TrimSpace(step.Obs.Content)
+		if content == "" && step.Obs.Error != nil {
+			content = step.Obs.Error.Error()
+		}
+		if strings.TrimSpace(step.ID) != "" {
+			lookup[step.ID] = content
+		}
+	}
+	if len(lookup) == 0 {
+		return args
+	}
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = resolvePlanValue(v, lookup)
+	}
+	return out
+}
+
+func resolvePlanValue(v any, lookup map[string]string) any {
+	switch t := v.(type) {
+	case string:
+		return planStepPlaceholderRe.ReplaceAllStringFunc(t, func(match string) string {
+			parts := planStepPlaceholderRe.FindStringSubmatch(match)
+			if len(parts) != 2 {
+				return match
+			}
+			if replacement, ok := lookup[parts[1]]; ok {
+				return replacement
+			}
+			return match
+		})
+	case []any:
+		out := make([]any, len(t))
+		for i, item := range t {
+			out[i] = resolvePlanValue(item, lookup)
+		}
+		return out
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, item := range t {
+			out[k] = resolvePlanValue(item, lookup)
+		}
+		return out
+	default:
+		return v
+	}
 }
 
 func stringifyArgs(args map[string]any) map[string]string {
