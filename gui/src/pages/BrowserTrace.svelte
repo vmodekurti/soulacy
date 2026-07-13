@@ -6,6 +6,7 @@
   let agentId = ''
   let sessionId = ''
   let trace = null
+  let policy = null
   let loading = false
   let error = ''
   let routeAgentId = ''
@@ -46,9 +47,11 @@
     loading = true
     error = ''
     trace = null
+    policy = null
     try {
       const res = await api.browserTrace(agentId, sessionId.trim())
       trace = res.trace || null
+      policy = res.policy || null
       if (res.enabled === false) error = 'Action logging is disabled, so no trace is available.'
     } catch (e) {
       error = e.message
@@ -66,6 +69,8 @@
     if (actionFilter === 'errors') return s.is_error
     return s.action === actionFilter
   })
+  $: policyAction = policy?.browser_action || policy?.network || 'allow'
+  $: policyTone = policyAction === 'deny' ? 'danger' : policyAction === 'prompt' ? 'warn' : 'ok'
 
   function deepLink() {
     if (!agentId) return ''
@@ -135,6 +140,40 @@
   {#if error}<div class="banner err">⚠ {error}</div>{/if}
 
   {#if trace}
+    {#if policy}
+      <section class="policy-panel" aria-label="Browser automation policy">
+        <div class="policy-main">
+          <div class="policy-eyebrow">Browser Policy</div>
+          <div class="policy-title">
+            <span class:ok={policyTone === 'ok'} class:warn={policyTone === 'warn'} class:danger={policyTone === 'danger'}>
+              {policyAction}
+            </span>
+            {#if policy.requires_approval}<em>approval required</em>{/if}
+            {#if !policy.enabled}<em>default</em>{/if}
+          </div>
+          <p>{policy.detail}</p>
+        </div>
+        <div class="policy-lists">
+          <div>
+            <strong>Allowed Domains</strong>
+            {#if policy.allow_domains?.length}
+              <div class="chips">{#each policy.allow_domains as d}<span>{d}</span>{/each}</div>
+            {:else}
+              <small>Any domain unless denied</small>
+            {/if}
+          </div>
+          <div>
+            <strong>Denied Domains</strong>
+            {#if policy.deny_domains?.length}
+              <div class="chips denied">{#each policy.deny_domains as d}<span>{d}</span>{/each}</div>
+            {:else}
+              <small>No explicit deny list</small>
+            {/if}
+          </div>
+        </div>
+      </section>
+    {/if}
+
     <div class="summary">
       <div class="stat"><div class="val">{trace.steps?.length || 0}</div><div class="lbl">Steps</div></div>
       <div class="stat"><div class="val">{trace.navigations || 0}</div><div class="lbl">Navigations</div></div>
@@ -225,6 +264,24 @@
   .controls label { display: flex; flex-direction: column; gap: .3rem; font-size: .72rem; color: #6b7294; }
   .controls select, .controls input { background: #0e1020; color: #d7dcf5; border: 1px solid #1a1e36; border-radius: 7px; padding: .4rem .55rem; font-size: .82rem; min-width: 220px; }
   .banner.err { background: rgba(240,96,96,.08); border: 1px solid rgba(240,96,96,.4); color: #f0a0a0; border-radius: 8px; padding: .6rem .8rem; margin-bottom: 1rem; }
+  .policy-panel {
+    display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1.25fr); gap: 1rem;
+    background: #111426; border: 1px solid #20243d; border-radius: 9px; padding: .85rem; margin-bottom: 1rem;
+  }
+  .policy-eyebrow { font-size: .62rem; text-transform: uppercase; letter-spacing: .08em; color: #6b7294; margin-bottom: .25rem; }
+  .policy-title { display: flex; align-items: center; gap: .45rem; color: #c5c9e8; font-weight: 750; text-transform: capitalize; }
+  .policy-title span { border: 1px solid #2b3152; border-radius: 999px; padding: .12rem .5rem; font-size: .76rem; }
+  .policy-title span.ok { color: #71e3a1; background: rgba(69, 217, 139, .08); border-color: rgba(69, 217, 139, .28); }
+  .policy-title span.warn { color: #f0c778; background: rgba(240, 188, 96, .08); border-color: rgba(240, 188, 96, .3); }
+  .policy-title span.danger { color: #f0a0a0; background: rgba(240, 96, 96, .08); border-color: rgba(240, 96, 96, .35); }
+  .policy-title em { color: #8a91b8; font-style: normal; font-size: .7rem; background: #171a2d; border-radius: 999px; padding: .1rem .45rem; }
+  .policy-main p { margin: .45rem 0 0; color: #9aa0c8; font-size: .78rem; line-height: 1.45; }
+  .policy-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .7rem; }
+  .policy-lists strong { display: block; color: #c5c9e8; font-size: .72rem; margin-bottom: .35rem; }
+  .policy-lists small { color: #6b7294; font-size: .72rem; }
+  .chips { display: flex; flex-wrap: wrap; gap: .3rem; }
+  .chips span { color: #bfe8d1; background: rgba(69, 217, 139, .08); border: 1px solid rgba(69, 217, 139, .24); border-radius: 999px; padding: .12rem .45rem; font-size: .68rem; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chips.denied span { color: #f0a0a0; background: rgba(240, 96, 96, .08); border-color: rgba(240, 96, 96, .25); }
   .summary { display: flex; gap: .6rem; flex-wrap: wrap; margin-bottom: 1rem; }
   .stat { background: #141626; border: 1px solid #1a1e36; border-radius: 9px; padding: .6rem .85rem; min-width: 110px; }
   .stat.wide { flex: 1; min-width: 240px; }
@@ -268,4 +325,7 @@
   .screenshot-ref img { max-width: min(420px, 100%); max-height: 240px; border-radius: 8px; border: 1px solid #20243d; background: #0a0c17; object-fit: contain; }
   .step-time { font-size: .68rem; color: #6b7294; white-space: nowrap; }
   .empty { color: #6b7294; font-size: .85rem; padding: 2rem; text-align: center; }
+  @media (max-width: 820px) {
+    .policy-panel, .policy-lists { grid-template-columns: 1fr; }
+  }
 </style>
