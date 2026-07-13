@@ -53,6 +53,11 @@ type Catalog struct {
 	// the generation prompt so Studio learns to build flows that work the first
 	// time. Populated server-side from the lesson store; not user-authored.
 	Lessons []Lesson `json:"lessons,omitempty"`
+	// Generation is the server-derived build profile for the Studio builder
+	// model. It lets the compiler tighten prompts for compact local models and
+	// report how much scaffolding was used, without relying on the GUI to infer
+	// model quality or locality.
+	Generation *GenerationProfile `json:"generation,omitempty"`
 }
 
 // CatalogKB is one knowledge base the workflow's agents could use as a source.
@@ -278,6 +283,11 @@ type Result struct {
 	// first pivot). Present when the intent matched a known pattern; surfaced for
 	// transparency so the user sees the framework did the structural planning.
 	Plan []PlanStep `json:"plan,omitempty"`
+	// Generation describes the local/cloud builder profile and confidence guard
+	// rails used for this compile. It is derived server-side from the actual
+	// configured Studio provider/model and returned so the UI can explain why a
+	// local model got stricter checks or why Studio recommends build verification.
+	Generation *GenerationProfile `json:"generation,omitempty"`
 }
 
 // canonicalExample is the shape the model is instructed to emit. It is
@@ -383,6 +393,11 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	// Lessons distilled from accepted live-run repairs — real API shapes that
 	// broke a node before, so this generation avoids repeating the same mistake.
 	sb.WriteString(LessonsPromptBlock(catalog.Lessons))
+
+	// Builder profile guidance is deliberately close to the top of the prompt:
+	// compact local models follow a short, explicit contract much better than
+	// long free-form instructions buried later in the context.
+	sb.WriteString(GenerationProfilePromptBlock(catalog.Generation))
 
 	if len(catalog.Skills) > 0 {
 		sb.WriteString("Available skills (use the EXACT name in read_skill's skill_name):\n")
@@ -661,6 +676,16 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 
 	draft, err := ParseDraft(raw)
 	if err != nil {
+		if shouldRepairMalformedDraft(catalog.Generation) {
+			if repairedRaw, repairErr := repairMalformedDraft(ctx, llm, prompt, raw, err); repairErr == nil {
+				if repairedDraft, parseErr := ParseDraft(repairedRaw); parseErr == nil {
+					draft = repairedDraft
+					err = nil
+				}
+			}
+		}
+	}
+	if err != nil {
 		// Don't discard the evidence. Classify what the model ACTUALLY returned
 		// (nothing / prose / truncated mid-object / malformed) so the operator
 		// gets the real cause and the right fix instead of a raw JSON parser
@@ -749,6 +774,17 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	}
 
 	questions, notes := analyze(draft)
+	if catalog.Generation != nil {
+		gp := *catalog.Generation
+		gp.PlanMatched = len(BuildPlan(intent, catalog)) > 0
+		gp.PatternMatched = len(MatchPatterns(intent, catalog, 1)) > 0
+		gp.LessonsApplied = len(catalog.Lessons)
+		gp.Confidence, gp.NextAction = generationConfidence(gp)
+		catalog.Generation = &gp
+		if gp.Local && gp.Compact {
+			notes = append(notes, "Local-model Studio mode: used deterministic planning, strict schema repair, and extra validation because the builder is a compact local model.")
+		}
+	}
 	// Transparency (Stories #15/#10): tell the user which proven pattern(s)
 	// shaped the design, so the applied step-ordering isn't a black box.
 	if applied := MatchPatterns(intent, catalog, 2); len(applied) > 0 {
@@ -791,6 +827,7 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 		Suggestions: suggestMissing(draft, catalog),
 		Explanation: &explanation,
 		Plan:        BuildPlan(intent, catalog),
+		Generation:  catalog.Generation,
 	}, nil
 }
 
