@@ -49,6 +49,32 @@ func TestNormalizeToolCallCommonAliases(t *testing.T) {
 			}},
 			want: map[string]any{"url": "https://example.com"},
 		},
+		{
+			name: "channel send tool alias with wrapped args",
+			call: message.ToolCall{Name: "send_message", Arguments: map[string]any{
+				"arguments": map[string]any{
+					"platform": "telegram",
+					"target":   "123",
+					"body":     "queued",
+				},
+			}},
+			want: map[string]any{"channel": "telegram", "to": "123", "text": "queued"},
+		},
+		{
+			name: "queue enqueue alias preserves payload as item",
+			call: message.ToolCall{Name: "enqueue", Arguments: map[string]any{
+				"topic":   "pending_resources",
+				"payload": map[string]any{"url": "https://example.com"},
+			}},
+			want: map[string]any{"queue": "pending_resources", "item": map[string]any{"url": "https://example.com"}},
+		},
+		{
+			name: "knowledge search alias with json wrapper",
+			call: message.ToolCall{Name: "knowledge.search", Arguments: map[string]any{
+				"args": `{"knowledge_base":"AI Docs","q":"governance","limit":3}`,
+			}},
+			want: map[string]any{"kb": "AI Docs", "query": "governance", "top_k": float64(3)},
+		},
 	}
 
 	for _, tt := range tests {

@@ -3445,6 +3445,7 @@ func isAgentToolCall(name string) bool {
 
 func normalizeToolCall(call message.ToolCall) message.ToolCall {
 	call.Name = normalizeToolCallName(call.Name)
+	call.Arguments = unwrapToolArguments(call.Name, call.Arguments)
 	switch call.Name {
 	case "channel.send":
 		call.Arguments = normalizeChannelSendArgs(call.Arguments)
@@ -3481,10 +3482,70 @@ func normalizeToolCallName(name string) string {
 		}
 	}
 	switch strings.ToLower(name) {
-	case "google:search", "google_search", "browser.search", "browser_search", "search", "web.search", "web-search":
+	case "google:search", "google_search", "browser.search", "browser_search", "search", "web.search", "web-search", "search_web", "websearch", "internet_search", "internet.search":
 		return "web_search"
+	case "send_message", "send.notification", "send_notification", "notify", "notification.send", "channel_send", "channel-send", "send_channel", "send.channel", "telegram_send", "telegram.send", "slack_send", "slack.send", "discord_send", "discord.send":
+		return "channel.send"
+	case "read_url", "open_url", "get_url", "url_fetch", "fetch-url", "http_get", "http.get":
+		return "fetch_url"
+	case "search_kb", "kb.search", "knowledge_search", "knowledge.search", "rag_search", "rag.search":
+		return "kb_search"
+	case "write_kb", "kb.write", "kb_add", "kb.add", "kb_store", "kb.store", "store_kb", "knowledge_write", "knowledge.write", "knowledge_store", "knowledge.store":
+		return "kb_write"
+	case "queue.add", "queue_add", "queue.push", "queue_push", "enqueue", "queue.enqueue":
+		return "queue_put"
+	case "queue.read", "queue_read", "queue.items", "queue_items", "queue.peek", "queue_peek", "peek_queue":
+		return "queue_list"
+	case "dequeue", "queue.pop", "queue_pop":
+		return "queue_take"
+	case "queue.create", "queue-create":
+		return "queue_create"
+	case "queue.clear", "queue-clear":
+		return "queue_clear"
 	}
 	return name
+}
+
+func unwrapToolArguments(tool string, args map[string]any) map[string]any {
+	if args == nil || len(args) != 1 {
+		return args
+	}
+	for _, key := range []string{"arguments", "args", "parameters", "params", "input"} {
+		v, ok := args[key]
+		if !ok {
+			continue
+		}
+		if unwrapped, ok := coerceToolArgumentMap(v); ok {
+			return unwrapped
+		}
+	}
+	if tool != "queue_put" {
+		if v, ok := args["payload"]; ok {
+			if unwrapped, ok := coerceToolArgumentMap(v); ok {
+				return unwrapped
+			}
+		}
+	}
+	return args
+}
+
+func coerceToolArgumentMap(v any) (map[string]any, bool) {
+	switch typed := v.(type) {
+	case map[string]any:
+		return typed, true
+	case map[string]string:
+		out := make(map[string]any, len(typed))
+		for k, val := range typed {
+			out[k] = val
+		}
+		return out, true
+	case string:
+		var out map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(typed)), &out); err == nil && out != nil {
+			return out, true
+		}
+	}
+	return nil, false
 }
 
 func normalizeWebSearchArgs(args map[string]any) map[string]any {
