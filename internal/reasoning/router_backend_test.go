@@ -44,6 +44,9 @@ func TestRouterBackend_ThinkParsesJSON(t *testing.T) {
 	if !strings.Contains(fc.lastSys, "web_search") || !strings.Contains(fc.lastSys, "JSON") {
 		t.Fatalf("system prompt missing tools/JSON instruction: %q", fc.lastSys)
 	}
+	if !strings.Contains(fc.lastSys, "exact Available tools") || !strings.Contains(fc.lastSys, "retry the same tool once") {
+		t.Fatalf("system prompt missing tool-call hygiene guidance: %q", fc.lastSys)
+	}
 }
 
 func TestRouterBackend_ThinkHandlesMarkdownFences(t *testing.T) {

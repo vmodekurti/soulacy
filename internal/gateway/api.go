@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -31,7 +32,10 @@ import (
 	"github.com/soulacy/soulacy/internal/channels"
 	wawebchan "github.com/soulacy/soulacy/internal/channels/whatsappweb"
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/introspect"
 	"github.com/soulacy/soulacy/internal/mcp"
+	"github.com/soulacy/soulacy/internal/pkgregistry"
+	"github.com/soulacy/soulacy/internal/plugininstall"
 	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/scheduler"
@@ -40,6 +44,7 @@ import (
 	"github.com/soulacy/soulacy/internal/tier"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
+	"github.com/soulacy/soulacy/pkg/plugin"
 	"github.com/soulacy/soulacy/sdk/registry"
 )
 
@@ -351,6 +356,7 @@ func (s *Server) handleUpdateAgentYAML(c *fiber.Ctx) error {
 	if err := s.loader.Upsert(dir, &def); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	audit := s.auditAgentCapabilityChange(existing, &def)
 
 	// Re-register schedule, mirroring handleUpdateAgent.
 	s.scheduler.DeregisterAgent(id)
@@ -362,7 +368,7 @@ func (s *Server) handleUpdateAgentYAML(c *fiber.Ctx) error {
 		c.Set("X-Soulacy-Warning", "WARNING: This agent has been granted 'system' capabilities. It has raw access to shell execution and file writing. Ensure you fully trust the agent's prompt to avoid local machine compromise.")
 	}
 
-	return c.JSON(fiber.Map{"agent": &def, "validation": report})
+	return c.JSON(fiber.Map{"agent": &def, "validation": report, "capability_audit": audit})
 }
 
 func (s *Server) handleListAgentVersions(c *fiber.Ctx) error {
@@ -526,6 +532,7 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	if err := s.loader.Upsert(dir, &updates); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	audit := s.auditAgentCapabilityChange(existing, &updates)
 
 	// Re-register schedule
 	s.scheduler.DeregisterAgent(id)
@@ -537,7 +544,102 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 		c.Set("X-Soulacy-Warning", "WARNING: This agent has been granted 'system' capabilities. It has raw access to shell execution and file writing. Ensure you fully trust the agent's prompt to avoid local machine compromise.")
 	}
 
-	return c.JSON(updates)
+	return c.JSON(agentDefinitionResponse(&updates, audit))
+}
+
+type agentCapabilityAudit struct {
+	Changed     bool     `json:"changed"`
+	Escalated   bool     `json:"escalated"`
+	OldTier     string   `json:"old_tier"`
+	NewTier     string   `json:"new_tier"`
+	Reasons     []string `json:"reasons,omitempty"`
+	Bindings    []string `json:"bindings,omitempty"`
+	Warnings    []string `json:"warnings,omitempty"`
+	RequiresAck bool     `json:"requires_ack,omitempty"`
+}
+
+func (s *Server) auditAgentCapabilityChange(oldDef, newDef *agent.Definition) agentCapabilityAudit {
+	oldExp := tier.Explain(oldDef, s.loader.Get)
+	newExp := tier.Explain(newDef, s.loader.Get)
+	audit := agentCapabilityAudit{
+		Changed:   oldExp.Tier != newExp.Tier,
+		Escalated: newExp.Tier > oldExp.Tier,
+		OldTier:   oldExp.Tier.String(),
+		NewTier:   newExp.Tier.String(),
+		Reasons:   newExp.Reasons,
+	}
+	if newDef != nil {
+		audit.Bindings = s.interactiveChannelBindingsForAgent(newDef.ID)
+	}
+	if audit.Escalated {
+		audit.Warnings = append(audit.Warnings, fmt.Sprintf("Capability tier changed from %s to %s.", audit.OldTier, audit.NewTier))
+	}
+	if newExp.Tier == tier.Privileged && len(audit.Bindings) > 0 {
+		audit.RequiresAck = true
+		audit.Warnings = append(audit.Warnings, "This privileged agent is exposed through interactive channel mappings: "+strings.Join(audit.Bindings, ", ")+". Review each mapping's privileged exposure approval.")
+	}
+	if audit.Changed {
+		s.recordAgentCapabilityAudit(newDef, audit)
+	}
+	return audit
+}
+
+func (s *Server) recordAgentCapabilityAudit(def *agent.Definition, audit agentCapabilityAudit) {
+	if s.actions == nil || def == nil {
+		return
+	}
+	s.actions.Append(message.Event{
+		Type:      "agent.capability_tier_changed",
+		AgentID:   def.ID,
+		SessionID: "config",
+		Payload: map[string]any{
+			"old_tier":     audit.OldTier,
+			"new_tier":     audit.NewTier,
+			"escalated":    audit.Escalated,
+			"bindings":     audit.Bindings,
+			"warnings":     audit.Warnings,
+			"requires_ack": audit.RequiresAck,
+			"reasons":      audit.Reasons,
+		},
+		Timestamp: time.Now().UTC(),
+	})
+}
+
+func (s *Server) interactiveChannelBindingsForAgent(agentID string) []string {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return nil
+	}
+	var out []string
+	for channelID, cfg := range s.cfg.Channels {
+		if channelID == "http" || cfg == nil {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(cfg["agent_id"])) == agentID && !channels.ParseBoolValue(cfg["outbound_only"], false) {
+			out = append(out, channelID)
+		}
+		for i, bot := range rawBotList(cfg["bots"]) {
+			if strings.TrimSpace(fmt.Sprint(bot["agent_id"])) != agentID || channels.ParseBoolValue(bot["outbound_only"], false) {
+				continue
+			}
+			botName := strings.TrimSpace(fmt.Sprint(bot["bot_name"]))
+			if botName == "" {
+				botName = channelAdapterID(channelID, agentID, "", i, false)
+			}
+			out = append(out, channelID+"/"+botName)
+		}
+	}
+	return out
+}
+
+func agentDefinitionResponse(def *agent.Definition, audit agentCapabilityAudit) fiber.Map {
+	raw, _ := json.Marshal(def)
+	var out fiber.Map
+	if err := json.Unmarshal(raw, &out); err != nil || out == nil {
+		out = fiber.Map{}
+	}
+	out["capability_audit"] = audit
+	return out
 }
 
 // preserveHiddenAgentUpdateFields protects advanced SOUL.yaml fields that are
@@ -572,7 +674,7 @@ func preserveHiddenAgentUpdateFields(updates, existing *agent.Definition) {
 	if !updates.SystemTools {
 		updates.SystemTools = existing.SystemTools
 	}
-	if len(updates.ConfirmTools) == 0 {
+	if updates.ConfirmTools == nil {
 		updates.ConfirmTools = existing.ConfirmTools
 	}
 	if len(updates.Labels) == 0 {
@@ -1215,11 +1317,22 @@ var channelSpecs = []channelSpec{
 		{Key: "account_id", Label: "Account ID", Type: "text", Required: false, Help: "Session subdirectory for this linked account"},
 		{Key: "agent_id", Label: "Default agent ID", Type: "text", Required: true},
 	}},
+	{ID: "email", Name: "Email (SMTP)", Fields: []channelField{
+		{Key: "host", Label: "SMTP host", Type: "text", Required: true, Help: "e.g. smtp.gmail.com"},
+		{Key: "port", Label: "Port", Type: "text", Help: "587 for STARTTLS (default), 465 for implicit TLS"},
+		{Key: "username", Label: "Username", Type: "text", Help: "Usually your full email address."},
+		{Key: "password", Label: "Password", Type: "password", Secret: true, Help: "Use an app password — not your account password."},
+		{Key: "from", Label: "From", Type: "text", Help: "Defaults to the username. Accepts \"Name <addr@example.com>\"."},
+		{Key: "default_output_to", Label: "Default recipient", Type: "text", Help: "Where scheduled output is emailed when no destination is set."},
+		{Key: "subject", Label: "Default subject", Type: "text"},
+		{Key: "tls", Label: "TLS", Type: "text", Help: "starttls | implicit | none (inferred from the port when blank)."},
+	}},
 	{ID: "webhook", Name: "Webhook", Fields: []channelField{
 		{Key: "url", Label: "Webhook URL", Type: "password", Required: true, Secret: true, Help: "Absolute http(s) endpoint that receives outbound JSON messages from agents and schedules"},
 		{Key: "method", Label: "HTTP method", Type: "text", Required: false, Help: "Defaults to POST"},
 		{Key: "headers", Label: "Headers", Type: "text", Required: false, Secret: true, Help: "Optional request headers as Key: value lines; useful for Authorization or shared secrets"},
 		{Key: "template", Label: "Body template", Type: "text", Required: false, Help: "Optional plain-text body template. Use {text}, {agent_id}, {session_id}, {to}, {timestamp}. Leave empty for structured JSON."},
+		{Key: "secret", Label: "Signing secret", Type: "password", Required: false, Secret: true, Help: "Optional. When set, each request is signed with HMAC-SHA256 — your receiver can verify X-Soulacy-Signature against X-Soulacy-Timestamp to prove the payload came from Soulacy and was not tampered with. Leave blank to send unsigned."},
 		{Key: "timeout_seconds", Label: "Timeout seconds", Type: "text", Required: false, Help: "Request timeout; defaults to 10"},
 		{Key: "default_output_to", Label: "Default output destination", Type: "password", Required: false, Secret: true, Help: "Optional override URL used by scheduled agents. Leave empty to use Webhook URL."},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional scheduled-output wrapper; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
@@ -3488,6 +3601,9 @@ func (s *Server) agentValidationOptions(ctx context.Context) agentvalidate.Optio
 	if s.llmRouter == nil {
 		return opts
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	opts.RegisteredProviders = s.llmRouter.ProviderIDs()
 	for _, id := range opts.RegisteredProviders {
 		p := s.llmRouter.Provider(id)
@@ -3905,6 +4021,140 @@ func (s *Server) handleRescanSkills(c *fiber.Ctx) error {
 		return c.JSON(fiber.Map{"ok": true, "count": len(s.skillLoader.All()), "warnings": msgs})
 	}
 	return c.JSON(fiber.Map{"ok": true, "count": len(s.skillLoader.All())})
+}
+
+func (s *Server) handleInstallRegistrySkill(c *fiber.Ctx) error {
+	if s.skillLoader == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"ok": false, "error": "skill loader unavailable",
+		})
+	}
+	var body struct {
+		Slug            string `json:"slug"`
+		AllowUnverified bool   `json:"allow_unverified"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "error": "invalid JSON body"})
+	}
+	slug := strings.TrimSpace(body.Slug)
+	if slug == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"ok": false, "error": "slug is required"})
+	}
+
+	ctx, cancel := context.WithTimeout(c.UserContext(), 90*time.Second)
+	defer cancel()
+	eng, warnings := pkgregistry.FromConfig(s.configuredOrDefaultRegistries(), s.log)
+	pkg, err := eng.Resolve(ctx, slug)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"ok":       false,
+			"error":    err.Error(),
+			"warnings": registryWarningStrings(warnings),
+		})
+	}
+
+	verified := pkg.Signature != "" && eng.VerifiesSignatures(pkg.Provider)
+	if !verified && !body.AllowUnverified {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"ok":       false,
+			"error":    "authenticity cannot be verified for this package",
+			"code":     "unverified_package",
+			"slug":     pkg.Slug,
+			"provider": pkg.Provider,
+			"remedy":   "Enable \"Allow unverified install\" only if you trust the source, or configure signing_key for the registry.",
+		})
+	}
+
+	wsPaths, err := config.ResolveWorkspace()
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"ok": false, "error": "cannot resolve workspace: " + err.Error()})
+	}
+	if err := os.MkdirAll(wsPaths.Skills, 0o755); err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"ok": false, "error": "create skills dir: " + err.Error()})
+	}
+	staging := filepath.Join(wsPaths.Skills, fmt.Sprintf(".staging-%d", time.Now().UnixNano()))
+	if err := eng.Fetch(ctx, pkg, staging); err != nil {
+		_ = os.RemoveAll(staging)
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"ok": false, "error": "fetch failed: " + err.Error()})
+	}
+	cleanup := func() { _ = os.RemoveAll(staging) }
+	if _, err := os.Stat(filepath.Join(staging, "SKILL.md")); err != nil {
+		cleanup()
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("package %q has no SKILL.md at its root", pkg.Slug),
+		})
+	}
+
+	var manifest *plugin.Manifest
+	if m, merr := plugininstall.ReadManifest(staging); merr == nil {
+		manifest = &m
+	}
+	pipeline := introspect.Pipeline{DryRun: &introspect.DryRunConfig{Timeout: 5 * time.Second}}
+	report := pipeline.Run(ctx, staging, manifest)
+	if report.Verdict == introspect.VerdictDanger {
+		cleanup()
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"ok":              false,
+			"error":           "skill failed safety introspection",
+			"code":            "danger_verdict",
+			"security_report": report,
+		})
+	}
+
+	name := registrySkillDirName(pkg.Slug)
+	dest := filepath.Join(wsPaths.Skills, name)
+	if _, err := os.Stat(dest); err == nil {
+		cleanup()
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"ok": false, "error": fmt.Sprintf("skill %q is already installed", name), "code": "already_installed",
+		})
+	}
+	if err := os.Rename(staging, dest); err != nil {
+		cleanup()
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"ok": false, "error": "activate skill: " + err.Error()})
+	}
+
+	rescanWarnings := []string{}
+	if scanner, ok := s.skillLoader.(interface{ Scan() []error }); ok {
+		for _, e := range scanner.Scan() {
+			if e != nil {
+				rescanWarnings = append(rescanWarnings, e.Error())
+			}
+		}
+	}
+	s.log.Info("skill installed from registry via API",
+		zap.String("slug", pkg.Slug), zap.String("provider", pkg.Provider), zap.String("dest", dest), zap.Bool("verified", verified))
+	return c.JSON(fiber.Map{
+		"ok":              true,
+		"slug":            pkg.Slug,
+		"name":            name,
+		"version":         pkg.Version,
+		"provider":        pkg.Provider,
+		"verified":        verified,
+		"path":            dest,
+		"security_report": report,
+		"warnings":        append(registryWarningStrings(warnings), rescanWarnings...),
+		"message":         fmt.Sprintf("Skill %q installed and hot-loaded.", name),
+	})
+}
+
+func registryWarningStrings(warnings []error) []string {
+	out := make([]string, 0, len(warnings))
+	for _, w := range warnings {
+		if w != nil {
+			out = append(out, w.Error())
+		}
+	}
+	return out
+}
+
+func registrySkillDirName(slug string) string {
+	name := path.Base(strings.TrimSuffix(strings.TrimSuffix(slug, "/"), ".git"))
+	name = strings.TrimSuffix(name, ".git")
+	if name == "" || name == "." || name == "/" {
+		return "skill"
+	}
+	return name
 }
 
 func (s *Server) handleProvisionAgenticSkill(c *fiber.Ctx) error {

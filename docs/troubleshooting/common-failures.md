@@ -15,6 +15,8 @@ recent error rate, and prints a specific remedy for each failed check.
 | `address already in use` | Another process holds the gateway port | `sy doctor` reports the port; stop the other process or change `server.addr` |
 | Gateway starts then exits | Config invalid or vault locked | Check `sy daemon logs`; run `sy doctor` |
 | Service won't start on login | Daemon not installed | `sy daemon install`, then `sy daemon status` |
+| `sy doctor` warns `no update manifest configured` | Production upgrade path is not wired | Set `updates.manifest_url` in `config.yaml` or export `SOULACY_UPDATE_MANIFEST` |
+| `sy doctor` warns `update manifest could not be checked` | Manifest URL/file is unreachable or invalid | Verify the URL/file path, JSON shape, and artifact links before launch |
 
 ## LLM providers
 
@@ -63,6 +65,9 @@ fail silently on Telegram/Slack/Discord.
 
 ## When you're stuck: support bundle
 
-`sy doctor bundle` produces a redacted support bundle — config with secrets
-stripped, recent logs, `doctor` output, versions, and recent failures — safe to
-share when asking for help. It never includes secret values.
+`sy support bundle` produces a redacted support bundle — config with secrets
+stripped, recent logs, `doctor` output, release/update metadata, versions, and
+recent failures — safe to share when asking for help. The same bundle can be
+downloaded from **Dashboard → Launch Readiness** or **Config → Support**; the
+live gateway bundle also includes launch-readiness state. It never includes
+secret values.

@@ -166,6 +166,7 @@ server:
 runtime:
   max_concurrent_sessions: 100
   default_max_turns: 20
+  max_agent_call_depth: 5
   python_bin: "python3"
   tool_timeout: "120s"
   # Sandbox python tools by default. Set enabled: false to disable.
@@ -215,9 +216,9 @@ log:
 // keys), which would surprise an operator who carefully laid out their
 // config. The patch handles three forms:
 //
-//   1. `api_key: ""` or `api_key:` under `server:` → replace the line.
-//   2. Missing `api_key:` under `server:` → insert one.
-//   3. Missing `server:` block entirely → append one.
+//  1. `api_key: ""` or `api_key:` under `server:` → replace the line.
+//  2. Missing `api_key:` under `server:` → insert one.
+//  3. Missing `server:` block entirely → append one.
 func patchConfigAPIKey(path, apiKey string) error {
 	body, err := os.ReadFile(path)
 	if err != nil {

@@ -19,17 +19,29 @@
   let replayingSession = ''
   let replayMsg = ''
   let learningSession = ''
+  let routeAgentId = ''
+  let sessionFilter = ''
+  let runHistory = []
+  let runFilter = null
+  const ALL_AGENTS = '__all__'
+
+  function hashParams() {
+    const hash = window.location.hash || ''
+    const idx = hash.indexOf('?')
+    return new URLSearchParams(idx >= 0 ? hash.slice(idx + 1) : '')
+  }
 
   async function loadAgents() {
     try {
       const res = await api.agents.list()
       agents = res.agents || []
       const preset = get(activityAgent)
-      if (preset && agents.find(a => a.id === preset)) selectedId = preset
-      else if (!selectedId && agents.length) selectedId = agents[0].id
+      if (routeAgentId && agents.find(a => a.id === routeAgentId)) selectedId = routeAgentId
+      else if (preset && agents.find(a => a.id === preset)) selectedId = preset
+      else if (!selectedId) selectedId = ALL_AGENTS
       if (selectedId) await poll()
       // Auto-start watching when deep-linked from a "Watch" button.
-      if (preset) { activityAgent.set(''); if (!watching) toggleWatch() }
+      if (preset || routeAgentId || sessionFilter) { activityAgent.set(''); if (!watching) toggleWatch() }
     } catch (e) { error = e.message }
   }
 
@@ -37,9 +49,18 @@
     if (!selectedId) return
     loading = events.length === 0
     try {
-      const res = await api.agents.actions(selectedId, 500)
+      const [res, hist] = await Promise.all([
+        selectedId === ALL_AGENTS
+          ? api.runs.events({ limit: 1000, sessionId: sessionFilter })
+          : api.agents.actions(selectedId, 500),
+        selectedId === ALL_AGENTS
+          ? Promise.resolve({ runs: [] })
+          : api.studio.runHistory(selectedId).catch(() => ({ runs: [] })),
+      ])
       events = res.events || []
-      path   = res.path || ''
+      path   = selectedId === ALL_AGENTS ? '' : (res.path || '')
+      runHistory = normalizeRunHistory(hist.runs || [])
+      if (runFilter && !runHistory.find(r => r.id === runFilter.id)) runFilter = null
       error  = ''
       if (autoScroll) scrollToBottom()
     } catch (e) {
@@ -65,6 +86,9 @@
 
   async function selectAgent(id) {
     selectedId = id
+    sessionFilter = ''
+    runFilter = null
+    runHistory = []
     events = []
     path = ''
     replayMsg = ''
@@ -72,11 +96,12 @@
   }
 
   async function replayRun(ev) {
-    if (!selectedId || !ev?.session_id || replayingSession) return
+    const agentId = eventAgentId(ev)
+    if (!agentId || !ev?.session_id || replayingSession) return
     replayingSession = ev.session_id
     replayMsg = ''
     try {
-      const res = await api.agents.replay(selectedId, ev.session_id)
+      const res = await api.agents.replay(agentId, ev.session_id)
       replayMsg = `Replayed ${ev.session_id} as ${res.replay_session_id || 'new session'}`
       await poll()
     } catch (e) {
@@ -87,14 +112,15 @@
   }
 
   async function learnFromRun(ev) {
-    if (!selectedId || !ev?.session_id || learningSession) return
+    const agentId = eventAgentId(ev)
+    if (!agentId || !ev?.session_id || learningSession) return
     learningSession = ev.session_id
     replayMsg = ''
     try {
-      const res = await api.brainMemory.proposeFromRun(selectedId, ev.session_id, 3)
+      const res = await api.brainMemory.proposeFromRun(agentId, ev.session_id, 3)
       const n = res.created || (res.proposals || []).length || 0
       replayMsg = n
-        ? `Created ${n} learning proposal${n === 1 ? '' : 's'} from ${ev.session_id}. Review them in Brain Memory → Learning.`
+        ? `Created ${n} learning proposal${n === 1 ? '' : 's'} from ${ev.session_id}. Review them in Learning.`
         : `No learning proposals created from ${ev.session_id}. The run may be too short to generalize.`
     } catch (e) {
       error = e.message || 'Learning proposal failed'
@@ -104,16 +130,42 @@
   }
 
   function debugInStudio(ev) {
-    if (!selectedId || !ev?.session_id) return
+    const agentId = eventAgentId(ev)
+    if (!agentId || !ev?.session_id) return
     studioDebugRun.set({
-      agentId: selectedId,
+      agentId,
       sessionId: ev.session_id,
       error: eventErrorText(ev),
     })
     window.location.hash = '#studio'
   }
 
-  onMount(loadAgents)
+  function isBrowserEvent(ev) {
+    if (!ev?.session_id || !ev.type?.startsWith('tool.')) return false
+    const p = ev.payload || {}
+    const name = String(p.name || '').toLowerCase()
+    return name.includes('browser') ||
+      name.includes('playwright') ||
+      name.includes('puppeteer') ||
+      name.includes('computer') ||
+      name.includes('navigate') ||
+      name.includes('screenshot') ||
+      name.includes('page_')
+  }
+
+  function openBrowserTrace(ev) {
+    const agentId = eventAgentId(ev)
+    if (!agentId || !ev?.session_id) return
+    const params = new URLSearchParams({ agent_id: agentId, session_id: ev.session_id })
+    window.location.hash = `#browser?${params.toString()}`
+  }
+
+  onMount(() => {
+    const params = hashParams()
+    routeAgentId = params.get('agent_id') || ''
+    sessionFilter = params.get('session_id') || ''
+    loadAgents()
+  })
   onDestroy(() => { if (timer) clearInterval(timer) })
 
   // ── rendering helpers ──────────────────────────────────────────────
@@ -134,6 +186,57 @@
 
   function snippet(s, n = 120) { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s }
 
+  function normalizeRunHistory(rows) {
+    return (rows || []).map(r => ({
+      id: r.runId || r.sessionId || '',
+      sessionId: r.sessionId || r.runId || '',
+      trigger: r.trigger || r.channel || '',
+      source: r.source || 'run-history',
+      startedAt: r.startedAt || '',
+      updatedAt: r.updatedAt || r.startedAt || '',
+      status: r.status || (r.ok ? 'success' : 'unknown'),
+      ok: !!r.ok,
+      steps: r.steps || 0,
+      output: r.output || r.error || '',
+      error: r.error || '',
+      deliveryStatus: r.deliveryStatus || '',
+      deliveryChannel: r.deliveryChannel || '',
+      deliveryTo: r.deliveryTo || '',
+      deliveryError: r.deliveryError || '',
+    })).filter(r => r.id).sort((a, b) => new Date(b.updatedAt || b.startedAt || 0) - new Date(a.updatedAt || a.startedAt || 0))
+  }
+
+  function selectRun(run) {
+    runFilter = run
+    sessionFilter = ''
+    typeFilter = 'all'
+  }
+
+  function clearRunFilter() {
+    runFilter = null
+  }
+
+  function runMatchesEvent(run, ev) {
+    if (!run || !ev) return true
+    if (run.sessionId && ev.session_id !== run.sessionId) return false
+    const t = new Date(ev.timestamp || 0).getTime()
+    const start = new Date(run.startedAt || 0).getTime()
+    const end = new Date(run.updatedAt || run.startedAt || 0).getTime()
+    if (!Number.isFinite(t) || !Number.isFinite(start)) return true
+    const pad = 1000
+    return t >= start - pad && (!Number.isFinite(end) || end <= 0 || t <= end + pad)
+  }
+
+  function runTitle(run) {
+    const status = run.status || 'unknown'
+    const trigger = run.trigger || run.source || 'run'
+    return `${status} · ${trigger} · ${fmtTime(run.startedAt)}`
+  }
+
+  function runPreview(run) {
+    return snippet(run.error || run.output || run.deliveryError || run.id, 110)
+  }
+
   function partsText(p) {
     if (!p || !p.parts) return ''
     return p.parts.filter(x => x.type === 'text').map(x => x.text).join(' ')
@@ -151,8 +254,8 @@
       case 'tool.call':   return `${p.name || 'tool'}(${snippet(JSON.stringify(p.arguments || {}), 80)})`
       case 'tool.result': return `${p.name || 'tool'} → ${snippet(p.content, 100)}`
       case 'reasoning.start':  return `reasoning loop started — ${p.strategy || '?'} · max ${p.max_steps ?? '?'} steps · ${p.tools ?? 0} tools`
-      case 'reasoning.step':   return `step ${p.index ?? '?'}: ${snippet(p.thought, 90)}${p.tool ? ` → ${p.tool}` : ''}`
-      case 'reasoning.result': return `loop finished — ${p.steps ?? 0} step(s) · ${p.confident ? 'confident' : 'not confident'} · ${p.duration_ms ?? 0}ms`
+      case 'reasoning.step':   return `${p.recovery ? 'recovery ' : ''}step ${p.index ?? '?'}: ${snippet(p.thought, 90)}${p.tool ? ` → ${p.tool}` : ''}`
+      case 'reasoning.result': return `loop finished — ${p.steps ?? 0} step(s) · ${p.confident ? 'confident' : 'degraded / not confident'} · ${p.duration_ms ?? 0}ms`
       case 'message.out': return `reply — ${snippet(partsText(p), 120)}`
       case 'error':       return `[${p.stage || 'error'}] ${snippet(p.error, 160)}`
       case 'connected':   return String(ev.payload || 'stream connected')
@@ -165,6 +268,15 @@
   function eventErrorText(ev) {
     const p = ev?.payload || {}
     return p.error || p.message || p.content || ev?.type || ''
+  }
+
+  function eventAgentId(ev) {
+    return ev?.agent_id || (selectedId !== ALL_AGENTS ? selectedId : '')
+  }
+
+  function agentName(id) {
+    const a = agents.find(x => x.id === id)
+    return a?.name || id || ''
   }
 
   function canDebug(ev) {
@@ -183,12 +295,16 @@
     tools:  (t) => t.startsWith('tool.'),
     errors: (t) => t === 'error',
   }
-  $: filtered = events.filter(ev => (FILTERS[typeFilter] || FILTERS.all)(ev.type || ''))
+  $: filtered = events.filter(ev =>
+    (FILTERS[typeFilter] || FILTERS.all)(ev.type || '') &&
+    (!sessionFilter || ev.session_id === sessionFilter) &&
+    (!runFilter || runMatchesEvent(runFilter, ev))
+  )
 </script>
 
 <div class="page">
   <div class="page-header">
-    <h1>Activity</h1>
+    <h1>Runs</h1>
     <div class="header-actions">
       <button class="btn-secondary" class:active={watching} on:click={toggleWatch}>
         {watching ? '⏹ Stop watching' : '▶ Watch (2s)'}
@@ -202,6 +318,7 @@
 
   <div class="toolbar">
     <select bind:value={selectedId} on:change={() => selectAgent(selectedId)} class="agent-select">
+      <option value={ALL_AGENTS}>All agents</option>
       {#if agents.length === 0}
         <option value="">No agents</option>
       {/if}
@@ -219,10 +336,64 @@
     <label class="autoscroll"><input type="checkbox" bind:checked={autoScroll} /> auto-scroll</label>
   </div>
 
+  {#if sessionFilter}
+    <div class="source-bar session-bar">
+      <span class="source-label">Session</span>
+      <code class="source-path">{sessionFilter}</code>
+      <button class="row-action" on:click={() => sessionFilter = ''}>Show all runs</button>
+    </div>
+  {/if}
+
+  {#if selectedId !== ALL_AGENTS && runHistory.length > 0}
+    <div class="run-strip" aria-label="Canonical run history">
+      <div class="run-strip-head">
+        <span class="source-label">Canonical runs</span>
+        <span class="source-count">{runHistory.length} retained</span>
+        {#if runFilter}
+          <button class="row-action" on:click={clearRunFilter}>Show all events</button>
+        {/if}
+      </div>
+      <div class="run-cards">
+        {#each runHistory.slice(0, 18) as run (run.id)}
+          <button
+            class="run-card"
+            class:on={runFilter?.id === run.id}
+            class:failed={run.status === 'failed'}
+            class:success={run.status === 'success'}
+            title={run.id}
+            on:click={() => selectRun(run)}
+          >
+            <span class="run-status">{run.status || 'unknown'}</span>
+            <span class="run-time">{fmtTime(run.startedAt)}</span>
+            <span class="run-trigger">{run.trigger || run.source || 'run'}</span>
+            <span class="run-preview">{runPreview(run)}</span>
+            {#if run.deliveryChannel || run.deliveryStatus}
+              <span class="run-delivery">{run.deliveryChannel || 'delivery'} · {run.deliveryStatus || 'unknown'}</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
+
+  {#if runFilter}
+    <div class="source-bar session-bar">
+      <span class="source-label">Run</span>
+      <code class="source-path">{runTitle(runFilter)}</code>
+      <span class="source-count">session {runFilter.sessionId || '—'}</span>
+    </div>
+  {/if}
+
   {#if path}
     <div class="source-bar">
       <span class="source-label">Log file</span>
       <code class="source-path">{path}</code>
+      <span class="source-count">{filtered.length} / {events.length} events</span>
+    </div>
+  {:else if selectedId === ALL_AGENTS}
+    <div class="source-bar">
+      <span class="source-label">Durable history</span>
+      <code class="source-path">All agents from the SQLite action log</code>
       <span class="source-count">{filtered.length} / {events.length} events</span>
     </div>
   {/if}
@@ -233,8 +404,8 @@
     {:else if filtered.length === 0}
       <div class="empty">
         {#if events.length === 0}
-          No actions logged yet for <strong>{selectedId || 'this agent'}</strong>.
-          <br>Trigger the agent (Schedule ▶ Run, or send it a message) and its actions will appear here.
+          No actions logged yet for <strong>{selectedId === ALL_AGENTS ? 'any agent' : (selectedId || 'this agent')}</strong>.
+          <br>Trigger the agent from Automations, Studio, or Chat and its actions will appear here.
         {:else}
           No <strong>{typeFilter}</strong> events in the log.
         {/if}
@@ -242,10 +413,13 @@
     {:else}
       {#each filtered as ev, i (i + (ev.timestamp || ''))}
         {@const m = meta(ev.type)}
-        <div class="row" class:is-error={ev.type === 'error' || ev.payload?.is_error}>
+        <div class="row" class:is-error={ev.type === 'error' || ev.payload?.is_error} class:is-recovery={ev.payload?.recovery} class:is-degraded={ev.type === 'reasoning.result' && ev.payload?.confident === false}>
           <span class="t">{fmtTime(ev.timestamp)}</span>
           <span class="badge" style="color:{m.color}">{m.icon} {m.label}</span>
           <span class="sum">{summary(ev)}</span>
+          {#if selectedId === ALL_AGENTS && ev.agent_id}
+            <span class="agent-pill" title={ev.agent_id}>{agentName(ev.agent_id)}</span>
+          {/if}
           {#if ev.type === 'message.in' && ev.session_id}
             <button class="row-action" on:click={() => replayRun(ev)} disabled={!!replayingSession}>
               {replayingSession === ev.session_id ? 'Replaying…' : 'Replay'}
@@ -254,6 +428,11 @@
           {#if canDebug(ev)}
             <button class="row-action debug" on:click={() => debugInStudio(ev)}>
               Debug in Studio
+            </button>
+          {/if}
+          {#if isBrowserEvent(ev)}
+            <button class="row-action browser" on:click={() => openBrowserTrace(ev)}>
+              Browser trace
             </button>
           {/if}
           {#if canLearn(ev)}
@@ -266,7 +445,7 @@
           <div class="row metrics-row">
             <span class="t"></span>
             <span class="badge run-sum">Σ run</span>
-            <RunMetrics sessionId={ev.session_id} agentId={selectedId} />
+            <RunMetrics sessionId={ev.session_id} agentId={eventAgentId(ev)} />
           </div>
         {/if}
       {/each}
@@ -304,6 +483,29 @@
   .source-path  { font-size: .78rem; color: #7b82a8; flex: 1; word-break: break-all; }
   .source-count { font-size: .72rem; color: #555a7a; flex-shrink: 0; }
 
+  .run-strip {
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 10px;
+    padding: .65rem; display: flex; flex-direction: column; gap: .55rem; flex-shrink: 0;
+  }
+  .run-strip-head { display: flex; align-items: center; gap: .7rem; }
+  .run-cards {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: .45rem; max-height: 190px; overflow: auto;
+  }
+  .run-card {
+    text-align: left; border: 1px solid #242a47; background: #12162a; color: #c8cadf;
+    border-radius: 8px; padding: .55rem .65rem; display: grid;
+    grid-template-columns: 1fr auto; gap: .18rem .5rem; min-height: 74px;
+  }
+  .run-card:hover, .run-card.on { border-color: rgba(108,99,255,.65); background: rgba(108,99,255,.12); }
+  .run-card.failed { border-left: 3px solid #f06060; }
+  .run-card.success { border-left: 3px solid #4caf82; }
+  .run-status { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: #8b85ff; font-weight: 700; }
+  .run-time { font-size: .66rem; color: #6b7294; justify-self: end; }
+  .run-trigger, .run-preview, .run-delivery { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-trigger { color: #e7e8f5; font-size: .76rem; }
+  .run-preview, .run-delivery { color: #7b82a8; font-size: .68rem; }
+
   .log-panel {
     flex: 1; min-height: 0; overflow-y: auto;
     background: #0a0c17; border: 1px solid #1a1e36; border-radius: 10px;
@@ -312,11 +514,13 @@
   .empty { padding: 3rem 2rem; text-align: center; color: #555a7a; line-height: 1.7; }
 
   .row {
-    display: grid; grid-template-columns: 76px 86px 1fr auto auto; gap: .6rem; align-items: start;
+    display: grid; grid-template-columns: 76px 86px minmax(0, 1fr) repeat(5, auto); gap: .6rem; align-items: start;
     padding: .3rem .85rem; border-bottom: 1px solid rgba(255,255,255,.03);
   }
   .row:hover { background: rgba(255,255,255,.03); }
   .row.is-error { background: rgba(240,96,96,.06); }
+  .row.is-recovery { background: rgba(245,167,66,.055); }
+  .row.is-degraded { background: rgba(245,167,66,.075); }
   .t     { color: #555a7a; }
   .badge { font-weight: 700; font-size: .68rem; white-space: nowrap; }
   .sum   { color: #c8cadf; white-space: pre-wrap; word-break: break-word; }
@@ -327,8 +531,14 @@
     font-family: inherit; font-size: .68rem;
   }
   .row-action.debug { background: rgba(76,175,130,.10); border-color: rgba(76,175,130,.35); color: #76d6a0; }
+  .row-action.browser { background: rgba(64,196,255,.10); border-color: rgba(64,196,255,.35); color: #8bdcff; }
   .row-action.learn { background: rgba(245,167,66,.10); border-color: rgba(245,167,66,.35); color: #f5bd67; }
   .row-action:disabled { opacity: .55; cursor: wait; }
+  .agent-pill {
+    justify-self: end; align-self: center; max-width: 180px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; border: 1px solid rgba(108,99,255,.28); background: rgba(108,99,255,.10);
+    color: #ada8ff; border-radius: 999px; padding: .14rem .45rem; font-size: .66rem;
+  }
 
   .metrics-row { opacity: .85; }
   .run-sum { color: #6b7294; }

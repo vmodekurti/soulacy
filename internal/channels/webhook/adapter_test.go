@@ -25,7 +25,7 @@ func TestWebhookSendPostsJSONPayload(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	a, err := New("webhook", srv.URL, "POST", map[string]string{"X-Test": "yes"}, "", time.Second)
+	a, err := New("webhook", srv.URL, "POST", map[string]string{"X-Test": "yes"}, "", "", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func TestWebhookSendNon2xxReturnsError(t *testing.T) {
 		http.Error(w, "nope", http.StatusBadGateway)
 	}))
 	defer srv.Close()
-	a, err := New("webhook", srv.URL, "POST", nil, "", time.Second)
+	a, err := New("webhook", srv.URL, "POST", nil, "", "", time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

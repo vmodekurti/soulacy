@@ -276,13 +276,18 @@ type Engine struct {
 	// max_turns (Story 1 / S3.2). Set via SetMaxTurnsCeiling; <=0 falls back
 	// to defaultMaxTurnsCeiling.
 	maxTurnsCeiling int
+
+	// maxAgentCallDepth bounds recursive peer-agent delegation chains. Set via
+	// SetMaxAgentCallDepth; <=0 falls back to defaultMaxAgentCallDepth.
+	maxAgentCallDepth int
 }
 
 const (
-	defaultSessionTTL      = 24 * time.Hour
-	defaultMaxSessions     = 10000
-	defaultMaxHistoryTurns = 100
-	defaultMaxTurnsCeiling = 50
+	defaultSessionTTL        = 24 * time.Hour
+	defaultMaxSessions       = 10000
+	defaultMaxHistoryTurns   = 100
+	defaultMaxTurnsCeiling   = 50
+	defaultMaxAgentCallDepth = 5
 )
 
 // PluginToolProvider is satisfied by *plugins.Loader. Defined locally to
@@ -801,11 +806,19 @@ func (e *Engine) maybeConfirm(ctx context.Context, def *agent.Definition, call m
 
 	sender, ok := confirmSenderFrom(ctx)
 	if !ok {
-		// No confirm channel in this context (e.g. non-streaming call).
-		// Proceed without confirmation rather than silently blocking forever.
-		e.log.Warn("tool confirmation required but no confirm channel in context — proceeding",
+		// No confirm channel in this context (e.g. a scheduled or non-streaming
+		// run). Unattended is the explicit operator opt-in for hands-off
+		// execution; otherwise fail closed so confirm_tools means the same thing
+		// across GUI chat, HTTP, cron, and channel-triggered runs.
+		if def != nil && def.Unattended {
+			e.log.Warn("tool confirmation required, no confirm channel — auto-approved (unattended agent)",
+				zap.String("agent", def.ID), zap.String("tool", call.Name))
+			e.logAudit(ctx, def, call, "auto-approved (unattended)", time.Now(), false, nil)
+			return nil
+		}
+		e.log.Warn("tool confirmation required but no confirm channel in context — denying",
 			zap.String("tool", call.Name))
-		return nil
+		return fmt.Errorf("tool %q requires confirmation, but no GUI confirmation channel is available", call.Name)
 	}
 
 	callID := uuid.New().String()
@@ -1160,20 +1173,36 @@ func (e *Engine) buildKBSearchBuiltin() BuiltinTool {
 					"type":        "string",
 					"description": "The knowledge base name to search (must be listed in this agent's available knowledge bases).",
 				},
+				"knowledge_base": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for kb.",
+				},
+				"kb_name": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for kb.",
+				},
 				"query": map[string]any{
 					"type":        "string",
 					"description": "The natural-language search query. Be specific — use the user's actual terms when possible.",
+				},
+				"text": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for query.",
+				},
+				"q": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for query.",
 				},
 				"top_k": map[string]any{
 					"type":        "integer",
 					"description": "How many passages to return (default 10, max 20). Use 10+ for broad questions or when the corpus has multiple related documents that might compete for the top spots.",
 				},
 			},
-			"required": []string{"kb", "query"},
+			"required": []string{},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			kbName := argString(args, "kb")
-			query := argString(args, "query")
+			kbName := argStringFirst(args, "kb", "knowledge_base", "kb_name", "collection")
+			query := argStringFirst(args, "query", "q", "text", "input")
 			topK := argInt(args, "top_k", 10)
 			if topK > 20 {
 				topK = 20
@@ -1201,6 +1230,14 @@ func (e *Engine) buildKBWriteBuiltin() BuiltinTool {
 					"type":        "string",
 					"description": "The knowledge base name to write to. Must be listed in this agent's available knowledge bases.",
 				},
+				"knowledge_base": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for kb.",
+				},
+				"kb_name": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for kb.",
+				},
 				"title": map[string]any{
 					"type":        "string",
 					"description": "Human-readable document title.",
@@ -1216,12 +1253,21 @@ func (e *Engine) buildKBWriteBuiltin() BuiltinTool {
 				"content": map[string]any{
 					"description": "The text content to ingest. Structured JSON values are accepted and stored as readable JSON text.",
 				},
+				"text": map[string]any{
+					"description": "Compatibility alias for content.",
+				},
+				"document": map[string]any{
+					"description": "Compatibility alias for content.",
+				},
+				"artifact": map[string]any{
+					"description": "Compatibility alias for content.",
+				},
 			},
-			"required": []string{"kb", "content"},
+			"required": []string{},
 		},
 		Handler: func(ctx context.Context, args map[string]any) (string, error) {
-			kbName := argString(args, "kb")
-			content := argContentText(args, "content")
+			kbName := argStringFirst(args, "kb", "knowledge_base", "kb_name", "collection")
+			content := argContentTextFirst(args, "content", "text", "document", "artifact", "data")
 			if kbName == "" {
 				return "", fmt.Errorf("kb_write: kb is required")
 			}
@@ -2969,6 +3015,23 @@ func (e *Engine) turnsCeiling() int {
 	return e.maxTurnsCeiling
 }
 
+// SetMaxAgentCallDepth configures the recursion guard for peer-agent calls.
+// n<=0 falls back to defaultMaxAgentCallDepth (5). Safe to call once at startup.
+func (e *Engine) SetMaxAgentCallDepth(n int) {
+	if n <= 0 {
+		n = defaultMaxAgentCallDepth
+	}
+	e.maxAgentCallDepth = n
+}
+
+// agentCallDepthLimit returns the effective peer-agent recursion guard.
+func (e *Engine) agentCallDepthLimit() int {
+	if e == nil || e.maxAgentCallDepth <= 0 {
+		return defaultMaxAgentCallDepth
+	}
+	return e.maxAgentCallDepth
+}
+
 // budgetExceeded reports the first per-run budget dimension that would be
 // violated by issuing another LLM call, or "" when the run is within budget.
 // A zero limit means "no cap for that dimension". (Story 1 / S3.1)
@@ -3270,60 +3333,114 @@ func (e *Engine) pastConversationRecall(def *agent.Definition, sessionID string,
 // Each tool definition points to a Python file; we call the named function
 // with the tool's arguments as keyword arguments, capture stdout as the result.
 func (e *Engine) executeToolCalls(ctx context.Context, def *agent.Definition, sessionID string, calls []message.ToolCall, seen map[string]string, seenMu *sync.Mutex) []message.ToolResult {
+	if shouldParallelizePeerCalls(def, calls) {
+		return e.executeToolCallsWithParallelPeers(ctx, def, sessionID, calls, seen, seenMu)
+	}
+
 	results := make([]message.ToolResult, len(calls))
 
 	for i, tc := range calls {
-		tc = normalizeToolCall(tc)
-		e.sink.Emit(message.Event{
-			Type: "tool.call", AgentID: def.ID, SessionID: sessionID,
-			Payload: tc, Timestamp: time.Now().UTC(),
-		})
-
-		// Anti-loop guard: if this exact tool+args was already run this turn,
-		// don't run it again — hand back the prior result and tell the model
-		// to move on.
-		argsJSON, _ := json.Marshal(tc.Arguments)
-		key := tc.Name + "|" + string(argsJSON)
-		seenMu.Lock()
-		prev, dup := seen[key]
-		seenMu.Unlock()
-
-		var result string
-		isErr := false
-		if dup {
-			result = fmt.Sprintf(
-				"NOTE: you already called %s with these arguments this run; do not call it again. "+
-					"Use the result below and proceed to the next step.\n\n%s", tc.Name, prev)
-		} else {
-			// Per-tool timing + outcome counter. (PRODUCTION_AUDIT →
-			// MED/Observability)
-			toolStart := time.Now()
-			var err error
-			result, err = e.runTool(ctx, def, sessionID, tc)
-			metrics.ToolCallDuration.WithLabelValues(tc.Name).Observe(time.Since(toolStart).Seconds())
-			if err != nil {
-				result = fmt.Sprintf("error: %v", err)
-				isErr = true
-				metrics.ToolCallsTotal.WithLabelValues(tc.Name, "error").Inc()
-			} else {
-				metrics.ToolCallsTotal.WithLabelValues(tc.Name, "success").Inc()
-			}
-			seenMu.Lock()
-			seen[key] = result
-			seenMu.Unlock()
-		}
-
-		results[i] = message.ToolResult{CallID: tc.ID, Name: tc.Name, Content: result, IsError: isErr}
-
-		// (The ToolObserver fires inside runTool so it captures both reasoning-loop
-		// and fixed-workflow tool calls uniformly.)
-
-		e.sink.Emit(message.Event{
-			Type: "tool.result", AgentID: def.ID, SessionID: sessionID,
-			Payload: results[i], Timestamp: time.Now().UTC(),
-		})
+		results[i] = e.executeOneToolCall(ctx, def, sessionID, normalizeToolCall(tc), seen, seenMu)
 	}
 	return results
+}
+
+func (e *Engine) executeToolCallsWithParallelPeers(ctx context.Context, def *agent.Definition, sessionID string, calls []message.ToolCall, seen map[string]string, seenMu *sync.Mutex) []message.ToolResult {
+	results := make([]message.ToolResult, len(calls))
+	var wg sync.WaitGroup
+
+	for i, raw := range calls {
+		tc := normalizeToolCall(raw)
+		if isAgentToolCall(tc.Name) {
+			wg.Add(1)
+			go func(i int, tc message.ToolCall) {
+				defer wg.Done()
+				results[i] = e.executeOneToolCall(ctx, def, sessionID, tc, seen, seenMu)
+			}(i, tc)
+			continue
+		}
+		results[i] = e.executeOneToolCall(ctx, def, sessionID, tc, seen, seenMu)
+	}
+
+	wg.Wait()
+	return results
+}
+
+func (e *Engine) executeOneToolCall(ctx context.Context, def *agent.Definition, sessionID string, tc message.ToolCall, seen map[string]string, seenMu *sync.Mutex) message.ToolResult {
+	e.sink.Emit(message.Event{
+		Type: "tool.call", AgentID: def.ID, SessionID: sessionID,
+		Payload: tc, Timestamp: time.Now().UTC(),
+	})
+
+	// Anti-loop guard: if this exact tool+args was already run this turn,
+	// don't run it again — hand back the prior result and tell the model
+	// to move on.
+	argsJSON, _ := json.Marshal(tc.Arguments)
+	key := tc.Name + "|" + string(argsJSON)
+	seenMu.Lock()
+	prev, dup := seen[key]
+	seenMu.Unlock()
+
+	var result string
+	isErr := false
+	if dup {
+		result = fmt.Sprintf(
+			"NOTE: you already called %s with these arguments this run; do not call it again. "+
+				"Use the result below and proceed to the next step.\n\n%s", tc.Name, prev)
+	} else {
+		// Per-tool timing + outcome counter. (PRODUCTION_AUDIT →
+		// MED/Observability)
+		toolStart := time.Now()
+		var err error
+		result, err = e.runTool(ctx, def, sessionID, tc)
+		metrics.ToolCallDuration.WithLabelValues(tc.Name).Observe(time.Since(toolStart).Seconds())
+		if err != nil {
+			result = fmt.Sprintf("error: %v", err)
+			isErr = true
+			metrics.ToolCallsTotal.WithLabelValues(tc.Name, "error").Inc()
+		} else {
+			metrics.ToolCallsTotal.WithLabelValues(tc.Name, "success").Inc()
+		}
+		seenMu.Lock()
+		seen[key] = result
+		seenMu.Unlock()
+	}
+
+	out := message.ToolResult{CallID: tc.ID, Name: tc.Name, Content: result, IsError: isErr}
+
+	// (The ToolObserver fires inside runTool so it captures both reasoning-loop
+	// and fixed-workflow tool calls uniformly.)
+
+	e.sink.Emit(message.Event{
+		Type: "tool.result", AgentID: def.ID, SessionID: sessionID,
+		Payload: out, Timestamp: time.Now().UTC(),
+	})
+	return out
+}
+
+func shouldParallelizePeerCalls(def *agent.Definition, calls []message.ToolCall) bool {
+	if def == nil || !def.ParallelPeerCalls || len(calls) < 2 {
+		return false
+	}
+	peerCalls := 0
+	seenBatch := map[string]bool{}
+	for _, raw := range calls {
+		tc := normalizeToolCall(raw)
+		argsJSON, _ := json.Marshal(tc.Arguments)
+		key := tc.Name + "|" + string(argsJSON)
+		if seenBatch[key] {
+			return false
+		}
+		seenBatch[key] = true
+		if isAgentToolCall(tc.Name) {
+			peerCalls++
+		}
+	}
+	return peerCalls >= 2
+}
+
+func isAgentToolCall(name string) bool {
+	return strings.HasPrefix(normalizeToolCallName(name), AgentToolPrefix)
 }
 
 func normalizeToolCall(call message.ToolCall) message.ToolCall {
@@ -3471,6 +3588,30 @@ func toolTimeoutError(name string, d time.Duration, outerCtxErr, callErr error) 
 		return fmt.Errorf("tool %q exceeded the %s tool_timeout — for slow-by-design tools (e.g. NotebookLM research/audio polling) raise runtime.tool_timeout, set a longer per-tool timeout, or poll in a bounded loop: %w", name, d, callErr)
 	}
 	return callErr
+}
+
+func pythonToolRetries(tool *agent.ToolDef) int {
+	if tool == nil || tool.Retries <= 0 {
+		return 0
+	}
+	if tool.Retries > 5 {
+		return 5
+	}
+	return tool.Retries
+}
+
+func pythonToolRetryBackoff(tool *agent.ToolDef) time.Duration {
+	if tool == nil || strings.TrimSpace(tool.RetryBackoff) == "" {
+		return time.Second
+	}
+	d, err := time.ParseDuration(tool.RetryBackoff)
+	if err != nil || d < 0 {
+		return time.Second
+	}
+	if d > 30*time.Second {
+		return 30 * time.Second
+	}
+	return d
 }
 
 // runTool dispatches a single tool call, notifying any in-context ToolObserver
@@ -3750,9 +3891,43 @@ print(result if isinstance(result, str) else json.dumps(result))
 	if d, ok := toolTimeoutOverride(ctx); ok {
 		timeout = d // the node's own budget is the most specific — it wins
 	}
-	tctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	retries := pythonToolRetries(toolDef)
+	backoff := pythonToolRetryBackoff(toolDef)
+	var lastErr error
+	for attempt := 0; attempt <= retries; attempt++ {
+		if attempt > 0 {
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return "", ctx.Err()
+			case <-timer.C:
+			}
+			e.sink.Emit(message.Event{
+				Type:      "tool.log",
+				AgentID:   def.ID,
+				SessionID: sessionID,
+				Payload: map[string]any{
+					"call_id": call.ID,
+					"name":    call.Name,
+					"line":    fmt.Sprintf("retrying after failure (attempt %d of %d)", attempt+1, retries+1),
+				},
+				Timestamp: time.Now().UTC(),
+			})
+		}
 
+		tctx, cancel := context.WithTimeout(ctx, timeout)
+		out, err := e.runPythonToolOnce(tctx, ctx, def, sessionID, call, script, argsJSON)
+		cancel()
+		if err == nil {
+			return out, nil
+		}
+		lastErr = err
+	}
+	return "", lastErr
+}
+
+func (e *Engine) runPythonToolOnce(tctx, auditCtx context.Context, def *agent.Definition, sessionID string, call message.ToolCall, script string, argsJSON []byte) (string, error) {
 	// Per-agent execution backend: when the agent explicitly selected a
 	// registered non-default backend (docker/ssh/…), run the tool's python
 	// through it instead of the local sandboxed subprocess. `script` is already
@@ -3763,7 +3938,7 @@ print(result if isinstance(result, str) else json.dumps(result))
 	if be := e.selectedNamedBackend(def); be != nil {
 		tstart := time.Now()
 		out, rerr := be.Run(tctx, "", "", script, argsJSON)
-		e.logAudit(ctx, def, call, out, tstart, false, rerr)
+		e.logAudit(auditCtx, def, call, out, tstart, false, rerr)
 		if rerr != nil {
 			return "", fmt.Errorf("tool %q (%s backend): %w", call.Name, def.Execution.Backend, rerr)
 		}
@@ -4102,11 +4277,6 @@ func sanitizeMCPID(s string) string {
 // tool catalog and tool-call routing.
 const AgentToolPrefix = "agent__"
 
-// maxAgentCallDepth caps the recursion chain. Each engine.Handle call invoked
-// from a tool handler bumps the depth carried via context.Value; exceeding the
-// cap returns an error so a runaway A → B → A loop fails cleanly.
-const maxAgentCallDepth = 5
-
 type agentCallDepthKey struct{}
 
 func agentCallDepth(ctx context.Context) int {
@@ -4194,6 +4364,9 @@ func (e *Engine) buildAgentCallSchemas(def *agent.Definition) []llm.ToolSchema {
 		desc := strings.TrimSpace(p.Description)
 		if desc == "" {
 			desc = "(no description provided)"
+		}
+		if def.StructuredPeerResults {
+			desc += " The tool result is returned as a SOULACY_AGENT_RESULT JSON envelope with target_agent, ok, content, and structured when the peer reply is valid JSON."
 		}
 		out = append(out, llm.ToolSchema{
 			Name:        AgentToolPrefix + p.ID,
@@ -4365,8 +4538,9 @@ func (e *Engine) runAgentCall(ctx context.Context, callerDef *agent.Definition, 
 
 	// Depth limit — bounds A → B → A → … recursion chains.
 	depth := agentCallDepth(ctx)
-	if depth >= maxAgentCallDepth {
-		return "", fmt.Errorf("agent call depth limit (%d) exceeded calling %q — possible infinite loop", maxAgentCallDepth, targetID)
+	depthLimit := e.agentCallDepthLimit()
+	if depth >= depthLimit {
+		return "", fmt.Errorf("agent call depth limit (%d) exceeded calling %q — possible infinite loop", depthLimit, targetID)
 	}
 
 	target := e.loader.Get(targetID)
@@ -4413,7 +4587,43 @@ func (e *Engine) runAgentCall(ctx context.Context, callerDef *agent.Definition, 
 	if err != nil {
 		return "", fmt.Errorf("agent call %q: %w", targetID, err)
 	}
-	return flattenParts(reply.Parts), nil
+	content := flattenParts(reply.Parts)
+	if callerDef.StructuredPeerResults {
+		return formatAgentCallResult(targetID, content), nil
+	}
+	return content, nil
+}
+
+func formatAgentCallResult(targetID, content string) string {
+	payload := map[string]any{
+		"kind":         "agent_result",
+		"target_agent": targetID,
+		"ok":           true,
+		"content":      content,
+	}
+	if parsed, ok := parseJSONValue(content); ok {
+		payload["structured"] = parsed
+	}
+	b, err := json.MarshalIndent(payload, "", "  ")
+	if err != nil {
+		return content
+	}
+	return "SOULACY_AGENT_RESULT\n```json\n" + string(b) + "\n```"
+}
+
+func parseJSONValue(s string) (any, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, false
+	}
+	if !strings.HasPrefix(s, "{") && !strings.HasPrefix(s, "[") {
+		return nil, false
+	}
+	var out any
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil, false
+	}
+	return out, true
 }
 
 // uuidShort returns a fresh UUIDv4 string. Used for sub-agent session IDs

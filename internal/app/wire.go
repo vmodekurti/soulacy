@@ -22,6 +22,7 @@ import (
 	"github.com/soulacy/soulacy/internal/events"
 	"github.com/soulacy/soulacy/internal/gateway"
 	"github.com/soulacy/soulacy/internal/hooks"
+	"github.com/soulacy/soulacy/internal/knowledge"
 	"github.com/soulacy/soulacy/internal/learning"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
@@ -354,6 +355,20 @@ func (a *App) Run(parent context.Context) error {
 		pluginLoader:    pluginLoader,
 		openedCostStore: openedCostStore,
 	}, stack)
+
+	// ── KB ingestion worker ───────────────────────────────────────────────────
+	// Document ingestion runs OUT of the HTTP request: uploads are spooled to
+	// disk and recorded in a durable job catalog, and this worker drains it —
+	// chunking, embedding in batches, reporting progress, retrying transient
+	// failures with bounded backoff. On startup it also requeues any job a crash
+	// left mid-flight, so a document can't silently go missing.
+	if knowledgeSvc != nil {
+		ingestWorker := knowledge.NewWorker(knowledgeSvc, knowledge.WorkerOptions{}, log)
+		ingestWorker.SetProgressSink(srv.IngestProgressSink())
+		srv.SetIngestWorker(ingestWorker)
+		ingestWorker.Start(ctx)
+		log.Info("knowledge ingestion worker started")
+	}
 
 	// Graceful shutdown on SIGINT / SIGTERM
 	sigCh := make(chan os.Signal, 1)

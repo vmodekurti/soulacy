@@ -148,16 +148,16 @@ try_download_binaries() {
     TMPDIR="$(mktemp -d)"
     trap 'rm -rf "$TMPDIR"' RETURN
 
-    for binary in soulacy sy; do
-        TARBALL="${binary}_linux_${ARCH}.tar.gz"
-        URL="${BASE_URL}/${TARBALL}"
-        log "Downloading ${binary} from ${URL}..."
-        curl -fsSL -o "${TMPDIR}/${TARBALL}" "$URL" || return 1
-        tar -xzf "${TMPDIR}/${TARBALL}" -C "$TMPDIR"
-        [ -f "${TMPDIR}/${binary}" ] || return 1
-        cp "${TMPDIR}/${binary}" "$INSTALL_DIR/$binary"
-        chmod 755 "$INSTALL_DIR/$binary"
-    done
+    TARBALL="soulacy_${VERSION}_linux_${ARCH}.tar.gz"
+    URL="${BASE_URL}/${TARBALL}"
+    log "Downloading Soulacy bundle from ${URL}..."
+    curl -fsSL -o "${TMPDIR}/${TARBALL}" "$URL" || return 1
+    tar -xzf "${TMPDIR}/${TARBALL}" -C "$TMPDIR"
+    [ -f "${TMPDIR}/soulacy" ] || return 1
+    [ -f "${TMPDIR}/sy" ] || return 1
+    cp "${TMPDIR}/soulacy" "$INSTALL_DIR/soulacy"
+    cp "${TMPDIR}/sy" "$INSTALL_DIR/sy"
+    chmod 755 "$INSTALL_DIR/soulacy" "$INSTALL_DIR/sy"
     return 0
 }
 

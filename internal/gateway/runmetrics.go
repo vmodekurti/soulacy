@@ -1,10 +1,14 @@
 package gateway
 
 import (
+	"strings"
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/soulacy/soulacy/internal/actionlog"
 	"github.com/soulacy/soulacy/internal/costs"
+	"github.com/soulacy/soulacy/pkg/message"
 )
 
 // Run-level observability (Story 7, milestone M1). Combines the costs store
@@ -17,6 +21,14 @@ import (
 // gracefully to costs-only metrics.
 type sessionStatser interface {
 	SessionStats(agentID, sessionID string) (actionlog.SessionStats, error)
+}
+
+type opsSummarizer interface {
+	OpsSummary(since time.Time, window string, limit int) (actionlog.OpsSummary, error)
+}
+
+type eventQuerier interface {
+	QueryEvents(agentID, sessionID string, limit int, allowed map[string]bool) ([]message.Event, error)
 }
 
 // handleRunMetrics handles GET /api/v1/runs/:session_id/metrics?agent_id=
@@ -90,4 +102,110 @@ func (s *Server) handleRunMetrics(c *fiber.Ctx) error {
 		out["duration_ms"] = cm.LastCallAt.Sub(cm.FirstCallAt).Milliseconds()
 	}
 	return c.JSON(out)
+}
+
+// handleOpsSummary handles GET /api/v1/runs/ops-summary?window=24h.
+// It is backed by the durable action log so it remains accurate even after
+// per-agent JSONL files rotate or the Activity view is filtered.
+func (s *Server) handleOpsSummary(c *fiber.Ctx) error {
+	if s.actions == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "ops summary not available (action log disabled)",
+		})
+	}
+	sp, ok := s.actions.(opsSummarizer)
+	if !ok {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "ops summary requires a durable action log backend",
+		})
+	}
+	window := c.Query("window", "24h")
+	since, label, err := parseCostSince(window)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusBadRequest, err)
+	}
+	limit := c.QueryInt("limit", 8)
+	summary, err := sp.OpsSummary(since, label, limit)
+	if err != nil {
+		s.log.Warn("ops summary: actionlog query failed")
+		return s.errMsg(c, fiber.StatusInternalServerError, "internal error")
+	}
+	out := fiber.Map{
+		"generated_at":       summary.GeneratedAt,
+		"since":              summary.Since,
+		"window":             summary.Window,
+		"total_runs":         summary.TotalRuns,
+		"successful_runs":    summary.SuccessfulRuns,
+		"failed_runs":        summary.FailedRuns,
+		"incomplete_runs":    summary.IncompleteRuns,
+		"failure_rate":       summary.FailureRate,
+		"total_events":       summary.TotalEvents,
+		"tool_calls":         summary.ToolCalls,
+		"top_failing_agents": summary.TopFailing,
+		"top_errors":         summary.TopErrors,
+		"recent_failures":    summary.RecentFailures,
+	}
+	if s.costStore != nil {
+		rows, err := s.costStore.SumByAgent(c.Context(), since)
+		if err != nil {
+			s.log.Warn("ops summary: cost query failed")
+		} else {
+			var tokens int
+			var usd float64
+			for _, row := range rows {
+				tokens += row.TotalTokens
+				usd += row.CostUSD
+			}
+			out["total_tokens"] = tokens
+			out["cost_usd"] = usd
+		}
+	}
+	return c.JSON(out)
+}
+
+// handleRunEvents handles GET /api/v1/runs/events and returns durable events
+// across all agents by default. Optional agent_id, session_id, limit, and types
+// filters let Activity, Schedule, and support tooling inspect the same source
+// of truth instead of depending on per-agent JSONL tails.
+func (s *Server) handleRunEvents(c *fiber.Ctx) error {
+	if s.actions == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "run events not available (action log disabled)",
+		})
+	}
+	q, ok := s.actions.(eventQuerier)
+	if !ok {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
+			"error": "run events require a durable action log backend",
+		})
+	}
+	limit := c.QueryInt("limit", 500)
+	if limit <= 0 {
+		limit = 500
+	}
+	if limit > 10000 {
+		limit = 10000
+	}
+	allowed := map[string]bool{}
+	if typesParam := c.Query("types", ""); typesParam != "" {
+		for _, t := range strings.Split(typesParam, ",") {
+			if t = strings.TrimSpace(t); t != "" {
+				allowed[t] = true
+			}
+		}
+	}
+	events, err := q.QueryEvents(c.Query("agent_id"), c.Query("session_id"), limit, allowed)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	for i := range events {
+		events[i].Payload = compactActionPayload(events[i].Payload, 64*1024)
+	}
+	return c.JSON(fiber.Map{
+		"agent_id":   c.Query("agent_id"),
+		"session_id": c.Query("session_id"),
+		"events":     events,
+		"count":      len(events),
+		"durable":    true,
+	})
 }

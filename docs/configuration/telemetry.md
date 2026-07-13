@@ -21,10 +21,16 @@ telemetry:
     path: /metrics          # scrape endpoint
 
   # Cost tracking
-  cost:
-    enabled: true
-    # Cost records are stored in the database.
-    # View via GET /api/v1/costs
+  costs:
+    # Cost records are stored in the database. Pricing is optional; when a
+    # provider/model is not listed, tokens are still recorded and cost_usd is 0.
+    pricing:
+      openai/gpt-4.1-mini:
+        input_per_mtok: 0.40
+        output_per_mtok: 1.60
+      omniroute/*:
+        input_per_mtok: 0.25
+        output_per_mtok: 0.75
 ```
 
 ## Traces
@@ -80,18 +86,48 @@ Prometheus metrics are available at `/metrics`:
 
 ## Cost tracking
 
-Soulacy records token usage and estimated cost for every LLM call. Cost per token is derived from provider pricing tables embedded in the binary (updated with each release).
+Soulacy records token usage for every LLM call. Estimated dollar cost is computed when you configure a pricing table under `costs.pricing`; otherwise `cost_usd` remains `0` so the system does not invent prices.
+
+Pricing keys match in this order:
+
+- `provider/model`
+- `provider/*`
+- `*/model`
+
+Values are USD per 1 million tokens:
+
+```yaml
+costs:
+  pricing:
+    anthropic/claude-sonnet-5:
+      input_per_mtok: 3.00
+      output_per_mtok: 15.00
+    ollama_cloud/*:
+      input_per_mtok: 0.00
+      output_per_mtok: 0.00
+```
 
 ```bash
 # View cost summary
 curl http://localhost:18789/api/v1/costs \
-  -H "Authorization: Bearer sy_your-key"
+  -H "Authorization: Bearer $SOULACY_API_KEY"
 
 # Filter by agent
 curl "http://localhost:18789/api/v1/costs?agent_id=assistant&period=7d"
 ```
 
 See the [Costs API reference](../api/costs.md) for full details.
+
+## Run reliability
+
+The dashboard's Run Reliability panel is backed by the durable action log, not the rolling per-agent JSONL tail. This makes the summary useful for cron jobs, manual triggers, and chat runs even after the visible log file rotates.
+
+```bash
+curl "http://localhost:18789/api/v1/runs/ops-summary?window=24h" \
+  -H "Authorization: Bearer $SOULACY_API_KEY"
+```
+
+The response includes total runs, successful/failed/incomplete run counts, failure rate, tool calls, recent failures, top failing agents, and repeated error signatures. When cost tracking is enabled, it also includes total tokens and estimated cost for the same window.
 
 ## Disabling telemetry
 

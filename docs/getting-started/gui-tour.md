@@ -18,17 +18,17 @@ Your at-a-glance health view: gateway status and version, agent counts, and a **
 
 **Try first:** send a chat message in another tab and watch the events appear live.
 
-## Build
+## First Run
 
-A conversational agent builder — describe what you want in plain language, answer its follow-up questions, and it generates a complete SOUL.yaml you can preview and deploy in one click.
+The guided setup path for a fresh workspace. It helps you choose a first focus, configure the essentials, and points you toward a starter template or Studio flow that matches what you are trying to build.
 
-**Try first:** type "an agent that summarizes RSS articles every morning" and see the blueprint form fill itself in.
+**Try first:** pick the focus closest to your use case, then follow the suggested next action.
 
-## Flow
+## Studio
 
-A visual canvas for each agent: trigger, system prompt, memory, LLM, tools, and output rendered as a connected graph. Click any node to open an editable inspector and hit **Save Flow**. Agents defined with `workflow.nodes` render as a read-only graph instead — see [Flow view](../using/flow-view.md).
+The one-stop agent development surface. Describe an agent in plain language, let Studio draft the workflow, inspect the generated plan, edit nodes and connections on the canvas, run dry/live tests, validate integrity, and use self-heal when a real run fails. Studio can author Workflow, ReAct, and Plan-Execute agents, then save them as normal SOUL.yaml agents.
 
-**Try first:** pick an agent in the left rail and click its LLM node.
+**Try first:** type "an agent that summarizes RSS articles every morning", generate a draft, run **Dry run**, then click any node to inspect its inputs and outputs.
 
 ## Agents
 
@@ -43,9 +43,9 @@ The full agent editor: identity, trigger, system prompt, LLM provider/model (wit
 
 ## Templates
 
-A catalog of ready-made agents: four agentic workflows (Meeting Minutes & Action Items, Smart Inbox Triage, Competitor & Market Monitor, Document Compliance Auditor) plus starters. One click on **⊕ Create agent** instantiates a working agent. See [Templates](../using/templates.md).
+A catalog of ready-made agents: four agentic workflows (Meeting Minutes & Action Items, Smart Inbox Triage, Competitor & Market Monitor, Document Compliance Auditor) plus starters. **Install** opens a guided checklist with readiness checks, a mock test, and optional scheduled-output routing. See [Templates](../using/templates.md).
 
-**Try first:** create **Meeting Minutes & Action Items** and paste a transcript into Chat.
+**Try first:** install **Meeting Minutes & Action Items** and paste a transcript into Chat.
 
 ## Chat
 
@@ -77,9 +77,9 @@ Status and configuration for every channel adapter — Telegram, Discord, Slack,
 
 **Try first:** open a channel's **Edit** dialog to see which agent each bot routes to.
 
-## Schedule (ops)
+## Automations (ops)
 
-All cron agents in one table: next run, last run, missed-run policy, live "Running…" status, and countdowns. **▶ Run** triggers immediately, **📋 History** opens a slide-out of past runs with outputs, **👁 Watch** jumps to the live action log. See [Schedules](../using/schedules.md).
+All cron agents in one table: next run, last run, missed-run policy, live "Running…" status, and countdowns. **▶ Run** triggers immediately, **📋 History** opens a slide-out of past manual, channel, and scheduled runs with outputs and delivery status, **👁 Watch** jumps to the live action log. See [Schedules](../using/schedules.md).
 
 **Try first:** click **📋 History** on any cron agent.
 

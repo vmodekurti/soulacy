@@ -43,6 +43,16 @@ func (s *Server) supportBundleOptions(c *fiber.Ctx) supportbundle.Options {
 			"providers": s.providerDoctorChecks(c),
 			"channels":  s.channelDoctorChecks(),
 		},
+		ExtraJSON: map[string]any{
+			"readiness": s.readinessPayload(c),
+			"release": fiber.Map{
+				"version":         config.Version,
+				"update_manifest": s.updateManifestSource(),
+				"updates_ready":   s.updateManifestSource() != "",
+				"dry_run_command": "sy update install --dry-run",
+				"install_command": "sy update install --yes",
+			},
+		},
 	}
 }
 

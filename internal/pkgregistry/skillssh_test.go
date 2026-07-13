@@ -85,6 +85,40 @@ func TestSkillsSh_Search(t *testing.T) {
 	}
 }
 
+func TestSkillsSh_SearchRetriesReadableSlugVariant(t *testing.T) {
+	var queries []string
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query().Get("q")
+		queries = append(queries, q)
+		if q != "options strategy advisor" {
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id": "acme/options/options-strategy-advisor", "slug": "options-strategy-advisor",
+				"name": "Options Strategy Advisor", "source": "acme/options",
+				"installs": 88,
+			}},
+		})
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p := newTestSkillsShProvider(t, srv.URL)
+	pkgs, err := p.Search(context.Background(), "options-strategy-advisor")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
+		t.Fatalf("pkgs = %+v", pkgs)
+	}
+	if strings.Join(queries, "|") != "options-strategy-advisor|options strategy advisor" {
+		t.Fatalf("queries = %v", queries)
+	}
+}
+
 func TestSkillsSh_SearchSendsConfiguredAuthHeader(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {

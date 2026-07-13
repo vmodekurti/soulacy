@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/costs"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/plugins"
@@ -81,13 +82,19 @@ func (a *engineDLQAdapter) PushFailed(ctx context.Context, queue string, payload
 
 // engineCostStoreAdapter bridges *costs.Store → runtime's cost-recording
 // interface (individual fields → UsageRecord struct).
-type engineCostStoreAdapter struct{ s *costs.Store }
+type engineCostStoreAdapter struct {
+	s      *costs.Store
+	prices costs.PriceTable
+}
 
 func (a *engineCostStoreAdapter) Record(ctx context.Context,
 	agentID, sessionID, provider, model string,
 	promptTokens, compTokens, totalTokens int,
 	costUSD float64,
 ) error {
+	if costUSD == 0 {
+		costUSD = costs.EstimateUSD(a.prices, provider, model, promptTokens, compTokens)
+	}
 	return a.s.Record(ctx, costs.UsageRecord{
 		AgentID:      agentID,
 		SessionID:    sessionID,
@@ -98,4 +105,25 @@ func (a *engineCostStoreAdapter) Record(ctx context.Context,
 		TotalTokens:  totalTokens,
 		CostUSD:      costUSD,
 	})
+}
+
+func costPriceTableFromConfig(in map[string]config.CostPricing) costs.PriceTable {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(costs.PriceTable, len(in))
+	for key, price := range in {
+		normalized := costs.NormalizePriceKey(key)
+		if normalized == "" {
+			continue
+		}
+		out[normalized] = costs.Pricing{
+			InputPerMTok:  price.InputPerMTok,
+			OutputPerMTok: price.OutputPerMTok,
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }

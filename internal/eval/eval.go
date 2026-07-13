@@ -33,6 +33,18 @@ type CaseDefaults struct {
 	Overrides  map[string]any `yaml:"overrides" json:"overrides,omitempty"`
 }
 
+// RunOptions controls how a suite is executed.
+type RunOptions struct {
+	// Tags limits execution to cases that carry at least one of these tags, or
+	// to all cases in a suite that carries a matching suite-level tag.
+	Tags []string
+	// Repeat runs the selected cases multiple times to expose flaky behavior and
+	// latency variance. Values <= 0 are treated as 1.
+	Repeat int
+	// FailFast stops after the first failed/error case.
+	FailFast bool
+}
+
 // Case is one evaluation test case.
 type Case struct {
 	Name                string         `yaml:"name" json:"name"`
@@ -77,6 +89,20 @@ type Result struct {
 	Reasons    []string      `json:"reasons,omitempty"` // why it failed
 }
 
+// Summary is the aggregate outcome of one eval run.
+type Summary struct {
+	Total        int `json:"total"`
+	Passed       int `json:"passed"`
+	Failed       int `json:"failed"`
+	Errors       int `json:"errors"`
+	Skipped      int `json:"skipped"`
+	TotalTokens  int `json:"total_tokens"`
+	AverageToken int `json:"average_tokens"`
+	AvgLatencyMS int `json:"avg_latency_ms"`
+	P50LatencyMS int `json:"p50_latency_ms"`
+	P95LatencyMS int `json:"p95_latency_ms"`
+}
+
 // Runner executes a Suite against a live gateway.
 type Runner struct {
 	GatewayURL string
@@ -97,11 +123,32 @@ func NewRunner(gatewayURL, apiKey, agentID string) *Runner {
 
 // Run executes all cases in a suite sequentially and returns results.
 func (r *Runner) Run(ctx context.Context, suite Suite) ([]Result, error) {
+	return r.RunWithOptions(ctx, suite, RunOptions{})
+}
+
+// RunWithOptions executes selected cases in a suite and returns results.
+func (r *Runner) RunWithOptions(ctx context.Context, suite Suite, opts RunOptions) ([]Result, error) {
+	suite, err := FilterSuite(suite, opts.Tags)
+	if err != nil {
+		return nil, err
+	}
+	repeat := opts.Repeat
+	if repeat <= 0 {
+		repeat = 1
+	}
 	results := make([]Result, 0, len(suite.Cases))
-	for idx, c := range suite.Cases {
-		c = applyDefaults(c, suite.Defaults)
-		result := r.runCase(ctx, idx, c)
-		results = append(results, result)
+	for rep := 0; rep < repeat; rep++ {
+		for idx, c := range suite.Cases {
+			c = applyDefaults(c, suite.Defaults)
+			if repeat > 1 {
+				c.Name = fmt.Sprintf("%s [%d/%d]", c.Name, rep+1, repeat)
+			}
+			result := r.runCase(ctx, rep*len(suite.Cases)+idx, c)
+			results = append(results, result)
+			if opts.FailFast && !result.Skipped && (!result.Passed || result.Error != nil) {
+				return results, nil
+			}
+		}
 	}
 	return results, nil
 }
@@ -278,9 +325,7 @@ func (r *Runner) runCase(ctx context.Context, idx int, c Case) Result {
 
 // PrintReport writes a formatted report of eval results to w.
 func PrintReport(results []Result, w io.Writer) {
-	passed := 0
-	skipped := 0
-	total := len(results)
+	summary := Summarize(results)
 
 	// Header
 	fmt.Fprintf(w, "%-30s  %-6s  %-10s  %-6s  %s\n", "CASE", "RESULT", "LATENCY", "TOKENS", "REASON")
@@ -292,15 +337,12 @@ func PrintReport(results []Result, w io.Writer) {
 		if r.Skipped {
 			status = "SKIP"
 			reason = r.SkipReason
-			skipped++
 		} else if r.Error != nil {
 			status = "ERROR"
 			reason = r.Error.Error()
 		} else if !r.Passed {
 			status = "FAIL"
 			reason = strings.Join(r.Reasons, "; ")
-		} else {
-			passed++
 		}
 
 		latency := "-"
@@ -325,11 +367,86 @@ func PrintReport(results []Result, w io.Writer) {
 	}
 
 	fmt.Fprintf(w, "%s\n", strings.Repeat("-", 80))
-	if skipped > 0 {
-		fmt.Fprintf(w, "%d/%d passed, %d skipped\n", passed, total-skipped, skipped)
+	if summary.Skipped > 0 {
+		fmt.Fprintf(w, "%d/%d passed, %d skipped", summary.Passed, summary.Total-summary.Skipped, summary.Skipped)
 	} else {
-		fmt.Fprintf(w, "%d/%d passed\n", passed, total)
+		fmt.Fprintf(w, "%d/%d passed", summary.Passed, summary.Total)
 	}
+	if summary.Failed > 0 || summary.Errors > 0 {
+		fmt.Fprintf(w, " (%d failed, %d errors)", summary.Failed, summary.Errors)
+	}
+	if summary.AvgLatencyMS > 0 {
+		fmt.Fprintf(w, " · latency avg/p50/p95 %d/%d/%dms", summary.AvgLatencyMS, summary.P50LatencyMS, summary.P95LatencyMS)
+	}
+	if summary.TotalTokens > 0 {
+		fmt.Fprintf(w, " · tokens total/avg %d/%d", summary.TotalTokens, summary.AverageToken)
+	}
+	fmt.Fprintln(w)
+}
+
+// Summarize aggregates result counts, token use, and latency percentiles.
+func Summarize(results []Result) Summary {
+	var s Summary
+	s.Total = len(results)
+	var latencies []int
+	tokenCases := 0
+	for _, r := range results {
+		if r.Skipped {
+			s.Skipped++
+			continue
+		}
+		if r.Error != nil {
+			s.Errors++
+		} else if r.Passed {
+			s.Passed++
+		} else {
+			s.Failed++
+		}
+		if r.Tokens > 0 {
+			s.TotalTokens += r.Tokens
+			tokenCases++
+		}
+		if r.Latency > 0 {
+			latencies = append(latencies, int(r.Latency.Round(time.Millisecond)/time.Millisecond))
+		}
+	}
+	if tokenCases > 0 {
+		s.AverageToken = s.TotalTokens / tokenCases
+	}
+	if len(latencies) > 0 {
+		sort.Ints(latencies)
+		sum := 0
+		for _, v := range latencies {
+			sum += v
+		}
+		s.AvgLatencyMS = sum / len(latencies)
+		s.P50LatencyMS = percentile(latencies, 50)
+		s.P95LatencyMS = percentile(latencies, 95)
+	}
+	return s
+}
+
+// FilterSuite returns a copy of suite narrowed to matching case tags. Suite tags
+// match all cases, making it easy to run a whole category such as "weather".
+func FilterSuite(suite Suite, tags []string) (Suite, error) {
+	need := normalizeTags(tags)
+	if len(need) == 0 {
+		return suite, nil
+	}
+	if tagsIntersect(suite.Tags, need) {
+		return suite, nil
+	}
+	filtered := suite
+	filtered.Cases = nil
+	for _, c := range suite.Cases {
+		if tagsIntersect(c.Tags, need) {
+			filtered.Cases = append(filtered.Cases, c)
+		}
+	}
+	if len(filtered.Cases) == 0 {
+		return Suite{}, fmt.Errorf("no eval cases matched tag filter: %s", strings.Join(tags, ", "))
+	}
+	return filtered, nil
 }
 
 // LoadSuite parses a Suite from JSON or YAML bytes.
@@ -417,6 +534,51 @@ func missingSecrets(names []string) []string {
 		}
 	}
 	return missing
+}
+
+func normalizeTags(tags []string) map[string]bool {
+	out := map[string]bool{}
+	for _, tag := range tags {
+		for _, part := range strings.Split(tag, ",") {
+			part = strings.ToLower(strings.TrimSpace(part))
+			if part != "" {
+				out[part] = true
+			}
+		}
+	}
+	return out
+}
+
+func tagsIntersect(tags []string, need map[string]bool) bool {
+	for _, tag := range tags {
+		if need[strings.ToLower(strings.TrimSpace(tag))] {
+			return true
+		}
+	}
+	return false
+}
+
+func percentile(sorted []int, p int) int {
+	if len(sorted) == 0 {
+		return 0
+	}
+	if len(sorted) == 1 {
+		return sorted[0]
+	}
+	if p <= 0 {
+		return sorted[0]
+	}
+	if p >= 100 {
+		return sorted[len(sorted)-1]
+	}
+	idx := (p*len(sorted) + 99) / 100
+	if idx <= 0 {
+		idx = 1
+	}
+	if idx > len(sorted) {
+		idx = len(sorted)
+	}
+	return sorted[idx-1]
 }
 
 func slug(s string) string {

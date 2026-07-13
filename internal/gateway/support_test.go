@@ -73,7 +73,7 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 		_ = rc.Close()
 		joined.Write(body)
 	}
-	for _, want := range []string{"manifest.json", "doctor.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
+	for _, want := range []string{"manifest.json", "doctor.json", "readiness.json", "release.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
 		if !names[want] {
 			t.Fatalf("bundle missing %s; got %#v", want, names)
 		}

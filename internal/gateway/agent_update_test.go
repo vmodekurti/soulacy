@@ -163,6 +163,19 @@ func TestPreserveHiddenAgentUpdateFieldsKeepsExplicitAdvancedFields(t *testing.T
 	}
 }
 
+func TestPreserveHiddenAgentUpdateFieldsAllowsClearingConfirmTools(t *testing.T) {
+	t.Parallel()
+	existing := &agent.Definition{ConfirmTools: []string{"shell_exec"}}
+	updates := &agent.Definition{ConfirmTools: []string{}}
+	preserveHiddenAgentUpdateFields(updates, existing)
+	if updates.ConfirmTools == nil {
+		t.Fatal("explicit empty ConfirmTools should remain an empty slice, not nil")
+	}
+	if len(updates.ConfirmTools) != 0 {
+		t.Fatalf("ConfirmTools = %v, want empty", updates.ConfirmTools)
+	}
+}
+
 func TestPreserveHiddenAgentUpdateFieldsNilSafe(t *testing.T) {
 	t.Parallel() // TEST-4: pure in-memory struct logic, no shared state.
 	preserveHiddenAgentUpdateFields(nil, &agent.Definition{})

@@ -176,6 +176,20 @@ var (
 		},
 		[]string{"channel"}, // channel ID, or "unknown" when not determinable
 	)
+	ChannelInboundTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "soulacy_channel_inbound_total",
+			Help: "Inbound channel messages accepted by the shared channel inbox.",
+		},
+		[]string{"channel", "agent"},
+	)
+	ChannelOutboundTotal = prometheus.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "soulacy_channel_outbound_total",
+			Help: "Outbound channel send attempts, by channel adapter, agent, and outcome.",
+		},
+		[]string{"channel", "agent", "outcome"}, // outcome: success|error|unregistered
+	)
 
 	// --- Mobile companion: approvals, pairing, push ---
 
@@ -221,7 +235,7 @@ func init() {
 		AgentRunDuration, AgentRunsTotal, AgentPanicsTotal, AgentBudgetHaltsTotal,
 		ActionlogQueueDepth, ActionlogBatchSize, ActionlogDropsTotal,
 		WorkerPoolActiveRuns,
-		ChannelInboxDropsTotal,
+		ChannelInboxDropsTotal, ChannelInboundTotal, ChannelOutboundTotal,
 		ApprovalsResolvedTotal, PairingTokensTotal, PushSubscriptions, PushSentTotal,
 		// Process + Go runtime collectors give us memory / CPU / GC for free.
 		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),

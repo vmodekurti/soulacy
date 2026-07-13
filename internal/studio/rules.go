@@ -17,24 +17,26 @@ under "Tier 2" so the builder knows each tool's real shape.
 ## Tier 1 — Generic rules (apply to every agent)
 
 ### Macro-Workflow Architecture
-- R1. Generate a Macro-Workflow graph by default! Visual flows MUST be high-level and simple (max 3-5 nodes).
-- R2. Do NOT generate 10-15 node pipelines. Instead of creating a separate node for every step of data extraction or cleaning, combine data manipulation, filtering, and JSON parsing into a SINGLE 'python' node.
-- R3. Delegate complex multi-tool reasoning to an 'agent' node. For example, instead of a rigid loop of tool nodes, create a 'Summarizer' or 'Researcher' peer agent and call it in one node.
-- R4. Only use 'react' execution mode if a rigid workflow is totally impossible. Macro-Workflows are preferred for predictable orchestration.
+- R1. Choose the architecture first, then generate. Use a Macro-Workflow graph for fixed, predictable pipelines; use an 'auto' tool-calling agent for conversational assistants and ordinary runtime tool selection; use 'react' or 'plan_execute' only for genuinely open-ended, long-horizon reasoning.
+- R2. Visual Macro-Workflows MUST be high-level and simple (usually max 3-5 nodes). Do NOT generate 10-15 node pipelines.
+- R3. Instead of creating a separate node for every step of data extraction or cleaning, combine data manipulation, filtering, and JSON parsing into a SINGLE 'python' node.
+- R4. Delegate complex summarizing or domain reasoning to an 'agent' node. For example, create a 'Summarizer' or 'Researcher' peer agent and call it in one node.
+- R5. Do not use a Macro-Workflow when each run must decide which tools to call, loop over unknown user intent, or recover interactively. Build an 'auto' agent for that case so the runtime tool loop can adapt.
 
 ### Tools & Capabilities
-- R5. If the workflow needs to parse complex JSON, manipulate lists, format strings, or do math, add a 'python' node. Do NOT try to use template variables like {{ .var }} to do complex data mangling.
-- R6. Do NOT invent tool names. If you need a capability that doesn't exist in the catalog, script it in a 'python' node, or use a web_search tool.
-- R7. When generating 'new_agents' for the overarching workflow to delegate to, ensure their system prompts are fully self-contained and describe exactly the output format they must return.
-- R8. Every tool node input MUST be a JSON object. Never pass raw text or a whole upstream reply directly into a tool node.
-- R9. If a tool expects structured arguments and the upstream node is an agent/LLM/free-form output, insert an LLM Extract or Python Transform node, or pass the upstream text through a JSON-safe field using {{ toJson .var }} unquoted.
-- R10. Prefer typed ports or JSON-safe {{ toJson .var }} handoffs. Never put a free-form or structured upstream value inside quotes like "content": "{{ .agent_reply }}"; quotes/newlines in the reply will break JSON.
-- R11. For "ingest documents/URLs into KB" tasks, build a safe Knowledge Ingestion flow: extract source(s) -> fetch/read content -> classify/tag/summarize -> kb_write -> optional verification search. Store the cleaned artifact record and metadata, not raw HTML dumps, activity traces, or arbitrary host files.
-- R12. For temporary workflow state, queues, buffers, or cross-step handoffs, use queue_create/queue_put/queue_take/queue_list instead of write_file. Queue tools are in-memory and do not require system authorization. Use an explicit queue name when the workflow has multiple buffers; otherwise the runtime uses the "default" queue. Use kb_write only for durable searchable knowledge.
+- R6. If the workflow needs to parse complex JSON, manipulate lists, format strings, or do math, add a 'python' node. Do NOT try to use template variables like {{ .var }} to do complex data mangling.
+- R7. Do NOT invent tool names. If you need a capability that doesn't exist in the catalog, script it in a 'python' node, or use a web_search tool.
+- R8. When generating 'new_agents' for the overarching workflow to delegate to, ensure their system prompts are fully self-contained and describe exactly the output format they must return.
+- R9. Every tool node input MUST be a JSON object. Never pass raw text or a whole upstream reply directly into a tool node.
+- R10. If a tool expects structured arguments and the upstream node is an agent/LLM/free-form output, insert an LLM Extract or Python Transform node, or pass the upstream text through a JSON-safe field using {{ toJson .var }} unquoted.
+- R11. Prefer typed ports or JSON-safe {{ toJson .var }} handoffs. Never put a free-form or structured upstream value inside quotes like "content": "{{ .agent_reply }}"; quotes/newlines in the reply will break JSON.
+- R12. For "ingest documents/URLs into KB" tasks, build a safe Knowledge Ingestion flow: extract source(s) -> fetch/read content -> classify/tag/summarize -> kb_write -> optional verification search. Store the cleaned artifact record and metadata, not raw HTML dumps, activity traces, or arbitrary host files.
+- R13. For temporary workflow state, queues, buffers, or cross-step handoffs, use queue_create/queue_put/queue_take/queue_list instead of write_file. Queue tools are in-memory and do not require system authorization. Use an explicit queue name when the workflow has multiple buffers; otherwise the runtime uses the "default" queue. Use kb_write only for durable searchable knowledge.
+- R14. channel.send uses the exact JSON arguments {"channel":"telegram|slack|discord|whatsapp","to":"destination id or chat/thread id","text":"message text"}. The field is text, not message. If the channel has a default outbound destination or the run arrived from an inbound channel, "to" may be omitted; otherwise include it.
 
 ### Scheduling & Delivery
-- R13. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
-- R14. Every channel the agent delivers to must be configured and enabled.
+- R15. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
+- R16. Every channel the agent delivers to must be configured and enabled.
 
 ## Tier 2 — Tool contracts (input args + output shapes)
 

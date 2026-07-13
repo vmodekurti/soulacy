@@ -72,9 +72,14 @@ Tagged releases publish `soulacy_<version>_<os>_<arch>.tar.gz` bundles
 [GitHub Releases](https://github.com/vmodekurti/soulacy/releases):
 
 ```bash
+grep 'soulacy_v0.2.0_darwin_arm64.tar.gz' SHA256SUMS | shasum -a 256 -c -
 tar -xzf soulacy_v0.2.0_darwin_arm64.tar.gz
 sudo install -m755 soulacy sy /usr/local/bin/
 ```
+
+Releases also include `release-manifest.json`, which records the release
+version, source commit, generation time, and every artifact's OS, architecture,
+byte size, and SHA-256 digest for installer and CI checks.
 
 If the releases page is empty, use the one-command installer above — it
 falls back to a source build automatically.
@@ -90,5 +95,5 @@ sy doctor          # checks workspace, config, providers, and the gateway
 
 ## What's next?
 
-1. `sy setup` — the interactive wizard (provider, channel, first agent).
+1. `sy onboard` — the guided first-run path for provider, search, starter agent, update manifest, and auto-start.
 2. Follow the [Quick Start](quickstart.md), then take the [GUI tour](gui-tour.md).

@@ -32,6 +32,9 @@ func TestChannelSendBuiltinRoutesThroughRegistry(t *testing.T) {
 	if !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("channel.send result should confirm success, got %s", out)
 	}
+	if !strings.Contains(out, `"delivered":true`) || !strings.Contains(out, `"route_source":"explicit"`) {
+		t.Fatalf("channel.send result should expose delivery route details, got %s", out)
+	}
 	if adp.sent.ThreadID != "dest-123" || firstText(adp.sent) != "hello delivery" {
 		t.Fatalf("sent message mismatch: %+v", adp.sent)
 	}
@@ -63,6 +66,9 @@ func TestChannelSendBuiltinUsesInboundContextAndMessageAlias(t *testing.T) {
 	}
 	if !strings.Contains(out, `"ok":true`) {
 		t.Fatalf("channel.send result should confirm success, got %s", out)
+	}
+	if !strings.Contains(out, `"route_source":"inbound"`) || !strings.Contains(out, `"text_preview":"queued"`) {
+		t.Fatalf("channel.send result should identify inbound route and preview, got %s", out)
 	}
 	if adp.sent.Channel != "telegram-research-librarian" {
 		t.Fatalf("sent channel = %q, want inbound adapter", adp.sent.Channel)
@@ -96,6 +102,30 @@ func TestChannelSendBuiltinAcceptsCommonAliases(t *testing.T) {
 	}
 }
 
+func TestChannelSendBuiltinAcceptsNaturalAliases(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	adp := &channelSendCaptureAdapter{id: "discord"}
+	reg.Register(adp)
+	e.SetChannelRegistry(reg)
+
+	tool := builtinByName(t, e.buildBuiltins(), "channel.send")
+	out, err := tool.Handler(context.Background(), map[string]any{
+		"platform":  "discord",
+		"recipient": "room-42",
+		"msg":       "natural alias delivery",
+	})
+	if err != nil {
+		t.Fatalf("channel.send returned error: %v", err)
+	}
+	if !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("channel.send result should confirm success, got %s", out)
+	}
+	if adp.sent.Channel != "discord" || adp.sent.ThreadID != "room-42" || firstText(adp.sent) != "natural alias delivery" {
+		t.Fatalf("sent message mismatch: %+v", adp.sent)
+	}
+}
+
 func TestChannelSendBuiltinUsesConfiguredDefaultDestination(t *testing.T) {
 	e := newMinimalEngine(t)
 	reg := channels.NewRegistry(1)
@@ -119,6 +149,9 @@ func TestChannelSendBuiltinUsesConfiguredDefaultDestination(t *testing.T) {
 	}
 	if !strings.Contains(out, `"channel":"telegram-research-librarian"`) {
 		t.Fatalf("channel.send result should resolve concrete adapter, got %s", out)
+	}
+	if !strings.Contains(out, `"route_source":"default"`) {
+		t.Fatalf("channel.send result should identify default routing, got %s", out)
 	}
 	if adp.sent.Channel != "telegram-research-librarian" || adp.sent.ThreadID != "8546291328" {
 		t.Fatalf("sent route mismatch: %+v", adp.sent)

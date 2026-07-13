@@ -365,6 +365,31 @@ func TestEngine_SearchAggregatesDedupes(t *testing.T) {
 	}
 }
 
+func TestEngine_SearchDetailedAddsDirectResolveHit(t *testing.T) {
+	searchDown := &stubProvider{id: "indexed", err: errors.New("search unavailable")}
+	direct := &stubProvider{id: "direct", pkgs: map[string]pkgregistry.Package{
+		"github.com/acme/options-strategy-advisor": {
+			Slug:    "github.com/acme/options-strategy-advisor",
+			Version: "HEAD",
+		},
+	}}
+	eng := NewEngine([]Entry{
+		{Provider: searchDown, Priority: 1},
+		{Provider: direct, Priority: 2},
+	}, zap.NewNop())
+
+	got, warnings := eng.SearchDetailed(context.Background(), "github.com/acme/options-strategy-advisor")
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %d, want failed search warning", len(warnings))
+	}
+	if len(got) != 1 {
+		t.Fatalf("SearchDetailed returned %d results, want direct resolve hit: %+v", len(got), got)
+	}
+	if got[0].Provider != "direct" || got[0].Slug != "github.com/acme/options-strategy-advisor" {
+		t.Fatalf("direct result = %+v", got[0])
+	}
+}
+
 func TestEngine_FetchRoutesByProvider(t *testing.T) {
 	a := &stubProvider{id: "a"}
 	b := &stubProvider{id: "b"}

@@ -240,11 +240,12 @@ func (s *Server) handleAddRegistry(c *fiber.Ctx) error {
 		})
 	}
 	var body struct {
-		ID         string `json:"id"`
-		Type       string `json:"type"`
-		BaseURL    string `json:"base_url"`
-		Priority   int    `json:"priority"`
-		SigningKey string `json:"signing_key"`
+		ID          string            `json:"id"`
+		Type        string            `json:"type"`
+		BaseURL     string            `json:"base_url"`
+		Priority    int               `json:"priority"`
+		SigningKey  string            `json:"signing_key"`
+		AuthHeaders map[string]string `json:"auth_headers"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
@@ -285,6 +286,20 @@ func (s *Server) handleAddRegistry(c *fiber.Ctx) error {
 	}
 	if body.SigningKey != "" {
 		entry["signing_key"] = body.SigningKey
+	}
+	if len(body.AuthHeaders) > 0 {
+		headers := map[string]any{}
+		for k, v := range body.AuthHeaders {
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k == "" || v == "" {
+				continue
+			}
+			headers[k] = v
+		}
+		if len(headers) > 0 {
+			entry["auth_headers"] = headers
+		}
 	}
 	current["registries"] = append(raw, entry)
 	if err := writeRawConfig(s.cfgPath, current); err != nil {

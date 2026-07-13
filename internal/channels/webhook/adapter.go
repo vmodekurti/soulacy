@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -27,6 +28,7 @@ type Adapter struct {
 	method   string
 	headers  map[string]string
 	template string
+	secret   string // HMAC signing secret; empty = unsigned (back-compat)
 	client   *http.Client
 
 	mu        sync.RWMutex
@@ -35,7 +37,7 @@ type Adapter struct {
 }
 
 // New creates an outbound webhook adapter.
-func New(id, endpoint, method string, headers map[string]string, template string, timeout time.Duration) (*Adapter, error) {
+func New(id, endpoint, method string, headers map[string]string, template, secret string, timeout time.Duration) (*Adapter, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		id = "webhook"
@@ -65,6 +67,7 @@ func New(id, endpoint, method string, headers map[string]string, template string
 		method:   method,
 		headers:  headers,
 		template: template,
+		secret:   strings.TrimSpace(secret),
 		client:   &http.Client{Timeout: timeout},
 	}, nil
 }
@@ -117,6 +120,15 @@ func (a *Adapter) Send(ctx context.Context, msg message.Message) error {
 		return fmt.Errorf("webhook: send: %w", err)
 	}
 	req.Header.Set("Content-Type", contentType)
+
+	// Sign the payload so the receiver can prove it came from us and hasn't been
+	// tampered with. Opt-in: no secret → no signature headers (unchanged behavior).
+	if a.secret != "" {
+		ts := time.Now().Unix()
+		req.Header.Set(HeaderTimestamp, strconv.FormatInt(ts, 10))
+		req.Header.Set(HeaderSignature, Sign(a.secret, ts, body))
+	}
+
 	for k, v := range a.headers {
 		k = strings.TrimSpace(k)
 		if k != "" {

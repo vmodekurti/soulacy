@@ -300,3 +300,49 @@ func TestAnthropicCompleteUsesTopPWhenTemperatureUnsetAndRetriesIfDeprecated(t *
 		t.Fatalf("content = %q", resp.Content)
 	}
 }
+
+func TestAnthropicCompleteRetriesWithoutUnsupportedTopP(t *testing.T) {
+	var calls int
+	provider := NewAnthropicProvider("http://anthropic.test", "sk-ant", "claude-test")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 {
+			if _, ok := got["top_p"]; !ok {
+				t.Fatal("first request should include top_p")
+			}
+			return jsonResponse(400, `{"type":"error","error":{"type":"invalid_request_error","message":"top_p is not supported for this model."}}`), nil
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("retry should omit unsupported top_p: %#v", got)
+		}
+		return jsonResponse(200, `{
+			"content": [{"type": "text", "text": "ok"}],
+			"usage": {"input_tokens": 1, "output_tokens": 1}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		TopP:     0.9,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q", resp.Content)
+	}
+}
+
+func TestAnthropicRetriableParamPrefersTopPForCannotBoth(t *testing.T) {
+	body := []byte(`{"type":"error","error":{"type":"invalid_request_error","message":"temperature and top_p cannot both be specified for this model. Please use only one."}}`)
+	if got := anthropicRetriableParam(body); got != "top_p" {
+		t.Fatalf("anthropicRetriableParam = %q, want top_p", got)
+	}
+}

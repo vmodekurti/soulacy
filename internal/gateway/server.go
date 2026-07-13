@@ -58,6 +58,7 @@ import (
 	"github.com/soulacy/soulacy/internal/costs"
 	"github.com/soulacy/soulacy/internal/credentials"
 	"github.com/soulacy/soulacy/internal/introspect"
+	"github.com/soulacy/soulacy/internal/knowledge"
 	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/metrics"
@@ -135,6 +136,10 @@ type Server struct {
 	// SetWorkboardStore after construction. When nil, /api/v1/workboard
 	// handlers return 503.
 	workboardStore *workboard.Store
+
+	// ingestWorker drains the durable KB ingestion job catalog. nil until
+	// SetIngestWorker() is called; used only to wake it on a fresh upload.
+	ingestWorker *knowledge.Worker
 
 	// Plugin GUI mounts + scoped plugin tokens (Story E8). Wired via
 	// SetPluginUI / SetCapEnforcer after construction; routes check at
@@ -631,12 +636,16 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), adaptor.HTTPHandler(metrics.Handler()))
 	api.Post("/admin/restart", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleRestart)
 	api.Get("/onboarding/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleOnboardingStatus)
+	api.Get("/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleReadiness)
 
 	// Agents
 	api.Get("/agents", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleListAgents)
 	api.Post("/agents/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleValidateAgent)
+	api.Post("/agents/package/inspect", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleInspectAgentPackage)
+	api.Post("/agents/package/import", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleImportAgentPackage)
 	api.Get("/agents/:id", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgent)
 	api.Get("/agents/:id/yaml", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentYAML)
+	api.Get("/agents/:id/package", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentPackage)
 	api.Put("/agents/:id/yaml", s.rbacAgentMW(rbac.ActionWrite), s.handleUpdateAgentYAML)
 	api.Get("/agents/:id/versions", s.rbacAgentMW(rbac.ActionRead), s.handleListAgentVersions)
 	api.Get("/agents/:id/versions/:version", s.rbacAgentMW(rbac.ActionRead), s.handleGetAgentVersion)
@@ -671,6 +680,7 @@ func (s *Server) buildApp() *fiber.App {
 
 	// Channels
 	api.Get("/channels", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleListChannels)
+	api.Get("/channels/metrics", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleChannelMetrics)
 	api.Patch("/channels/:id", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleUpdateChannel)
 	api.Post("/channels/:id/test", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleTestChannelDelivery)
 	api.Post("/channels/:id/diagnose", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleDiagnoseChannelDelivery)
@@ -748,6 +758,7 @@ func (s *Server) buildApp() *fiber.App {
 	// Skills (Agent Skills format — agentskills.io)
 	api.Get("/skills", s.rbacMW(rbac.ResourceSkills, rbac.ActionRead), s.handleListSkills)
 	api.Get("/skills/:name", s.rbacMW(rbac.ResourceSkills, rbac.ActionRead), s.handleGetSkill)
+	api.Post("/skills/install", s.rbacMW(rbac.ResourceSkills, rbac.ActionWrite), s.handleInstallRegistrySkill)
 	api.Post("/skills/provision-agenticskills", s.rbacMW(rbac.ResourceSkills, rbac.ActionWrite), s.handleProvisionAgenticSkill)
 	api.Post("/skills/rescan", s.rbacMW(rbac.ResourceSkills, rbac.ActionWrite), s.handleRescanSkills)
 
@@ -768,6 +779,13 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/knowledge/:kb/documents", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionRead), s.handleListKnowledgeDocuments)
 	api.Post("/knowledge/:kb/documents", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionWrite), s.handleIngestDocument)
 	api.Delete("/knowledge/:kb/documents/:doc", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionDelete), s.handleDeleteKnowledgeDocument)
+	// Async ingestion: upload returns 202 + a job; these track and retry it.
+	// The per-job routes deliberately live OUTSIDE /knowledge/... — a path like
+	// /knowledge/jobs/:job collides with the /knowledge/:kb/... family (a KB
+	// literally named "jobs" would shadow it).
+	api.Get("/knowledge/:kb/jobs", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionRead), s.handleListIngestJobs)
+	api.Get("/ingest-jobs/:job", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionRead), s.handleGetIngestJob)
+	api.Post("/ingest-jobs/:job/retry", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionWrite), s.handleRetryIngestJob)
 	api.Post("/knowledge/:kb/search", s.rbacMW(rbac.ResourceKnowledge, rbac.ActionRead), s.handleSearchKnowledge)
 
 	// Unified tool catalog (python tools + MCP tools + Go built-ins)
@@ -927,6 +945,8 @@ func (s *Server) buildApp() *fiber.App {
 	// --- Run-level observability (Story 7) ---
 	// Stores checked at request time; 503 when neither costs nor action log
 	// is wired, 404 when the session has no recorded data.
+	api.Get("/runs/ops-summary", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleOpsSummary)
+	api.Get("/runs/events", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunEvents)
 	api.Get("/runs/:session_id/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunMetrics)
 
 	// --- Workboard (Story 5) ---

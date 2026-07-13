@@ -210,6 +210,16 @@ type ToolDef struct {
 	// global default. Useful for tools that legitimately block for minutes
 	// (e.g. NotebookLM audio generation, large data exports).
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// Retries re-runs this Python tool after a failure. Default 0 preserves the
+	// historical single-attempt behavior. Keep this for idempotent/transient
+	// tools such as fetchers, parsers, and flaky API readers; do not use it for
+	// tools that perform irreversible side effects.
+	Retries int `yaml:"retries,omitempty" json:"retries,omitempty"`
+
+	// RetryBackoff controls the wait before each retry. Empty defaults to 1s.
+	// Uses Go duration syntax: "500ms", "2s", "1m".
+	RetryBackoff string `yaml:"retry_backoff,omitempty" json:"retry_backoff,omitempty"`
 }
 
 // ContextHook is a lifecycle callback inserted before/after context assembly.
@@ -362,9 +372,22 @@ type Definition struct {
 	//
 	// Use ["*"] (or ["all"]) to expose every other loaded agent as a tool.
 	// Self-references (an agent in its own peer list) are silently skipped.
-	// Cycles are bounded by a depth limit (5) carried via context.Value;
-	// exceeding it returns an error tool result so the parent can recover.
+	// Cycles are bounded by runtime.max_agent_call_depth carried via
+	// context.Value; exceeding it returns an error tool result so the parent can
+	// recover.
 	Agents []string `yaml:"agents,omitempty" json:"agents,omitempty"`
+
+	// ParallelPeerCalls lets an orchestrator fan out multiple peer-agent calls
+	// emitted in the same LLM turn. Results are still returned to the model in
+	// the original tool-call order, but the peer agents run concurrently under
+	// the same nested-chain deadline. Normal tools remain sequential.
+	ParallelPeerCalls bool `yaml:"parallel_peer_calls,omitempty" json:"parallel_peer_calls,omitempty"`
+
+	// StructuredPeerResults wraps peer-agent replies in a small JSON envelope
+	// when they are returned as tool results. This gives coordinator agents a
+	// stable place to read target agent, content, and parsed JSON payloads
+	// without changing the SDK ToolResult shape or surprising simple agents.
+	StructuredPeerResults bool `yaml:"structured_peer_results,omitempty" json:"structured_peer_results,omitempty"`
 
 	// --- Built-in tool allowlist (opt-in) ---
 	// Controls which Go-native built-ins (web_search, kb_search, read_skill, …)

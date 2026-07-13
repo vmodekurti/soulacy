@@ -1,6 +1,6 @@
 <script>
-  import { onMount } from 'svelte'
-  import { api } from '../lib/api.js'
+  import { onMount, onDestroy } from 'svelte'
+  import { api, createEventSocket } from '../lib/api.js'
 
   let kbs            = []
   let selected       = null
@@ -84,6 +84,61 @@
     newKB.embedding_model = providerDefaultModel(newKB.embedding_provider)
   }
 
+  // ── Ingestion queue (async pipeline) ───────────────────────────────────────
+  // Ingestion no longer blocks the upload request: the server returns a job and
+  // a background worker does the extract/chunk/embed. These track it live.
+  let ingestJobs = []
+  let retryingJob = ''
+
+  async function loadIngestJobs() {
+    if (!selected) return
+    try {
+      const res = await api.knowledge.listJobs(selected.name)
+      ingestJobs = res.jobs || []
+    } catch (_) { /* jobs are supplementary — never break the page */ }
+  }
+
+  async function retryIngestJob(job) {
+    retryingJob = job.id
+    error = ''
+    try {
+      await api.knowledge.retryJob(job.id)
+      await loadIngestJobs()
+    } catch (e) {
+      error = e.message
+    } finally {
+      retryingJob = ''
+    }
+  }
+
+  // Live progress: the worker broadcasts `knowledge.ingest` over the same
+  // websocket the rest of the app uses, so the queue updates without polling.
+  function onIngestEvent(ev) {
+    const p = ev?.payload
+    if (!p || !p.id) return
+    if (selected && p.kb && p.kb !== selected.name) return
+    const i = ingestJobs.findIndex(j => j.id === p.id)
+    const next = { ...(i >= 0 ? ingestJobs[i] : {}), ...p, kb_name: p.kb }
+    if (i >= 0) {
+      ingestJobs[i] = next
+      ingestJobs = [...ingestJobs]
+    } else {
+      ingestJobs = [next, ...ingestJobs]
+    }
+    // A finished job means the document list changed.
+    if (p.status === 'done') loadDocumentsQuietly()
+  }
+
+  async function loadDocumentsQuietly() {
+    if (!selected) return
+    try {
+      const res = await api.knowledge.listDocuments(selected.name)
+      documents = res.documents || []
+    } catch (_) {}
+  }
+
+  const jobPctLabel = (j) => (j.status === 'done' ? 100 : (j.progress || 0))
+
   async function selectKB(kb) {
     selected     = kb
     documents    = []
@@ -91,10 +146,12 @@
     searchQuery  = ''
     loadingDocs  = true
     selectedDocs = new Set()
+    ingestJobs   = []
     try {
       const res = await api.knowledge.listDocuments(kb.name)
       documents = res.documents || []
       selected  = res.kb || kb
+      loadIngestJobs()
     } catch (e) {
       error = e.message
     } finally {
@@ -264,7 +321,21 @@
     return `${(b / 1024 / 1024).toFixed(1)} MB`
   }
 
-  onMount(loadKBs)
+  // Live ingestion progress over the shared event socket.
+  let ingestWS = null
+  onMount(() => {
+    loadKBs()
+    try {
+      ingestWS = createEventSocket()
+      ingestWS.onmessage = (m) => {
+        try {
+          const ev = JSON.parse(m.data)
+          if (ev && ev.type === 'knowledge.ingest') onIngestEvent(ev)
+        } catch (_) { /* ignore non-JSON frames */ }
+      }
+    } catch (_) { /* no live updates — the queue still loads on demand */ }
+  })
+  onDestroy(() => { try { ingestWS && ingestWS.close() } catch (_) {} })
 </script>
 
 <div class="page">
@@ -329,6 +400,41 @@
 
         {#if selected.description}
           <p class="detail-description">{selected.description}</p>
+        {/if}
+
+        <!-- Ingestion queue: uploads are processed in the background, so show
+             what's in flight, how far along it is, and let a failure be retried. -->
+        {#if ingestJobs.filter(j => j.status !== 'done').length}
+          <div class="docs-section ingest-queue">
+            <div class="docs-header">
+              <h3>Processing <span class="muted">({ingestJobs.filter(j => j.status !== 'done').length})</span></h3>
+              <button class="btn-secondary" on:click={loadIngestJobs}>↻</button>
+            </div>
+            {#each ingestJobs.filter(j => j.status !== 'done') as j (j.id)}
+              <div class="ijob {j.status}">
+                <div class="ijob-top">
+                  <span class="ijob-title">{j.title || 'Untitled'}</span>
+                  <span class="ijob-status">
+                    {#if j.status === 'queued'}queued
+                    {:else if j.status === 'running'}embedding… {jobPctLabel(j)}%
+                    {:else if j.status === 'failed'}failed{#if j.attempt > 1} after {j.attempt} attempts{/if}
+                    {/if}
+                  </span>
+                  {#if j.status === 'failed'}
+                    <button class="btn-secondary tiny" on:click={() => retryIngestJob(j)} disabled={retryingJob === j.id}>
+                      {retryingJob === j.id ? 'Retrying…' : 'Retry'}
+                    </button>
+                  {/if}
+                </div>
+                {#if j.status === 'running' || j.status === 'queued'}
+                  <div class="ijob-bar"><div class="ijob-fill" style="width:{jobPctLabel(j)}%"></div></div>
+                {/if}
+                {#if j.status === 'failed' && j.error}
+                  <div class="ijob-err">{j.error}</div>
+                {/if}
+              </div>
+            {/each}
+          </div>
         {/if}
 
         <div class="docs-section">
@@ -607,6 +713,19 @@
   .muted { color: #6b7294; font-weight: normal; }
 
   .docs-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; gap: 1rem; }
+
+  /* Ingestion queue — background processing progress */
+  .ingest-queue { border: 1px solid #252a46; border-radius: 10px; padding: .7rem .85rem; background: #10121f; margin-bottom: 1rem; }
+  .ijob { padding: .5rem 0; border-top: 1px solid #1a1e36; }
+  .ijob:first-of-type { border-top: none; }
+  .ijob-top { display: flex; align-items: center; gap: .6rem; }
+  .ijob-title { font-size: .82rem; color: #dfe2f5; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ijob-status { font-size: .72rem; color: #8f96bb; white-space: nowrap; }
+  .ijob.failed .ijob-status { color: #ff8b9c; }
+  .ijob-bar { margin-top: .4rem; height: 4px; border-radius: 999px; background: #1c1f35; overflow: hidden; }
+  .ijob-fill { height: 100%; background: linear-gradient(90deg, #6c5cff, #8b85ff); transition: width .3s ease; }
+  .ijob-err { margin-top: .35rem; font-size: .72rem; color: #ff9a9a; word-break: break-word; }
+  .ijob .tiny { padding: .2rem .55rem; font-size: .7rem; border-radius: 5px; }
   .docs-header h3 { margin-bottom: 0; }
   .bulk-bar { display: flex; align-items: center; gap: .5rem; }
   .bulk-count { font-size: .78rem; color: #8b85ff; font-weight: 600; }

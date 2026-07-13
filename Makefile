@@ -3,10 +3,10 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui up install which test regression uat release-smoke lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install which test regression uat release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
-        release-darwin release-darwin-arm64 release-darwin-amd64 \
+        release-darwin release-darwin-arm64 release-darwin-amd64 release-package \
         service-install service-uninstall deploy help
 
 ## Full build: unified GUI (Studio is built in as a first-class route), then
@@ -130,6 +130,18 @@ health:
 logs-bundle:
 	@$(BINARY_CLI) support bundle || sy support bundle
 
+## Optional real-channel golden smoke. Skips channels unless env targets are set.
+## Example:
+##   SOULACY_API_KEY=... SOULACY_GOLDEN_TELEGRAM_TO=123456 make channel-golden-smoke
+channel-golden-smoke:
+	@bash scripts/channel-golden-smoke.sh
+
+## Optional Playwright MCP/browser sidecar smoke. Skips unless explicitly enabled.
+## Example:
+##   SOULACY_BROWSER_MCP_SMOKE=1 make browser-mcp-smoke
+browser-mcp-smoke:
+	@python3 scripts/browser-mcp-smoke.py
+
 ## Install Python SDK in editable mode (development)
 sdk-install:
 	pip3 install -e sdk/python
@@ -175,6 +187,11 @@ uat: build
 ## Install-like release smoke: copies built binaries to a temp PATH and runs clean-runtime UAT.
 release-smoke: build
 	bash scripts/release-smoke.sh
+
+## Production parity automation: CI checks, regression, clean UAT, release smoke,
+## race/vulnerability checks, SDK/docs, optional live channels/browser/Studio.
+production-parity:
+	bash scripts/production-parity.sh
 
 ## Lint
 lint:
@@ -289,7 +306,7 @@ DOCKER_BUILDKIT_FLAGS := --load
 
 ## Build every supported target (Linux amd64+arm64). Skip Darwin here;
 ## it requires a macOS host — use `make release-darwin` on macOS.
-release: release-linux
+release: release-linux release-package
 
 ## All Linux targets.
 release-linux: release-linux-amd64 release-linux-arm64
@@ -327,7 +344,7 @@ release-linux-arm64:
 	@echo "✓ $(RELEASE_DIR)/soulacy-linux-arm64"
 
 ## Darwin targets — built natively; macOS + Xcode required.
-release-darwin: release-darwin-arm64
+release-darwin: release-darwin-arm64 release-package
 
 release-darwin-arm64:
 	@echo "→ Release: darwin/arm64 (native cgo build)"
@@ -346,6 +363,10 @@ release-darwin-amd64:
 	CGO_ENABLED=1 GOOS=darwin GOARCH=amd64 \
 		go build $(LDFLAGS) -o $(RELEASE_DIR)/sy-darwin-amd64 ./cmd/sy
 	@echo "✓ $(RELEASE_DIR)/soulacy-darwin-amd64"
+
+## Package release binaries into GitHub-release tarballs plus checksums.
+release-package:
+	VERSION=$(VERSION) RELEASE_DIR=$(RELEASE_DIR) bash scripts/package-release.sh
 
 ## Show help
 help:

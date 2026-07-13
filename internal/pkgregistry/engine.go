@@ -176,6 +176,20 @@ func (e *Engine) SearchDetailed(ctx context.Context, query string) ([]sdkpkg.Pac
 			out = append(out, pkg)
 		}
 	}
+	for _, en := range e.entries {
+		pkg, err := en.Provider.Resolve(ctx, query)
+		if err != nil {
+			continue
+		}
+		if _, dup := seen[pkg.Slug]; dup {
+			continue
+		}
+		seen[pkg.Slug] = struct{}{}
+		if pkg.Provider == "" {
+			pkg.Provider = en.Provider.ID()
+		}
+		out = append(out, pkg)
+	}
 	return out, warnings
 }
 

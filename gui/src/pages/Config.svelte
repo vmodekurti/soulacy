@@ -20,14 +20,20 @@
   let toolTimeout = '30s'
   let maxTurns    = 20
   let maxSessions = 100
+  let maxAgentCallDepth = 5
   let defaultProvider = ''
   let providerOptions = []   // configured llm.providers names (for the dropdown)
+  let providerDefaults = {}   // provider id -> configured default model
+  let modelsByProvider = {}
+  let modelsLoading = {}
+  let modelsError = {}
   let studioProvider = ''    // llm.studio override (Studio compiler)
   let studioModel = ''
   let reasonerProvider = ''  // llm.reasoner override (ReAct/Plan-Execute loop)
   let reasonerModel = ''
   let searchProvider = 'ollama'
   let searchApiKey = ''
+  let costRows = []
   let agentDirs = ''
   let skillDirs = ''
 
@@ -71,6 +77,90 @@
     return patch
   }
 
+  function seedCostEditor(pricing = {}) {
+    costRows = Object.entries(pricing || {})
+      .map(([selector, price]) => ({
+        selector,
+        input: price?.input_per_mtok ?? '',
+        output: price?.output_per_mtok ?? '',
+      }))
+      .sort((a, b) => a.selector.localeCompare(b.selector))
+  }
+
+  function addCostRow() {
+    costRows = [...costRows, { selector: '', input: '', output: '' }]
+  }
+
+  function removeCostRow(idx) {
+    costRows = costRows.filter((_, i) => i !== idx)
+  }
+
+  function costsPatch() {
+    const pricing = {}
+    for (const row of costRows) {
+      const selector = (row.selector || '').trim()
+      if (!selector) continue
+      pricing[selector] = {
+        input_per_mtok: Number(row.input || 0),
+        output_per_mtok: Number(row.output || 0),
+      }
+    }
+    return { pricing }
+  }
+
+  async function loadProviderRegistry(configured = []) {
+    const ids = new Set(configured)
+    const defaults = {}
+    try {
+      const res = await api.providers.list()
+      for (const id of (res.registered || [])) ids.add(id)
+      for (const id of (res.known || [])) ids.add(id)
+      for (const [id, cfg] of Object.entries(res.providers || {})) {
+        ids.add(id)
+        if (cfg?.model) defaults[id] = cfg.model
+      }
+    } catch (_) {
+      // Config remains usable with the static config.yaml provider list.
+    }
+    providerDefaults = defaults
+    providerOptions = [...ids].filter(Boolean).sort()
+  }
+
+  async function loadModels(providerId) {
+    if (!providerId || modelsByProvider[providerId] || modelsLoading[providerId]) return
+    modelsLoading = { ...modelsLoading, [providerId]: true }
+    try {
+      const res = await api.providers.models(providerId)
+      modelsByProvider = { ...modelsByProvider, [providerId]: res.models || [] }
+      modelsError = { ...modelsError, [providerId]: '' }
+    } catch (e) {
+      modelsByProvider = { ...modelsByProvider, [providerId]: [] }
+      modelsError = { ...modelsError, [providerId]: e.message }
+    } finally {
+      modelsLoading = { ...modelsLoading, [providerId]: false }
+    }
+  }
+
+  function effectiveRoleProvider(roleProvider) {
+    return roleProvider || defaultProvider
+  }
+
+  function modelOptions(providerId, current) {
+    const list = modelsByProvider[providerId] || []
+    const out = []
+    if (current && !out.includes(current)) out.push(current)
+    for (const m of list) {
+      if (m && !out.includes(m)) out.push(m)
+    }
+    const def = providerDefaults[providerId]
+    if (def && !out.includes(def)) out.unshift(def)
+    return out
+  }
+
+  function pickProviderDefault(providerId, setter) {
+    if (providerId && providerDefaults[providerId]) setter(providerDefaults[providerId])
+  }
+
   async function load() {
     loading = true
     error   = ''
@@ -85,6 +175,7 @@
       toolTimeout     = config.runtime?.tool_timeout  || '30s'
       maxTurns        = config.runtime?.default_max_turns       || 20
       maxSessions     = config.runtime?.max_concurrent_sessions || 100
+      maxAgentCallDepth = config.runtime?.max_agent_call_depth || 5
       defaultProvider = config.llm?.default_provider || ''
       providerOptions = Object.keys(config.llm?.providers || {})
       // Make sure the current value is selectable even if it isn't a
@@ -96,8 +187,10 @@
       studioModel      = config.llm?.studio?.model || ''
       reasonerProvider = config.llm?.reasoner?.provider || ''
       reasonerModel    = config.llm?.reasoner?.model || ''
+      await loadProviderRegistry(providerOptions)
       searchProvider  = config.search?.provider || 'ollama'
       searchApiKey    = config.search?.api_key || ''
+      seedCostEditor(config.costs?.pricing)
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
       seedPluginEditor(config.plugins_config)
@@ -119,6 +212,7 @@
           tool_timeout:            toolTimeout,
           default_max_turns:       Number(maxTurns),
           max_concurrent_sessions: Number(maxSessions),
+          max_agent_call_depth:    Number(maxAgentCallDepth),
         },
         llm: {
           default_provider: defaultProvider,
@@ -129,6 +223,7 @@
         // api_key of '***' (redacted placeholder) is skipped server-side, so
         // saving without retyping the key never clobbers the real one on disk.
         search: { provider: searchProvider, api_key: searchApiKey },
+        costs: costsPatch(),
         log: { level: logLevel, format: logFormat, file: logFile },
         agent_dirs: agentDirs.split('\n').map(s => s.trim()).filter(Boolean),
         skill_dirs: skillDirs.split('\n').map(s => s.trim()).filter(Boolean),
@@ -179,6 +274,9 @@
       downloadingSupport = false
     }
   }
+
+  $: loadModels(effectiveRoleProvider(studioProvider))
+  $: loadModels(effectiveRoleProvider(reasonerProvider))
 
   onMount(load)
 </script>
@@ -243,29 +341,67 @@
 
           <div class="field-row">
             <div class="field">
-              <label for="studio-provider">Studio builder — provider</label>
-              <select id="studio-provider" bind:value={studioProvider} disabled={!writable}>
+              <label for="studio-provider" title="Provider used when Studio turns natural-language requests into workflows. Leave blank to use the default provider.">Studio builder — provider</label>
+              <select id="studio-provider" bind:value={studioProvider} disabled={!writable}
+                      title="Provider used when Studio turns natural-language requests into workflows. Leave blank to use the default provider."
+                      on:change={() => pickProviderDefault(effectiveRoleProvider(studioProvider), (m) => studioModel = m)}>
                 <option value="">— use default —</option>
                 {#each providerOptions as p}<option value={p}>{p}</option>{/each}
               </select>
             </div>
             <div class="field">
-              <label for="studio-model">Studio model</label>
-              <input id="studio-model" bind:value={studioModel} placeholder="(provider default)" disabled={!writable} />
+              <label for="studio-model" title="Model Studio uses for prompt refinement, workflow generation, and repair. Stronger models usually produce better workflow graphs.">
+                Studio model
+                {#if modelsLoading[effectiveRoleProvider(studioProvider)]}
+                  <span class="inline-status">loading…</span>
+                {:else if modelsError[effectiveRoleProvider(studioProvider)]}
+                  <span class="inline-error" title={modelsError[effectiveRoleProvider(studioProvider)]}>models unavailable</span>
+                {/if}
+              </label>
+              <select id="studio-model" bind:value={studioModel} disabled={!writable}
+                      title="Model Studio uses for prompt refinement, workflow generation, and repair. Stronger models usually produce better workflow graphs.">
+                <option value="">— provider default —</option>
+                {#each modelOptions(effectiveRoleProvider(studioProvider), studioModel) as m (m)}
+                  <option value={m}>{m}</option>
+                {/each}
+                <option value="__custom__">Custom model ID…</option>
+              </select>
+              {#if studioModel === '__custom__'}
+                <input bind:value={studioModel} placeholder="Enter exact model id" on:focus={() => studioModel = ''} disabled={!writable} />
+              {/if}
             </div>
           </div>
 
           <div class="field-row">
             <div class="field">
-              <label for="reasoner-provider">Reasoner (ReAct / Plan-Execute) — provider</label>
-              <select id="reasoner-provider" bind:value={reasonerProvider} disabled={!writable}>
+              <label for="reasoner-provider" title="Provider used by ReAct and Plan-Execute control loops. Pick a reliable structured-output model for tool-heavy agents.">Reasoner (ReAct / Plan-Execute) — provider</label>
+              <select id="reasoner-provider" bind:value={reasonerProvider} disabled={!writable}
+                      title="Provider used by ReAct and Plan-Execute control loops. Pick a reliable structured-output model for tool-heavy agents."
+                      on:change={() => pickProviderDefault(effectiveRoleProvider(reasonerProvider), (m) => reasonerModel = m)}>
                 <option value="">— use default —</option>
                 {#each providerOptions as p}<option value={p}>{p}</option>{/each}
               </select>
             </div>
             <div class="field">
-              <label for="reasoner-model">Reasoner model</label>
-              <input id="reasoner-model" bind:value={reasonerModel} placeholder="(provider default)" disabled={!writable} />
+              <label for="reasoner-model" title="Model used for internal thinking, planning, and final reflection. Lower-latency models are fine if they follow JSON reliably.">
+                Reasoner model
+                {#if modelsLoading[effectiveRoleProvider(reasonerProvider)]}
+                  <span class="inline-status">loading…</span>
+                {:else if modelsError[effectiveRoleProvider(reasonerProvider)]}
+                  <span class="inline-error" title={modelsError[effectiveRoleProvider(reasonerProvider)]}>models unavailable</span>
+                {/if}
+              </label>
+              <select id="reasoner-model" bind:value={reasonerModel} disabled={!writable}
+                      title="Model used for internal thinking, planning, and final reflection. Lower-latency models are fine if they follow JSON reliably.">
+                <option value="">— provider default —</option>
+                {#each modelOptions(effectiveRoleProvider(reasonerProvider), reasonerModel) as m (m)}
+                  <option value={m}>{m}</option>
+                {/each}
+                <option value="__custom__">Custom model ID…</option>
+              </select>
+              {#if reasonerModel === '__custom__'}
+                <input bind:value={reasonerModel} placeholder="Enter exact model id" on:focus={() => reasonerModel = ''} disabled={!writable} />
+              {/if}
             </div>
           </div>
         </div>
@@ -291,6 +427,40 @@
         </div>
 
         <div class="section">
+          <h2 class="section-title">Cost estimation</h2>
+          <p class="hint">
+            Optional USD-per-million-token rates used by Activity, run metrics, and <code>/api/v1/costs</code>.
+            Selectors match <code>provider/model</code>, <code>provider/*</code>, then <code>*/model</code>.
+            Unknown models still record tokens with <code>cost_usd: 0</code>.
+          </p>
+          {#if costRows.length === 0}
+            <p class="hint">No pricing configured yet. Add one row for exact model pricing or a provider wildcard.</p>
+          {/if}
+          {#each costRows as row, idx}
+            <div class="cost-row">
+              <label class="field cost-selector">
+                <span title="Pricing selector. Use provider/model for exact pricing, provider/* for a provider default, or */model for a shared model default.">Selector</span>
+                <input bind:value={row.selector} placeholder="openai/gpt-4.1-mini or omniroute/*" disabled={!writable} />
+              </label>
+              <label class="field cost-rate">
+                <span title="USD charged per 1 million prompt/input tokens. Leave 0 for local or prepaid providers.">Input $/M</span>
+                <input type="number" step="0.0001" min="0" bind:value={row.input} placeholder="0.00" disabled={!writable} />
+              </label>
+              <label class="field cost-rate">
+                <span title="USD charged per 1 million completion/output tokens. Output is often more expensive than input.">Output $/M</span>
+                <input type="number" step="0.0001" min="0" bind:value={row.output} placeholder="0.00" disabled={!writable} />
+              </label>
+              {#if writable}
+                <button class="link-danger cost-del" title="Remove pricing row" on:click={() => removeCostRow(idx)}>✕</button>
+              {/if}
+            </div>
+          {/each}
+          {#if writable}
+            <button class="btn-secondary kv-add" on:click={addCostRow}>+ Add pricing row</button>
+          {/if}
+        </div>
+
+        <div class="section">
           <h2 class="section-title">Runtime</h2>
           <div class="field-row">
             <div class="field">
@@ -310,6 +480,10 @@
             <div class="field">
               <label for="max-sessions">Max concurrent sessions</label>
               <input id="max-sessions" type="number" bind:value={maxSessions} min="1" max="1000" disabled={!writable} />
+            </div>
+            <div class="field">
+              <label for="max-agent-call-depth" title="Caps recursive peer-agent delegation chains. Raise for deeper coordinator teams; lower to stop accidental loops sooner. Default is 5.">Max agent-call depth</label>
+              <input id="max-agent-call-depth" type="number" bind:value={maxAgentCallDepth} min="1" max="50" disabled={!writable} />
             </div>
           </div>
         </div>
@@ -482,6 +656,8 @@
   .field { display: flex; flex-direction: column; gap: .35rem; }
   .field label { font-size: .78rem; color: #7b82a8; font-weight: 500; }
   .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: .75rem; }
+  .inline-status { margin-left: .35rem; color: #8b85ff; font-size: .72rem; font-weight: 500; }
+  .inline-error { margin-left: .35rem; color: #f0a060; font-size: .72rem; font-weight: 500; cursor: help; }
 
   /* JSON column */
   .json-col {
@@ -515,4 +691,21 @@
   .kv-val { flex: 1; font-family: monospace; font-size: .78rem; }
   .kv-del { flex: 0 0 auto; }
   .kv-add { align-self: flex-start; font-size: .75rem; padding: .25rem .6rem; }
+  .cost-row {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) 110px 110px auto;
+    gap: .5rem;
+    align-items: end;
+    padding: .55rem .65rem;
+    background: #10121f;
+    border: 1px solid #1a1e36;
+    border-radius: 8px;
+  }
+  .cost-selector input { font-family: monospace; font-size: .78rem; }
+  .cost-rate input { text-align: right; }
+  .cost-del { align-self: end; margin-bottom: .15rem; }
+  @media (max-width: 640px) {
+    .cost-row { grid-template-columns: 1fr; }
+    .cost-rate input { text-align: left; }
+  }
 </style>

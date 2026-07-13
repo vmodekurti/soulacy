@@ -17,6 +17,11 @@ func result(agent, sess, callID string, isErr bool) message.Event {
 		Payload: message.ToolResult{CallID: callID, IsError: isErr}}
 }
 
+func resultContent(agent, sess, callID, content string) message.Event {
+	return message.Event{Type: "tool.result", AgentID: agent, SessionID: sess, Timestamp: time.Now(),
+		Payload: message.ToolResult{CallID: callID, Content: content}}
+}
+
 func TestBuild_ReconstructsBrowserSteps(t *testing.T) {
 	events := []message.Event{
 		call("a", "s1", "mcp__playwright__browser_navigate", "c1", map[string]any{"url": "https://example.com"}),
@@ -58,6 +63,31 @@ func TestBuild_CapturesScreenshotRef(t *testing.T) {
 	tr := Build("a", "s1", events)
 	if tr.Screenshot != "shot1.png" {
 		t.Fatalf("screenshot ref = %q", tr.Screenshot)
+	}
+}
+
+func TestBuild_CapturesScreenshotFromResult(t *testing.T) {
+	events := []message.Event{
+		call("a", "s1", "mcp__playwright__browser_screenshot", "c1", map[string]any{}),
+		resultContent("a", "s1", "c1", `{"artifact":{"path":"shot2.png"},"text":"captured screenshot"}`),
+	}
+	tr := Build("a", "s1", events)
+	if tr.Screenshot != "shot2.png" {
+		t.Fatalf("trace screenshot ref = %q", tr.Screenshot)
+	}
+	if len(tr.Steps) != 1 || tr.Steps[0].Screenshot != "shot2.png" || tr.Steps[0].Output == "" {
+		t.Fatalf("step did not capture screenshot/output: %+v", tr.Steps)
+	}
+}
+
+func TestBuild_CapturesShortObservation(t *testing.T) {
+	events := []message.Event{
+		call("a", "s1", "mcp__playwright__browser_get_text", "c1", map[string]any{"selector": "main"}),
+		resultContent("a", "s1", "c1", `{"text":"Welcome to the app"}`),
+	}
+	tr := Build("a", "s1", events)
+	if len(tr.Steps) != 1 || tr.Steps[0].Output != "Welcome to the app" {
+		t.Fatalf("output preview = %+v", tr.Steps)
 	}
 }
 

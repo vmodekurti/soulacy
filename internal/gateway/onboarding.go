@@ -80,12 +80,12 @@ func (s *Server) onboardingAgentStep() onboardingStep {
 		}
 	}
 	if enabled > 0 {
-		return onboardingStep{Key: "agent", Label: "Create an agent", Status: "ok", Detail: "You have enabled agents ready to run.", Href: "agents", Priority: 20}
+		return onboardingStep{Key: "agent", Label: "Deploy an agent", Status: "ok", Detail: "You have enabled agents ready to run.", Href: "studio", Priority: 20}
 	}
 	if total > 0 {
-		return onboardingStep{Key: "agent", Label: "Create an agent", Status: "warn", Detail: "Agents exist, but none are enabled.", Href: "agents", Priority: 20}
+		return onboardingStep{Key: "agent", Label: "Deploy an agent", Status: "warn", Detail: "Agents exist, but none are enabled.", Href: "agents", Priority: 20}
 	}
-	return onboardingStep{Key: "agent", Label: "Create an agent", Status: "todo", Detail: "Install a template or build one in Studio.", Href: "templates", Priority: 20}
+	return onboardingStep{Key: "agent", Label: "Build in Studio", Status: "todo", Detail: "Start from a template or generate a workflow in Studio.", Href: "studio", Priority: 20}
 }
 
 func (s *Server) onboardingChannelStep(checks []doctorChannelCheck) onboardingStep {

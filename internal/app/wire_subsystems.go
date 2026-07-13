@@ -892,8 +892,9 @@ func (a *App) wireEngineExtras(ctx context.Context, ws config.Paths, engine *run
 	} else {
 		stack.pushClose("cost-store", costsStore)
 		openedCostStore = costsStore
-		engine.SetCostStore(&engineCostStoreAdapter{s: costsStore})
-		log.Info("cost tracking ready", zap.String("path", costsPath))
+		prices := costPriceTableFromConfig(cfg.Costs.Pricing)
+		engine.SetCostStore(&engineCostStoreAdapter{s: costsStore, prices: prices})
+		log.Info("cost tracking ready", zap.String("path", costsPath), zap.Int("pricing_entries", len(prices)))
 	}
 	return openedCostStore
 }
@@ -1056,6 +1057,10 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 
 	// S3.2: hard ceiling on any agent's effective max_turns.
 	engine.SetMaxTurnsCeiling(cfg.Runtime.MaxTurnsCeiling)
+
+	// Bound recursive peer-agent delegation chains while allowing deeper
+	// coordinator hierarchies to opt in from config.
+	engine.SetMaxAgentCallDepth(cfg.Runtime.MaxAgentCallDepth)
 
 	return engine
 }

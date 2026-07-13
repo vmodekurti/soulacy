@@ -123,12 +123,13 @@ chain is bounded by Vasu OS's `run_timeout`, not the sum of
 per-level timeouts. This is the good news — it's already correct.
 `docs/CHANNEL_DESIGN.md` covered this and it shipped.
 
-**Sequential dispatch.** No parallel peer calls. `runAgentCall` (line
-4331) is called synchronously from the tool handler; there's no
-errgroup wrapper. If Chief of Staff wants to fan out ("check calendar
-+ research this + draft email in parallel"), the engine serializes
-each `agent__X` call and waits for the reply before invoking
-`agent__Y`. Latency is additive down the chain.
+**Parallel peer dispatch.** Orchestrators can set
+`parallel_peer_calls: true`. When the LLM emits two or more unique
+`agent__X` tool calls in the same turn, Soulacy runs those peer agents
+concurrently and then returns results to the coordinator in the original
+tool-call order. Normal tools remain sequential. This keeps the safe,
+isolated peer-session model while avoiding additive latency for
+independent fan-out.
 
 **Auto-delegate is single-peer only.** The `tool_choice: agent__X`
 optimization at line 1970 skips turn 1 only for a single named peer.
@@ -138,32 +139,28 @@ Multi-peer parallel dispatch would need different plumbing.
 
 Prioritized by leverage-per-effort:
 
-1. **Raise `maxAgentCallDepth` to 8 or 10**, and expose it as
-   `runtime.max_agent_call_depth` in `config.yaml`. Two-line change
-   at `engine.go:4094`. Un-breaks 5-level hierarchies. Cost: minimal.
-   Risk: infinite-loop failures take slightly longer to manifest —
-   still bounded. Not a semantic change.
+1. **Configurable agent-call depth.** Shipped as
+   `runtime.max_agent_call_depth` in `config.yaml` with default `5`.
+   Operators can raise it to `8` or `10` for deeper Vasu OS-style
+   hierarchies while keeping recursion bounded by the same chain-wide
+   run timeout. Risk: infinite-loop failures take slightly longer to
+   manifest when raised — still bounded.
 
-2. **Parallel peer dispatch with return-when semantics.** The LLM
-   already emits multiple tool calls in one response; the engine
-   currently loops them sequentially. Wrapping the loop in an
-   `errgroup` (or `sync.WaitGroup` with per-peer contexts) is a
-   contained change to the tool-dispatch loop. New optional field:
-   `parallel_peer_calls: true` on the caller, or infer parallel
-   whenever the LLM emits ≥ 2 `agent__*` calls in one turn. Cost:
-   medium (requires thinking about deterministic ordering of
-   results in the tool result messages). Highest user-visible win —
-   turns "3-second head + 3-second peer + 3-second peer" from 9s
-   into 5s.
+2. **Parallel peer dispatch with deterministic result ordering.** Shipped
+   as `parallel_peer_calls: true` on the caller. The engine parallelizes
+   only unique peer-agent calls, preserves the original result order, and
+   leaves ordinary tools sequential. This turns "3-second head +
+   3-second peer + 3-second peer" into roughly 5s without surprising
+   existing agents.
 
-3. **Structured payload channel between peers.** Optional
-   `structured_reply` field on `RunAgentCall`'s tool result, so the
-   Chief of Staff can receive not just the researcher's summary but
-   also `{citations: [...], confidence: ..., raw_facts: [...]}`.
-   Backwards compatible — nil = current flat-text behavior. Cost:
-   larger — needs a schema, needs the LLM prompted to consume the
-   structured payload, and needs the peer template to know how to
-   emit it. Highest architectural leverage but the biggest surface.
+3. **Structured payload channel between peers.** Shipped as
+   `structured_peer_results: true` on the coordinator agent. Peer
+   replies are returned in a `SOULACY_AGENT_RESULT` JSON envelope with
+   `target_agent`, `ok`, `content`, and parsed `structured` payload
+   when the peer itself returned JSON. Backwards compatible — absent
+   flag keeps the current flat-text behavior. Remaining work is richer
+   Studio affordance and packaged team templates that prompt reviewers
+   and researchers to emit citation/confidence JSON.
 
 4. **`kind: coordinator`** — a new agent kind that's like a worker
    but MAINTAINS SESSION STATE across multiple peer calls, so a head

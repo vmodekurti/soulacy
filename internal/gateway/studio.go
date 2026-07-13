@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -1078,7 +1079,411 @@ func (s *Server) handleStudioRunHistory(c *fiber.Ctx) error {
 	if agentID == "" {
 		return s.errMsg(c, fiber.StatusBadRequest, "agentId is required")
 	}
-	return c.JSON(fiber.Map{"agentId": agentID, "runs": s.engine.FlowRunHistory(agentID)})
+	return c.JSON(fiber.Map{"agentId": agentID, "runs": s.completeRunHistory(agentID)})
+}
+
+type studioRunHistoryRow struct {
+	RunID           string    `json:"runId"`
+	SessionID       string    `json:"sessionId,omitempty"`
+	Trigger         string    `json:"trigger,omitempty"`
+	Source          string    `json:"source,omitempty"`
+	StartedAt       time.Time `json:"startedAt"`
+	UpdatedAt       time.Time `json:"updatedAt,omitempty"`
+	Steps           int       `json:"steps,omitempty"`
+	Ok              bool      `json:"ok"`
+	Status          string    `json:"status"`
+	Error           string    `json:"error,omitempty"`
+	Output          string    `json:"output,omitempty"`
+	DeliveryChannel string    `json:"deliveryChannel,omitempty"`
+	DeliveryTo      string    `json:"deliveryTo,omitempty"`
+	DeliveryStatus  string    `json:"deliveryStatus,omitempty"`
+	DeliveryError   string    `json:"deliveryError,omitempty"`
+}
+
+func (s *Server) completeRunHistory(agentID string) []studioRunHistoryRow {
+	byID := map[string]studioRunHistoryRow{}
+	for _, r := range s.engine.FlowRunHistory(agentID) {
+		status := "success"
+		if !r.Ok {
+			status = "failed"
+		}
+		byID[r.RunID] = studioRunHistoryRow{
+			RunID:     r.RunID,
+			SessionID: r.RunID,
+			Trigger:   r.Trigger,
+			Source:    "flow",
+			StartedAt: r.StartedAt,
+			UpdatedAt: r.UpdatedAt,
+			Steps:     r.Steps,
+			Ok:        r.Ok,
+			Status:    status,
+			Error:     r.Error,
+			Output:    r.Error,
+		}
+	}
+
+	for _, r := range s.durableRunHistory(agentID) {
+		if cur, ok := byID[r.RunID]; ok {
+			cur.SessionID = studioFirstNonEmpty(cur.SessionID, r.SessionID)
+			cur.Trigger = studioFirstNonEmpty(cur.Trigger, r.Trigger)
+			cur.Source = "flow+durable"
+			cur.StartedAt = studioFirstNonZeroTime(cur.StartedAt, r.StartedAt)
+			if r.UpdatedAt.After(cur.UpdatedAt) {
+				cur.UpdatedAt = r.UpdatedAt
+			}
+			cur.Output = studioFirstNonEmpty(cur.Output, r.Output)
+			cur.Error = studioFirstNonEmpty(cur.Error, r.Error)
+			cur.DeliveryChannel = studioFirstNonEmpty(cur.DeliveryChannel, r.DeliveryChannel)
+			cur.DeliveryTo = studioFirstNonEmpty(cur.DeliveryTo, r.DeliveryTo)
+			cur.DeliveryStatus = studioFirstNonEmpty(cur.DeliveryStatus, r.DeliveryStatus)
+			cur.DeliveryError = studioFirstNonEmpty(cur.DeliveryError, r.DeliveryError)
+			if cur.Status == "" || cur.Status == "success" && r.Status == "failed" {
+				cur.Status = r.Status
+				cur.Ok = r.Ok
+			}
+			byID[r.RunID] = cur
+			continue
+		}
+		byID[r.RunID] = r
+	}
+
+	rows := make([]studioRunHistoryRow, 0, len(byID))
+	for _, r := range byID {
+		if r.UpdatedAt.IsZero() {
+			r.UpdatedAt = r.StartedAt
+		}
+		if r.Status == "" {
+			r.Status = "unknown"
+		}
+		rows = append(rows, r)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].UpdatedAt.After(rows[j].UpdatedAt)
+	})
+	return rows
+}
+
+func (s *Server) durableRunHistory(agentID string) []studioRunHistoryRow {
+	if s.actions == nil {
+		return nil
+	}
+	allowed := map[string]bool{
+		"message.in":      true,
+		"message.out":     true,
+		"error":           true,
+		"tool.result":     true,
+		"schedule.output": true,
+	}
+	var events []message.Event
+	var err error
+	if qf, ok := s.actions.(interface {
+		QueryFiltered(string, int, map[string]bool) ([]message.Event, error)
+	}); ok {
+		events, err = qf.QueryFiltered(agentID, 10000, allowed)
+	} else if tf, ok := s.actions.(interface {
+		TailFiltered(string, int, map[string]bool) ([]message.Event, error)
+	}); ok {
+		events, err = tf.TailFiltered(agentID, 5000, allowed)
+	} else {
+		events, err = s.actions.Tail(agentID, 5000)
+	}
+	if err != nil {
+		return []studioRunHistoryRow{{
+			RunID:     "history-error",
+			Source:    "durable",
+			StartedAt: time.Now().UTC(),
+			UpdatedAt: time.Now().UTC(),
+			Status:    "failed",
+			Error:     "could not load durable run history: " + err.Error(),
+		}}
+	}
+
+	sort.Slice(events, func(i, j int) bool { return events[i].Timestamp.Before(events[j].Timestamp) })
+
+	byRun := map[string][]message.Event{}
+	runSession := map[string]string{}
+	currentBySession := map[string]string{}
+	startsBySession := map[string]int{}
+	order := []string{}
+	for i, ev := range events {
+		if len(allowed) > 0 && !allowed[ev.Type] {
+			continue
+		}
+		sid := strings.TrimSpace(ev.SessionID)
+		if sid == "" {
+			sid = fmt.Sprintf("event-%d", i)
+		}
+		runID := currentBySession[sid]
+		if ev.Type == "message.in" || runID == "" {
+			if startsBySession[sid] == 0 {
+				runID = sid
+			} else {
+				runID = durableHistoryRunID(sid, ev.Timestamp, i)
+			}
+			startsBySession[sid]++
+			currentBySession[sid] = runID
+			order = append(order, runID)
+		}
+		if _, ok := byRun[runID]; !ok {
+			runSession[runID] = sid
+		}
+		byRun[runID] = append(byRun[runID], ev)
+	}
+
+	rows := make([]studioRunHistoryRow, 0, len(byRun))
+	for _, runID := range order {
+		if row, ok := summarizeActionEvents(runID, runSession[runID], byRun[runID]); ok {
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func durableHistoryRunID(sessionID string, ts time.Time, idx int) string {
+	if ts.IsZero() {
+		return fmt.Sprintf("%s:%06d", sessionID, idx)
+	}
+	return fmt.Sprintf("%s:%s:%06d", sessionID, ts.UTC().Format("20060102T150405.000000000Z"), idx)
+}
+
+func summarizeActionEvents(runID, sessionID string, events []message.Event) (studioRunHistoryRow, bool) {
+	if len(events) == 0 {
+		return studioRunHistoryRow{}, false
+	}
+	sort.Slice(events, func(i, j int) bool { return events[i].Timestamp.Before(events[j].Timestamp) })
+	row := studioRunHistoryRow{
+		RunID:     runID,
+		SessionID: sessionID,
+		Source:    "durable",
+		StartedAt: events[0].Timestamp,
+		UpdatedAt: events[len(events)-1].Timestamp,
+		Status:    "unknown",
+	}
+	var outParts []string
+	for _, ev := range events {
+		switch ev.Type {
+		case "message.in":
+			row.Trigger = studioFirstNonEmpty(row.Trigger, triggerFromMessagePayload(ev.Payload))
+			if row.StartedAt.IsZero() {
+				row.StartedAt = ev.Timestamp
+			}
+		case "message.out":
+			if txt := messagePayloadText(ev.Payload); txt != "" {
+				outParts = append(outParts, txt)
+			}
+			row.Status = "success"
+			row.Ok = true
+		case "error":
+			row.Status = "failed"
+			row.Ok = false
+			row.Error = studioFirstNonEmpty(row.Error, payloadErrorText(ev.Payload))
+		case "tool.result":
+			row.Steps++
+			if isToolError(ev.Payload) {
+				row.Status = "failed"
+				row.Ok = false
+				row.Error = studioFirstNonEmpty(row.Error, payloadErrorText(ev.Payload))
+			}
+		case "schedule.output":
+			ch, to, delivered, fallback, reason, preview, trigger := scheduleOutputSummary(ev.Payload)
+			row.DeliveryChannel = studioFirstNonEmpty(row.DeliveryChannel, ch)
+			row.DeliveryTo = studioFirstNonEmpty(row.DeliveryTo, to)
+			row.Trigger = studioFirstNonEmpty(row.Trigger, trigger, "cron")
+			if preview != "" {
+				outParts = append(outParts, preview)
+			}
+			if delivered {
+				if fallback {
+					row.DeliveryStatus = "delivered via fallback"
+				} else {
+					row.DeliveryStatus = "delivered"
+				}
+				if row.Status == "unknown" || row.Status == "pending" {
+					row.Status = "success"
+					row.Ok = true
+				}
+			} else {
+				row.DeliveryStatus = "failed"
+				row.DeliveryError = studioFirstNonEmpty(row.DeliveryError, reason)
+				row.Status = "failed"
+				row.Ok = false
+			}
+		}
+	}
+	if len(outParts) > 0 {
+		row.Output = strings.Join(studioUniqueStrings(outParts), "\n\n")
+	}
+	if row.Error != "" && row.Output == "" {
+		row.Output = row.Error
+	}
+	if row.Status == "unknown" && row.Output == "" && row.Error == "" {
+		row.Status = "pending"
+	}
+	return row, true
+}
+
+func studioUniqueStrings(vals []string) []string {
+	out := make([]string, 0, len(vals))
+	seen := map[string]bool{}
+	for _, v := range vals {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+func studioFirstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
+func studioFirstNonZeroTime(vals ...time.Time) time.Time {
+	for _, v := range vals {
+		if !v.IsZero() {
+			return v
+		}
+	}
+	return time.Time{}
+}
+
+func payloadMap(payload any) map[string]any {
+	switch v := payload.(type) {
+	case map[string]any:
+		return v
+	case map[string]string:
+		out := make(map[string]any, len(v))
+		for k, val := range v {
+			out[k] = val
+		}
+		return out
+	case message.Message:
+		b, _ := json.Marshal(v)
+		var out map[string]any
+		_ = json.Unmarshal(b, &out)
+		return out
+	default:
+		return nil
+	}
+}
+
+func triggerFromMessagePayload(payload any) string {
+	m := payloadMap(payload)
+	if m == nil {
+		return ""
+	}
+	if meta, ok := m["metadata"].(map[string]any); ok {
+		if trig, _ := meta["trigger"].(string); trig != "" {
+			return trig
+		}
+	}
+	txt := messagePayloadText(payload)
+	if strings.HasPrefix(txt, "__trigger:") && strings.HasSuffix(txt, "__") {
+		return strings.TrimSuffix(strings.TrimPrefix(txt, "__trigger:"), "__")
+	}
+	if ch, _ := m["channel"].(string); ch != "" {
+		return ch
+	}
+	return ""
+}
+
+func messagePayloadText(payload any) string {
+	if msg, ok := payload.(message.Message); ok {
+		parts := make([]string, 0, len(msg.Parts))
+		for _, p := range msg.Parts {
+			if p.Type == message.ContentText && strings.TrimSpace(p.Text) != "" {
+				parts = append(parts, p.Text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	m := payloadMap(payload)
+	if m == nil {
+		if s, ok := payload.(string); ok {
+			return s
+		}
+		return ""
+	}
+	rawParts, _ := m["parts"].([]any)
+	parts := make([]string, 0, len(rawParts))
+	for _, raw := range rawParts {
+		pm, _ := raw.(map[string]any)
+		if pm == nil {
+			continue
+		}
+		typ, _ := pm["type"].(string)
+		txt, _ := pm["text"].(string)
+		if (typ == "" || typ == "text") && strings.TrimSpace(txt) != "" {
+			parts = append(parts, txt)
+		}
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, "\n")
+	}
+	for _, key := range []string{"text", "message", "reply_preview", "error"} {
+		if txt, _ := m[key].(string); txt != "" {
+			return txt
+		}
+	}
+	return ""
+}
+
+func payloadErrorText(payload any) string {
+	if txt := messagePayloadText(payload); txt != "" {
+		return txt
+	}
+	m := payloadMap(payload)
+	if m == nil {
+		return fmt.Sprint(payload)
+	}
+	for _, key := range []string{"error", "message", "content", "detail"} {
+		if txt, _ := m[key].(string); txt != "" {
+			return txt
+		}
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
+func isToolError(payload any) bool {
+	m := payloadMap(payload)
+	if m == nil {
+		return false
+	}
+	if v, ok := m["is_error"].(bool); ok {
+		return v
+	}
+	if v, ok := m["isError"].(bool); ok {
+		return v
+	}
+	return false
+}
+
+func scheduleOutputSummary(payload any) (channel, to string, delivered, fallback bool, reason, preview, trigger string) {
+	m := payloadMap(payload)
+	if m == nil {
+		return "", "", false, false, "", "", ""
+	}
+	channel, _ = m["channel"].(string)
+	to, _ = m["to"].(string)
+	delivered, _ = m["delivered"].(bool)
+	fallback, _ = m["fallback"].(bool)
+	reason = studioFirstNonEmpty(stringField(m, "reason"), stringField(m, "detail"))
+	preview = studioFirstNonEmpty(stringField(m, "reply_preview"), stringField(m, "text"), stringField(m, "message"))
+	trigger = stringField(m, "trigger")
+	return channel, to, delivered, fallback, reason, preview, trigger
+}
+
+func stringField(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
 }
 
 // studioDiagnoseRunRequest is the POST /api/v1/studio/diagnose-run body: a
@@ -1330,7 +1735,7 @@ func (s *Server) handleStudioCompileAgent(c *fiber.Ctx) error {
 	s.groundCatalog(&req.Catalog)
 	res, err := studio.CompileAgent(c.Context(), model, req.Intent, req.Catalog, req.Strategy, req.Answers)
 	if err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
+		return s.errMsg(c, fiber.StatusUnprocessableEntity, s.studioGenerationHint(err))
 	}
 	s.stampDefaultLLM(&res.Workflow)         // make the runtime provider/model explicit in the YAML
 	studio.ApplyTemplateFixes(&res.Workflow) // deterministic self-heal (no-op when there's no flow graph)
@@ -1391,7 +1796,9 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 
 	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
 	if err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
+		// Surface a plain-language, actionable failure (which builder model, and
+		// how to fix it) rather than a raw JSON-parser error.
+		return s.errMsg(c, fiber.StatusUnprocessableEntity, s.studioGenerationHint(err))
 	}
 	s.stampDefaultLLM(&res.Workflow) // make the runtime provider/model explicit in the YAML
 

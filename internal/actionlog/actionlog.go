@@ -380,15 +380,29 @@ func (l *Logger) TailFiltered(agentID string, limit int, allowed map[string]bool
 // the public storage.ActionLogBackend interface so non-SQL backends remain
 // compatible; callers can type-assert when they want full history.
 func (l *Logger) QueryFiltered(agentID string, limit int, allowed map[string]bool) ([]message.Event, error) {
+	return l.QueryEvents(agentID, "", limit, allowed)
+}
+
+// QueryEvents returns durable SQLite-backed events, oldest-first, from the
+// newest `limit` events matching optional filters. Empty agentID/sessionID mean
+// "all". This powers cross-agent Activity/history views that should not depend
+// on per-agent JSONL tails or log rotation.
+func (l *Logger) QueryEvents(agentID, sessionID string, limit int, allowed map[string]bool) ([]message.Event, error) {
 	agentID = strings.TrimSpace(agentID)
-	if agentID == "" {
-		return []message.Event{}, nil
-	}
+	sessionID = strings.TrimSpace(sessionID)
 	if limit <= 0 || limit > 10000 {
 		limit = 1000
 	}
-	args := []any{agentID}
-	where := "agent_id = ?"
+	args := []any{}
+	where := "1 = 1"
+	if agentID != "" {
+		where += " AND agent_id = ?"
+		args = append(args, agentID)
+	}
+	if sessionID != "" {
+		where += " AND session_id = ?"
+		args = append(args, sessionID)
+	}
 	if len(allowed) > 0 {
 		placeholders := make([]string, 0, len(allowed))
 		for typ := range allowed {
@@ -423,9 +437,11 @@ func (l *Logger) QueryFiltered(agentID string, limit int, allowed map[string]boo
 	for rows.Next() {
 		var ev message.Event
 		var payload string
-		if err := rows.Scan(&ev.AgentID, &ev.SessionID, &ev.Type, &payload, &ev.Timestamp); err != nil {
+		var atRaw any
+		if err := rows.Scan(&ev.AgentID, &ev.SessionID, &ev.Type, &payload, &atRaw); err != nil {
 			return nil, err
 		}
+		ev.Timestamp = parseSQLiteTime(atRaw)
 		if payload != "" {
 			var decoded any
 			if err := json.Unmarshal([]byte(payload), &decoded); err == nil {

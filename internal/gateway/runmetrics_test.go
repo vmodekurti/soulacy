@@ -169,3 +169,74 @@ func TestRunMetrics_RequiresAuth(t *testing.T) {
 		t.Fatalf("status = %d, want 401", status)
 	}
 }
+
+func TestOpsSummary_CombinedActionLogAndCosts(t *testing.T) {
+	s := newTestGatewayWithMetrics(t)
+
+	status, body := gatewayJSON(t, s, http.MethodGet,
+		"/api/v1/runs/ops-summary?window=2026-01-01", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	if body["total_runs"] != float64(1) || body["failed_runs"] != float64(1) {
+		t.Fatalf("run totals = %v", body)
+	}
+	if body["tool_calls"] != float64(1) {
+		t.Fatalf("tool_calls = %v, want 1", body["tool_calls"])
+	}
+	if body["total_tokens"] != float64(400) {
+		t.Fatalf("total_tokens = %v, want 400", body["total_tokens"])
+	}
+	if cost, _ := body["cost_usd"].(float64); cost < 0.0049 || cost > 0.0051 {
+		t.Fatalf("cost_usd = %v, want ~0.005", body["cost_usd"])
+	}
+	failures, _ := body["recent_failures"].([]any)
+	if len(failures) != 1 {
+		t.Fatalf("recent_failures = %#v", body["recent_failures"])
+	}
+}
+
+func TestOpsSummary_NoActionLog503(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	status, _ := gatewayJSON(t, s, http.MethodGet,
+		"/api/v1/runs/ops-summary", "secret", "")
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", status)
+	}
+}
+
+func TestRunEvents_DurableAllAgentsAndFilters(t *testing.T) {
+	s := newTestGatewayWithMetrics(t)
+
+	status, body := gatewayJSON(t, s, http.MethodGet,
+		"/api/v1/runs/events?limit=10", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d body=%v", status, body)
+	}
+	if body["durable"] != true || body["count"] != float64(4) {
+		t.Fatalf("events response = %v", body)
+	}
+
+	status, body = gatewayJSON(t, s, http.MethodGet,
+		"/api/v1/runs/events?session_id=sess-run-1&types=message.in,error", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("filtered status = %d body=%v", status, body)
+	}
+	events, _ := body["events"].([]any)
+	if len(events) != 2 {
+		t.Fatalf("filtered events = %#v", body["events"])
+	}
+	last, _ := events[1].(map[string]any)
+	if last["type"] != "error" {
+		t.Fatalf("last filtered event = %#v", last)
+	}
+}
+
+func TestRunEvents_NoActionLog503(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	status, _ := gatewayJSON(t, s, http.MethodGet,
+		"/api/v1/runs/events", "secret", "")
+	if status != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", status)
+	}
+}

@@ -19,13 +19,17 @@ A working agent, the web GUI, and your first chat — in under five minutes.
 
 More options (Docker, VPS, launchd service): [Installation](installation.md).
 
-## 2. Run the setup wizard
+## 2. Run the onboarding wizard
 
 ```bash
-sy setup
+sy onboard
 ```
 
-The wizard creates your workspace (`~/.soulacy/soulspace` — the [soulspace layout](../configuration/workspace.md)), asks which LLM provider to use, and can wire a channel.
+The wizard creates or updates your workspace (`~/.soulacy/soulspace` — the
+[soulspace layout](../configuration/workspace.md)), asks which LLM provider to
+use, can wire web search and a starter agent, and can configure the release
+manifest used by `sy update check`. Use `sy setup` only when you want to write a
+fresh config from scratch.
 
 !!! tip "No API key? Use Ollama."
     If you run [Ollama](https://ollama.com) locally, pick it in the wizard and Soulacy works fully offline — no cloud account needed.
@@ -36,7 +40,7 @@ The wizard creates your workspace (`~/.soulacy/soulspace` — the [soulspace lay
 soulacy
 ```
 
-The gateway starts on **http://localhost:18789** with the full web GUI: Dashboard, Agents, Chat, Workboard, Knowledge, Memory, Skills, Flow, Plugins, and more. Take the [GUI tour](gui-tour.md).
+The gateway starts on **http://localhost:18789** with the full web GUI: Dashboard, Studio, Agents, Chat, Workboard, Knowledge, Memory, Skills, integrations, and observability. Take the [GUI tour](gui-tour.md).
 
 ## 4. Talk to an agent
 
@@ -89,7 +93,7 @@ Changes hot-reload — no restart. The full schema (tools, memory, reasoning, sc
    Every install passes a [security review](../extend/safety.md) before you consent. → [Skill sources](../extend/skill-sources.md)
 2. **Put it on Telegram** — a bot token and two YAML lines. → [Channels](../channels/telegram.md)
 3. **Schedule it** — run every morning, with automatic catch-up after downtime. → [Schedules](../using/schedules.md)
-4. **Start from a template** — Meeting Minutes, Inbox Triage, Market Monitor, Compliance Auditor, ready in one click. → [Templates](../using/templates.md)
+4. **Start from a template** — Meeting Minutes, Inbox Triage, Market Monitor, Compliance Auditor, with guided readiness checks and mock tests. → [Templates](../using/templates.md)
 5. **Talk to it** — configure `voice:` and hold a realtime conversation in Chat. → [Voice](../using/voice.md)
 
 ## Where everything lives

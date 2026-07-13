@@ -60,6 +60,9 @@ func (c *Config) Validate() error {
 	if c.Runtime.MaxTurnsCeiling < 0 {
 		errs = append(errs, fmt.Errorf("runtime.max_turns_ceiling: %d must not be negative", c.Runtime.MaxTurnsCeiling))
 	}
+	if c.Runtime.MaxAgentCallDepth < 0 {
+		errs = append(errs, fmt.Errorf("runtime.max_agent_call_depth: %d must not be negative", c.Runtime.MaxAgentCallDepth))
+	}
 	// When both are set, the default must not exceed the hard ceiling.
 	if c.Runtime.MaxTurnsCeiling > 0 && c.Runtime.DefaultMaxTurns > c.Runtime.MaxTurnsCeiling {
 		errs = append(errs, fmt.Errorf(

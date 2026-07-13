@@ -1,3 +1,4 @@
+README.md
 pyproject.toml
 soulacy/__init__.py
 soulacy/_cli.py

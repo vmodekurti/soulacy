@@ -679,6 +679,118 @@ func TestOpenAICompleteRetryReplaysBody(t *testing.T) {
 	}
 }
 
+func TestOpenAICompleteRetriesWithoutUnsupportedOptionalParam(t *testing.T) {
+	attempts := 0
+	var retried map[string]any
+	p := NewOpenAIProvider("openroute", "http://openroute.test/v1", "key", "router-model")
+	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			if _, ok := got["top_p"]; !ok {
+				t.Fatalf("first request should include top_p: %#v", got)
+			}
+			return jsonResponse(400, `{"error":{"type":"invalid_request_error","message":"top_p is not supported for this model"}}`), nil
+		}
+		retried = got
+		return jsonResponse(200, `{"choices":[{"message":{"content":"ok"}}],"usage":{}}`), nil
+	})
+	resp, err := p.Complete(context.Background(), CompletionRequest{
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.2,
+		TopP:        0.9,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if _, ok := retried["top_p"]; ok {
+		t.Fatalf("retry should omit unsupported top_p: %#v", retried)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+}
+
+func TestOpenAICompleteRetriesMaxTokensAsMaxCompletionTokens(t *testing.T) {
+	attempts := 0
+	var retried map[string]any
+	p := NewOpenAIProvider("openroute", "http://openroute.test/v1", "key", "reasoning-model")
+	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			if got["max_tokens"] == nil {
+				t.Fatalf("first request should include max_tokens: %#v", got)
+			}
+			return jsonResponse(400, `{"error":{"type":"invalid_request_error","message":"max_tokens is not supported for this model. Use max_completion_tokens instead."}}`), nil
+		}
+		retried = got
+		return jsonResponse(200, `{"choices":[{"message":{"content":"ok"}}],"usage":{}}`), nil
+	})
+	resp, err := p.Complete(context.Background(), CompletionRequest{
+		Messages:  []ChatMessage{{Role: "user", Content: "hi"}},
+		MaxTokens: 512,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if _, ok := retried["max_tokens"]; ok {
+		t.Fatalf("retry should omit max_tokens: %#v", retried)
+	}
+	if got := retried["max_completion_tokens"]; got != float64(512) {
+		t.Fatalf("max_completion_tokens = %#v, want 512", got)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+}
+
+func TestOpenAICompleteRetriesWithoutUnsupportedParallelToolCalls(t *testing.T) {
+	attempts := 0
+	var retried map[string]any
+	p := NewOpenAIProvider("openroute", "http://openroute.test/v1", "key", "gemini/gemini-pro")
+	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			if _, ok := got["parallel_tool_calls"]; !ok {
+				t.Fatalf("first request should include parallel_tool_calls: %#v", got)
+			}
+			return jsonResponse(400, `{"error":{"message":"Unknown parameter: parallel_tool_calls","type":"invalid_request_error"}}`), nil
+		}
+		retried = got
+		return jsonResponse(200, `{"choices":[{"message":{"content":"ok"}}],"usage":{}}`), nil
+	})
+	_, err := p.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+		Tools:    []ToolSchema{{Name: "lookup", Parameters: map[string]any{"type": "object"}}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if _, ok := retried["parallel_tool_calls"]; ok {
+		t.Fatalf("retry should omit unsupported parallel_tool_calls: %#v", retried)
+	}
+}
+
 // TestOpenAIModelsReturnsListFromServer verifies that /models is called and
 // IDs are extracted.
 func TestOpenAIModelsReturnsListFromServer(t *testing.T) {

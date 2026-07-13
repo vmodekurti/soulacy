@@ -66,6 +66,26 @@ You can configure this from the GUI: **Channels → Telegram → Edit → Bot ma
 
 ---
 
+## Default Outbound vs Interactive Bots
+
+Telegram can be used in two ways:
+
+| Mode | Use it for | Configure |
+| --- | --- | --- |
+| Default outbound sender | Cron reports, one-off `channel.send`, non-interactive delivery | Top-level token, `default_output_to`, and usually `outbound_only: true` |
+| Interactive agent bot | A Telegram bot that receives messages and invokes one agent | A bot mapping with `agent_id`, token, and allowlists |
+
+If the channel card says `OUTBOUND-ONLY`, that is expected for the default
+sender. It means the bot can send reports, but it will not poll inbound Telegram
+messages. Add a bot mapping when you want a user to chat with an agent.
+
+For interactive bot mappings, restart the gateway after saving, then send
+`/start` to that exact bot. If the bot is used in a group, set
+`ignore_groups: false`, add an allowlist if needed, and mention the bot or use
+the configured trigger phrase.
+
+---
+
 ## Send Scheduled Output To Telegram
 
 For cron agents that only need to post results, configure Telegram as
@@ -115,6 +135,12 @@ Open **Channels -> Telegram** and read **Delivery checks**:
   channel-level `default_output_to`.
 - A dedicated bot mapping must either select an `agent_id` for interactive use
   or be marked `outbound_only` for send-only use.
+- `chat not found` usually means `default_output_to` / `schedule.output.to` is
+  wrong, the bot is not in the target chat/channel, or a private chat has not
+  sent `/start` to that bot yet.
+- If a mapped bot is listed as connected but never receives prompts, confirm the
+  agent has `trigger: channel` and includes the mapping adapter ID or
+  `telegram` in its `channels:` list.
 
 You can also call `GET /api/v1/doctor`; its `channels` section returns the
 same diagnostics for automated production checks.

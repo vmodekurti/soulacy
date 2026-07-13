@@ -15,9 +15,20 @@ sy eval --agent my-agent --suite evals/golden
 
 # machine-readable output
 sy eval --agent my-agent --suite evals/golden --json
+
+# run only matching tags
+sy eval --agent my-agent --suite evals/golden --tag weather
+
+# repeat cases to catch flaky behavior and collect latency variance
+sy eval --agent my-agent --suite evals/golden/weather.yaml --repeat 3
+
+# stop as soon as the first failure appears
+sy eval --agent my-agent --suite evals/golden --fail-fast
 ```
 
 `sy eval` exits non-zero if any case fails, so it drops straight into CI.
+The table report includes aggregate pass/fail/skip counts, latency
+avg/p50/p95, and token totals when the gateway reports token usage.
 
 ## Writing cases
 
@@ -34,6 +45,7 @@ cases:
     expected_not_regex: ["(?i)error"]        # none may match
     max_tokens: 800                          # token budget
     max_latency_ms: 45000                    # latency budget
+    tags: ["weather", "smoke"]               # selectable with --tag
     expect_tool_success: ["get_weather"]     # named tool ran and succeeded
     expect_delivered: true                   # channel delivery confirmed
     requires_secret: ["WEATHER_API_KEY"]     # skip (not fail) if unset
@@ -47,8 +59,20 @@ cases:
 | `expected_regex` / `expected_not_regex` | Regex matches on the reply |
 | `max_tokens` | Reply token count is within budget |
 | `max_latency_ms` | Response latency is within budget |
+| `tags` | Case labels used by `sy eval --tag`; suite-level tags select every case in that suite |
 | `expect_tool_success` | Each named tool was called and succeeded (asserted when the gateway returns a tool trace) |
 | `expect_delivered` | The reported channel-delivery flag matches |
+
+### Benchmark mode
+
+Use `--repeat N` to run each selected case multiple times. This is useful for
+spotting flaky agents, prompt drift, provider variance, and regressions where a
+single pass hides a slow p95. Combine it with `max_latency_ms`, `max_tokens`,
+and `--tag` for focused release checks:
+
+```bash
+sy eval --agent weather --suite evals/golden/weather.yaml --tag weather --repeat 5
+```
 
 ### Secret-backed cases
 

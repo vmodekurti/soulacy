@@ -8,7 +8,9 @@
   import { api } from '../lib/api.js'
 
   let templates = []
+  let channels = []
   let loading   = true
+  let channelsLoading = false
   let error     = ''
   let notice    = ''
   let instantiating = ''
@@ -30,14 +32,21 @@
 
   async function load() {
     loading = true
+    channelsLoading = true
     error   = ''
     try {
-      const res = await api.templates.list()
-      templates = res.templates || []
+      const [tplRes, chRes] = await Promise.allSettled([
+        api.templates.list(),
+        api.channels.list(),
+      ])
+      if (tplRes.status === 'rejected') throw tplRes.reason
+      templates = tplRes.value.templates || []
+      if (chRes.status === 'fulfilled') channels = chRes.value.channels || []
     } catch (e) {
       error = e.message
     } finally {
       loading = false
+      channelsLoading = false
     }
   }
 
@@ -61,7 +70,20 @@
     mockResult = null
     error = ''
     notice = ''
+    if (!channels.length) loadChannels()
     checkReadiness(t)
+  }
+
+  async function loadChannels() {
+    channelsLoading = true
+    try {
+      const res = await api.channels.list()
+      channels = res.channels || []
+    } catch (_) {
+      channels = []
+    } finally {
+      channelsLoading = false
+    }
   }
 
   async function checkReadiness(t = wizard) {
@@ -157,8 +179,73 @@
     return !!(t.definition?.schedule || t.schedule_hint || (t.setup || []).find(x => x.key === 'schedule'))
   }
 
+  function isTruthy(value) {
+    return value === true || String(value).toLowerCase() === 'true'
+  }
+
+  function hasValue(value) {
+    return String(value ?? '').trim() !== '' && String(value ?? '').trim() !== '—' && String(value ?? '').trim() !== '-'
+  }
+
+  function channelOptionLabel(channel, row) {
+    const base = row.bot_name || channel.name || channel.id
+    const mode = row.outbound_only ? 'scheduled output' : (row.agent_id ? `agent ${row.agent_id}` : 'delivery')
+    return `${base} · ${row.adapter_id} · ${mode}`
+  }
+
+  function channelOptionsFrom(channelsList) {
+    const out = []
+    for (const ch of channelsList || []) {
+      const defaultDest = ch.settings?.default_output_to || ''
+      const defaultTemplate = ch.settings?.default_output_template || ''
+      const hasDefault = ch.configured || hasValue(defaultDest) || ch.status?.connected
+      if (hasDefault) {
+        out.push({
+          adapter_id: ch.id,
+          label: channelOptionLabel(ch, {
+            adapter_id: ch.id,
+            bot_name: ch.settings?.bot_name || ch.name || ch.id,
+            agent_id: ch.settings?.agent_id || '',
+            outbound_only: isTruthy(ch.settings?.outbound_only) || !ch.settings?.agent_id,
+          }),
+          destination: defaultDest,
+          template: defaultTemplate,
+          connected: !!ch.status?.connected,
+          detail: ch.status?.detail || '',
+        })
+      }
+      for (const bot of ch.bots || []) {
+        out.push({
+          adapter_id: bot._adapter_id,
+          label: channelOptionLabel(ch, {
+            adapter_id: bot._adapter_id,
+            bot_name: bot.bot_name || bot.name || ch.name || ch.id,
+            agent_id: bot.agent_id || '',
+            outbound_only: isTruthy(bot.outbound_only),
+          }),
+          destination: bot.default_output_to || '',
+          template: bot.default_output_template || '',
+          connected: !!bot._connected,
+          detail: bot._detail || '',
+        })
+      }
+    }
+    return out.filter(x => hasValue(x.adapter_id))
+  }
+
+  function applyChannelOption() {
+    const opt = outputOptions.find(x => x.adapter_id === wizardChannel)
+    if (!opt) return
+    if (!wizardTo.trim() && hasValue(opt.destination)) wizardTo = String(opt.destination)
+    if ((!wizardTemplate.trim() || wizardTemplate.trim() === '{reply}') && hasValue(opt.template)) {
+      wizardTemplate = String(opt.template)
+    }
+  }
+
   $: workflows = templates.filter(t => (t.tags || []).includes(WORKFLOW_TAG))
   $: starters  = templates.filter(t => !(t.tags || []).includes(WORKFLOW_TAG))
+  $: outputOptions = channelOptionsFrom(channels)
+  $: selectedOutputOption = outputOptions.find(x => x.adapter_id === wizardChannel)
 
   onMount(load)
 </script>
@@ -341,11 +428,30 @@
           </label>
           <label>
             Output channel
-            <input bind:value={wizardChannel} placeholder="telegram" disabled={!!createdAgent} />
+            <select bind:value={wizardChannel} on:change={applyChannelOption} disabled={!!createdAgent}>
+              <option value="">Do not send scheduled output</option>
+              {#if wizardChannel && !selectedOutputOption}
+                <option value={wizardChannel}>{wizardChannel} · from template</option>
+              {/if}
+              {#each outputOptions as opt}
+                <option value={opt.adapter_id}>{opt.label}</option>
+              {/each}
+            </select>
           </label>
+          {#if wizardChannel && selectedOutputOption}
+            <div class="delivery-hint {selectedOutputOption.connected ? 'ok' : 'warn'}">
+              {selectedOutputOption.connected ? 'Connected' : 'Needs restart or credentials'}
+              {#if selectedOutputOption.detail} · {selectedOutputOption.detail}{/if}
+            </div>
+          {:else if !outputOptions.length}
+            <div class="delivery-hint warn">
+              {channelsLoading ? 'Loading delivery channels…' : 'No configured output bots found. Open Channels to add Telegram, Slack, Discord, WhatsApp, or a webhook.'}
+              <button class="btn-link" type="button" on:click={() => window.location.hash = '#channels'}>Open Channels</button>
+            </div>
+          {/if}
           <label>
             Destination
-            <input bind:value={wizardTo} placeholder="@channel or chat id" disabled={!!createdAgent} />
+            <input bind:value={wizardTo} placeholder="@channel, chat ID, Slack channel, Discord channel, or webhook URL" disabled={!!createdAgent || !wizardChannel} />
           </label>
           <label>
             Output template
@@ -379,7 +485,7 @@
 
       <div class="wizard-actions">
         {#if createdAgent}
-          <button class="btn-secondary" on:click={() => window.location.hash = '#agents'}>Open Agents</button>
+          <button class="btn-secondary" on:click={() => window.location.hash = '#agents'}>Open Deployed</button>
           <button class="btn-secondary" on:click={() => window.location.hash = '#chat'}>Try in Chat</button>
           <button class="btn-secondary" on:click={() => api.agents.trigger(createdAgent.id).then(() => notice = 'Real test run started for "' + createdAgent.id + '".').catch(e => error = e.message)}>
             Run real test
@@ -447,6 +553,23 @@
   label { display: flex; flex-direction: column; gap: .35rem; color: #c8cbe8; font-size: .75rem; }
   .wizard-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .wizard-grid h3 { margin: 0 0 .5rem; font-size: .82rem; color: #c8cbe8; }
+  select {
+    background: #171b30;
+    color: #d8dcff;
+    border: 1px solid #2a2f4a;
+    border-radius: 7px;
+    padding: .55rem .6rem;
+    font: inherit;
+    min-height: 2.2rem;
+  }
+  .delivery-hint {
+    border-radius: 8px;
+    padding: .45rem .55rem;
+    font-size: .72rem;
+    line-height: 1.45;
+  }
+  .delivery-hint.ok { color: #72d9aa; background: rgba(76,175,130,.08); border: 1px solid rgba(95,206,154,.22); }
+  .delivery-hint.warn { color: #f0b070; background: rgba(240,160,96,.08); border: 1px solid rgba(240,160,96,.24); }
   .wizard-list { display: flex; flex-direction: column; gap: .45rem; }
   .wizard-row { border: 1px solid #252a46; background: #15182a; border-radius: 8px; padding: .55rem .65rem; }
   .wizard-row.ready { border-color: rgba(95, 206, 154, .25); }

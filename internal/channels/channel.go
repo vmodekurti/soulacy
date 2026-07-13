@@ -78,6 +78,7 @@ func (r *Registry) Inbox() <-chan message.Message { return r.inbox }
 func (r *Registry) Enqueue(msg message.Message) bool {
 	select {
 	case r.inbox <- msg:
+		metrics.ChannelInboundTotal.WithLabelValues(channelMetricLabel(msg.Channel), channelMetricLabel(msg.AgentID)).Inc()
 		return true
 	default:
 		// Inbox is full — increment the Prometheus drop counter and log at
@@ -164,13 +165,28 @@ func (r *Registry) StopAll() []error {
 
 // Send routes an outbound message to the correct channel adapter.
 func (r *Registry) Send(ctx context.Context, msg message.Message) error {
+	ch := channelMetricLabel(msg.Channel)
+	agentID := channelMetricLabel(msg.AgentID)
 	r.mu.RLock()
 	a, ok := r.adapters[msg.Channel]
 	r.mu.RUnlock()
 	if !ok {
+		metrics.ChannelOutboundTotal.WithLabelValues(ch, agentID, "unregistered").Inc()
 		return fmt.Errorf("channel adapter %q is not registered", msg.Channel)
 	}
-	return a.Send(ctx, msg)
+	if err := a.Send(ctx, msg); err != nil {
+		metrics.ChannelOutboundTotal.WithLabelValues(ch, agentID, "error").Inc()
+		return err
+	}
+	metrics.ChannelOutboundTotal.WithLabelValues(ch, agentID, "success").Inc()
+	return nil
+}
+
+func channelMetricLabel(v string) string {
+	if v == "" {
+		return "unknown"
+	}
+	return v
 }
 
 // Statuses returns a map of adapter ID → status for the admin API.

@@ -13,6 +13,11 @@
   let eventFilter = 'all'
   let suggestions = []
   let dismissed = new Set()
+  let readiness = null
+  let ops = null
+  let opsError = ''
+  let downloadingSupport = false
+  let supportMessage = ''
 
   const EVENT_FILTERS = [
     { id: 'all', label: 'All' },
@@ -44,6 +49,18 @@
       suggestions = (res.suggestions || []).filter(s => !dismissed.has(s.kind + ':' + s.agent_id))
     } catch {
       suggestions = []
+    }
+    try {
+      readiness = await api.readiness()
+    } catch {
+      readiness = null
+    }
+    try {
+      ops = await api.opsSummary('24h')
+      opsError = ''
+    } catch (e) {
+      ops = null
+      opsError = e.status === 503 ? 'Run reliability needs durable action logging.' : (e.message || 'Run reliability unavailable.')
     }
   }
 
@@ -105,6 +122,55 @@
     return true
   }
 
+  function openHref(href) {
+    if (!href) return
+    window.location.hash = href.replace(/^#/, '')
+  }
+
+  async function downloadSupportBundle() {
+    downloadingSupport = true
+    supportMessage = ''
+    try {
+      const { blob, filename } = await api.support.bundle()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename || `soulacy-support-${new Date().toISOString().slice(0, 19).replaceAll(':', '')}.zip`
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+      supportMessage = 'Support bundle includes readiness, doctor output, redacted config, agent manifests, and recent logs.'
+    } catch (e) {
+      supportMessage = e.message || 'Could not prepare support bundle.'
+    } finally {
+      downloadingSupport = false
+    }
+  }
+
+  function statusLabel(status) {
+    if (status === 'ok') return 'Ready'
+    if (status === 'warn') return 'Needs attention'
+    return 'Blocked'
+  }
+
+  function pct(n) {
+    if (!Number.isFinite(Number(n))) return '0%'
+    return `${Math.round(Number(n) * 100)}%`
+  }
+
+  function fmtUSD(n) {
+    n = Number(n || 0)
+    if (n === 0) return '$0.00'
+    if (n < 0.01) return `$${n.toFixed(4)}`
+    return `$${n.toFixed(2)}`
+  }
+
+  function shortError(s) {
+    s = String(s || '').trim()
+    return s.length > 110 ? s.slice(0, 110) + '…' : s
+  }
+
   $: filteredEvents = events.filter(matchesFilter)
 </script>
 
@@ -133,17 +199,163 @@
     </div>
 
     <div class="card">
-      <div class="card-label">Agents</div>
+      <div class="card-label">Deployed Agents</div>
       <div class="card-value">{agents.length}</div>
       <div class="card-sub">{agents.filter(a => a.enabled).length} enabled</div>
     </div>
 
     <div class="card">
-      <div class="card-label">Events (session)</div>
+      <div class="card-label">Runs (session)</div>
       <div class="card-value">{events.length}</div>
       <div class="card-sub">{filteredEvents.length} shown · {$connected ? 'streaming live' : 'reconnecting…'}</div>
     </div>
   </div>
+
+  {#if ops || opsError}
+    <div class="ops">
+      <div class="ops-top">
+        <div>
+          <div class="eyebrow">Run Reliability</div>
+          <h2>
+            {#if ops}
+              {ops.total_runs || 0} runs · {pct(ops.failure_rate)} failure rate
+            {:else}
+              Not available
+            {/if}
+          </h2>
+          <p>
+            {#if ops}
+              Last 24h · {ops.successful_runs || 0} successful · {ops.failed_runs || 0} failed · {ops.incomplete_runs || 0} incomplete
+              {#if ops.total_tokens !== undefined} · {(ops.total_tokens || 0).toLocaleString()} tokens · {fmtUSD(ops.cost_usd)}{/if}
+            {:else}
+              {opsError}
+            {/if}
+          </p>
+        </div>
+        <button class="btn-secondary" on:click={() => openHref('#activity')}>Open Runs</button>
+      </div>
+      {#if ops}
+        <div class="ops-grid">
+          <div class="ops-panel">
+            <div class="ops-label">Top Failing Agents</div>
+            {#if ops.top_failing_agents?.length}
+              {#each ops.top_failing_agents as row}
+                <button class="ops-row" type="button" on:click={() => openHref(`#activity?agent_id=${encodeURIComponent(row.agent_id)}`)}>
+                  <strong>{row.agent_id}</strong>
+                  <span>{row.failures} failure{row.failures === 1 ? '' : 's'} · {pct(row.failure_rate)}</span>
+                </button>
+              {/each}
+            {:else}
+              <div class="ops-empty">No failing agents in this window.</div>
+            {/if}
+          </div>
+          <div class="ops-panel">
+            <div class="ops-label">Recent Failures</div>
+            {#if ops.recent_failures?.length}
+              {#each ops.recent_failures as fail}
+                <button class="ops-row" type="button" on:click={() => openHref(`#activity?agent_id=${encodeURIComponent(fail.agent_id)}&session_id=${encodeURIComponent(fail.session_id)}`)}>
+                  <strong>{fail.agent_id}</strong>
+                  <span>{shortError(fail.error)}</span>
+                </button>
+              {/each}
+            {:else}
+              <div class="ops-empty">No recent run failures.</div>
+            {/if}
+          </div>
+          <div class="ops-panel">
+            <div class="ops-label">Error Signatures</div>
+            {#if ops.top_errors?.length}
+              {#each ops.top_errors as err}
+                <div class="ops-row static">
+                  <strong>{err.count}×</strong>
+                  <span>{shortError(err.message)}</span>
+                </div>
+              {/each}
+            {:else}
+              <div class="ops-empty">No error signatures captured.</div>
+            {/if}
+          </div>
+        </div>
+      {/if}
+    </div>
+  {/if}
+
+  {#if readiness}
+    <div class="readiness">
+      <div class="readiness-top">
+        <div>
+          <div class="eyebrow">Launch Readiness</div>
+          <h2>{readiness.summary?.score || 0}% · {readiness.summary?.status === 'ready' ? 'Ready' : readiness.summary?.status === 'at_risk' ? 'At risk' : 'Needs setup'}</h2>
+          <p>
+            {readiness.summary?.ready_items || 0}/{readiness.summary?.total_items || 0} checks ready ·
+            {readiness.summary?.blocker_items || 0} blockers ·
+            {readiness.summary?.warning_items || 0} warnings
+          </p>
+          <p>
+            {readiness.summary?.enabled_agents || 0} enabled agents ·
+            {readiness.summary?.providers_ready || 0} providers ·
+            {readiness.summary?.channels_ready || 0} channels ·
+            {readiness.summary?.learning_agents || 0} learning loops
+          </p>
+        </div>
+        <div class="readiness-actions">
+          <button class="btn-primary" on:click={() => openHref('#studio')}>Open Studio</button>
+          <button class="btn-secondary" on:click={downloadSupportBundle} disabled={downloadingSupport}>
+            {downloadingSupport ? 'Preparing...' : 'Download support bundle'}
+          </button>
+        </div>
+      </div>
+      {#if supportMessage}
+        <div class:ok-note={!supportMessage.toLowerCase().includes('could not')} class:err-note={supportMessage.toLowerCase().includes('could not')}>
+          {supportMessage}
+        </div>
+      {/if}
+
+      {#if readiness.release}
+        <div class:release-strip={true} class:ok={readiness.release?.updates_ready} class:warn={!readiness.release?.updates_ready}>
+          <div>
+            <div class="release-title">
+              <span>{readiness.release?.updates_ready ? 'Updates configured' : 'Updates need setup'}</span>
+              <small>{readiness.release?.version || 'unknown version'}</small>
+            </div>
+            <p>{readiness.release?.update_hint || 'Configure a release manifest before production launch.'}</p>
+            {#if readiness.release?.update_manifest}
+              <code>{readiness.release.update_manifest}</code>
+            {/if}
+          </div>
+          <div class="release-cmds">
+            <code>{readiness.release?.dry_run_command || 'sy update install --dry-run'}</code>
+            <code>{readiness.release?.install_command || 'sy update install --yes'}</code>
+          </div>
+        </div>
+      {/if}
+
+      <div class="journey-grid">
+        {#each readiness.journey || [] as item}
+          <button class="journey-card {item.status}" type="button" on:click={() => openHref(item.href)}>
+            <span class="journey-status">{statusLabel(item.status)}</span>
+            <strong>{item.label}</strong>
+            <small>{item.detail}</small>
+          </button>
+        {/each}
+      </div>
+
+      {#if readiness.next_actions?.length}
+        <div class="next-actions">
+          <div class="section-hdr inline">
+            <span>Next best actions</span>
+            <span class="pill">{readiness.next_actions.length}</span>
+          </div>
+          {#each readiness.next_actions as action}
+            <button class="action-row {action.status}" type="button" on:click={() => openHref(action.href)}>
+              <span>{action.label}</span>
+              <small>{action.detail}</small>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </div>
+  {/if}
 
   <!-- Proactive suggestions -->
   {#if suggestions.length}
@@ -224,6 +436,125 @@
   .card-value { font-size: 1.45rem; font-weight: 600; }
   .card-sub   { color: #6b7294; font-size: 0.75rem; margin-top: .2rem; }
 
+  .btn-primary {
+    background: #6c63ff; color: white; border: 0; border-radius: 8px;
+    padding: .55rem .9rem; font-weight: 650; cursor: pointer;
+  }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-secondary {
+    background: #20243d; color: #dfe2ff; border: 1px solid #30365f; border-radius: 8px;
+    padding: .55rem .9rem; font-weight: 650; cursor: pointer;
+  }
+  .btn-secondary:hover:not(:disabled) { border-color: #6c63ff; }
+  .btn-secondary:disabled { opacity: .65; cursor: not-allowed; }
+
+  .readiness {
+    background: #121525; border: 1px solid #24284a; border-radius: 10px;
+    padding: 1rem; display: flex; flex-direction: column; gap: 1rem;
+  }
+  .ops {
+    background: #121525; border: 1px solid #24284a; border-radius: 10px;
+    padding: 1rem; display: flex; flex-direction: column; gap: .85rem;
+  }
+  .ops-top {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  }
+  .ops h2 { font-size: 1.05rem; margin: 0; }
+  .ops p { margin: .35rem 0 0; color: #8a91b8; font-size: .78rem; }
+  .ops-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: .65rem;
+  }
+  .ops-panel {
+    background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
+  }
+  .ops-label {
+    padding: .6rem .75rem; border-bottom: 1px solid #1a1e36;
+    color: #7d84c9; font-size: .68rem; text-transform: uppercase;
+    letter-spacing: .08em; font-weight: 700;
+  }
+  .ops-row {
+    width: 100%; display: grid; grid-template-columns: minmax(92px, 130px) 1fr; gap: .65rem;
+    text-align: left; background: transparent; border: 0; border-top: 1px solid #171b31;
+    color: #dfe2ff; padding: .6rem .75rem; cursor: pointer;
+  }
+  .ops-row:first-of-type { border-top: 0; }
+  .ops-row.static { cursor: default; }
+  .ops-row:not(.static):hover { background: #171a2e; }
+  .ops-row strong { font-size: .75rem; color: #f0f2ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ops-row span { font-size: .72rem; color: #8a91b8; line-height: 1.35; overflow-wrap: anywhere; }
+  .ops-empty { padding: .8rem .75rem; color: #6b7294; font-size: .74rem; }
+  .readiness-top {
+    display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+  }
+  .eyebrow {
+    color: #7d84c9; font-size: .68rem; text-transform: uppercase;
+    letter-spacing: .08em; font-weight: 700; margin-bottom: .25rem;
+  }
+  .readiness h2 { font-size: 1.15rem; margin: 0; }
+  .readiness p { margin: .35rem 0 0; color: #8a91b8; font-size: .78rem; }
+  .readiness-actions { display: flex; gap: .5rem; flex-wrap: wrap; justify-content: flex-end; }
+  .release-strip {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
+    border-radius: 8px; padding: .75rem .85rem; background: #0f1222;
+    border: 1px solid #252a4a;
+  }
+  .release-strip.ok { border-color: rgba(76,175,130,.3); background: rgba(76,175,130,.06); }
+  .release-strip.warn { border-color: rgba(240,160,96,.35); background: rgba(240,160,96,.07); }
+  .release-title {
+    display: flex; align-items: baseline; gap: .6rem; color: #dfe2ff;
+    font-weight: 700; font-size: .82rem;
+  }
+  .release-title small { color: #7d84c9; font-size: .7rem; font-weight: 650; }
+  .release-strip p { margin: .3rem 0 0; max-width: 760px; }
+  .release-strip code {
+    display: inline-block; margin-top: .35rem; background: #0a0d19;
+    border: 1px solid #1a1e36; border-radius: 6px; padding: .18rem .4rem;
+    color: #bfc5ff; font-size: .7rem; overflow-wrap: anywhere;
+  }
+  .release-cmds {
+    display: flex; flex-direction: column; gap: .25rem; min-width: 230px; align-items: flex-end;
+  }
+  .ok-note,
+  .err-note {
+    border-radius: 8px; padding: .55rem .75rem; font-size: .75rem;
+  }
+  .ok-note { background: rgba(76,175,130,.1); border: 1px solid rgba(76,175,130,.25); color: #68d19b; }
+  .err-note { background: rgba(240,96,96,.1); border: 1px solid rgba(240,96,96,.25); color: #ff8585; }
+  .journey-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: .65rem;
+  }
+  .journey-card {
+    text-align: left; background: #171a2e; border: 1px solid #252a4a; border-radius: 8px;
+    padding: .8rem; color: #dfe2ff; cursor: pointer; min-height: 116px;
+  }
+  .journey-card strong { display: block; font-size: .86rem; margin: .35rem 0; }
+  .journey-card small { display: block; color: #8a91b8; font-size: .72rem; line-height: 1.35; }
+  .journey-card.ok { border-color: rgba(76,175,130,.35); }
+  .journey-card.warn { border-color: rgba(240,160,96,.45); }
+  .journey-card.fail { border-color: rgba(240,96,96,.45); }
+  .journey-card:hover { border-color: #6c63ff; }
+  .journey-status {
+    display: inline-flex; border-radius: 999px; padding: .15rem .45rem;
+    font-size: .66rem; font-weight: 700; background: #202542; color: #b6bcf3;
+  }
+  .journey-card.ok .journey-status { background: rgba(76,175,130,.15); color: #68d19b; }
+  .journey-card.warn .journey-status { background: rgba(240,160,96,.16); color: #f0b070; }
+  .journey-card.fail .journey-status { background: rgba(240,96,96,.14); color: #ff8585; }
+  .next-actions {
+    background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
+  }
+  .section-hdr.inline { border-bottom: 1px solid #1a1e36; }
+  .action-row {
+    width: 100%; display: grid; grid-template-columns: 170px 1fr; gap: .75rem;
+    text-align: left; background: transparent; border: 0; border-top: 1px solid #171b31;
+    color: #dfe2ff; padding: .65rem .9rem; cursor: pointer;
+  }
+  .action-row span { font-weight: 700; font-size: .78rem; }
+  .action-row small { color: #8a91b8; font-size: .72rem; line-height: 1.35; }
+  .action-row:hover { background: #171a2e; }
+  .action-row.fail span { color: #ff8585; }
+  .action-row.warn span { color: #f0b070; }
+
   .section     { background: #141626; border: 1px solid #1a1e36; border-radius: 10px; overflow: hidden; flex: 1; min-height: 0; display: flex; flex-direction: column; }
   .section-hdr {
     display: flex; align-items: center; gap: .7rem;
@@ -269,5 +600,10 @@
     .log-data { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }
     .filter-tabs { margin-left: 0; flex-wrap: wrap; }
     .section-hdr { flex-wrap: wrap; }
+    .readiness-top { align-items: flex-start; flex-direction: column; }
+    .readiness-actions { justify-content: flex-start; }
+    .release-strip { flex-direction: column; }
+    .release-cmds { align-items: flex-start; min-width: 0; width: 100%; }
+    .action-row { grid-template-columns: 1fr; gap: .25rem; }
   }
 </style>

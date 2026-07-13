@@ -94,3 +94,46 @@ func TestWriteIncludesRedactedConfigAndManifest(t *testing.T) {
 		t.Fatalf("bundle did not include redaction marker:\n%s", joined)
 	}
 }
+
+func TestWriteIncludesExtraJSONDiagnostics(t *testing.T) {
+	var buf bytes.Buffer
+	_, err := Write(&buf, Options{
+		Doctor: map[string]any{"ok": true},
+		ExtraJSON: map[string]any{
+			"readiness": map[string]any{
+				"status": "ready",
+				"token":  "xoxb-extra-secret-token-value-1234567890",
+			},
+		},
+		Now: time.Date(2026, 7, 5, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(buf.Bytes()), int64(buf.Len()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var readiness string
+	for _, f := range zr.File {
+		if f.Name != "readiness.json" {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(rc)
+		_ = rc.Close()
+		readiness = string(data)
+	}
+	if readiness == "" {
+		t.Fatalf("bundle missing readiness.json")
+	}
+	if !strings.Contains(readiness, `"status": "ready"`) {
+		t.Fatalf("unexpected readiness.json:\n%s", readiness)
+	}
+	if strings.Contains(readiness, "xoxb-extra-secret") {
+		t.Fatalf("extra diagnostic leaked secret:\n%s", readiness)
+	}
+}

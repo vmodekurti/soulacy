@@ -6,8 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/metrics"
 	"github.com/soulacy/soulacy/pkg/message"
 )
 
@@ -83,6 +85,54 @@ func TestRegistryEnqueueIsNonBlocking(t *testing.T) {
 	got := <-reg.Inbox()
 	if text := firstRegistryTestText(got); text != "one" {
 		t.Fatalf("dequeued text = %q, want one", text)
+	}
+}
+
+func TestRegistryEnqueueRecordsInboundMetric(t *testing.T) {
+	reg := NewRegistry(1)
+	before := testutil.ToFloat64(metrics.ChannelInboundTotal.WithLabelValues("slack", "agent-a"))
+
+	if !reg.Enqueue(message.Message{Channel: "slack", AgentID: "agent-a", Parts: message.Text("one")}) {
+		t.Fatal("enqueue should succeed")
+	}
+
+	after := testutil.ToFloat64(metrics.ChannelInboundTotal.WithLabelValues("slack", "agent-a"))
+	if after != before+1 {
+		t.Fatalf("inbound metric delta = %v, want 1", after-before)
+	}
+}
+
+func TestRegistrySendRecordsOutboundMetrics(t *testing.T) {
+	reg := NewRegistry(1)
+	wantErr := errors.New("send failed")
+	reg.Register(&registryTestAdapter{id: "slack"})
+	reg.Register(&registryTestAdapter{id: "telegram", sendErr: wantErr})
+
+	successBefore := testutil.ToFloat64(metrics.ChannelOutboundTotal.WithLabelValues("slack", "agent-a", "success"))
+	if err := reg.Send(context.Background(), message.Message{Channel: "slack", AgentID: "agent-a"}); err != nil {
+		t.Fatalf("Send success case: %v", err)
+	}
+	successAfter := testutil.ToFloat64(metrics.ChannelOutboundTotal.WithLabelValues("slack", "agent-a", "success"))
+	if successAfter != successBefore+1 {
+		t.Fatalf("success metric delta = %v, want 1", successAfter-successBefore)
+	}
+
+	errorBefore := testutil.ToFloat64(metrics.ChannelOutboundTotal.WithLabelValues("telegram", "agent-a", "error"))
+	if err := reg.Send(context.Background(), message.Message{Channel: "telegram", AgentID: "agent-a"}); !errors.Is(err, wantErr) {
+		t.Fatalf("Send error case = %v, want %v", err, wantErr)
+	}
+	errorAfter := testutil.ToFloat64(metrics.ChannelOutboundTotal.WithLabelValues("telegram", "agent-a", "error"))
+	if errorAfter != errorBefore+1 {
+		t.Fatalf("error metric delta = %v, want 1", errorAfter-errorBefore)
+	}
+
+	missingBefore := testutil.ToFloat64(metrics.ChannelOutboundTotal.WithLabelValues("discord", "agent-a", "unregistered"))
+	if err := reg.Send(context.Background(), message.Message{Channel: "discord", AgentID: "agent-a"}); err == nil {
+		t.Fatal("Send missing adapter should fail")
+	}
+	missingAfter := testutil.ToFloat64(metrics.ChannelOutboundTotal.WithLabelValues("discord", "agent-a", "unregistered"))
+	if missingAfter != missingBefore+1 {
+		t.Fatalf("unregistered metric delta = %v, want 1", missingAfter-missingBefore)
 	}
 }
 

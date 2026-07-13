@@ -15,6 +15,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -39,20 +40,27 @@ type ToolCall struct {
 
 // UnmarshalJSON accepts both the original string-only input contract and full
 // JSON tool arguments. Models usually emit {"input":{...}}, while some newer
-// prompts emit {"arguments":{...}}; both populate Arguments.
+// prompts emit {"arguments":{...}}; both populate Arguments. The decoder also
+// accepts common LLM aliases so ReAct agents do not burn loop steps on harmless
+// schema drift.
 func (c *ToolCall) UnmarshalJSON(data []byte) error {
 	var raw struct {
-		Tool      string         `json:"tool"`
-		Input     map[string]any `json:"input"`
-		Arguments map[string]any `json:"arguments"`
+		Tool        string         `json:"tool"`
+		ToolName    string         `json:"tool_name"`
+		Name        string         `json:"name"`
+		Input       map[string]any `json:"input"`
+		Arguments   map[string]any `json:"arguments"`
+		Parameters  map[string]any `json:"parameters"`
+		Params      map[string]any `json:"params"`
+		ActionInput map[string]any `json:"action_input"`
 	}
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	c.Tool = raw.Tool
-	args := raw.Arguments
-	if len(args) == 0 {
-		args = raw.Input
+	c.Tool = firstNonEmpty(raw.Tool, raw.ToolName, raw.Name)
+	args := firstNonNilMap(raw.Arguments, raw.Parameters, raw.Params, raw.Input, raw.ActionInput)
+	if args == nil {
+		args = map[string]any{}
 	}
 	if len(args) > 0 {
 		c.Arguments = args
@@ -72,6 +80,24 @@ func (c *ToolCall) UnmarshalJSON(data []byte) error {
 				}
 				c.Input[k] = string(b)
 			}
+		}
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func firstNonNilMap(values ...map[string]any) map[string]any {
+	for _, value := range values {
+		if len(value) > 0 {
+			return value
 		}
 	}
 	return nil

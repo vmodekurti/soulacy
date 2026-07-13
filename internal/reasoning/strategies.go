@@ -40,6 +40,8 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 	var steps []Step
 	consecutiveThinkErrors := 0
 	totalThinkErrors := 0
+	lastFailedToolKey := ""
+	repeatedFailedToolCalls := 0
 
 	for i := 0; i < env.Config.MaxSteps; i++ {
 		if ctx.Err() != nil {
@@ -68,9 +70,12 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 				Duration: time.Since(stepStart),
 			})
 			cancel()
-			if consecutiveThinkErrors >= 3 && lastUsefulObservation(steps) != "" {
+			if consecutiveThinkErrors >= 1 && lastUsefulObservation(steps) != "" {
 				if resp, ok := reflectAfterRepeatedThinkErrors(ctx, env, taskInput, steps); ok {
 					return steps, resp
+				}
+				if consecutiveThinkErrors >= 2 {
+					return steps, ReflectResponse{Output: synthesizeAfterThinkErrors(steps)}
 				}
 			}
 			if consecutiveThinkErrors >= maxConsecutiveThinkErrors || totalThinkErrors >= maxTotalThinkErrors {
@@ -148,6 +153,20 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 		// Execute the tool — failures are wrapped as observations, not panics.
 		obs := env.Tools.Execute(stepCtx, think.Action)
 		obs = boundObservation(obs)
+		callKey := toolCallKey(think.Action)
+		repeatedToolFailure := false
+		if isToolFailure(obs) && callKey != "" {
+			if callKey == lastFailedToolKey {
+				repeatedFailedToolCalls++
+			} else {
+				lastFailedToolKey = callKey
+				repeatedFailedToolCalls = 1
+			}
+			repeatedToolFailure = repeatedFailedToolCalls >= 2
+		} else {
+			lastFailedToolKey = ""
+			repeatedFailedToolCalls = 0
+		}
 
 		steps = append(steps, Step{
 			ID:       fmt.Sprintf("step-%d", i+1),
@@ -157,6 +176,22 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			Duration: time.Since(stepStart),
 		})
 		cancel()
+		if repeatedToolFailure {
+			steps = append(steps, Step{
+				ID:      fmt.Sprintf("step-%d-recovery", i+1),
+				Thought: "Repeated identical tool failure detected.",
+				Obs: Observation{
+					Content: repeatedToolFailureInstruction(think.Action, obs, repeatedFailedToolCalls),
+					Source:  "controller",
+				},
+			})
+			if repeatedFailedToolCalls >= 3 {
+				if resp, ok := reflectAfterRepeatedToolFailures(ctx, env, taskInput, steps); ok {
+					return steps, resp
+				}
+				return steps, ReflectResponse{Output: repeatedToolFailureStopMessage(steps)}
+			}
+		}
 	}
 
 	// MaxSteps exhausted or LLM errored — reflect on what we have.
@@ -212,12 +247,116 @@ func thinkErrorInstruction(err error, consecutive, total int) string {
 	return fmt.Sprintf("controller: Think failed (%s). Return one short valid JSON object only. Keep thought under 25 words. If a tool is needed, use action with concise arguments. Invalid response %d in a row, %d total this run.", err.Error(), consecutive, total)
 }
 
+func toolCallKey(call ToolCall) string {
+	if strings.TrimSpace(call.Tool) == "" {
+		return ""
+	}
+	args := call.Arguments
+	if len(args) == 0 && len(call.Input) > 0 {
+		args = make(map[string]any, len(call.Input))
+		for k, v := range call.Input {
+			args[k] = v
+		}
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return strings.TrimSpace(call.Tool)
+	}
+	return strings.TrimSpace(call.Tool) + ":" + string(raw)
+}
+
+func isToolFailure(obs Observation) bool {
+	if obs.Error != nil {
+		return true
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(obs.Content)), "tool error:")
+}
+
+func repeatedToolFailureInstruction(call ToolCall, obs Observation, repeated int) string {
+	msg := strings.TrimSpace(obs.Content)
+	if msg == "" && obs.Error != nil {
+		msg = obs.Error.Error()
+	}
+	if msg == "" {
+		msg = "the tool failed without a message"
+	}
+	return fmt.Sprintf("controller: the exact same %q tool call failed %d times. Do not repeat it unchanged. Change the arguments, choose a different available tool, or finish with a concise explanation of the failure. Last failure: %s", call.Tool, repeated, truncateForPrompt(msg, 360))
+}
+
+func reflectAfterRepeatedToolFailures(ctx context.Context, env Env, taskInput string, steps []Step) (ReflectResponse, bool) {
+	resp, err := env.LLM.Reflect(ctx, ReflectRequest{
+		TaskInput: taskInput,
+		Steps:     steps,
+		SystemPrompt: strings.TrimSpace(env.Config.SystemPrompt +
+			"\n\nIMPORTANT: The same tool call failed repeatedly. Do not propose running that identical call again. Produce the best available answer from the trace, or clearly explain what configuration/input is missing."),
+		OutputFormat: env.Config.OutputFormat,
+	})
+	if err != nil || strings.TrimSpace(resp.Output) == "" {
+		return ReflectResponse{}, false
+	}
+	if isPrematureFinalAnswer(resp.Output) {
+		return ReflectResponse{}, false
+	}
+	return resp, true
+}
+
+func repeatedToolFailureStopMessage(steps []Step) string {
+	last := lastUsefulObservation(steps)
+	if last != "" {
+		return "The run stopped because the same tool call failed repeatedly. Last useful observation: " + last
+	}
+	return "The run stopped because the same tool call failed repeatedly. Change the tool arguments, choose another tool, or verify the required channel/provider/credential configuration."
+}
+
 func thinkErrorStopMessage(steps []Step) string {
 	last := lastUsefulObservation(steps)
 	if last != "" {
 		return "The run stopped because the model returned invalid ReAct JSON too many times. The last useful observation was: " + last
 	}
 	return "The run stopped because the model returned invalid ReAct JSON too many times before producing a usable tool result. Retry with a smaller input, choose a more reliable model, or switch this workflow step to a deterministic tool/flow node."
+}
+
+func synthesizeAfterThinkErrors(steps []Step) string {
+	observations := recentUsefulObservations(steps, 3)
+	if len(observations) == 0 {
+		return thinkErrorStopMessage(steps)
+	}
+	var b strings.Builder
+	b.WriteString("The run stopped because the model repeatedly returned invalid ReAct JSON after useful work was already completed. Here is the best available result from the successful steps:\n\n")
+	for i, obs := range observations {
+		if len(observations) > 1 {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, obs)
+		} else {
+			b.WriteString(obs)
+		}
+	}
+	return b.String()
+}
+
+func recentUsefulObservations(steps []Step, max int) []string {
+	if max <= 0 {
+		return nil
+	}
+	reversed := make([]string, 0, max)
+	for i := len(steps) - 1; i >= 0 && len(reversed) < max; i-- {
+		s := steps[i]
+		if s.Obs.Source == "controller" {
+			continue
+		}
+		content := strings.TrimSpace(s.Obs.Content)
+		if content == "" && s.Obs.Error != nil {
+			content = s.Obs.Error.Error()
+		}
+		if content == "" {
+			continue
+		}
+		reversed = append(reversed, truncateForPrompt(content, 420))
+	}
+	out := make([]string, len(reversed))
+	for i := range reversed {
+		out[len(reversed)-1-i] = reversed[i]
+	}
+	return out
 }
 
 func reflectAfterRepeatedThinkErrors(ctx context.Context, env Env, taskInput string, steps []Step) (ReflectResponse, bool) {
@@ -495,7 +634,15 @@ func firstNonNilMap(values ...map[string]any) map[string]any {
 func recoverThinkResponseFromRaw(raw string, toolNames []string) (ThinkResponse, bool) {
 	call, ok := recoverTextualToolCall(raw, toolNames)
 	if !ok {
-		return ThinkResponse{}, false
+		answer := strings.TrimSpace(stripMarkdownFence(raw))
+		if answer == "" || looksLikeMalformedControlPayload(answer) || isPrematureFinalAnswer(answer) || !looksLikeSubstantivePlainAnswer(answer) {
+			return ThinkResponse{}, false
+		}
+		return ThinkResponse{
+			Thought:     "Recovered plain-text final answer.",
+			IsDone:      true,
+			FinalAnswer: answer,
+		}, true
 	}
 	thought := strings.TrimSpace(raw)
 	if idx := strings.LastIndex(strings.ToLower(thought), "action:"); idx >= 0 {
@@ -511,6 +658,48 @@ func recoverThinkResponseFromRaw(raw string, toolNames []string) (ThinkResponse,
 		IsDone:  false,
 		Action:  call,
 	}, true
+}
+
+func stripMarkdownFence(s string) string {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "```") {
+		return s
+	}
+	if i := strings.Index(s, "\n"); i >= 0 {
+		s = s[i+1:]
+	}
+	if j := strings.LastIndex(s, "```"); j >= 0 {
+		s = s[:j]
+	}
+	return strings.TrimSpace(s)
+}
+
+func looksLikeMalformedControlPayload(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		return true
+	}
+	for _, marker := range []string{"\"thought\"", "\"is_done\"", "\"action\"", "tool_name", "action input:", "action:"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeSubstantivePlainAnswer(s string) bool {
+	trimmed := strings.TrimSpace(s)
+	if len(trimmed) < 24 {
+		return false
+	}
+	if strings.Contains(trimmed, "\n") || strings.Contains(trimmed, "|") {
+		return true
+	}
+	if strings.Contains(trimmed, ".") || strings.Contains(trimmed, "!") || strings.Contains(trimmed, "?") || strings.Contains(trimmed, ":") {
+		return true
+	}
+	return false
 }
 
 func parseLegacyMapArgs(raw string) (map[string]any, bool) {
@@ -730,7 +919,9 @@ func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) (
 			Obs:      obs,
 			Duration: time.Since(stepStart),
 		})
-		completedIDs[ps.ID] = true
+		if !isToolFailure(obs) {
+			completedIDs[ps.ID] = true
+		}
 		cancel()
 	}
 
@@ -740,7 +931,49 @@ func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) (
 		SystemPrompt: env.Config.SystemPrompt,
 		OutputFormat: env.Config.OutputFormat,
 	})
+	if isPrematureFinalAnswer(resp.Output) && planExecutionHadIssue(steps) {
+		resp.Output = planExecuteFallbackOutput(steps)
+	} else if strings.TrimSpace(resp.Output) == "" || isPrematureFinalAnswer(resp.Output) {
+		if obs := lastUsefulObservation(steps); obs != "" {
+			resp.Output = obs
+		} else {
+			resp.Output = planExecuteFallbackOutput(steps)
+		}
+	}
 	return steps, resp
+}
+
+func planExecuteFallbackOutput(steps []Step) string {
+	if len(steps) == 0 {
+		return "The run could not produce a plan to execute. Retry with a clearer request or choose a ReAct agent for open-ended tool use."
+	}
+	failed := 0
+	skipped := 0
+	for _, step := range steps {
+		if isToolFailure(step.Obs) {
+			failed++
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(step.Obs.Content)), "skipped:") {
+			skipped++
+		}
+	}
+	if failed > 0 || skipped > 0 {
+		return fmt.Sprintf("The plan could not fully complete: %d step(s) failed and %d dependent step(s) were skipped. Open the run trace to inspect the failed step, then fix the tool input, credential, or workflow dependency.", failed, skipped)
+	}
+	return "The plan executed but the model did not produce a final answer. Open the run trace to inspect the completed steps."
+}
+
+func planExecutionHadIssue(steps []Step) bool {
+	for _, step := range steps {
+		if isToolFailure(step.Obs) {
+			return true
+		}
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(step.Obs.Content)), "skipped:") {
+			return true
+		}
+	}
+	return false
 }
 
 func planHasUnavailableTool(plan Plan, toolNames []string) bool {

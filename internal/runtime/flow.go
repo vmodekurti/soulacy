@@ -251,7 +251,7 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		// Remember the content routed to a delivery tool so a receipt-terminated
 		// workflow can still return the message to an interactive caller.
 		if tool == "channel.send" {
-			if t := strings.TrimSpace(fmt.Sprint(tc.Arguments["text"])); t != "" && t != "<no value>" {
+			if t := argStringFirst(tc.Arguments, "text", "message", "body", "content"); t != "" && t != "<no value>" {
 				lastSentText = t
 			}
 		}
@@ -360,8 +360,15 @@ func isChannelSendReceipt(b json.RawMessage) bool {
 	if _, hasChannel := m["channel"]; !hasChannel {
 		return false
 	}
-	// Receipt is small (ok/channel/to). More keys ⇒ it's real content, leave it.
-	return len(m) <= 3
+	for key := range m {
+		switch key {
+		case "ok", "delivered", "channel", "to", "route_source", "text_preview":
+		default:
+			// Unknown keys imply this is real content, not a delivery receipt.
+			return false
+		}
+	}
+	return true
 }
 
 func trimFlowNodeRun(rec reasoning.FlowNodeRun) reasoning.FlowNodeRun {

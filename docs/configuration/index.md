@@ -29,6 +29,7 @@ Start from the annotated example at the repo root:
 | `knowledge` | RAG defaults: knowledge DB path, embedding provider/model, chunking | [Storage & Backends](storage.md) |
 | `auth` | `apikey` (default) or `jwt` mode, JWT secret/TTLs, OIDC issuer | [Auth](auth.md) |
 | `credentials` | Credential vault KMS provider: local (default), hashicorp, awskms | [Credentials API](../api/credentials.md) |
+| `updates` | Release manifest for `sy update check/install` and launch readiness | [CLI Reference](../cli/reference.md) |
 | `rate_limit` | Per-user/per-agent RPM and daily token quotas; memory or redis backend | [Rate Limiting](rate-limiting.md) |
 | `telemetry` | OpenTelemetry tracing: exporter, OTLP endpoint, service name | [Telemetry](telemetry.md) |
 | `hooks` | Signed outbound webhooks fed by the event stream (`on`/`agents`/`url`/`secret_env`) | [Events & Webhooks](events.md) |
@@ -63,6 +64,9 @@ channels:
   http:
     enabled: true
 
+updates:
+  manifest_url: https://github.com/vmodekurti/soulacy/releases/latest/download/release-manifest.json
+
 log:
   level: info
   format: console
@@ -82,6 +86,7 @@ Any config key can be overridden with an environment variable: prefix
 export SOULACY_SERVER_API_KEY="sy_..."     # server.api_key
 export SOULACY_SERVER_PORT=18789            # server.port
 export SOULACY_LOG_LEVEL=debug             # log.level
+export SOULACY_UPDATE_MANIFEST="https://example.com/release-manifest.json"
 ```
 
 Two related env vars are not config overrides:

@@ -163,6 +163,12 @@ func Open(path string) (*Store, error) {
 		}
 	}
 
+	// Durable ingestion job catalog. Idempotent (CREATE TABLE IF NOT EXISTS), so
+	// an existing knowledge.db gains the table in place on first open.
+	if err := initJobSchema(db); err != nil {
+		return nil, err
+	}
+
 	// Schema versioning (E22 adoption): v1 = the bootstrap above INCLUDING
 	// the legacy parent_chunk_id backfill below (pre-versioning, stays
 	// best-effort); future changes go through sqlitex.MigrateSchema with v2+.

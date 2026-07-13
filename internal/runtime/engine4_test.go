@@ -526,21 +526,35 @@ func TestConfirmSenderFrom_AbsentReturnsNotOK(t *testing.T) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// engine.go — maybeConfirm: no confirm sender present (should proceed)
+// engine.go — maybeConfirm: no confirm sender present (deny unless unattended)
 // ─────────────────────────────────────────────────────────────────────────────
 
-func TestMaybeConfirm_NoSenderProceeds(t *testing.T) {
+func TestMaybeConfirm_NoSenderDeniesByDefault(t *testing.T) {
 	e := newMinimalEngine(t)
 	def := &agent.Definition{
 		ID:           "guarded",
 		ConfirmTools: []string{"dangerous_op"},
 	}
-	// No ConfirmSender in context — should NOT block and should NOT error.
+	err := e.maybeConfirm(context.Background(), def, message.ToolCall{
+		ID: "call-1", Name: "dangerous_op",
+	})
+	if err == nil {
+		t.Fatal("maybeConfirm without sender should deny for a non-unattended agent")
+	}
+}
+
+func TestMaybeConfirm_NoSenderUnattendedAutoApproves(t *testing.T) {
+	e := newMinimalEngine(t)
+	def := &agent.Definition{
+		ID:           "scheduled-guarded",
+		ConfirmTools: []string{"dangerous_op"},
+		Unattended:   true,
+	}
 	err := e.maybeConfirm(context.Background(), def, message.ToolCall{
 		ID: "call-1", Name: "dangerous_op",
 	})
 	if err != nil {
-		t.Fatalf("maybeConfirm without sender should proceed, got error: %v", err)
+		t.Fatalf("maybeConfirm without sender should auto-approve for unattended agents, got error: %v", err)
 	}
 }
 
@@ -1338,7 +1352,7 @@ func TestRunAgentCall_DepthLimitExceeded(t *testing.T) {
 	e := NewEngine(loader, router, mem, nil, "", time.Second, zap.NewNop(), nil, nil, "", nil, nil, nil, nil, nil)
 
 	// Inject maximum depth into context.
-	ctx := withAgentCallDepth(context.Background(), maxAgentCallDepth)
+	ctx := withAgentCallDepth(context.Background(), defaultMaxAgentCallDepth)
 
 	_, err := e.runAgentCall(ctx, callerDef, AgentToolPrefix+"depth-peer", map[string]any{"message": "hello"})
 	if err == nil {

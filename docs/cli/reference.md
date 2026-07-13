@@ -29,6 +29,12 @@ sy doctor --json    # machine-readable report
 but non-fatal configuration (relative `agent_dirs`, non-absolute
 `runtime.python_bin`, …).
 
+It also checks the production update path. If `updates.manifest_url` or
+`SOULACY_UPDATE_MANIFEST` is configured, the doctor fetches the release manifest
+and reports whether this install is current, upgradeable, or unable to reach the
+manifest. Missing or unreachable update manifests are warnings so local
+development is not blocked, but production workspaces should clear them.
+
 ## Managing agents
 
 ```bash
@@ -40,11 +46,25 @@ sy agent enable support-bot
 sy agent disable support-bot
 sy agent trigger daily-briefing      # manually fire a scheduled agent
 sy agent delete old-bot
+
+sy agent package export support-bot --out support-bot.soulacy-agent.json
+sy agent package export support-bot --signing-key-file ./ed25519.hex
+sy agent package inspect support-bot.soulacy-agent.json
+sy agent package import support-bot.soulacy-agent.json      # imports disabled for review
+sy agent package import support-bot.soulacy-agent.json --enable --overwrite
 ```
 
 `sy agent validate` checks YAML fields, trigger/schedule consistency,
 provider and model availability, tool paths, and MCP references — errors
 return nonzero, making it CI-friendly.
+
+Agent packages are portable `.soulacy-agent.json` bundles. They include
+redacted `SOUL.yaml`, safe local tool files when available, bundled
+`evals/`, `prompts/`, and `samples/` files, a setup requirements checklist,
+a content checksum, and optional Ed25519 signature metadata. `inspect`
+verifies package integrity and shows missing providers, channels, peer
+agents, skills, files, knowledge bases, and secrets before anything is
+imported.
 
 Pull a definition from a URL or the public registry:
 
@@ -63,11 +83,14 @@ sy chat --agent support-bot --user alice "Hello!"
 
 sy eval --agent my-agent --suite tests/smoke.json        # pass/fail report
 sy eval --agent my-agent --suite tests/smoke.json --json
+sy eval --agent my-agent --suite evals/golden --tag weather --repeat 3
+sy eval --agent my-agent --suite evals/golden --fail-fast
 ```
 
 Eval suites are JSON:
 `{"name": "smoke", "cases": [{"name":"math","input":"2+2?","expected_contains":["4"]}]}`.
-A failing case makes the command exit nonzero.
+A failing case makes the command exit nonzero. Reports include aggregate
+pass/fail/skip counts plus latency and token summaries when available.
 
 ## Channels
 
@@ -158,8 +181,16 @@ Stop the gateway before `migrate` — databases move as files. See
 ```bash
 sy server status     # GET /health against the gateway
 sy server start      # convenience hint — run the `soulacy` binary for production
+sy update check --manifest ./release-manifest.json
+sy update install --manifest ./release-manifest.json --dry-run
+sy update install --manifest ./release-manifest.json --yes
 sy version           # CLI version + resolved gateway URL
 ```
+
+When `updates.manifest_url` is configured in `config.yaml` or
+`SOULACY_UPDATE_MANIFEST`, `sy update check` and `sy update install` use it by
+default. `sy launch check` also reports whether that production upgrade path is
+configured.
 
 ---
 

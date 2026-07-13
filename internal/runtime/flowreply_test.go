@@ -10,6 +10,7 @@ func TestIsChannelSendReceipt(t *testing.T) {
 		`{"ok":true,"channel":"http","to":"<no value>"}`,
 		`{"ok":true,"channel":"telegram","to":"123"}`,
 		`{"ok":false,"channel":"slack"}`,
+		`{"ok":true,"delivered":true,"channel":"telegram","to":"123","route_source":"default","text_preview":"queued"}`,
 	}
 	for _, r := range receipts {
 		if !isChannelSendReceipt(json.RawMessage(r)) {
@@ -20,7 +21,7 @@ func TestIsChannelSendReceipt(t *testing.T) {
 	notReceipts := []string{
 		`{"ticker":"NVDA","price":123.45,"chart_url":"https://x"}`,
 		`{"ok":true,"channel":"http","to":"","summary":"NVDA is $123","chart":"http://x"}`, // has real content ⇒ leave it
-		`"NVDA is trading at $123 — chart: http://x"`,                                       // plain string content
+		`"NVDA is trading at $123 — chart: http://x"`,                                      // plain string content
 		`{}`,
 		``,
 	}

@@ -92,6 +92,8 @@ export async function streamSSE(path, body, onEvent) {
 
 export const api = {
   health: () => apiFetch('/health'),
+  readiness: () => apiFetch('/readiness'),
+  opsSummary: (window = '24h') => apiFetch('/runs/ops-summary?window=' + encodeURIComponent(window)),
 
   agents: {
     list:    ()        => apiFetch('/agents'),
@@ -113,6 +115,13 @@ export const api = {
     replay:  (id, sessionId) => apiFetch(`/agents/${id}/replay`, { method: 'POST', body: JSON.stringify({ session_id: sessionId }) }),
     testScheduleOutput: (id) => apiFetch(`/agents/${id}/schedule-output/test`, { method: 'POST' }),
     clone:   (id)      => apiFetch(`/agents/${id}/clone`,   { method: 'POST' }),
+    tier:    (id)      => apiFetch(`/agents/${id}/tier`),
+    package: (id)      => apiBlob(`/agents/${id}/package`),
+    inspectPackage: (pkg) => apiFetch('/agents/package/inspect', { method: 'POST', body: JSON.stringify(pkg) }),
+    importPackage:  (pkg, opts = {}) => apiFetch('/agents/package/import', {
+      method: 'POST',
+      body: JSON.stringify({ package: pkg, ...opts }),
+    }),
     actions: (id, limit = 500, types = '', opts = {}) => {
       const q = new URLSearchParams()
       q.set('limit', String(limit))
@@ -332,6 +341,7 @@ export const api = {
 
   channels: {
     list:    ()          => apiFetch('/channels'),
+    metrics: ()          => apiFetch('/channels/metrics'),
     update:  (id, patch) => apiFetch(`/channels/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     test:    (id, body = {}) => apiFetch(`/channels/${id}/test`, { method: 'POST', body: JSON.stringify(body) }),
     diagnose: (id, body = {}) => apiFetch(`/channels/${id}/diagnose`, { method: 'POST', body: JSON.stringify(body) }),
@@ -409,6 +419,9 @@ export const api = {
   skills: {
     list:             ()     => apiFetch('/skills'),
     get:              (name) => apiFetch(`/skills/${name}`),
+    install:          (body) => apiFetch('/skills/install', {
+      method: 'POST', body: JSON.stringify(body),
+    }),
     provisionAgenticSkills: (body) => apiFetch('/skills/provision-agenticskills', {
       method: 'POST', body: JSON.stringify(body),
     }),
@@ -793,8 +806,18 @@ export const api = {
     create: (body)    => apiFetch('/knowledge', { method: 'POST', body: JSON.stringify(body) }),
     delete: (kb)      => apiFetch(`/knowledge/${encodeURIComponent(kb)}`, { method: 'DELETE' }),
     listDocuments: (kb) => apiFetch(`/knowledge/${encodeURIComponent(kb)}/documents`),
+    // Ingestion is ASYNC: this returns 202 with an ingest job, not a document.
+    // Watch it via listJobs/getJob, or the `knowledge.ingest` websocket event.
     ingest: (kb, body) =>
       apiFetch(`/knowledge/${encodeURIComponent(kb)}/documents`, { method: 'POST', body: JSON.stringify(body) }),
+    /** Ingestion queue for a KB (newest first): {jobs:[{id,status,progress,attempt,error,doc_id,...}]} */
+    listJobs: (kb, limit = 50) =>
+      apiFetch(`/knowledge/${encodeURIComponent(kb)}/jobs?limit=${limit}`),
+    /** Poll a single ingest job. */
+    getJob: (id) => apiFetch(`/ingest-jobs/${encodeURIComponent(id)}`),
+    /** Retry a failed ingest job (resets its attempt budget). */
+    retryJob: (id) =>
+      apiFetch(`/ingest-jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
     /**
      * Upload a file (PDF/DOCX/MD/TXT). Browser sets multipart Content-Type.
      */
@@ -841,6 +864,14 @@ export const api = {
   runs: {
     metrics: (sessionId, agentId = '') =>
       apiFetch(`/runs/${encodeURIComponent(sessionId)}/metrics${agentId ? '?agent_id=' + encodeURIComponent(agentId) : ''}`),
+    events: ({ agentId = '', sessionId = '', limit = 500, types = '' } = {}) => {
+      const q = new URLSearchParams()
+      q.set('limit', String(limit))
+      if (agentId) q.set('agent_id', agentId)
+      if (sessionId) q.set('session_id', sessionId)
+      if (types) q.set('types', types)
+      return apiFetch('/runs/events?' + q.toString())
+    },
   },
 
   workboard: {

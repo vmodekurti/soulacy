@@ -381,7 +381,14 @@ func (l *Loader) Upsert(dir string, def *agent.Definition) error {
 		}
 	}
 
-	oldPath := def.SourcePath // where this agent currently lives (empty for new agents)
+	oldPath := def.SourcePath // where this agent currently lives (empty for new agents/imports)
+	if oldPath == "" {
+		l.mu.RLock()
+		if existing := l.agents[def.ID]; existing != nil {
+			oldPath = existing.SourcePath
+		}
+		l.mu.RUnlock()
+	}
 	if oldPath != "" && oldPath != builtinSourcePath {
 		if err := l.snapshotPath(dir, def.ID, oldPath); err != nil {
 			l.log.Warn("agent history snapshot failed", zap.String("agent", def.ID), zap.Error(err))
