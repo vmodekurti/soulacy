@@ -670,6 +670,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/voice/ephemeral", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleVoiceEphemeral)
 
 	// Chat — token-quota (user + agent) + per-agent RPM checks applied on top of user RPM.
+	api.Get("/chat/status", s.rbacMW(rbac.ResourceChat, rbac.ActionRead), s.handleChatStatus)
 	api.Post("/chat", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChat)
 	api.Post("/chat/stream", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChatStream)
 	api.Get("/chat/stream", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.rlTokenMW(), s.rlAgentTokenMW(), s.rlAgentMW(), s.handleChatStream)
