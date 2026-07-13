@@ -175,3 +175,33 @@ func TestCheckDataFlow_BlocksTypedPortFromNodeWithoutOutput(t *testing.T) {
 		t.Fatalf("expected no-output typed port blocker, got: %v", blockers)
 	}
 }
+
+func TestCheckOutputContracts_BlocksDuplicateInvalidAndReservedVars(t *testing.T) {
+	d := Draft{Flow: Flow{
+		Nodes: []sdkr.FlowNode{
+			{ID: "search", Kind: "tool", Tool: "x", Output: "result"},
+			{ID: "summarize", Kind: "agent", Agent: "a", Output: "result"},
+			{ID: "tag", Kind: "python", Code: "def run(inputs):\n  return {}", Output: "bad-name!"},
+			{ID: "capture", Kind: "tool", Tool: "x", Output: "trigger"},
+			{ID: "branch", Kind: "branch", Output: "branch_result"},
+		},
+		Entry: "search",
+	}}
+	var blockers, warnings []string
+	checkOutputContracts(d, func(sev, kind, node, msg, fix string) {
+		if sev == "block" {
+			blockers = append(blockers, node+": "+msg)
+		} else {
+			warnings = append(warnings, node+": "+msg)
+		}
+	})
+	joined := strings.Join(blockers, "\n")
+	for _, want := range []string{"produced by both", "not a valid workflow identifier", "reserved by the workflow runtime"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("expected blocker containing %q, got %v", want, blockers)
+		}
+	}
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "Structural node") {
+		t.Fatalf("expected one structural-node warning, got %v", warnings)
+	}
+}

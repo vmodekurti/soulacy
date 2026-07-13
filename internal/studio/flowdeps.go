@@ -14,6 +14,10 @@ import (
 // method-style chains (only the leading identifier matters for our purpose).
 var tmplVarRe = regexp.MustCompile(`(?:{{|\s)\.([A-Za-z_][A-Za-z0-9_]*)`)
 
+// flowVarNameRe is the identifier grammar a node output variable must satisfy
+// to be referenceable from Go templates and Python inputs by name.
+var flowVarNameRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
 // pythonInputRefRe captures the common inline-Python contract:
 // inputs.get("foo"), inputs['foo'], and inputs.get('foo', default). Most keys
 // must be supplied by the node input object, a typed input port, or an upstream
@@ -95,6 +99,47 @@ func checkDataFlow(draft Draft, add func(sev, kind, node, msg, fix string)) {
 				"Typed port wire from \""+from+"\" cannot carry data because that step has no output variable.",
 				"Set an output variable on \""+from+"\" or remove the typed port wire.")
 		}
+	}
+}
+
+// checkOutputContracts validates the names nodes publish into the workflow
+// variable map. These names are global within one flow run: duplicates clobber
+// each other, invalid identifiers cannot be referenced as {{ .var }}, and names
+// such as "trigger" or "history" overwrite runtime-provided inputs. Catching
+// this at authoring time prevents downstream steps from reading the wrong value
+// while the graph still appears to compile.
+func checkOutputContracts(draft Draft, add func(sev, kind, node, msg, fix string)) {
+	seen := map[string]string{}
+	for _, n := range draft.Flow.Nodes {
+		out := strings.TrimSpace(n.Output)
+		if out == "" {
+			continue
+		}
+		if sdkr.IsStructuralKind(n.Kind) {
+			add("warn", "dependency", n.ID,
+				"Structural node \""+n.ID+"\" declares output variable \""+out+"\", but trigger/branch/exit nodes do not publish data.",
+				"Remove the output variable from this structural node, or move the output to a tool, Python, LLM, or agent step.")
+			continue
+		}
+		if !flowVarNameRe.MatchString(out) {
+			add("block", "dependency", n.ID,
+				"Output variable \""+out+"\" is not a valid workflow identifier.",
+				"Use letters, numbers, and underscores only, and start with a letter or underscore.")
+			continue
+		}
+		if builtinFlowVars[out] {
+			add("block", "dependency", n.ID,
+				"Output variable \""+out+"\" is reserved by the workflow runtime.",
+				"Rename this output variable so it does not replace the built-in \""+out+"\" value.")
+			continue
+		}
+		if first := seen[out]; first != "" && first != n.ID {
+			add("block", "dependency", n.ID,
+				"Output variable \""+out+"\" is produced by both \""+first+"\" and \""+n.ID+"\".",
+				"Give each step a unique output variable name so downstream references are unambiguous.")
+			continue
+		}
+		seen[out] = n.ID
 	}
 }
 
