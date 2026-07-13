@@ -49,6 +49,19 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if _, ok := body["next_actions"].([]any); !ok {
 		t.Fatalf("missing next_actions: %#v", body)
 	}
+	parity, ok := body["parity"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing parity cockpit: %#v", body)
+	}
+	if got, _ := parity["score"].(float64); got <= 0 {
+		t.Fatalf("parity score = %v, want positive", parity["score"])
+	}
+	if areas, ok := parity["areas"].([]any); !ok || len(areas) < 8 {
+		t.Fatalf("parity areas = %#v", parity["areas"])
+	}
+	if gaps, ok := parity["top_gaps"].([]any); !ok || len(gaps) == 0 {
+		t.Fatalf("parity top gaps = %#v", parity["top_gaps"])
+	}
 }
 
 func TestReadinessUsesConfiguredUpdateManifest(t *testing.T) {
@@ -106,5 +119,24 @@ func TestReadinessStatusCounts(t *testing.T) {
 	ready, warnings, blockers := readinessStatusCounts(items)
 	if ready != 1 || warnings != 1 || blockers != 2 {
 		t.Fatalf("counts = ready:%d warnings:%d blockers:%d, want 1/1/2", ready, warnings, blockers)
+	}
+}
+
+func TestParityGapsPrioritizeLowestScores(t *testing.T) {
+	areas := []parityArea{
+		{Key: "studio", Status: "ok", Score: 90},
+		{Key: "enterprise", Status: "fail", Score: 25},
+		{Key: "mobile", Status: "warn", Score: 50},
+		{Key: "channels", Status: "warn", Score: 55},
+	}
+	gaps := topParityGaps(areas, 2)
+	if len(gaps) != 2 {
+		t.Fatalf("gaps len = %d, want 2", len(gaps))
+	}
+	if gaps[0].Key != "enterprise" || gaps[1].Key != "mobile" {
+		t.Fatalf("gaps order = %#v", gaps)
+	}
+	if got := parityScore(areas); got != 55 {
+		t.Fatalf("parityScore = %d, want 55", got)
 	}
 }
