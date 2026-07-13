@@ -62,6 +62,9 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if _, ok := body["executors"].(map[string]any); !ok {
 		t.Fatalf("missing executors readiness: %#v", body)
 	}
+	if _, ok := body["browser"].(map[string]any); !ok {
+		t.Fatalf("missing browser readiness: %#v", body)
+	}
 	if gaps, ok := parity["top_gaps"].([]any); !ok || len(gaps) == 0 {
 		t.Fatalf("parity top gaps = %#v", parity["top_gaps"])
 	}

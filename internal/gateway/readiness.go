@@ -70,6 +70,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	usableOutbound := countUsableOutboundChannels(channels)
 	updateManifest := s.updateManifestSource()
 	executors := s.executorReadiness()
+	browser := s.browserAutomationReadiness()
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -121,7 +122,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -165,6 +166,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"providers":    providers,
 		"channels":     channels,
 		"executors":    executors,
+		"browser":      browser,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -188,7 +190,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chatAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -197,16 +199,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, chat
 		parityLearning(learningAgents, enabledAgents),
 		parityAutomation(scheduledAgents, usableOutbound),
 		parityOps(providersReady, enabledAgents, updateManifest),
-		{
-			Key:       "browser",
-			Label:     "Browser Automation",
-			Status:    "warn",
-			Score:     60,
-			Detail:    "MCP/browser sidecar foundations exist, but production parity needs a live viewer, domain policy, and trace replay.",
-			Next:      "Productize browser session viewing, approvals, and recorded trace artifacts.",
-			Benchmark: "OpenClaw/Hermes",
-			Href:      "#browser",
-		},
+		parityBrowserAutomation(browser),
 		parityRemoteExecution(executors),
 		{
 			Key:       "mobile_companion",

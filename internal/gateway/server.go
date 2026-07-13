@@ -725,6 +725,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/learning/evidence", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleLearningEvidence)
 	api.Get("/proactive/suggestions", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleProactiveSuggestions)
 	api.Get("/browser/trace", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleBrowserTrace)
+	api.Get("/browser/status", s.rbacMW(rbac.ResourceMemory, rbac.ActionRead), s.handleBrowserStatus)
 	api.Post("/pairing/tokens", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleCreatePairingToken)
 	api.Post("/pairing/redeem", s.handleRedeemPairingToken)
 	api.Get("/approvals", s.rbacMW(rbac.ResourceChat, rbac.ActionChat), s.handleListApprovals)

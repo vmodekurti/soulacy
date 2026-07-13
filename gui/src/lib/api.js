@@ -262,6 +262,7 @@ export const api = {
     if (sessionId) p.set('session_id', sessionId)
     return apiFetch('/browser/trace?' + p.toString())
   },
+  browserStatus: () => apiFetch('/browser/status'),
 
   brainMemory: {
     stats: () => apiFetch('/brain-memory'),
