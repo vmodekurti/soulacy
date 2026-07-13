@@ -130,6 +130,14 @@ PY
 }
 
 run_required_suite() {
+  if [[ "${SOULACY_PARITY_QUICK:-0}" == "1" ]]; then
+    run_check "go vet" true "go vet ./..."
+    run_check "targeted go tests" true "go test ./internal/runtime ./internal/gateway ./internal/channels ./cmd/sy -timeout 120s"
+    run_check "production regression smoke" true "make regression"
+    run_check "clean runtime UAT" true "make uat"
+    run_check "release smoke" true "make release-smoke"
+    return
+  fi
   run_check "go vet" true "go vet ./..."
   run_check "golangci-lint" true "which golangci-lint >/dev/null 2>&1 || curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b \$(go env GOPATH)/bin; golangci-lint run"
   run_check "full go tests" true "go test ./... -timeout 120s"
