@@ -64,23 +64,7 @@ func (c *ToolCall) UnmarshalJSON(data []byte) error {
 	}
 	if len(args) > 0 {
 		c.Arguments = args
-		c.Input = make(map[string]string, len(args))
-		for k, v := range args {
-			switch t := v.(type) {
-			case string:
-				c.Input[k] = t
-			case nil:
-				c.Input[k] = ""
-			case bool, float64:
-				c.Input[k] = fmt.Sprint(t)
-			default:
-				b, err := json.Marshal(t)
-				if err != nil {
-					return err
-				}
-				c.Input[k] = string(b)
-			}
-		}
+		c.Input = stringifyArgs(args)
 	}
 	return nil
 }
@@ -249,6 +233,89 @@ type ThinkResponse struct {
 	IsDone      bool     `json:"is_done"`
 	Action      ToolCall `json:"action"`
 	FinalAnswer string   `json:"final_answer,omitempty"`
+}
+
+// UnmarshalJSON accepts the canonical ReAct response shape plus common aliases
+// produced by local and OpenAI-compatible models. This keeps harmless schema
+// drift from becoming an "invalid reasoning step" in every ReAct loop.
+func (r *ThinkResponse) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Thought     string          `json:"thought"`
+		Reasoning   string          `json:"reasoning"`
+		IsDone      *bool           `json:"is_done"`
+		Done        *bool           `json:"done"`
+		Final       *bool           `json:"final"`
+		Action      json.RawMessage `json:"action"`
+		Tool        string          `json:"tool"`
+		ToolName    string          `json:"tool_name"`
+		Name        string          `json:"name"`
+		Input       map[string]any  `json:"input"`
+		Arguments   map[string]any  `json:"arguments"`
+		Parameters  map[string]any  `json:"parameters"`
+		Params      map[string]any  `json:"params"`
+		ActionInput map[string]any  `json:"action_input"`
+		FinalAnswer string          `json:"final_answer"`
+		Output      string          `json:"output"`
+		Answer      string          `json:"answer"`
+		Response    string          `json:"response"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	r.Thought = firstNonEmpty(raw.Thought, raw.Reasoning)
+	r.IsDone = firstBool(false, raw.IsDone, raw.Done, raw.Final)
+	r.FinalAnswer = firstNonEmpty(raw.FinalAnswer, raw.Output, raw.Answer, raw.Response)
+	r.Action = ToolCall{}
+	if len(raw.Action) > 0 && string(raw.Action) != "null" {
+		if err := json.Unmarshal(raw.Action, &r.Action); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(r.Action.Tool) == "" {
+		r.Action.Tool = firstNonEmpty(raw.Tool, raw.ToolName, raw.Name)
+	}
+	if len(r.Action.Arguments) == 0 {
+		args := firstNonNilMap(raw.Arguments, raw.Parameters, raw.Params, raw.Input, raw.ActionInput)
+		if len(args) > 0 {
+			r.Action.Arguments = args
+			r.Action.Input = stringifyArgs(args)
+		}
+	}
+	return nil
+}
+
+func firstBool(fallback bool, values ...*bool) bool {
+	for _, value := range values {
+		if value != nil {
+			return *value
+		}
+	}
+	return fallback
+}
+
+func stringifyArgs(args map[string]any) map[string]string {
+	if len(args) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(args))
+	for k, v := range args {
+		switch t := v.(type) {
+		case string:
+			out[k] = t
+		case nil:
+			out[k] = ""
+		case bool, float64:
+			out[k] = fmt.Sprint(t)
+		default:
+			b, err := json.Marshal(t)
+			if err != nil {
+				out[k] = fmt.Sprint(t)
+			} else {
+				out[k] = string(b)
+			}
+		}
+	}
+	return out
 }
 
 // ReflectRequest is the input to LLMBackend.Reflect().
