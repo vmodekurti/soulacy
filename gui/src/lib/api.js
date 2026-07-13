@@ -95,6 +95,7 @@ export const api = {
   readiness: () => apiFetch('/readiness'),
   executors: () => apiFetch('/executors'),
   opsSummary: (window = '24h') => apiFetch('/runs/ops-summary?window=' + encodeURIComponent(window)),
+  costStatus: () => apiFetch('/costs/status'),
 
   agents: {
     list:    ()        => apiFetch('/agents'),

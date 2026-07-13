@@ -102,7 +102,10 @@ func (s *Server) safeConfigView() fiber.Map {
 			"api_key":  searchAPIKey,
 		},
 		"costs": fiber.Map{
-			"pricing": cfg.Costs.Pricing,
+			"daily_budget_usd":   cfg.Costs.DailyBudgetUSD,
+			"monthly_budget_usd": cfg.Costs.MonthlyBudgetUSD,
+			"alert_threshold":    cfg.Costs.AlertThreshold,
+			"pricing":            cfg.Costs.Pricing,
 		},
 		"agent_dirs":     cfg.AgentDirs,
 		"skill_dirs":     cfg.SkillDirs,
@@ -252,7 +255,10 @@ type PatchableConfig struct {
 	} `json:"search" yaml:"search"`
 
 	Costs *struct {
-		Pricing map[string]struct {
+		DailyBudgetUSD   float64 `json:"daily_budget_usd" yaml:"daily_budget_usd"`
+		MonthlyBudgetUSD float64 `json:"monthly_budget_usd" yaml:"monthly_budget_usd"`
+		AlertThreshold   float64 `json:"alert_threshold" yaml:"alert_threshold"`
+		Pricing          map[string]struct {
 			InputPerMTok  float64 `json:"input_per_mtok" yaml:"input_per_mtok"`
 			OutputPerMTok float64 `json:"output_per_mtok" yaml:"output_per_mtok"`
 		} `json:"pricing" yaml:"pricing"`
@@ -463,6 +469,9 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 	}
 	if patch.Costs != nil {
 		cs := getOrCreateMap(dst, "costs")
+		cs["daily_budget_usd"] = patch.Costs.DailyBudgetUSD
+		cs["monthly_budget_usd"] = patch.Costs.MonthlyBudgetUSD
+		cs["alert_threshold"] = patch.Costs.AlertThreshold
 		pricing := map[string]any{}
 		for selector, price := range patch.Costs.Pricing {
 			key := strings.TrimSpace(selector)
