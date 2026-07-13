@@ -246,7 +246,11 @@ func (b *AnthropicBackend) complete(ctx context.Context, model, system, userMsg 
 		case "temperature":
 			payload.Temperature = 0
 		case "top_p":
-			payload.TopP = 0
+			if payload.TopP > 0 {
+				payload.TopP = 0
+			} else if payload.Temperature > 0 {
+				payload.Temperature = 0
+			}
 		}
 		strippedDeprecated[param] = true
 	}
@@ -331,8 +335,14 @@ func truncate(s string, max int) string {
 
 func anthropicDeprecatedParam(message string) string {
 	msg := strings.ToLower(message)
-	if !strings.Contains(msg, "deprecated") {
+	if !(strings.Contains(msg, "deprecated") ||
+		strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "cannot both be specified") ||
+		strings.Contains(msg, "please use only one")) {
 		return ""
+	}
+	if strings.Contains(msg, "cannot both be specified") || strings.Contains(msg, "please use only one") {
+		return "top_p"
 	}
 	for _, name := range []string{"temperature", "top_p"} {
 		if strings.Contains(msg, name) {
