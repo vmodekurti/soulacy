@@ -145,7 +145,7 @@ func TestAnthropicBackend_Think_RetriesWithoutDeprecatedSamplingParams(t *testin
 		return jsonResponse(200, anthropicOKBody(thinkJSON)), nil
 	}}
 	b := newAnthropicWithTransport(ft)
-	b.ThinkParams.TopP = 0.8
+	b.ThinkParams.Temperature = 0.1
 
 	resp, err := b.Think(context.Background(), reasoning.ThinkRequest{
 		TaskInput:    "hi",
@@ -159,6 +159,90 @@ func TestAnthropicBackend_Think_RetriesWithoutDeprecatedSamplingParams(t *testin
 	}
 	if !resp.IsDone || resp.FinalAnswer != "ok" {
 		t.Fatalf("resp = %+v", resp)
+	}
+}
+
+func TestAnthropicBackend_Think_RetriesWhenSamplingParamsCannotBothBeSpecified(t *testing.T) {
+	thinkJSON := `{"thought":"done","is_done":true,"final_answer":"ok"}`
+	var calls int
+	ft := &fakeTransport{fn: func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 {
+			if _, ok := got["temperature"]; !ok {
+				t.Fatalf("first request should include temperature: %#v", got)
+			}
+			if _, ok := got["top_p"]; ok {
+				t.Fatalf("request builder should not send temperature and top_p together: %#v", got)
+			}
+			return jsonResponse(400, map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "invalid_request_error",
+					"message": "temperature and top_p cannot both be specified for this model. Please use only one.",
+				},
+			}), nil
+		}
+		if _, ok := got["temperature"]; ok {
+			t.Fatalf("retry should omit temperature after provider sampling conflict: %#v", got)
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("retry should not add top_p after provider sampling conflict: %#v", got)
+		}
+		return jsonResponse(200, anthropicOKBody(thinkJSON)), nil
+	}}
+	b := newAnthropicWithTransport(ft)
+	b.ThinkParams.Temperature = 0.1
+	b.ThinkParams.TopP = 0.8
+
+	resp, err := b.Think(context.Background(), reasoning.ThinkRequest{TaskInput: "x"})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if calls != 2 || !resp.IsDone {
+		t.Fatalf("calls=%d resp=%+v", calls, resp)
+	}
+}
+
+func TestAnthropicBackend_Think_RetriesWithoutUnsupportedTopP(t *testing.T) {
+	thinkJSON := `{"thought":"done","is_done":true,"final_answer":"ok"}`
+	var calls int
+	ft := &fakeTransport{fn: func(r *http.Request) (*http.Response, error) {
+		calls++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if calls == 1 {
+			if _, ok := got["top_p"]; !ok {
+				t.Fatalf("first request should include top_p: %#v", got)
+			}
+			return jsonResponse(400, map[string]any{
+				"type": "error",
+				"error": map[string]any{
+					"type":    "invalid_request_error",
+					"message": "top_p is not supported for this model.",
+				},
+			}), nil
+		}
+		if _, ok := got["top_p"]; ok {
+			t.Fatalf("retry should omit unsupported top_p: %#v", got)
+		}
+		return jsonResponse(200, anthropicOKBody(thinkJSON)), nil
+	}}
+	b := newAnthropicWithTransport(ft)
+	b.ThinkParams.Temperature = 0
+	b.ThinkParams.TopP = 0.8
+
+	resp, err := b.Think(context.Background(), reasoning.ThinkRequest{TaskInput: "x"})
+	if err != nil {
+		t.Fatalf("Think: %v", err)
+	}
+	if calls != 2 || !resp.IsDone {
+		t.Fatalf("calls=%d resp=%+v", calls, resp)
 	}
 }
 

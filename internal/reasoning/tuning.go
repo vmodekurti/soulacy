@@ -5,7 +5,7 @@ func phaseParamsWithDefaults(in PhaseParams, maxTokens int, temperature float64,
 	if out.MaxTokens <= 0 {
 		out.MaxTokens = maxTokens
 	}
-	if out.Temperature <= 0 {
+	if out.Temperature <= 0 && out.TopP <= 0 {
 		out.Temperature = temperature
 	}
 	if out.ResponseFormat == "" {
