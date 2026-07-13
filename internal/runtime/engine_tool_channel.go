@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
 
+	"github.com/soulacy/soulacy/internal/channels"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"github.com/soulacy/soulacy/pkg/message"
 )
@@ -177,6 +179,153 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 			return string(b), nil
 		},
 	}
+}
+
+// buildChannelStatusBuiltin lets agents inspect the exact outbound route that
+// channel.send would use before spending steps on trial-and-error sends.
+func (e *Engine) buildChannelStatusBuiltin() BuiltinTool {
+	return BuiltinTool{
+		Name:        "channel.status",
+		Gate:        "",
+		Description: "Diagnose whether a configured outbound channel route is ready. Use before retrying channel.send failures or when you need to know the resolved adapter, destination, defaults, and connection state. Does not send a message.",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"channel": map[string]any{
+					"type":        "string",
+					"description": "Channel adapter id such as telegram, slack, discord, or an agent-specific mapping id. Optional when an inbound channel or single default outbound channel is available.",
+				},
+				"adapter": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for channel.",
+				},
+				"to": map[string]any{
+					"type":        "string",
+					"description": "Destination id such as a Telegram chat id, Slack channel id, Discord channel id, or thread id. Optional when an inbound route or configured default output exists.",
+				},
+				"destination": map[string]any{
+					"type":        "string",
+					"description": "Compatibility alias for to.",
+				},
+				"include_channels": map[string]any{
+					"type":        "boolean",
+					"description": "When true, include registered channel ids and configured defaults in the response.",
+				},
+			},
+			"required": []string{},
+		},
+		Handler: func(ctx context.Context, args map[string]any) (string, error) {
+			channelID, to, routeSource := e.resolveChannelRoute(ctx, args)
+			requiresTo := channelSendRequiresDestination(channelID)
+			statuses := map[string]channels.AdapterStatus{}
+			if e.channelRegistry != nil {
+				statuses = e.channelRegistry.Statuses()
+			}
+			status, registered := statuses[channelID]
+			connected := registered && status.Connected
+			diag := channels.DiagnoseDelivery(channelID, to, registered, connected, nil)
+			if channelID == "" {
+				diag = channels.Diagnosis{
+					Category: channels.DeliveryAdapterDown,
+					Reason:   "No outbound channel could be resolved from the request, inbound context, or configured defaults.",
+					Fix:      "Pass channel explicitly, run from an interactive channel, or configure exactly one default outbound channel.",
+				}
+			} else if !requiresTo && to == "" && registered {
+				diag = channels.Diagnosis{OK: connected, Category: channels.DeliveryOK, Reason: "The channel route is configured and does not require a destination."}
+				if !connected {
+					diag = channels.DiagnoseDelivery(channelID, "webhook", registered, connected, nil)
+				}
+			}
+			response := map[string]any{
+				"ok":                   diag.OK,
+				"channel":              channelID,
+				"to":                   to,
+				"route_source":         routeSource,
+				"registered":           registered,
+				"connected":            connected,
+				"requires_destination": requiresTo,
+				"diagnosis":            diag,
+			}
+			if status.Detail != "" {
+				response["detail"] = status.Detail
+			}
+			if argBool(args, "include_channels") || !diag.OK {
+				response["registered_channels"] = sortedChannelIDs(statuses)
+				response["default_outputs"] = e.channelDefaultOutputSnapshot()
+			}
+			b, _ := json.Marshal(response)
+			return string(b), nil
+		},
+	}
+}
+
+func (e *Engine) resolveChannelRoute(ctx context.Context, args map[string]any) (string, string, string) {
+	channelID := argStringFirst(args, "channel", "adapter", "adapter_id", "platform")
+	to := argStringFirst(args, "to", "destination", "target", "recipient", "chat_id", "channel_id", "thread_id", "user_id", "conversation", "room")
+	routeSource := "explicit"
+	if channelID == "" || to == "" {
+		routeSource = "partial-explicit"
+	}
+	if inbound, ok := ctx.Value(inboundMsgKey{}).(message.Message); ok {
+		if channelID == "" {
+			channelID = strings.TrimSpace(inbound.Channel)
+			routeSource = "inbound"
+		}
+		if to == "" {
+			to = strings.TrimSpace(inbound.ThreadID)
+			routeSource = "inbound"
+		}
+	}
+	defaultOut, hasDefault := e.channelDefaultOutput(channelID)
+	if channelID == "" {
+		defaultOut, hasDefault = e.onlyChannelDefaultOutput()
+		if hasDefault {
+			channelID = strings.TrimSpace(defaultOut.Channel)
+			routeSource = "default"
+		}
+	}
+	if hasDefault {
+		if defaultOut.Channel != "" {
+			channelID = strings.TrimSpace(defaultOut.Channel)
+			if routeSource == "partial-explicit" {
+				routeSource = "default"
+			}
+		}
+		if to == "" {
+			to = strings.TrimSpace(defaultOut.To)
+			routeSource = "default"
+		}
+	}
+	return channelID, to, routeSource
+}
+
+func sortedChannelIDs(statuses map[string]channels.AdapterStatus) []string {
+	out := make([]string, 0, len(statuses))
+	for id := range statuses {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func (e *Engine) channelDefaultOutputSnapshot() map[string]map[string]string {
+	e.channelDefaultMu.RLock()
+	defer e.channelDefaultMu.RUnlock()
+	out := make(map[string]map[string]string, len(e.channelDefaults))
+	for id, def := range e.channelDefaults {
+		row := map[string]string{}
+		if def.Channel != "" {
+			row["channel"] = def.Channel
+		}
+		if def.To != "" {
+			row["to"] = def.To
+		}
+		if def.BotName != "" {
+			row["bot_name"] = def.BotName
+		}
+		out[id] = row
+	}
+	return out
 }
 
 func argStringFirst(args map[string]any, keys ...string) string {

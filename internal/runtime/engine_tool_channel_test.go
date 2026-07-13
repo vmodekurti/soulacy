@@ -219,6 +219,92 @@ func TestChannelSendBuiltinRejectsUnknownChannel(t *testing.T) {
 	}
 }
 
+func TestChannelStatusBuiltinDiagnosesConfiguredDefault(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	reg.Register(&channelSendCaptureAdapter{id: "telegram-research-librarian"})
+	e.SetChannelRegistry(reg)
+	e.SetChannelDefaultOutputs(map[string]agent.ScheduleOutput{
+		"telegram": {
+			Channel: "telegram-research-librarian",
+			To:      "8546291328",
+			BotName: "Notebook Bot",
+		},
+	})
+
+	tool := builtinByName(t, e.buildBuiltins(), "channel.status")
+	out, err := tool.Handler(context.Background(), map[string]any{
+		"channel":          "telegram",
+		"include_channels": true,
+	})
+	if err != nil {
+		t.Fatalf("channel.status returned error: %v", err)
+	}
+	for _, want := range []string{
+		`"ok":true`,
+		`"channel":"telegram-research-librarian"`,
+		`"to":"8546291328"`,
+		`"route_source":"default"`,
+		`"registered_channels":["telegram-research-librarian"]`,
+		`"bot_name":"Notebook Bot"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("channel.status result missing %s: %s", want, out)
+		}
+	}
+}
+
+func TestChannelStatusBuiltinUsesInboundContext(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	reg.Register(&channelSendCaptureAdapter{id: "slack-research"})
+	e.SetChannelRegistry(reg)
+
+	ctx := context.WithValue(context.Background(), inboundMsgKey{}, message.Message{
+		Channel:  "slack-research",
+		ThreadID: "C123",
+	})
+	tool := builtinByName(t, e.buildBuiltins(), "channel.status")
+	out, err := tool.Handler(ctx, map[string]any{})
+	if err != nil {
+		t.Fatalf("channel.status returned error: %v", err)
+	}
+	if !strings.Contains(out, `"ok":true`) || !strings.Contains(out, `"route_source":"inbound"`) || !strings.Contains(out, `"to":"C123"`) {
+		t.Fatalf("channel.status should diagnose inbound route, got %s", out)
+	}
+}
+
+func TestChannelStatusBuiltinReportsMissingDestination(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	reg.Register(&channelSendCaptureAdapter{id: "discord"})
+	e.SetChannelRegistry(reg)
+
+	tool := builtinByName(t, e.buildBuiltins(), "channel.status")
+	out, err := tool.Handler(context.Background(), map[string]any{
+		"channel": "discord",
+	})
+	if err != nil {
+		t.Fatalf("channel.status returned error: %v", err)
+	}
+	if !strings.Contains(out, `"ok":false`) || !strings.Contains(out, `"category":"missing_destination"`) {
+		t.Fatalf("channel.status should report missing destination, got %s", out)
+	}
+}
+
+func TestChannelStatusAliasIsNormalized(t *testing.T) {
+	call := normalizeToolCall(message.ToolCall{
+		Name: "channel.diagnose",
+		Arguments: map[string]any{
+			"adapter":     "telegram",
+			"destination": "123",
+		},
+	})
+	if call.Name != "channel.status" || call.Arguments["channel"] != "telegram" || call.Arguments["to"] != "123" {
+		t.Fatalf("normalized call = %#v", call)
+	}
+}
+
 func builtinByName(t *testing.T, tools []BuiltinTool, name string) BuiltinTool {
 	t.Helper()
 	for _, tool := range tools {
