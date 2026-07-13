@@ -736,6 +736,75 @@ func TestPlanExecutePassesStructuredArguments(t *testing.T) {
 	}
 }
 
+func TestPlanExecuteCanonicalizesCommonToolAliases(t *testing.T) {
+	llm := &stubLLM{planSteps: []reasoning.PlannedStep{
+		{
+			ID:          "capture",
+			Description: "queue the resource",
+			Tool:        "enqueue",
+			Arguments: map[string]any{
+				"queue": "pending_resources",
+				"item":  map[string]any{"url": "https://example.com"},
+			},
+		},
+		{
+			ID:          "notify",
+			Description: "send acknowledgement",
+			Tool:        "send_message",
+			DependsOn:   []string{"capture"},
+			Arguments: map[string]any{
+				"channel": "slack",
+				"to":      "C123",
+				"text":    "Queued.",
+			},
+		},
+	}}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_put", "channel.send"},
+	}, llm, exec)
+
+	_ = loop.Run(context.Background(), "planner", "queue and notify")
+
+	if len(exec.calls) != 2 {
+		t.Fatalf("tool calls = %d, want 2", len(exec.calls))
+	}
+	if exec.calls[0].Tool != "queue_put" || exec.calls[1].Tool != "channel.send" {
+		t.Fatalf("tool aliases not canonicalized: %#v", exec.calls)
+	}
+}
+
+func TestReActRecoveredTextualToolCallCanonicalizesAlias(t *testing.T) {
+	llm := &scriptedLLM{
+		responses: []reasoning.ThinkResponse{
+			{IsDone: true, FinalAnswer: `send_message({"channel":"telegram","to":"123","text":"ok"})`},
+			{IsDone: true, FinalAnswer: "done"},
+		},
+		reflectOut: "done",
+	}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"channel.send"},
+	}, llm, exec)
+
+	_ = loop.Run(context.Background(), "react-agent", "notify")
+
+	if len(exec.calls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(exec.calls))
+	}
+	if exec.calls[0].Tool != "channel.send" {
+		t.Fatalf("recovered alias not canonicalized: %#v", exec.calls[0])
+	}
+}
+
 func TestPlanExecuteResolvesPriorStepPlaceholders(t *testing.T) {
 	llm := &stubLLM{planSteps: []reasoning.PlannedStep{
 		{
