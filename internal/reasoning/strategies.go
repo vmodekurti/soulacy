@@ -460,9 +460,11 @@ func recoverTextualToolCall(text string, toolNames []string) (ToolCall, bool) {
 		return ToolCall{}, false
 	}
 	name := strings.TrimSpace(s[:open])
-	if !toolAllowed(name, toolNames) {
+	canonicalName, ok := canonicalAllowedTool(name, toolNames)
+	if !ok {
 		return ToolCall{}, false
 	}
+	name = canonicalName
 	rawArgs := strings.TrimSpace(s[open+1 : close])
 	if rawArgs == "" {
 		rawArgs = "{}"
@@ -501,7 +503,12 @@ func recoverTextualToolCall(text string, toolNames []string) (ToolCall, bool) {
 
 func recoverJSONToolCall(s string, toolNames []string) (ToolCall, bool) {
 	var direct ToolCall
-	if err := json.Unmarshal([]byte(s), &direct); err == nil && direct.Tool != "" && toolAllowed(direct.Tool, toolNames) {
+	if err := json.Unmarshal([]byte(s), &direct); err == nil && direct.Tool != "" {
+		canonicalName, ok := canonicalAllowedTool(direct.Tool, toolNames)
+		if !ok {
+			return ToolCall{}, false
+		}
+		direct.Tool = canonicalName
 		normalizeToolCallArgs(&direct)
 		return direct, true
 	}
@@ -542,10 +549,11 @@ func recoverJSONToolCall(s string, toolNames []string) (ToolCall, bool) {
 		}
 	}
 
-	if name == "" || !toolAllowed(name, toolNames) {
+	canonicalName, ok := canonicalAllowedTool(name, toolNames)
+	if name == "" || !ok {
 		return ToolCall{}, false
 	}
-	call := ToolCall{Tool: name, Arguments: args}
+	call := ToolCall{Tool: canonicalName, Arguments: args}
 	normalizeToolCallArgs(&call)
 	return call, true
 }
@@ -570,7 +578,8 @@ func recoverActionInputToolCall(s string, toolNames []string) (ToolCall, bool) {
 			}
 		}
 	}
-	if name == "" || !toolAllowed(name, toolNames) {
+	canonicalName, ok := canonicalAllowedTool(name, toolNames)
+	if name == "" || !ok {
 		return ToolCall{}, false
 	}
 	args := map[string]any{}
@@ -581,7 +590,7 @@ func recoverActionInputToolCall(s string, toolNames []string) (ToolCall, bool) {
 		}
 		args = parsed
 	}
-	call := ToolCall{Tool: name, Arguments: args}
+	call := ToolCall{Tool: canonicalName, Arguments: args}
 	normalizeToolCallArgs(&call)
 	return call, true
 }
@@ -610,6 +619,7 @@ func parseActionArgs(raw string) (map[string]any, bool) {
 }
 
 func normalizeToolCallArgs(call *ToolCall) {
+	call.Tool = canonicalToolAlias(call.Tool)
 	if call.Arguments == nil {
 		call.Arguments = map[string]any{}
 	}
@@ -826,12 +836,56 @@ func parseKnownLegacyMap(body string, keys []string) (map[string]any, bool) {
 }
 
 func toolAllowed(name string, toolNames []string) bool {
+	_, ok := canonicalAllowedTool(name, toolNames)
+	return ok
+}
+
+func canonicalAllowedTool(name string, toolNames []string) (string, bool) {
+	candidate := canonicalToolAlias(name)
+	if len(toolNames) == 0 {
+		return candidate, strings.TrimSpace(candidate) != ""
+	}
 	for _, n := range toolNames {
-		if n == name {
-			return true
+		canonicalName := canonicalToolAlias(n)
+		if canonicalName == candidate || strings.TrimSpace(n) == strings.TrimSpace(name) {
+			return canonicalName, true
 		}
 	}
-	return false
+	return "", false
+}
+
+func canonicalToolAlias(name string) string {
+	name = strings.TrimSpace(name)
+	for _, prefix := range []string{"agent:", "tool:", "function:", "functions."} {
+		if strings.HasPrefix(name, prefix) {
+			name = strings.TrimSpace(strings.TrimPrefix(name, prefix))
+			break
+		}
+	}
+	switch strings.ToLower(name) {
+	case "google:search", "google_search", "browser.search", "browser_search", "search", "web.search", "web-search", "search_web", "websearch", "internet_search", "internet.search":
+		return "web_search"
+	case "send_message", "send.notification", "send_notification", "notify", "notification.send", "channel_send", "channel-send", "send_channel", "send.channel", "telegram_send", "telegram.send", "slack_send", "slack.send", "discord_send", "discord.send":
+		return "channel.send"
+	case "read_url", "open_url", "get_url", "url_fetch", "fetch-url", "http_get", "http.get":
+		return "fetch_url"
+	case "search_kb", "kb.search", "knowledge_search", "knowledge.search", "rag_search", "rag.search":
+		return "kb_search"
+	case "write_kb", "kb.write", "kb_add", "kb.add", "kb_store", "kb.store", "store_kb", "knowledge_write", "knowledge.write", "knowledge_store", "knowledge.store":
+		return "kb_write"
+	case "queue.add", "queue_add", "queue.push", "queue_push", "enqueue", "queue.enqueue":
+		return "queue_put"
+	case "queue.read", "queue_read", "queue.items", "queue_items", "queue.peek", "queue_peek", "peek_queue":
+		return "queue_list"
+	case "dequeue", "queue.pop", "queue_pop":
+		return "queue_take"
+	case "queue.create", "queue-create":
+		return "queue_create"
+	case "queue.clear", "queue-clear":
+		return "queue_clear"
+	default:
+		return name
+	}
 }
 
 func isPrematureFinalAnswer(text string) bool {
@@ -907,6 +961,7 @@ func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) (
 		// Planning failed — fall back to ReAct.
 		return reactStrategy{}.Run(ctx, env, taskInput)
 	}
+	plan = normalizePlanToolAliases(plan)
 
 	completedIDs := map[string]bool{}
 	var steps []Step
@@ -1127,4 +1182,11 @@ func planHasUnavailableTool(plan Plan, toolNames []string) bool {
 		}
 	}
 	return false
+}
+
+func normalizePlanToolAliases(plan Plan) Plan {
+	for i := range plan.Steps {
+		plan.Steps[i].Tool = canonicalToolAlias(plan.Steps[i].Tool)
+	}
+	return plan
 }
