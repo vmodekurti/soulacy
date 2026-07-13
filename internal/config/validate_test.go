@@ -24,6 +24,7 @@ func validConfig() *Config {
 	c.Executor.Backend = "process"
 	c.Knowledge.ChunkSize = 1000
 	c.Knowledge.ChunkOverlap = 200
+	c.Knowledge.MaxDocumentBytes = 50 << 20
 	return c
 }
 
@@ -51,6 +52,7 @@ func TestValidate_RangeViolations(t *testing.T) {
 		"negative agent depth":   func(c *Config) { c.Runtime.MaxAgentCallDepth = -1 },
 		"port out of range":      func(c *Config) { c.Server.Port = 70000 },
 		"overlap >= chunk size":  func(c *Config) { c.Knowledge.ChunkOverlap = 1000 },
+		"negative max doc bytes": func(c *Config) { c.Knowledge.MaxDocumentBytes = -1 },
 		"default above ceiling":  func(c *Config) { c.Runtime.DefaultMaxTurns = 200 },
 		"negative max_sessions":  func(c *Config) { c.Runtime.MaxSessions = -5 },
 		"pool workers below one": func(c *Config) { c.Executor.Backend = "pool"; c.Executor.Workers = 0 },

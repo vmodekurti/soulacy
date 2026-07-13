@@ -2,6 +2,7 @@ package knowledge
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -33,8 +34,23 @@ func TestWorkerBackoffIsBoundedAndExponential(t *testing.T) {
 
 func TestWorkerOptionDefaults(t *testing.T) {
 	o := WorkerOptions{}.withDefaults()
-	if o.MaxAttempts != DefaultMaxAttempts || o.PollInterval <= 0 || o.BaseBackoff <= 0 || o.MaxBackoff <= 0 {
+	if o.MaxAttempts != DefaultMaxAttempts || o.PollInterval <= 0 || o.BaseBackoff <= 0 || o.MaxBackoff <= 0 || o.MaxDocumentBytes != DefaultMaxDocumentBytes {
 		t.Fatalf("zero-value options must get sane defaults: %+v", o)
+	}
+}
+
+func TestWorkerRejectsOversizedJobBeforeReadingSpool(t *testing.T) {
+	w := NewWorker(nil, WorkerOptions{MaxDocumentBytes: 4}, nil)
+	_, err := w.run(context.Background(), IngestJob{
+		ID:        "j-big",
+		SpoolPath: "/does/not/matter",
+		ByteSize:  5,
+	})
+	if err == nil {
+		t.Fatal("expected oversized job to fail")
+	}
+	if !strings.Contains(err.Error(), "knowledge.max_document_bytes") {
+		t.Fatalf("error should explain the configured limit, got %v", err)
 	}
 }
 

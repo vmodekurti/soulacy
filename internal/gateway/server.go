@@ -376,6 +376,7 @@ func (s *Server) buildApp() *fiber.App {
 	app := fiber.New(fiber.Config{
 		AppName:               "Soulacy Gateway",
 		DisableStartupMessage: true,
+		BodyLimit:             s.requestBodyLimit(),
 		// Immutable makes c.Params/c.Query/etc. return copied strings instead of
 		// views into fasthttp's reusable request buffer. REQUIRED here because we
 		// retain handler strings (agent IDs from c.Params) in long-lived structures
@@ -400,7 +401,11 @@ func (s *Server) buildApp() *fiber.App {
 		WriteTimeout: 0,
 		IdleTimeout:  120 * time.Second,
 		ErrorHandler: func(c *fiber.Ctx, err error) error {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			status := fiber.StatusInternalServerError
+			if fe, ok := err.(*fiber.Error); ok {
+				status = fe.Code
+			}
+			return c.Status(status).JSON(fiber.Map{
 				"error": err.Error(),
 			})
 		},
@@ -1168,6 +1173,20 @@ func (s *Server) buildApp() *fiber.App {
 	}
 
 	return app
+}
+
+func (s *Server) requestBodyLimit() int {
+	limit := int64(50 << 20)
+	if s != nil && s.cfg != nil && s.cfg.Knowledge.MaxDocumentBytes > 0 {
+		limit = s.cfg.Knowledge.MaxDocumentBytes
+	}
+	// Keep a little room for JSON/form overhead while the handler enforces the
+	// exact document payload limit.
+	const overhead = int64(1 << 20)
+	if limit > int64(^uint(0)>>1)-overhead {
+		return int(^uint(0) >> 1)
+	}
+	return int(limit + overhead)
 }
 
 // handleGetCosts handles GET /api/v1/costs

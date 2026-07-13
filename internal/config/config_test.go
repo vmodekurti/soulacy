@@ -240,6 +240,9 @@ func TestLoadNoConfigFileUsesDefaults(t *testing.T) {
 	if cfg.Knowledge.ChunkOverlap != 200 {
 		t.Errorf("knowledge.chunk_overlap = %d, want 200", cfg.Knowledge.ChunkOverlap)
 	}
+	if cfg.Knowledge.MaxDocumentBytes != 50<<20 {
+		t.Errorf("knowledge.max_document_bytes = %d, want %d", cfg.Knowledge.MaxDocumentBytes, int64(50<<20))
+	}
 
 	// Log defaults.
 	if cfg.Log.Level != "info" {
