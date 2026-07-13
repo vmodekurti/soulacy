@@ -242,6 +242,18 @@
             </li>
           {/each}
         {/if}
+        <!-- Trigger and Exit are the structural endpoints of a flow. They are a
+             pair: one starts it, the other delivers the result. The canvas has
+             always accepted a dragged trigger — it just was not offered here. -->
+        <li
+          class="item draggable"
+          draggable="true"
+          on:dragstart={(e) => startDrag(e, { kind: 'trigger' })}
+          title="Drag onto the canvas — the block that STARTS the flow (schedule, webhook, channel message). Configure it in the Inspector."
+        >
+          <span class="item-label">🚩 Trigger</span>
+          <span class="item-sub">starts the flow</span>
+        </li>
         <li
           class="item draggable"
           draggable="true"
