@@ -203,6 +203,7 @@
   let notes = []
   let answers = {}            // { [questionId]: value }
   let explanation = null      // plain-language "what Studio built" (Story #10)
+  let generationProfile = null // local/cloud builder guardrails used for compile
   let modelAdvice = null      // builder-model advice (local-first)
   let cloudAck = false        // user acknowledged cloud builder this session
   let cloudGate = null        // { provider, model } when the escalation dialog is open
@@ -1206,6 +1207,7 @@ Use null for fields that are not present.`
     validation = null
     tryQuestion = ''
     tryResult = null
+    generationProfile = null
     // Swapping in a different draft invalidates the SOUL.yaml view's serialization
     // (which is only re-generated on entry). Drop back to canvas so a stale YAML
     // can't be shown — or, worse, saved over the new draft. routeToAgent re-opens
@@ -1230,6 +1232,7 @@ Use null for fields that are not present.`
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
     explanation = (data && data.explanation) || null
+    generationProfile = (data && data.generation) || null
     // M4: surface missing-capability suggestions (non-blocking). Keep only the
     // ones not yet installed; a fresh compile resets any in-flight discovery.
     suggestions = (data && Array.isArray(data.suggestions))
@@ -2611,6 +2614,25 @@ Use null for fields that are not present.`
     }
   }
 
+  // When the agent currently ON the canvas is deleted, the canvas must go with
+  // it. Leaving the workflow up is worse than untidy: the editor still thinks
+  // it is editing agent X, so hitting Save would silently RECREATE the agent the
+  // user just deleted. Clearing loadedAgentId is what actually prevents that;
+  // wiping the canvas is what makes the deletion believable.
+  function clearCanvasIfShowing(id) {
+    if (!id || loadedAgentId !== id) return false
+    loadedAgentId = ''
+    runTrace = null
+    runDiagnosis = null
+    codeYaml = ''
+    codeOrig = ''
+    codeValidation = null
+    codeWarnings = []
+    compileError = ''
+    setWorkflow(null)
+    return true
+  }
+
   // Delete an agent straight from the palette (with confirm), then refresh the
   // palette so it disappears.
   async function deleteAgentFromPalette(id, name) {
@@ -2620,7 +2642,10 @@ Use null for fields that are not present.`
     if (!ok) return
     try {
       await bridge.deleteAgent(id)
-      toast(`Deleted agent ${name || id}.`)
+      const wasOpen = clearCanvasIfShowing(id)
+      toast(wasOpen
+        ? `Deleted agent ${name || id}. Canvas cleared.`
+        : `Deleted agent ${name || id}.`)
       await loadCatalog()
     } catch (e) {
       toast(e.message || 'Could not delete agent')
@@ -2655,6 +2680,8 @@ Use null for fields that are not present.`
     try {
       await bridge.deleteAgent(a.id)
       library = { ...library, busyId: '', agents: library.agents.filter((x) => x.id !== a.id) }
+      if (clearCanvasIfShowing(a.id)) toast(`Deleted agent ${a.name || a.id}. Canvas cleared.`)
+      await loadCatalog()
     } catch (e) {
       library = { ...library, busyId: '', error: e.message || 'could not delete agent' }
     }
@@ -2846,6 +2873,7 @@ Use null for fields that are not present.`
 
   async function openModelPicker() {
     modelPicker = { open: true, provider: '', model: '', models: [], saving: false, error: '' }
+    resetModelChooser()
     try {
       const cfg = await bridge.getConfig()
       const st = (cfg && cfg.llm && cfg.llm.studio) || {}
@@ -2872,7 +2900,41 @@ Use null for fields that are not present.`
 
   function pickProvider(p) {
     modelPicker = { ...modelPicker, provider: p, model: '' }
+    resetModelChooser()
     loadModelsFor(p)
+  }
+
+  // ── model chooser ────────────────────────────────────────────────────────
+  // Two earlier attempts got this wrong, both for the same underlying reason:
+  // they tried to show the model list in a layer floating ABOVE the field.
+  //
+  //   1. <input list> + <datalist> — the browser filters a datalist against the
+  //      input's current value, so once a model was chosen the list could only
+  //      offer that same model back. You had to clear the field to see anything.
+  //   2. A hand-rolled absolute dropdown — the modal is `overflow-y: auto`, so
+  //      the dropdown was clipped by it, and it covered the Save button.
+  //
+  // A modal is not a page: there is no room to float things over. So the list
+  // is now part of the modal's flow — it takes space instead of stealing it.
+  // Nothing can clip it and nothing can hide the buttons.
+  let modelFilter = ''   // filters the list; NOT the chosen value
+  let manualModel = false
+
+  // Reset per-open so the list never opens pre-filtered from a previous visit.
+  function resetModelChooser() {
+    modelFilter = ''
+    manualModel = false
+  }
+
+  $: modelChoices = (() => {
+    const all = modelPicker.models || []
+    const q = modelFilter.trim().toLowerCase()
+    if (!q) return all
+    return all.filter((m) => m.toLowerCase().includes(q))
+  })()
+
+  function chooseModel(m) {
+    modelPicker = { ...modelPicker, model: m }
   }
 
   async function saveStudioModel() {
@@ -3109,6 +3171,26 @@ Use null for fields that are not present.`
           {:else if modelAdvice.frontier_available}
             <span class="ma-rec">Optional: use {modelAdvice.frontier_provider} for complex builds —</span>
             <button class="btn ma-btn" type="button" on:click={openModelPicker}>Use {modelAdvice.frontier_provider}</button>
+          {/if}
+        </div>
+      {/if}
+      {#if generationProfile}
+        <div class="strip strip-modeladvice" class:strip-local={generationProfile.local} title="Studio generation guardrails">
+          <span class="strip-label">
+            {#if generationProfile.local}Local guardrails{:else}Builder guardrails{/if}
+          </span>
+          <span>
+            {generationProfile.provider}/{generationProfile.model}
+            {#if generationProfile.compact} · compact local mode{/if}
+            {#if generationProfile.plan_matched} · deterministic plan{/if}
+            {#if generationProfile.pattern_matched} · proven pattern{/if}
+            {#if generationProfile.lessons_applied} · {generationProfile.lessons_applied} lesson{generationProfile.lessons_applied === 1 ? '' : 's'}{/if}
+            · confidence {generationProfile.confidence || 'medium'}
+          </span>
+          {#if generationProfile.next_action === 'build_verify'}
+            <span class="ma-rec">Recommended: run Build until it works before saving.</span>
+          {:else if generationProfile.next_action === 'ask_clarify'}
+            <span class="ma-rec">Recommended: refine the spec or run Build until it works.</span>
           {/if}
         </div>
       {/if}
@@ -4459,12 +4541,76 @@ Use null for fields that are not present.`
           <option value="">(default provider)</option>
           {#each providerOptions as p}<option value={p}>{p}</option>{/each}
         </select>
-        <label class="field-label" for="mp-model">model</label>
-        <input id="mp-model" list="mp-models" placeholder="leave blank for the provider's default model"
-          bind:value={modelPicker.model} />
-        <datalist id="mp-models">
-          {#each modelPicker.models as m}<option value={m}></option>{/each}
-        </datalist>
+        <span class="field-label">model</span>
+
+        {#if !modelPicker.provider}
+          <p class="mp-hint">Choose a provider above to see its models.</p>
+        {:else}
+          <!-- Filter only appears once there are enough models to be worth
+               filtering; below that it is just a box in the way. -->
+          {#if (modelPicker.models || []).length > 6}
+            <input
+              class="mp-filter"
+              type="search"
+              autocomplete="off"
+              placeholder="Filter {modelPicker.models.length} models…"
+              aria-label="Filter models"
+              bind:value={modelFilter}
+            />
+          {/if}
+
+          <div class="mp-list" role="radiogroup" aria-label="Model">
+            <!-- Blank model = the provider's own default. It is a real choice,
+                 so it belongs in the list rather than hidden in placeholder text. -->
+            <button
+              type="button"
+              class="mp-row"
+              class:sel={!modelPicker.model}
+              role="radio"
+              aria-checked={!modelPicker.model}
+              on:click={() => chooseModel('')}
+            >
+              <span class="mp-tick">{!modelPicker.model ? '✓' : ''}</span>
+              <span class="mp-name muted">Provider default</span>
+            </button>
+
+            {#each modelChoices as m}
+              <button
+                type="button"
+                class="mp-row"
+                class:sel={m === modelPicker.model}
+                role="radio"
+                aria-checked={m === modelPicker.model}
+                on:click={() => chooseModel(m)}
+              >
+                <span class="mp-tick">{m === modelPicker.model ? '✓' : ''}</span>
+                <span class="mp-name">{m}</span>
+              </button>
+            {/each}
+
+            {#if (modelPicker.models || []).length === 0}
+              <p class="mp-empty">This provider reported no models. Enter one by hand below.</p>
+            {:else if modelChoices.length === 0}
+              <p class="mp-empty">No model matches “{modelFilter.trim()}”.</p>
+            {/if}
+          </div>
+
+          <!-- Escape hatch: a model the provider does not advertise. Collapsed
+               by default so it does not compete with the list. -->
+          {#if manualModel}
+            <input
+              class="mp-manual"
+              autocomplete="off"
+              placeholder="e.g. llama3.1:70b"
+              aria-label="Model name"
+              bind:value={modelPicker.model}
+            />
+          {:else}
+            <button type="button" class="mp-link" on:click={() => { manualModel = true }}>
+              Model not listed? Enter it manually
+            </button>
+          {/if}
+        {/if}
         <div class="modal-actions">
           <button class="btn" type="button" on:click={() => modelPicker = { ...modelPicker, open: false }} disabled={modelPicker.saving}>Cancel</button>
           <button class="btn primary" type="button" on:click={saveStudioModel} disabled={modelPicker.saving}>
@@ -5948,6 +6094,39 @@ Use null for fields that are not present.`
   .consent-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .consent-scope select { width: auto; flex: 1; }
   .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+
+  /* Model chooser. Deliberately NO position:absolute — the modal is
+     overflow-y:auto, so any floating layer gets clipped by it and covers the
+     action buttons. The list lives in the flow and the modal grows around it. */
+  .mp-hint { margin: 0; font-size: .8rem; color: var(--text-dim, #6b7294); }
+  .mp-filter { width: 100%; box-sizing: border-box; }
+  .mp-list {
+    display: flex; flex-direction: column;
+    max-height: 200px; overflow-y: auto;      /* the LIST scrolls, not the modal */
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+  }
+  .mp-row {
+    display: flex; align-items: center; gap: .5rem;
+    width: 100%; text-align: left; background: none; border: none; border-radius: 0;
+    padding: .5rem .6rem; font-size: .84rem; color: var(--text, #c8cadf);
+    cursor: pointer;
+  }
+  .mp-row + .mp-row { border-top: 1px solid color-mix(in srgb, var(--border) 40%, transparent); }
+  .mp-row:hover { background: color-mix(in srgb, var(--accent, #6c63ff) 10%, transparent); }
+  .mp-row.sel   { background: color-mix(in srgb, var(--accent, #6c63ff) 18%, transparent); }
+  .mp-tick  { width: 1em; flex-shrink: 0; color: var(--accent, #6c63ff); font-size: .8rem; }
+  .mp-name  { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mp-name.muted { color: var(--text-dim, #6b7294); }
+  .mp-empty { margin: 0; padding: .7rem .6rem; font-size: .78rem; color: var(--text-dim, #6b7294); }
+  .mp-manual { width: 100%; box-sizing: border-box; }
+  .mp-link {
+    align-self: flex-start;
+    background: none; border: none; padding: 0;
+    font-size: .78rem; color: var(--accent, #6c63ff);
+    cursor: pointer; text-decoration: underline;
+  }
   .modal-actions .btn { white-space: normal; }
 
   /* Browse SOUL.yaml: wider modal with an agent list beside a read-only viewer. */
