@@ -162,6 +162,46 @@ func TestPreflight_BuiltinContractToolNotWarnedWhenCatalogPartial(t *testing.T) 
 	}
 }
 
+func TestPreflight_ChannelSendUsesDotNameAndTextAliases(t *testing.T) {
+	d := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+		{ID: "notify", Kind: "tool", Tool: "channel.send", Input: `{"channel":"telegram","to":"123","message":"queued"}`},
+	}}}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"web_search"}}})
+	if !r.OK {
+		t.Fatalf("channel.send with runtime-supported message alias should pass, blockers: %+v", r.Blockers)
+	}
+	for _, w := range r.Warnings {
+		if w.Kind == "tool" {
+			t.Fatalf("channel.send should be recognized as a built-in even when catalog is partial: %+v", r.Warnings)
+		}
+	}
+	if isBuiltinContractTool("channel_send") {
+		t.Fatal("legacy channel_send must not be advertised as a Studio built-in contract")
+	}
+	if !isBuiltinContractTool("channel.send") {
+		t.Fatal("channel.send must be advertised as the Studio built-in contract")
+	}
+}
+
+func TestPreflight_ChannelSendRequiresSomeTextBody(t *testing.T) {
+	d := Draft{Flow: Flow{Nodes: []sdkr.FlowNode{
+		{ID: "notify", Kind: "tool", Tool: "channel.send", Input: `{"channel":"telegram","to":"123"}`},
+	}}}
+	r := Preflight(d, PreflightInput{Catalog: Catalog{Tools: []string{"channel.send"}}})
+	if r.OK {
+		t.Fatal("channel.send without text/message/body/content should be blocked")
+	}
+	found := false
+	for _, b := range r.Blockers {
+		if b.NodeID == "notify" && strings.Contains(b.Message, `"text"`) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected missing text blocker, got %+v", r.Blockers)
+	}
+}
+
 func TestPreflight_BlocksWriteFileForKnowledgeIngestion(t *testing.T) {
 	d := Draft{
 		Name:   "AI Docs ingestion",
