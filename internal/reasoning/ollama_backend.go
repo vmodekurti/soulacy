@@ -135,7 +135,8 @@ const ollamaPlanInstructions = `
 
 Respond with ONLY a JSON object — no explanation, no markdown. Max %d steps.
 Required schema:
-{"goal":"one-sentence goal","steps":[{"id":"step-1","description":"what to do","tool":"tool_name","depends_on":[]},{"id":"step-2","description":"...","tool":"tool_name","depends_on":["step-1"]}]}`
+{"goal":"one-sentence goal","steps":[{"id":"step-1","description":"what to do","tool":"tool_name","arguments":{"arg":"value"},"depends_on":[]},{"id":"step-2","description":"...","tool":"tool_name","arguments":{"arg":"{{step-1.output}}"},"depends_on":["step-1"]}]}
+Use only exact Available tools when listed. Put concise JSON tool arguments in "arguments".`
 
 // ─── Reflect ──────────────────────────────────────────────────────────────────
 

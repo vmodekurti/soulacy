@@ -899,7 +899,7 @@ func firstNonEmpty(values ...string) string {
 type planExecuteStrategy struct{}
 
 func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step, ReflectResponse) {
-	plan, err := env.LLM.Plan(ctx, env.Config.SystemPrompt, taskInput, env.Config.MaxPlanSteps)
+	plan, err := env.LLM.Plan(ctx, planSystemPrompt(env.Config.SystemPrompt, env.Config.ToolNames), taskInput, env.Config.MaxPlanSteps)
 	if err != nil || planHasUnavailableTool(plan, env.Config.ToolNames) {
 		// Planning failed — fall back to ReAct.
 		return reactStrategy{}.Run(ctx, env, taskInput)
@@ -937,10 +937,7 @@ func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) (
 		stepCtx, cancel := context.WithTimeout(ctx, env.Config.StepTimeout)
 		stepStart := time.Now()
 
-		call := ToolCall{
-			Tool:  ps.Tool,
-			Input: map[string]string{"task": ps.Description},
-		}
+		call := plannedStepToolCall(ps)
 		obs := env.Tools.Execute(stepCtx, call)
 		obs = boundObservation(obs)
 
@@ -994,6 +991,56 @@ func planExecuteFallbackOutput(steps []Step) string {
 		return fmt.Sprintf("The plan could not fully complete: %d step(s) failed and %d dependent step(s) were skipped. Open the run trace to inspect the failed step, then fix the tool input, credential, or workflow dependency.", failed, skipped)
 	}
 	return "The plan executed but the model did not produce a final answer. Open the run trace to inspect the completed steps."
+}
+
+func planSystemPrompt(systemPrompt string, toolNames []string) string {
+	system := strings.TrimSpace(systemPrompt)
+	if len(toolNames) == 0 {
+		return system
+	}
+	toolList := "Available tools: " + strings.Join(toolNames, ", ")
+	if system == "" {
+		return toolList
+	}
+	return system + "\n\n" + toolList
+}
+
+func plannedStepToolCall(ps PlannedStep) ToolCall {
+	if len(ps.Arguments) > 0 {
+		input := stringifyArgs(ps.Arguments)
+		return ToolCall{Tool: ps.Tool, Input: input, Arguments: ps.Arguments}
+	}
+	if len(ps.Input) > 0 {
+		args := make(map[string]any, len(ps.Input))
+		for k, v := range ps.Input {
+			args[k] = v
+		}
+		return ToolCall{Tool: ps.Tool, Input: ps.Input, Arguments: args}
+	}
+	args := map[string]any{"task": ps.Description}
+	return ToolCall{Tool: ps.Tool, Input: map[string]string{"task": ps.Description}, Arguments: args}
+}
+
+func stringifyArgs(args map[string]any) map[string]string {
+	input := make(map[string]string, len(args))
+	for k, v := range args {
+		switch t := v.(type) {
+		case string:
+			input[k] = t
+		case nil:
+			input[k] = ""
+		case bool, float64, int, int64, uint64:
+			input[k] = fmt.Sprint(t)
+		default:
+			raw, err := json.Marshal(t)
+			if err != nil {
+				input[k] = fmt.Sprint(t)
+			} else {
+				input[k] = string(raw)
+			}
+		}
+	}
+	return input
 }
 
 func planExecutionHadIssue(steps []Step) bool {

@@ -41,3 +41,27 @@ func TestToolCallUnmarshalAcceptsNameParamsAndActionInputAliases(t *testing.T) {
 		})
 	}
 }
+
+func TestPlannedStepUnmarshalAcceptsArgumentAliases(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"arguments", `{"id":"s1","description":"send","tool":"channel.send","arguments":{"channel":"telegram","to":123,"text":"hi"}}`},
+		{"input", `{"id":"s1","description":"send","tool":"channel.send","input":{"channel":"telegram","to":123,"text":"hi"}}`},
+		{"params", `{"id":"s1","description":"send","tool":"channel.send","params":{"channel":"telegram","to":123,"text":"hi"}}`},
+		{"parameters", `{"id":"s1","description":"send","tool":"channel.send","parameters":{"channel":"telegram","to":123,"text":"hi"}}`},
+		{"action_input", `{"id":"s1","description":"send","tool":"channel.send","action_input":{"channel":"telegram","to":123,"text":"hi"}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var step PlannedStep
+			if err := json.Unmarshal([]byte(tc.raw), &step); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			if step.Tool != "channel.send" || step.Arguments["channel"] != "telegram" || step.Input["to"] != "123" {
+				t.Fatalf("step arguments not normalized: %#v", step)
+			}
+		})
+	}
+}

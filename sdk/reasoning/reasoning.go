@@ -130,6 +130,63 @@ type PlannedStep struct {
 	Description string   `json:"description"`
 	Tool        string   `json:"tool"`
 	DependsOn   []string `json:"depends_on,omitempty"`
+	// Input is the legacy string-only argument map for the planned tool call.
+	// It remains optional so older plans that only include a description still
+	// execute with the historical {"task": description} fallback.
+	Input map[string]string `json:"input,omitempty"`
+	// Arguments carries the full JSON argument object for the planned tool call.
+	// Hosts prefer Arguments, then Input, then the legacy task fallback.
+	Arguments map[string]any `json:"arguments,omitempty"`
+}
+
+// UnmarshalJSON accepts common model aliases for planned-step tool arguments
+// so Plan-Execute does not fail or silently fall back to vague task strings when
+// a model emits "input", "params", "parameters", or "action_input".
+func (s *PlannedStep) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		ID          string         `json:"id"`
+		Description string         `json:"description"`
+		Tool        string         `json:"tool"`
+		DependsOn   []string       `json:"depends_on"`
+		Input       map[string]any `json:"input"`
+		Arguments   map[string]any `json:"arguments"`
+		Parameters  map[string]any `json:"parameters"`
+		Params      map[string]any `json:"params"`
+		ActionInput map[string]any `json:"action_input"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	s.ID = raw.ID
+	s.Description = raw.Description
+	s.Tool = raw.Tool
+	s.DependsOn = raw.DependsOn
+	s.Arguments = firstNonNilMap(raw.Arguments, raw.Input, raw.Parameters, raw.Params, raw.ActionInput)
+	if len(s.Arguments) > 0 {
+		s.Input = stringifyJSONArgs(s.Arguments)
+	}
+	return nil
+}
+
+func stringifyJSONArgs(args map[string]any) map[string]string {
+	input := make(map[string]string, len(args))
+	for k, v := range args {
+		switch t := v.(type) {
+		case string:
+			input[k] = t
+		case nil:
+			input[k] = ""
+		case bool, float64:
+			input[k] = fmt.Sprint(t)
+		default:
+			b, err := json.Marshal(t)
+			if err != nil {
+				return nil
+			}
+			input[k] = string(b)
+		}
+	}
+	return input
 }
 
 // Plan is the full decomposition produced by a plan_execute-style strategy.

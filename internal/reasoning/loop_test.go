@@ -18,6 +18,7 @@ type stubLLM struct {
 	doneOnStep int // Think returns IsDone=true on this call number
 	planSteps  []reasoning.PlannedStep
 	reflectOut string
+	planSystem string
 }
 
 func (s *stubLLM) Think(_ context.Context, req reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
@@ -32,7 +33,8 @@ func (s *stubLLM) Think(_ context.Context, req reasoning.ThinkRequest) (reasonin
 	}, nil
 }
 
-func (s *stubLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+func (s *stubLLM) Plan(_ context.Context, systemPrompt, _ string, _ int) (reasoning.Plan, error) {
+	s.planSystem = systemPrompt
 	return reasoning.Plan{Goal: "test goal", Steps: s.planSteps}, nil
 }
 
@@ -689,6 +691,48 @@ func TestPlanExecuteFallsBackToReActForUnavailablePlanTool(t *testing.T) {
 	}
 	if len(result.Steps) != 1 {
 		t.Fatalf("steps = %d, want one ReAct step", len(result.Steps))
+	}
+}
+
+func TestPlanExecutePassesStructuredArguments(t *testing.T) {
+	llm := &stubLLM{planSteps: []reasoning.PlannedStep{
+		{
+			ID:          "send",
+			Description: "send the acknowledgement",
+			Tool:        "channel.send",
+			Arguments: map[string]any{
+				"channel": "telegram",
+				"to":      "12345",
+				"text":    "Queued.",
+			},
+		},
+	}}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"channel.send"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "planner", "notify the user")
+
+	if len(exec.calls) != 1 {
+		t.Fatalf("tool calls = %d, want 1", len(exec.calls))
+	}
+	call := exec.calls[0]
+	if call.Tool != "channel.send" || call.Input["channel"] != "telegram" || call.Input["to"] != "12345" || call.Input["text"] != "Queued." {
+		t.Fatalf("structured arguments not passed through: %#v", call)
+	}
+	if call.Arguments["text"] != "Queued." {
+		t.Fatalf("full arguments not preserved: %#v", call.Arguments)
+	}
+	if !strings.Contains(llm.planSystem, "Available tools: channel.send") {
+		t.Fatalf("planner prompt did not include available tools: %q", llm.planSystem)
+	}
+	if strings.TrimSpace(result.Output) == "" {
+		t.Fatal("empty result")
 	}
 }
 
