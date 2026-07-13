@@ -289,13 +289,37 @@ func (s *Scheduler) RegisterAgent(def *agent.Definition) error {
 	if def.Schedule == nil || !def.Enabled {
 		return nil
 	}
-	switch def.Trigger {
+	switch scheduledKind(def) {
 	case agent.TriggerCron:
 		return s.addCron(def)
 	case agent.TriggerOneShot:
 		return s.addOneShot(def)
 	}
 	return nil
+}
+
+// scheduledKind returns the concrete schedule mechanism for an agent. Older
+// agents declare it with trigger: cron/oneshot. Newer multi-surface agents may
+// keep a different primary trigger and opt into scheduling with
+// surfaces: [schedule] plus a schedule block.
+func scheduledKind(def *agent.Definition) agent.TriggerKind {
+	if def == nil || def.Schedule == nil {
+		return ""
+	}
+	switch def.Trigger {
+	case agent.TriggerCron, agent.TriggerOneShot:
+		return def.Trigger
+	}
+	if !def.AppearsOn(agent.SurfaceSchedule) {
+		return ""
+	}
+	if strings.TrimSpace(def.Schedule.Cron) != "" {
+		return agent.TriggerCron
+	}
+	if !def.Schedule.At.IsZero() {
+		return agent.TriggerOneShot
+	}
+	return ""
 }
 
 // DeregisterAgent removes a scheduled agent. Safe to call if not registered.
@@ -504,7 +528,7 @@ func (s *Scheduler) runMissedOnStartup() {
 }
 
 func (s *Scheduler) missedCronFire(def *agent.Definition, now time.Time) (time.Time, bool) {
-	if def == nil || !def.Enabled || def.Trigger != agent.TriggerCron || def.Schedule == nil {
+	if def == nil || !def.Enabled || scheduledKind(def) != agent.TriggerCron || def.Schedule == nil {
 		return time.Time{}, false
 	}
 	if !def.Schedule.RunMissedOnStartup || strings.TrimSpace(def.Schedule.Cron) == "" {

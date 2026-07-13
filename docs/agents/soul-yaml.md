@@ -43,8 +43,9 @@ tags: [research, writing]
 labels: { owner: ops }
 
 # ── Trigger ───────────────────────────────────────────────
-trigger: channel             # channel | cron | oneshot | webhook | internal
+trigger: channel             # primary start mode: channel | cron | oneshot | webhook | internal
 channels: [http, telegram]   # channel adapter IDs this agent serves
+surfaces: [chat, telegram]   # optional UI/invocation surfaces; empty = derived
 
 # ── Model ─────────────────────────────────────────────────
 llm:
@@ -132,7 +133,7 @@ run_timeout: 10m             # whole-run wall-clock cap (default 15m)
 
 ## Trigger and Channels
 
-`trigger` controls how the agent starts:
+`trigger` is the agent's primary start mode:
 
 | Trigger | Meaning |
 |---------|---------|
@@ -145,6 +146,25 @@ run_timeout: 10m             # whole-run wall-clock cap (default 15m)
 `channels` binds the agent to channel adapter IDs. Platform credentials and
 inbound routing live in `config.yaml` — the agent only declares which adapters
 it serves.
+
+`surfaces` controls where the same agent is visible or invokable. Leave it
+empty for Soulacy to derive a conservative default from `trigger` and
+`channels`; set it explicitly when one agent should serve multiple interfaces.
+This is the preferred way to make a scheduled agent interactive without
+duplicating it:
+
+```yaml
+trigger: cron
+channels: [telegram, slack]
+surfaces: [schedule, chat, telegram, slack]
+schedule:
+  cron: "0 7 * * *"
+  output: { channel: telegram, to: "@daily_brief" }
+```
+
+With that shape, the scheduler fires the agent, the Chat picker can test it,
+and mapped Telegram/Slack bots can route inbound messages to the same agent.
+The channel credentials and bot mappings still live under `config.yaml`.
 
 ## LLM Block
 

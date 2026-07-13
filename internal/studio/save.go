@@ -454,9 +454,11 @@ func flowPeers(flow Flow) []string {
 // | webhook | manual) onto the agent's TriggerKind. "manual" has no direct
 // agent equivalent; it maps to TriggerInternal (programmatic activation).
 // studioSurfaces derives the agent's interface surfaces from the draft's
-// trigger + channels (Stories #11/#12). A scheduled agent appears only under
-// Schedule (not Chat) unless it also delivers to channels; a manual/channel
-// agent appears in Chat and on its channels.
+// trigger + channels (Stories #11/#12). Cron-only agents stay schedule-only,
+// but a scheduled agent that explicitly selects channels is also chat-visible:
+// that is the supported "scheduled plus interactive" shape for digest bots,
+// research librarians, and other agents that should run unattended but still
+// answer when a human pings them or tests them manually.
 func studioSurfaces(draft Draft) []string {
 	var out []string
 	add := func(s string) {
@@ -476,6 +478,9 @@ func studioSurfaces(draft Draft) []string {
 		add(agent.SurfaceSchedule)
 		for _, ch := range draft.Channels {
 			add(ch) // a scheduled digest still delivers to its channel(s)
+		}
+		if len(draft.Channels) > 0 {
+			add(agent.SurfaceChat)
 		}
 	case "channel":
 		for _, ch := range draft.Channels {

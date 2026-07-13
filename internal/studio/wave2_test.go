@@ -130,6 +130,18 @@ func TestToAgentDefinition_CarriesFieldsDisabled(t *testing.T) {
 	if len(def.Channels) != 1 || def.Channels[0] != "telegram" {
 		t.Errorf("channels = %v, want [telegram]", def.Channels)
 	}
+	for _, want := range []string{"schedule", "telegram", "chat"} {
+		found := false
+		for _, got := range def.Surfaces {
+			if got == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("surfaces = %v, missing %q", def.Surfaces, want)
+		}
+	}
 	if def.Workflow == nil || len(def.Workflow.Nodes) != 2 {
 		t.Fatalf("workflow not carried over: %+v", def.Workflow)
 	}
