@@ -74,6 +74,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	marketplace := s.marketplaceReadiness()
 	mobile := s.mobileCompanionReadiness()
 	chat := s.chatExperienceReadiness(c)
+	costs := s.costReadiness(c)
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -125,7 +126,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -173,6 +174,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"marketplace":  marketplace,
 		"mobile":       mobile,
 		"chat":         chat,
+		"costs":        costs,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -196,7 +198,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -204,7 +206,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, sche
 		parityChat(chat),
 		parityLearning(learningAgents, enabledAgents),
 		parityAutomation(scheduledAgents, usableOutbound),
-		parityOps(providersReady, enabledAgents, updateManifest),
+		parityOps(providersReady, enabledAgents, updateManifest, costs),
 		parityBrowserAutomation(browser),
 		parityRemoteExecution(executors),
 		parityMobileCompanion(mobile),
@@ -356,13 +358,6 @@ func parityAutomation(scheduledAgents, usableOutbound int) parityArea {
 		return parityArea{Key: "automation", Label: "Scheduled Automations", Status: "ok", Score: 84, Detail: plural(scheduledAgents, "scheduled agent") + " can deliver through configured channels.", Next: "Add schedule reliability alerts and missed-run remediation defaults.", Benchmark: "OpenClaw/Hermes", Href: "#schedule"}
 	}
 	return parityArea{Key: "automation", Label: "Scheduled Automations", Status: "warn", Score: 58, Detail: "Scheduler exists, but production value needs scheduled agents paired with delivery channels.", Next: "Create one scheduled agent, run a manual test, then verify outbound delivery.", Benchmark: "OpenClaw/Hermes", Href: "#schedule"}
-}
-
-func parityOps(providersReady, enabledAgents int, updateManifest string) parityArea {
-	if providersReady > 0 && enabledAgents > 0 && strings.TrimSpace(updateManifest) != "" {
-		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 82, Detail: "Readiness, doctor, support bundles, action logs, parity harness, and updates are wired.", Next: "Add cost budgets, service SLO alerts, and production deployment profiles.", Benchmark: "Commercial launch", Href: "#dashboard"}
-	}
-	return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "warn", Score: 62, Detail: "Diagnostics and support bundles exist; complete provider/agent/update setup before a production launch.", Next: "Run launch checks, configure update manifest, and keep support-bundle download visible.", Benchmark: "Commercial launch", Href: "#dashboard"}
 }
 
 func parityScore(areas []parityArea) int {

@@ -55,6 +55,9 @@ func TestLoadCostsPricingConfig(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	if err := os.WriteFile(cfgPath, []byte(`
 costs:
+  daily_budget_usd: 12.5
+  monthly_budget_usd: 250
+  alert_threshold: 0.75
   pricing:
     openai/gpt-test:
       input_per_mtok: 1.5
@@ -75,6 +78,9 @@ costs:
 	}
 	if got := cfg.Costs.Pricing["omniroute/*"]; got.InputPerMTok != 0.25 || got.OutputPerMTok != 0.75 {
 		t.Fatalf("omniroute pricing = %+v", got)
+	}
+	if cfg.Costs.DailyBudgetUSD != 12.5 || cfg.Costs.MonthlyBudgetUSD != 250 || cfg.Costs.AlertThreshold != 0.75 {
+		t.Fatalf("cost budgets = daily %.2f monthly %.2f threshold %.2f", cfg.Costs.DailyBudgetUSD, cfg.Costs.MonthlyBudgetUSD, cfg.Costs.AlertThreshold)
 	}
 }
 

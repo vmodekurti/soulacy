@@ -49,6 +49,9 @@
   let reasonerModel = ''
   let searchProvider = 'ollama'
   let searchApiKey = ''
+  let dailyBudgetUSD = ''
+  let monthlyBudgetUSD = ''
+  let costAlertThreshold = 0.8
   let costRows = []
   let agentDirs = ''
   let skillDirs = ''
@@ -121,7 +124,12 @@
         output_per_mtok: Number(row.output || 0),
       }
     }
-    return { pricing }
+    return {
+      daily_budget_usd: Number(dailyBudgetUSD || 0),
+      monthly_budget_usd: Number(monthlyBudgetUSD || 0),
+      alert_threshold: Number(costAlertThreshold || 0),
+      pricing,
+    }
   }
 
   async function loadProviderRegistry(configured = []) {
@@ -232,6 +240,9 @@
       await loadProviderRegistry(providerOptions)
       searchProvider  = config.search?.provider || 'ollama'
       searchApiKey    = config.search?.api_key || ''
+      dailyBudgetUSD = config.costs?.daily_budget_usd || ''
+      monthlyBudgetUSD = config.costs?.monthly_budget_usd || ''
+      costAlertThreshold = config.costs?.alert_threshold || 0.8
       seedCostEditor(config.costs?.pricing)
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
@@ -492,6 +503,20 @@
             Selectors match <code>provider/model</code>, <code>provider/*</code>, then <code>*/model</code>.
             Unknown models still record tokens with <code>cost_usd: 0</code>.
           </p>
+          <div class="budget-row">
+            <label class="field cost-rate">
+              <span title="Maximum estimated spend allowed over a rolling 24-hour window. Set 0 to disable this budget.">Daily budget</span>
+              <input type="number" step="0.01" min="0" bind:value={dailyBudgetUSD} placeholder="0.00" disabled={!writable} />
+            </label>
+            <label class="field cost-rate">
+              <span title="Maximum estimated spend allowed over a rolling 30-day window. Set 0 to disable this budget.">Monthly budget</span>
+              <input type="number" step="0.01" min="0" bind:value={monthlyBudgetUSD} placeholder="0.00" disabled={!writable} />
+            </label>
+            <label class="field cost-rate">
+              <span title="Fraction of a budget that should show warning status. 0.8 means warn at 80% of budget.">Alert threshold</span>
+              <input type="number" step="0.05" min="0.01" max="1" bind:value={costAlertThreshold} placeholder="0.80" disabled={!writable} />
+            </label>
+          </div>
           {#if costRows.length === 0}
             <p class="hint">No pricing configured yet. Add one row for exact model pricing or a provider wildcard.</p>
           {/if}
@@ -881,8 +906,16 @@
   .cost-selector input { font-family: monospace; font-size: .78rem; }
   .cost-rate input { text-align: right; }
   .cost-del { align-self: end; margin-bottom: .15rem; }
+  .budget-row {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(120px, 180px));
+    gap: .6rem;
+    align-items: end;
+    margin: .65rem 0 .85rem;
+  }
   @media (max-width: 640px) {
     .cost-row { grid-template-columns: 1fr; }
+    .budget-row { grid-template-columns: 1fr; }
     .cost-rate input { text-align: left; }
   }
 </style>

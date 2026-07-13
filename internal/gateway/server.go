@@ -946,6 +946,7 @@ func (s *Server) buildApp() *fiber.App {
 	// Fiber registers routes at build time, we register a stub here that
 	// reads from s.costStore at request time so the nil guard works.
 	api.Get("/costs", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetCosts)
+	api.Get("/costs/status", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleCostStatus)
 	api.Get("/costs/:agent_id", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetAgentCosts)
 
 	// --- Chat checkpoints & branching (Story 8) ---

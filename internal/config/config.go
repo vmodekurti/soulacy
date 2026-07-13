@@ -193,6 +193,9 @@ type TelemetryConfig struct {
 // token usage, but cost_usd remains 0 until an operator configures pricing.
 //
 //	costs:
+//	  daily_budget_usd: 25
+//	  monthly_budget_usd: 500
+//	  alert_threshold: 0.8
 //	  pricing:
 //	    openai/gpt-4.1-mini:
 //	      input_per_mtok: 0.40
@@ -201,7 +204,10 @@ type TelemetryConfig struct {
 //	      input_per_mtok: 0.25
 //	      output_per_mtok: 0.75
 type CostConfig struct {
-	Pricing map[string]CostPricing `mapstructure:"pricing"`
+	DailyBudgetUSD   float64                `mapstructure:"daily_budget_usd"`
+	MonthlyBudgetUSD float64                `mapstructure:"monthly_budget_usd"`
+	AlertThreshold   float64                `mapstructure:"alert_threshold"`
+	Pricing          map[string]CostPricing `mapstructure:"pricing"`
 }
 
 // UpdateConfig points Soulacy at a signed or checksum-backed release manifest.
