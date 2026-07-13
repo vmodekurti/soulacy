@@ -495,6 +495,41 @@ func TestReActStopsAfterRepeatedThinkErrors(t *testing.T) {
 	}
 }
 
+func TestReActStopsAfterRepeatedMissingAction(t *testing.T) {
+	llm := &scriptedLLM{
+		responses: []reasoning.ThinkResponse{
+			{Thought: "I should use a tool", IsDone: false},
+			{Thought: "Still working", IsDone: false},
+			{Thought: "Continuing", IsDone: false},
+			{Thought: "Proceeding", IsDone: false},
+			{IsDone: true, FinalAnswer: "should not get here"},
+		},
+	}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     30,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_list"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
+
+	if llm.thinkCalls != 4 {
+		t.Fatalf("think calls = %d, want 4 before controller stop", llm.thinkCalls)
+	}
+	if len(exec.calls) != 0 {
+		t.Fatalf("empty tool action should not dispatch, got calls=%+v", exec.calls)
+	}
+	if !strings.Contains(result.Output, "invalid ReAct JSON too many times") {
+		t.Fatalf("unexpected output: %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("missing action controller errors should mark the run not confident")
+	}
+}
+
 func TestReActReflectsAfterRepeatedThinkErrorsWithUsefulObservation(t *testing.T) {
 	llm := &interleavedBadThinkLLM{}
 	exec := &recordingExecutor{}

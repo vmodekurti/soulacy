@@ -243,6 +243,9 @@ func containsToolErrors(steps []Step) bool {
 		if s.Obs.Source == "controller" && strings.Contains(strings.ToLower(s.Obs.Content), "think failed") {
 			return true
 		}
+		if s.Obs.Source == "controller" && strings.Contains(strings.ToLower(s.Obs.Content), "invalid reasoning step") {
+			return true
+		}
 	}
 	return false
 }

@@ -83,9 +83,8 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			}
 			continue
 		}
-		consecutiveThinkErrors = 0
-
 		if think.IsDone {
+			consecutiveThinkErrors = 0
 			if call, ok := recoverTextualToolCall(think.FinalAnswer, env.Config.ToolNames); ok {
 				obs := env.Tools.Execute(stepCtx, call)
 				obs = boundObservation(obs)
@@ -149,6 +148,35 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 			}
 			return steps, resp
 		}
+
+		if strings.TrimSpace(think.Action.Tool) == "" {
+			consecutiveThinkErrors++
+			totalThinkErrors++
+			steps = append(steps, Step{
+				ID:      fmt.Sprintf("step-%d", i+1),
+				Thought: firstNonEmpty(think.Thought, "The model returned an invalid reasoning step."),
+				Obs: Observation{
+					Content: invalidActionInstruction(consecutiveThinkErrors, totalThinkErrors),
+					Source:  "controller",
+				},
+				Duration: time.Since(stepStart),
+			})
+			cancel()
+			if consecutiveThinkErrors >= 1 && lastUsefulObservation(steps) != "" {
+				if resp, ok := reflectAfterRepeatedThinkErrors(ctx, env, taskInput, steps); ok {
+					return steps, resp
+				}
+				if consecutiveThinkErrors >= 2 {
+					return steps, ReflectResponse{Output: synthesizeAfterThinkErrors(steps)}
+				}
+			}
+			if consecutiveThinkErrors >= maxConsecutiveThinkErrors || totalThinkErrors >= maxTotalThinkErrors {
+				return steps, ReflectResponse{Output: thinkErrorStopMessage(steps)}
+			}
+			continue
+		}
+
+		consecutiveThinkErrors = 0
 
 		// Execute the tool — failures are wrapped as observations, not panics.
 		obs := env.Tools.Execute(stepCtx, think.Action)
@@ -245,6 +273,10 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 
 func thinkErrorInstruction(err error, consecutive, total int) string {
 	return fmt.Sprintf("controller: Think failed (%s). Return one short valid JSON object only. Keep thought under 25 words. If a tool is needed, use action with concise arguments. Invalid response %d in a row, %d total this run.", err.Error(), consecutive, total)
+}
+
+func invalidActionInstruction(consecutive, total int) string {
+	return fmt.Sprintf("controller: invalid reasoning step. is_done=false requires an action.tool that names one available tool. Either return is_done=true with a final_answer, or return action with concise arguments. Invalid response %d in a row, %d total this run.", consecutive, total)
 }
 
 func toolCallKey(call ToolCall) string {
