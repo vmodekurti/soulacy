@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/supportbundle"
+	"github.com/soulacy/soulacy/pkg/message"
 )
 
 func (s *Server) handleSupportBundle(c *fiber.Ctx) error {
@@ -99,34 +101,97 @@ func (s *Server) supportAdminAudit() fiber.Map {
 }
 
 func (s *Server) supportRunLedger() fiber.Map {
-	if s == nil || s.actions == nil {
+	if s == nil {
 		return fiber.Map{
 			"available": false,
-			"reason":    "action log disabled",
+			"reason":    "gateway not initialized",
 		}
 	}
-	q, ok := s.actions.(eventQuerier)
-	if !ok {
+	const (
+		eventLimit = 10000
+		rowLimit   = 250
+	)
+	var (
+		events    []message.Event
+		rows      []runLedgerRow
+		sources   []string
+		queryNote string
+	)
+	if s.actions != nil {
+		q, ok := s.actions.(eventQuerier)
+		if !ok {
+			queryNote = "durable action log backend does not support event queries"
+		} else {
+			got, err := q.QueryEvents("", "", eventLimit, runLedgerEventTypes())
+			if err != nil {
+				return fiber.Map{
+					"available": false,
+					"reason":    err.Error(),
+				}
+			}
+			events = got
+			rows = append(rows, s.buildRunLedger(events, 0)...)
+			sources = append(sources, "action-log")
+		}
+	} else {
+		queryNote = "action log disabled"
+	}
+
+	flowRows := s.supportFlowRunLedgerRows(events)
+	if len(flowRows) > 0 {
+		rows = append(rows, flowRows...)
+		sources = append(sources, "flow")
+	}
+	if len(sources) == 0 {
+		reason := "run ledger not available (no action log or flow history)"
+		if queryNote != "" {
+			reason = queryNote
+		}
 		return fiber.Map{
 			"available": false,
-			"reason":    "durable action log backend does not support event queries",
+			"reason":    reason,
 		}
 	}
-	events, err := q.QueryEvents("", "", 10000, runLedgerEventTypes())
-	if err != nil {
-		return fiber.Map{
-			"available": false,
-			"reason":    err.Error(),
-		}
-	}
-	rows := s.buildRunLedger(events, 250)
+	rows = mergeRunLedgerRows(rows, rowLimit)
 	return fiber.Map{
-		"available":   true,
-		"source":      "action-log",
-		"event_count": len(events),
-		"count":       len(rows),
-		"runs":        rows,
+		"available":       true,
+		"source":          strings.Join(studioUniqueStrings(sources), "+"),
+		"durable":         runLedgerContainsString(sources, "action-log"),
+		"event_count":     len(events),
+		"event_limit":     eventLimit,
+		"event_truncated": len(events) >= eventLimit,
+		"flow_count":      len(flowRows),
+		"row_limit":       rowLimit,
+		"count":           len(rows),
+		"runs":            rows,
 	}
+}
+
+func (s *Server) supportFlowRunLedgerRows(events []message.Event) []runLedgerRow {
+	if s == nil || s.engine == nil {
+		return nil
+	}
+	agentIDs := map[string]bool{}
+	for id := range s.runLedgerAgentNames() {
+		if strings.TrimSpace(id) != "" {
+			agentIDs[id] = true
+		}
+	}
+	for _, ev := range events {
+		if id := strings.TrimSpace(ev.AgentID); id != "" {
+			agentIDs[id] = true
+		}
+	}
+	ids := make([]string, 0, len(agentIDs))
+	for id := range agentIDs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	rows := []runLedgerRow{}
+	for _, id := range ids {
+		rows = append(rows, s.flowRunLedgerRows(id)...)
+	}
+	return rows
 }
 
 func supportConfigPath(cfgPath string, ws config.Paths) string {

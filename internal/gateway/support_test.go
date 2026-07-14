@@ -39,6 +39,7 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
 	s.cfg.AgentDirs = []string{agentDir}
 	s.cfg.Log.File = filepath.Join(logDir, "soulacy.log")
+	s.engine.TagFlowRun("demo", "flow-only", "http")
 	base := time.Date(2026, 7, 13, 7, 0, 0, 0, time.UTC)
 	s.actions = &fakeTailBackend{events: []message.Event{
 		{
@@ -107,14 +108,33 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 	if err := json.Unmarshal([]byte(files["run_ledger.json"]), &ledger); err != nil {
 		t.Fatalf("run_ledger.json is not JSON: %v\n%s", err, files["run_ledger.json"])
 	}
-	if ledger["available"] != true || ledger["source"] != "action-log" {
+	if ledger["available"] != true || ledger["source"] != "action-log+flow" {
 		t.Fatalf("run ledger unavailable or wrong source: %#v", ledger)
 	}
-	runs, ok := ledger["runs"].([]any)
-	if !ok || len(runs) != 1 {
-		t.Fatalf("run ledger runs = %#v, want one run", ledger["runs"])
+	if got := int(ledger["event_limit"].(float64)); got != 10000 {
+		t.Fatalf("event_limit = %d, want 10000", got)
 	}
-	run := runs[0].(map[string]any)
+	if got := ledger["event_truncated"]; got != false {
+		t.Fatalf("event_truncated = %v, want false", got)
+	}
+	runs, ok := ledger["runs"].([]any)
+	if !ok || len(runs) != 2 {
+		t.Fatalf("run ledger runs = %#v, want durable plus flow run", ledger["runs"])
+	}
+	var run map[string]any
+	seenFlow := false
+	for _, raw := range runs {
+		candidate := raw.(map[string]any)
+		switch candidate["runId"] {
+		case "cron-1":
+			run = candidate
+		case "flow-only":
+			seenFlow = true
+		}
+	}
+	if run == nil || !seenFlow {
+		t.Fatalf("run ledger did not include both durable cron run and flow-only history: %#v", runs)
+	}
 	if got := run["deliveryStatus"]; got != "failed" {
 		t.Fatalf("deliveryStatus = %v, want failed", got)
 	}
