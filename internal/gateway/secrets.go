@@ -42,6 +42,7 @@ func (s *Server) handleSetSecret(c *fiber.Ctx) error {
 	if err := mgr.Set(c.Context(), name, body.Value); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	s.recordAdminAudit(c, "secret.set", "secret", name, "ok", nil)
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
@@ -53,8 +54,10 @@ func (s *Server) handleDeleteSecret(c *fiber.Ctx) error {
 	if !mgr.Enabled() {
 		return s.errMsg(c, fiber.StatusServiceUnavailable, "secrets vault not configured")
 	}
-	if err := mgr.Delete(c.Context(), c.Params("name")); err != nil {
+	name := c.Params("name")
+	if err := mgr.Delete(c.Context(), name); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	s.recordAdminAudit(c, "secret.delete", "secret", name, "ok", nil)
 	return c.SendStatus(fiber.StatusNoContent)
 }

@@ -152,6 +152,7 @@ func (s *Server) handleRestart(c *fiber.Ctx) error {
 			"error": "restart failed: " + err.Error(),
 		})
 	}
+	s.recordAdminAudit(c, "restart.request", "gateway", "", "accepted", nil)
 	go func() {
 		time.Sleep(250 * time.Millisecond)
 		os.Exit(0)
@@ -1932,6 +1933,15 @@ func (s *Server) handleUpdateChannel(c *fiber.Ctx) error {
 	s.applyChannelToMemory(id, chMap)
 
 	s.log.Info("channel settings updated via API", zap.String("channel", id))
+	details := map[string]any{
+		"enabled_changed": auditBoolPtrSet(req.Enabled),
+		"setting_keys":    channelSettingKeys(req.Settings, spec),
+	}
+	if req.Bots != nil {
+		details["bots_changed"] = true
+		details["bots_count"] = len(req.Bots)
+	}
+	s.recordAdminAudit(c, "channel.update", "channel", id, "ok", details)
 	return c.JSON(fiber.Map{
 		"ok":      true,
 		"message": "Channel saved. Restart the gateway to connect/disconnect adapters.",
@@ -2167,6 +2177,11 @@ func (s *Server) setChannelEnabled(c *fiber.Ctx, enabled bool) error {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.applyChannelToMemory(id, chMap)
+	action := "channel.disable"
+	if enabled {
+		action = "channel.enable"
+	}
+	s.recordAdminAudit(c, action, "channel", id, "ok", map[string]any{"enabled": enabled})
 	return c.JSON(fiber.Map{
 		"ok":      true,
 		"id":      id,
