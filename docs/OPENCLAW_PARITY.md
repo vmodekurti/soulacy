@@ -16,7 +16,7 @@ Soulacy has closed the original load-bearing parity gaps from the June analysis:
 - Studio now has validation, autowiring, runtime diagnosis, and build-until-it-works repair loops.
 - Verified update checks and installs exist through `sy update check/install`, release workflows sign artifacts, generate an SBOM, optionally codesign/notarize macOS binaries when secrets are present, and launch readiness reports whether a production update manifest is configured.
 
-The remaining parity work is not "add more primitives." It is productization: live credential-backed regression, docs/site publishing, mobile chat polish, and broader channel/community polish.
+The remaining parity work is not "add more primitives." It is productization: live credential-backed regression, screenshot refresh, mobile chat polish, and broader channel/community polish.
 
 ## Updated Parity Matrix
 
@@ -53,10 +53,10 @@ The remaining parity work is not "add more primitives." It is productization: li
 2. **Regression suite:** Clean-runtime UAT now covers launch readiness, GUI/PWA, golden template presence/instantiation, queues, schedule, support bundles, update checks, Browser trace wiring, and opt-in live-model Studio build/repair traces. `sy eval` now supports reusable golden suites, tag filtering, repeat-based benchmark runs, fail-fast, secret-aware skips, latency p50/p95, token summaries, tool assertions, and channel-delivery assertions. Opt-in golden smokes now prove real Slack/Telegram/Discord delivery and Playwright MCP browser sidecar startup/tool discovery when credentials or local sidecar dependencies are available.
 3. **Mobile/PWA companion:** Core phone-sized operations are now usable: approvals, active run links, recent run history, schedule run/test actions, delivery health checks, PWA install signals, and run-review readiness. Remaining work is richer mobile chat polish and native app packaging if native presence becomes a launch requirement.
 4. **Channel polish:** Default outbound routing, agent-specific bot mappings, dry diagnosis, live delivery tests, companion-surface checks, Teams/Google Chat/Email outbound adapters, and opt-in credential-backed golden delivery smoke exist. Remaining work is collecting more real-world failure signatures into the doctor and keeping setup docs current as adapters are added.
-5. **Public docs:** Quickstarts, production deployment guide, channel setup guides, and troubleshooting playbooks exist in-repo. Remaining work is publishing/hosting the docs site and keeping screenshots current.
+5. **Public docs:** Quickstarts, production deployment guide, channel setup guides, troubleshooting playbooks, strict docs build, GitHub Pages deploy workflow, canonical published installer, and launch-readiness docs checks now exist. Remaining work is keeping screenshots current.
 6. **Browser control hardening:** Domain policies, Browser trace wiring, action filters, trace export, screenshot gallery, deep links, and authenticated local screenshot artifacts exist. Remaining work is more Activity-to-Browser affordances and opt-in live browser smoke coverage in release runs.
 7. **Voice/product narrative:** Decide whether voice is a launch requirement or a post-launch differentiator.
 
 ## Current Recommendation
 
-Do not add new architectural primitives unless they directly improve reliability or launch polish. The platform now has enough core machinery; the next competitive leap is running credential-backed UAT repeatedly, publishing the docs/release story, polishing mobile chat/activity, and making every failure explainable and recoverable from Studio or Activity.
+Do not add new architectural primitives unless they directly improve reliability or launch polish. The platform now has enough core machinery; the next competitive leap is running credential-backed UAT repeatedly, polishing mobile chat/activity, keeping docs screenshots fresh, and making every failure explainable and recoverable from Studio or Activity.

@@ -50,6 +50,7 @@ func (s *Server) supportBundleOptions(c *fiber.Ctx) supportbundle.Options {
 			"browser_status": s.browserAutomationReadiness(),
 			"mobile_status":  s.mobileCompanionReadiness(),
 			"chat_status":    s.chatExperienceReadiness(c),
+			"docs_status":    s.publicDocsReadiness(),
 			"run_ledger":     s.supportRunLedger(),
 			"admin_audit":    s.supportAdminAudit(),
 			"release": fiber.Map{
