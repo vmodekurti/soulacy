@@ -168,6 +168,28 @@
     return merged.sort((a, b) => new Date(b.startTime || 0) - new Date(a.startTime || 0))
   }
 
+  function normalizeLedgerRun(r) {
+    return {
+      id: r.id || r.runId || `${r.sessionId || ''}:${r.startedAt || ''}`,
+      sessionId: r.sessionId || r.runId || '',
+      agentId: r.agentId || '',
+      agentName: r.agentName || r.agentId || '',
+      startTime: r.startedAt,
+      updatedAt: r.updatedAt,
+      status: r.status || (r.ok ? 'success' : 'unknown'),
+      output: r.output || r.error || '',
+      channel: r.channel || r.trigger || '',
+      source: r.source || 'action-log',
+      steps: r.steps || 0,
+      eventCount: r.eventCount || 0,
+      durationMs: r.durationMs || 0,
+      deliveryStatus: r.deliveryStatus || '',
+      deliveryChannel: r.deliveryChannel || '',
+      deliveryTo: r.deliveryTo || '',
+      deliveryError: r.deliveryError || '',
+    }
+  }
+
   async function openHistory(a) {
     historyAgent   = a
     historyRuns    = []
@@ -176,6 +198,12 @@
     expandedRuns   = {}
     historyLoading = true
     try {
+      const ledger = await api.runs.ledger({ agentId: a.id, limit: 100, eventLimit: 50000 }).catch(() => ({ runs: null }))
+      if (Array.isArray(ledger.runs)) {
+        historyRuns = ledger.runs.map(normalizeLedgerRun)
+        historySourceSummary = `${historyRuns.length} shown · unified durable run ledger`
+        return
+      }
       const hist = await api.studio.runHistory(a.id).catch(() => ({ runs: [] }))
       const retainedRuns = (hist.runs || []).map((r) => ({
         id: r.runId || r.sessionId,
@@ -211,13 +239,16 @@
     recentLoading = true
     recentError = ''
     try {
+      const res = await api.runs.ledger({ limit: 12, eventLimit: 50000 })
+      recentRuns = (res.runs || []).map(normalizeLedgerRun)
+    } catch (e) {
+      const ledgerError = e.message
       const res = await api.runs.events({
         limit: 5000,
         types: 'message.in,message.out,error,tool.result,reasoning.step,reasoning.result,schedule.output',
-      })
+      }).catch(() => ({ events: [] }))
       recentRuns = groupRuns(res.events || []).slice(0, 12)
-    } catch (e) {
-      recentError = e.message
+      recentError = recentRuns.length ? '' : ledgerError
     } finally {
       recentLoading = false
     }
