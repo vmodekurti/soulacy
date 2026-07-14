@@ -103,8 +103,12 @@
     notice = ''
     try {
       const res = await api.channels.test(ch.id, row ? { adapter_id: adapterId } : {})
+      diagnosis = { ...diagnosis, [adapterId]: { ok: true, category: 'ok', reason: 'Delivery test reached the destination.', to: res.to } }
       notice = `Delivery test sent through ${res.channel}${res.to ? ` to ${res.to}` : ''}.`
     } catch (e) {
+      if (e.body?.diagnosis) {
+        diagnosis = { ...diagnosis, [adapterId]: { ...e.body.diagnosis, to: e.body.to } }
+      }
       error = e.message
     } finally {
       actionLoading = { ...actionLoading, [`test:${adapterId}`]: false }
