@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -17,15 +18,19 @@ type scheduleOutputTestAdapter struct {
 }
 
 type channelDeliveryTestAdapter struct {
-	id   string
-	mu   sync.Mutex
-	sent []message.Message
+	id      string
+	sendErr error
+	mu      sync.Mutex
+	sent    []message.Message
 }
 
 func (a *channelDeliveryTestAdapter) ID() string                                          { return a.id }
 func (a *channelDeliveryTestAdapter) Name() string                                        { return "Channel Delivery Test" }
 func (a *channelDeliveryTestAdapter) Start(context.Context, chan<- message.Message) error { return nil }
 func (a *channelDeliveryTestAdapter) Send(_ context.Context, msg message.Message) error {
+	if a.sendErr != nil {
+		return a.sendErr
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.sent = append(a.sent, msg)
@@ -227,5 +232,34 @@ func TestGatewayHandleTestChannelDelivery_RejectsMissingDestination(t *testing.T
 	}
 	if !strings.Contains(res["error"].(string), "destination is required") {
 		t.Fatalf("unexpected error: %v", res)
+	}
+}
+
+func TestGatewayHandleTestChannelDelivery_ReturnsDiagnosisOnSendFailure(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	s.channels.Register(&channelDeliveryTestAdapter{
+		id:      "telegram",
+		sendErr: errors.New("telegram: send: API returned status 400: Bad Request: chat not found"),
+	})
+	s.cfg.Channels = map[string]map[string]any{}
+	s.cfg.Channels["telegram"] = map[string]any{
+		"enabled":           true,
+		"token":             "test-token",
+		"default_output_to": "8546291328",
+	}
+
+	status, res := gatewayJSON(t, s, http.MethodPost, "/api/v1/channels/telegram/test", "secret", `{"text":"hello channel"}`)
+	if status != http.StatusBadGateway {
+		t.Fatalf("channel test status = %d body=%v", status, res)
+	}
+	diag, ok := res["diagnosis"].(map[string]any)
+	if !ok {
+		t.Fatalf("diagnosis missing: %#v", res)
+	}
+	if diag["category"] != string(channels.DeliveryInvalidDest) {
+		t.Fatalf("category = %v, want invalid destination; body=%v", diag["category"], res)
+	}
+	if fix, _ := diag["fix"].(string); !strings.Contains(fix, "-100") {
+		t.Fatalf("fix = %q, want Telegram chat id guidance", fix)
 	}
 }

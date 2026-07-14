@@ -1735,7 +1735,15 @@ func (s *Server) handleTestChannelDelivery(c *fiber.Ctx) error {
 		CreatedAt: time.Now().UTC(),
 	}
 	if err := s.channels.Send(c.UserContext(), out); err != nil {
-		return s.errMsg(c, fiber.StatusBadGateway, "channel delivery test failed: "+err.Error())
+		status := statuses[adapterID]
+		diag := channels.DiagnoseDelivery(adapterID, to, true, status.Connected, err)
+		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
+			"error":          "channel delivery test failed: " + err.Error(),
+			"channel":        adapterID,
+			"channel_family": id,
+			"to":             to,
+			"diagnosis":      diag,
+		})
 	}
 	return c.JSON(fiber.Map{"ok": true, "channel": adapterID, "channel_family": id, "to": to})
 }

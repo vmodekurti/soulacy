@@ -201,7 +201,9 @@
       const ledger = await api.runs.ledger({ agentId: a.id, limit: 100, eventLimit: 50000 }).catch(() => ({ runs: null }))
       if (Array.isArray(ledger.runs)) {
         historyRuns = ledger.runs.map(normalizeLedgerRun)
-        historySourceSummary = `${historyRuns.length} shown · unified durable run ledger`
+        const source = ledger.source ? ` · source: ${ledger.source}` : ''
+        const trunc = ledger.event_truncated ? ` · event query hit ${ledger.event_limit || 'the'} cap; older/noisier runs may be hidden` : ''
+        historySourceSummary = `${historyRuns.length} shown · ${ledger.event_count || 0} events scanned · unified durable run ledger${source}${trunc}`
         return
       }
       const hist = await api.studio.runHistory(a.id).catch(() => ({ runs: [] }))
@@ -241,6 +243,9 @@
     try {
       const res = await api.runs.ledger({ limit: 12, eventLimit: 50000 })
       recentRuns = (res.runs || []).map(normalizeLedgerRun)
+      if (res.event_truncated) {
+        recentError = `Recent run list scanned ${res.event_limit || 50000} events and may be truncated. Use Activity for exact log tails.`
+      }
     } catch (e) {
       const ledgerError = e.message
       const res = await api.runs.events({
