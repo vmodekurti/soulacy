@@ -147,7 +147,7 @@ func (s *Server) sumCostSince(c *fiber.Ctx, since time.Time) float64 {
 
 func parityOps(providersReady, enabledAgents int, updateManifest string, cost costReadiness, slo sloReadiness) parityArea {
 	if providersReady > 0 && enabledAgents > 0 && updateManifest != "" && cost.Status == "ok" && slo.Status == "ok" {
-		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 92, Detail: "Readiness, doctor, support bundles, action logs, parity harness, updates, cost guardrails, and SLO checks are wired.", Next: "Add deployment profiles and alert delivery for SLO breaches.", Benchmark: "Commercial launch", Href: "#dashboard"}
+		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 92, Detail: "Readiness, doctor, support bundles, action logs, parity harness, updates, cost guardrails, deployment profiles, and SLO checks are wired.", Next: "Wire alert delivery for SLO breaches and budget threshold changes.", Benchmark: "Commercial launch", Href: "#dashboard"}
 	}
 	status := "warn"
 	score := 62

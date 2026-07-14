@@ -107,7 +107,7 @@ echo "onboarding status"
 api GET /onboarding/status | json_assert "'steps' in doc and len(doc['steps']) >= 3"
 
 echo "launch readiness"
-api GET /readiness | json_assert "'summary' in doc and 'journey' in doc and 'release' in doc and len(doc['journey']) >= 6 and all(k in doc['summary'] for k in ['status', 'score', 'providers_ready', 'agents', 'enabled_agents', 'updates_ready']) and all(k in [item.get('key') for item in doc['journey']] for k in ['providers', 'studio', 'agents', 'channels', 'monitor', 'learning', 'release'])"
+api GET /readiness | json_assert "'summary' in doc and 'journey' in doc and 'release' in doc and 'deployment' in doc and len(doc['journey']) >= 6 and all(k in doc['summary'] for k in ['status', 'score', 'providers_ready', 'agents', 'enabled_agents', 'updates_ready', 'deployment_profile']) and all(k in [item.get('key') for item in doc['journey']] for k in ['providers', 'studio', 'agents', 'channels', 'monitor', 'learning', 'deployment'])"
 
 echo "gui shell"
 INDEX_HTML="$(curl -fsS "$URL/")"
