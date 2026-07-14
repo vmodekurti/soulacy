@@ -12,6 +12,8 @@ Channels are adapters that connect agents to messaging platforms. Each channel h
 | [Slack](slack.md) | ✅ Stable | `channels.slack` |
 | [Discord](discord.md) | ✅ Stable | `channels.discord` |
 | [WhatsApp](whatsapp.md) | ✅ Stable | `channels.whatsapp` |
+| [Email](email.md) | ✅ Stable | `channels.email` |
+| [Outgoing Webhook](webhook.md#outbound-webhook-delivery) | ✅ Stable | `channels.webhook` |
 
 ## How channels route to agents
 
@@ -174,7 +176,8 @@ Tool input:
 
 `channel` is the adapter ID shown in **Channels**. `to` is the platform-native
 destination: Telegram chat ID, Slack channel/user ID, Discord channel ID,
-WhatsApp recipient, or a custom sidecar thread ID.
+WhatsApp recipient, email recipient, custom sidecar thread ID, or an override
+HTTP URL for the outgoing webhook adapter.
 
 If `to` is omitted, Soulacy can only infer it when the run came from an inbound
 chat/thread or the selected channel mapping has `default_output_to` configured.

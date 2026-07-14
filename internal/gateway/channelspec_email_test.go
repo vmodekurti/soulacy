@@ -41,6 +41,9 @@ func TestChannelSpecs_WebhookExposesTheSigningSecret(t *testing.T) {
 	if spec == nil {
 		t.Fatal("no channelSpec for webhook")
 	}
+	if spec.Name != "Outgoing Webhook" {
+		t.Fatalf("webhook channel should be labeled as outbound delivery, got %q", spec.Name)
+	}
 	for _, f := range spec.Fields {
 		if f.Key == "secret" {
 			if !f.Secret || f.Type != "password" {

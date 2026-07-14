@@ -56,7 +56,10 @@ func (s *Server) channelDeliveryReadiness() channelDeliveryReadiness {
 		}
 		enabled := channelEnabled(spec, cfg)
 		defaultTo := channelDefaultDestination(cfg, spec.ID, spec.ID)
-		if valuePresent(cfg["default_output_to"]) || valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"]) || valuePresent(cfg["access_token"]) {
+		if spec.ID == "webhook" && defaultTo == "" && valuePresent(cfg["url"]) {
+			defaultTo = "configured webhook URL"
+		}
+		if channelHasDefaultDeliveryTarget(spec.ID, cfg) {
 			targets = append(targets, s.channelDeliveryTarget(spec, spec.ID, "Default outbound", "default", "", defaultTo, false, true, enabled, statuses))
 		}
 		if channelSupportsBots(spec.ID) {
@@ -107,6 +110,16 @@ func (s *Server) channelDeliveryReadiness() channelDeliveryReadiness {
 		Targets:     targets,
 		NextActions: uniqueStrings(next),
 	}
+}
+
+func channelHasDefaultDeliveryTarget(channelID string, cfg map[string]any) bool {
+	if cfg == nil {
+		return false
+	}
+	if channelID == "webhook" && valuePresent(cfg["url"]) {
+		return true
+	}
+	return valuePresent(cfg["default_output_to"]) || valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"]) || valuePresent(cfg["access_token"])
 }
 
 func (s *Server) channelDeliveryTarget(spec channelSpec, adapterID, label, mode, agentID, to string, inbound, outbound, enabled bool, statuses map[string]channels.AdapterStatus) channelDeliveryTarget {

@@ -1,5 +1,15 @@
 # Generic Webhooks
 
+Soulacy supports two different webhook patterns:
+
+| Pattern | Use it when | Configuration |
+| --- | --- | --- |
+| Inbound webhook trigger | An external system sends JSON to Soulacy and expects an agent response | Agent `trigger: webhook` plus the agent's `webhook:` mapping |
+| Outbound webhook delivery | Soulacy should send cron reports, alerts, or `channel.send` output to an HTTP endpoint | `channels.webhook` in `config.yaml` |
+
+These are intentionally separate. Inbound webhook triggers decide which agent
+runs. Outbound webhook delivery decides where Soulacy sends a finished message.
+
 Use generic webhooks when another product can send JSON but Soulacy does not
 need a dedicated native adapter yet.
 
@@ -64,3 +74,46 @@ present, it sends the compact JSON payload as the prompt.
 Open **Agents**, set **Trigger** to `webhook`, then fill the **Webhook request
 mapping** fields. The editor shows the endpoint path for the selected agent.
 
+## Outbound webhook delivery
+
+Use `channels.webhook` when Soulacy should send a completed result to another
+system: Zapier, Make, n8n, an internal API, an incident webhook, or any service
+that accepts HTTP.
+
+```yaml title="config.yaml"
+channels:
+  webhook:
+    enabled: true
+    url: "https://example.com/hooks/soulacy"
+    method: POST
+    headers: |
+      Authorization: Bearer YOUR_SHARED_SECRET
+    secret: "hmac-signing-secret"
+```
+
+Then point a scheduled agent at it:
+
+```yaml title="agents/daily-brief/SOUL.yaml"
+trigger: cron
+schedule:
+  cron: "0 7 * * *"
+  output:
+    channel: webhook
+```
+
+Or send from an agent/tool step:
+
+```json
+{
+  "channel": "webhook",
+  "text": "Daily report is ready."
+}
+```
+
+For webhooks, `to` is optional because the configured `url` is the destination.
+If you do pass `to` and it is an absolute `http` or `https` URL, Soulacy uses it
+as a per-message override without changing the saved channel configuration.
+
+When `secret` is set, Soulacy signs the request body with HMAC-SHA256 and sends
+`X-Soulacy-Timestamp` and `X-Soulacy-Signature` headers so the receiver can
+reject forged or replayed requests.
