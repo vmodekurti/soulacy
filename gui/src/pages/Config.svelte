@@ -58,6 +58,10 @@
   let sloMaxIncompleteRate = 0.05
   let sloMaxP95RunDuration = '5m'
   let sloMinRunsForSignal = 3
+  let deploymentProfile = 'local'
+  let deploymentOwner = ''
+  let deploymentRegion = ''
+  let deploymentNotes = ''
   let agentDirs = ''
   let skillDirs = ''
 
@@ -253,6 +257,10 @@
       sloMaxIncompleteRate = config.ops?.max_incomplete_rate || 0.05
       sloMaxP95RunDuration = config.ops?.max_p95_run_duration || '5m'
       sloMinRunsForSignal = config.ops?.min_runs_for_signal || 3
+      deploymentProfile = config.deployment?.profile || 'local'
+      deploymentOwner = config.deployment?.owner || ''
+      deploymentRegion = config.deployment?.region || ''
+      deploymentNotes = config.deployment?.notes || ''
       seedCostEditor(config.costs?.pricing)
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
@@ -309,6 +317,12 @@
           max_incomplete_rate: Number(sloMaxIncompleteRate || 0),
           max_p95_run_duration: sloMaxP95RunDuration,
           min_runs_for_signal: Number(sloMinRunsForSignal || 0),
+        },
+        deployment: {
+          profile: deploymentProfile,
+          owner: deploymentOwner,
+          region: deploymentRegion,
+          notes: deploymentNotes,
         },
         log: { level: logLevel, format: logFormat, file: logFile },
         agent_dirs: agentDirs.split('\n').map(s => s.trim()).filter(Boolean),
@@ -590,6 +604,43 @@
               <span title="Minimum number of recent runs before the SLO signal is treated as reliable instead of sample-starved.">Minimum runs</span>
               <input type="number" min="1" max="1000" step="1" bind:value={sloMinRunsForSignal} disabled={!writable} />
             </label>
+          </div>
+        </div>
+
+        <div class="section">
+          <h2 class="section-title">Deployment profile</h2>
+          <p class="hint">
+            Controls how strict launch readiness should be. Production treats missing auth, providers,
+            enabled agents, outbound delivery, update manifest, cost guardrails, and run SLOs as launch blockers.
+          </p>
+          <div class="field-row">
+            <div class="field">
+              <label for="deployment-profile" title="Select local, development, staging, or production. Production enables strict launch blockers; local/development keep checks advisory.">Profile</label>
+              <select id="deployment-profile" bind:value={deploymentProfile} disabled={!writable}
+                      title="Select local, development, staging, or production. Production enables strict launch blockers; local/development keep checks advisory.">
+                <option value="local">local</option>
+                <option value="development">development</option>
+                <option value="staging">staging</option>
+                <option value="production">production</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="deployment-owner" title="Team or person accountable for this workspace in production readiness reports.">Owner</label>
+              <input id="deployment-owner" bind:value={deploymentOwner} placeholder="platform-team" disabled={!writable}
+                     title="Team or person accountable for this workspace in production readiness reports." />
+            </div>
+            <div class="field">
+              <label for="deployment-region" title="Primary region, environment, or customer location for this workspace.">Region</label>
+              <input id="deployment-region" bind:value={deploymentRegion} placeholder="us-central" disabled={!writable}
+                     title="Primary region, environment, or customer location for this workspace." />
+            </div>
+          </div>
+          <div class="field">
+            <label for="deployment-notes" title="Optional context shown in config and deployment diagnostics.">Notes</label>
+            <textarea id="deployment-notes" bind:value={deploymentNotes} rows="2"
+                      placeholder="Customer-facing workspace, staging burn-in, local demo, etc."
+                      disabled={!writable}
+                      title="Optional context shown in config and deployment diagnostics."></textarea>
           </div>
         </div>
 

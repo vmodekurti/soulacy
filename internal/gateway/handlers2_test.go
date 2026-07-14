@@ -324,6 +324,31 @@ func TestGatewayHandlePatchConfig_OpsSLOs(t *testing.T) {
 	}
 }
 
+func TestGatewayHandlePatchConfig_DeploymentProfile(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	status, body := gatewayJSON(t, s, http.MethodPatch, "/api/v1/config", "secret",
+		`{"deployment":{"profile":"production","owner":"platform","region":"us-central","notes":"customer workspace"}}`)
+	if status != http.StatusOK {
+		t.Fatalf("patch deployment status = %d body=%v", status, body)
+	}
+	disk, err := readRawConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	depView, ok := disk["deployment"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected deployment object, config=%v", disk)
+	}
+	if depView["profile"] != "production" || depView["owner"] != "platform" || depView["region"] != "us-central" || depView["notes"] != "customer workspace" {
+		t.Fatalf("deployment config = %#v", depView)
+	}
+	cfgView := body["config"].(map[string]any)
+	if cfgView["deployment"] == nil {
+		t.Fatalf("config response missing deployment view: %v", cfgView)
+	}
+}
+
 func TestGatewayHandlePatchConfig_InvalidJSON(t *testing.T) {
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
 	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)

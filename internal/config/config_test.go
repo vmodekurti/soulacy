@@ -71,6 +71,11 @@ ops:
   max_incomplete_rate: 0.03
   max_p95_run_duration: 2m
   min_runs_for_signal: 5
+deployment:
+  profile: production
+  owner: platform
+  region: us-central
+  notes: customer workspace
 `), 0600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -90,6 +95,9 @@ ops:
 	}
 	if cfg.Ops.SLOWindow != "12h" || cfg.Ops.MaxFailureRate != 0.2 || cfg.Ops.MaxIncompleteRate != 0.03 || cfg.Ops.MaxP95RunDuration != "2m" || cfg.Ops.MinRunsForSignal != 5 {
 		t.Fatalf("ops slo config = %+v", cfg.Ops)
+	}
+	if cfg.Deployment.Profile != "production" || cfg.Deployment.Owner != "platform" || cfg.Deployment.Region != "us-central" || cfg.Deployment.Notes != "customer workspace" {
+		t.Fatalf("deployment config = %+v", cfg.Deployment)
 	}
 }
 

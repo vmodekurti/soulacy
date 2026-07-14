@@ -114,6 +114,12 @@ func (s *Server) safeConfigView() fiber.Map {
 			"max_p95_run_duration": cfg.Ops.MaxP95RunDuration,
 			"min_runs_for_signal":  cfg.Ops.MinRunsForSignal,
 		},
+		"deployment": fiber.Map{
+			"profile": cfg.Deployment.Profile,
+			"owner":   cfg.Deployment.Owner,
+			"region":  cfg.Deployment.Region,
+			"notes":   cfg.Deployment.Notes,
+		},
 		"agent_dirs":     cfg.AgentDirs,
 		"skill_dirs":     cfg.SkillDirs,
 		"channels":       safeChannelsView(cfg.Channels),
@@ -278,6 +284,13 @@ type PatchableConfig struct {
 		MaxP95RunDuration string  `json:"max_p95_run_duration" yaml:"max_p95_run_duration"`
 		MinRunsForSignal  int     `json:"min_runs_for_signal" yaml:"min_runs_for_signal"`
 	} `json:"ops" yaml:"ops"`
+
+	Deployment *struct {
+		Profile string `json:"profile" yaml:"profile"`
+		Owner   string `json:"owner" yaml:"owner"`
+		Region  string `json:"region" yaml:"region"`
+		Notes   string `json:"notes" yaml:"notes"`
+	} `json:"deployment" yaml:"deployment"`
 
 	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDirs []string `json:"skill_dirs" yaml:"skill_dirs"`
@@ -507,6 +520,13 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		ops["max_incomplete_rate"] = patch.Ops.MaxIncompleteRate
 		ops["max_p95_run_duration"] = patch.Ops.MaxP95RunDuration
 		ops["min_runs_for_signal"] = patch.Ops.MinRunsForSignal
+	}
+	if patch.Deployment != nil {
+		dep := getOrCreateMap(dst, "deployment")
+		dep["profile"] = patch.Deployment.Profile
+		dep["owner"] = patch.Deployment.Owner
+		dep["region"] = patch.Deployment.Region
+		dep["notes"] = patch.Deployment.Notes
 	}
 	if patch.Log != nil {
 		lg := getOrCreateMap(dst, "log")

@@ -354,6 +354,32 @@
         </div>
       {/if}
 
+      {#if readiness.deployment}
+        <div class:release-strip={true}
+             class:ok={readiness.deployment.status === 'ok'}
+             class:warn={readiness.deployment.status === 'warn'}
+             class:fail={readiness.deployment.status === 'fail'}>
+          <div>
+            <div class="release-title">
+              <span>{readiness.deployment.label || 'Local'} deployment</span>
+              <small>{readiness.deployment.strict ? 'strict launch gate' : 'advisory checks'}</small>
+            </div>
+            <p>
+              {readiness.deployment.ready || 0}/{readiness.deployment.total || 0} deployment checks ready ·
+              {statusLabel(readiness.deployment.status)}
+            </p>
+            {#if readiness.deployment.owner || readiness.deployment.region || readiness.deployment.notes}
+              <code>
+                {readiness.deployment.owner || 'unowned'}
+                {#if readiness.deployment.region} · {readiness.deployment.region}{/if}
+                {#if readiness.deployment.notes} · {readiness.deployment.notes}{/if}
+              </code>
+            {/if}
+          </div>
+          <button class="btn-secondary" on:click={() => openHref('#config')}>Edit profile</button>
+        </div>
+      {/if}
+
       {#if readiness.parity}
         <div class="parity-cockpit">
           <div class="parity-head">
