@@ -59,6 +59,13 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if _, ok := body["vault"].(map[string]any); !ok {
 		t.Fatalf("missing vault readiness: %#v", body)
 	}
+	contracts, ok := body["studio_contracts"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing studio contract readiness: %#v", body)
+	}
+	if got, _ := contracts["checked"].(float64); got < 1 {
+		t.Fatalf("studio contract checked = %v, want at least 1", contracts["checked"])
+	}
 	parity, ok := body["parity"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing parity cockpit: %#v", body)
@@ -218,6 +225,25 @@ func TestParityGapsPrioritizeLowestScores(t *testing.T) {
 	}
 	if got := parityScore(areas); got != 55 {
 		t.Fatalf("parityScore = %d, want 55", got)
+	}
+}
+
+func TestParityStudioReflectsContractBlockers(t *testing.T) {
+	area := parityStudio(3, studioContractReadiness{
+		Status:       "fail",
+		Score:        38,
+		Checked:      2,
+		Passing:      0,
+		Blockers:     3,
+		Warnings:     1,
+		WorstAgent:   "Broken Workflow",
+		WorstSummary: "Studio contract blocked by 2 issue(s), with 1 warning(s).",
+	})
+	if area.Status != "fail" || area.Score != 38 {
+		t.Fatalf("studio area = %#v, want fail/38", area)
+	}
+	if !strings.Contains(area.Detail, "Broken Workflow") || !strings.Contains(area.Next, "contract") {
+		t.Fatalf("studio area should explain weakest contract and next step: %#v", area)
 	}
 }
 

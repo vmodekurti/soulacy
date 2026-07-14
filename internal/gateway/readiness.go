@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/studio"
 )
 
 type readinessItem struct {
@@ -61,6 +62,18 @@ type parityArea struct {
 	Href      string `json:"href,omitempty"`
 }
 
+type studioContractReadiness struct {
+	Status       string `json:"status"`
+	Score        int    `json:"score"`
+	Agents       int    `json:"agents"`
+	Checked      int    `json:"checked"`
+	Passing      int    `json:"passing"`
+	Blockers     int    `json:"blockers"`
+	Warnings     int    `json:"warnings"`
+	WorstAgent   string `json:"worst_agent,omitempty"`
+	WorstSummary string `json:"worst_summary,omitempty"`
+}
+
 // handleReadiness returns Soulacy's product journey state in one place:
 // setup, build, delivery, monitoring, learning, and release readiness. It is
 // intentionally platform-wide, not tied to one agent, so every agent type gets
@@ -89,6 +102,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	costs := s.costReadiness(c)
 	slo := s.sloReadiness(c)
 	opsAlerts := s.opsAlertReadiness()
+	studioContracts := s.studioContractReadiness(c)
 	deployment := s.deploymentReadiness(providersReady, usableOutbound, enabledAgents, updateManifest, costs, slo)
 
 	journey := []readinessItem{
@@ -100,13 +114,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 			Detail: detailTemplates(len(templates)),
 			Href:   "#onboarding",
 		},
-		{
-			Key:    "studio",
-			Label:  "Studio",
-			Status: statusFromBool(len(templates) > 0),
-			Detail: detailStudio(len(templates)),
-			Href:   "#studio",
-		},
+		studioReadinessItem(len(templates), studioContracts),
 		agentReadinessItem(agents, enabledAgents, chatAgents, scheduledAgents),
 		channelReadinessItem(channels, channelsReady, usableOutbound),
 		{
@@ -141,7 +149,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo, opsAlerts)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo, opsAlerts, studioContracts)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	checklist := buildLaunchChecklist(providers, channels, vault, deployment)
@@ -197,6 +205,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"costs":            costs,
 		"slo":              slo,
 		"ops_alerts":       opsAlerts,
+		"studio_contracts": studioContracts,
 		"deployment":       deployment,
 		"parity": fiber.Map{
 			"score":    parityScore,
@@ -221,11 +230,11 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness, slo sloReadiness, opsAlerts opsAlertReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness, slo sloReadiness, opsAlerts opsAlertReadiness, contracts studioContractReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
-		parityStudio(templates),
+		parityStudio(templates, contracts),
 		parityChat(chat),
 		parityLearning(learningAgents, enabledAgents),
 		parityAutomation(scheduledAgents, usableOutbound),
@@ -356,11 +365,29 @@ func parityChannels(usableOutbound int) parityArea {
 	return parityArea{Key: "channels", Label: "Channel Reach", Status: "fail", Score: 25, Detail: "No outbound messaging channel is production-ready.", Next: "Configure at least one default outbound channel, then expand with Slack/Discord/WhatsApp sidecars.", Benchmark: "OpenClaw", Href: "#channels"}
 }
 
-func parityStudio(templates int) parityArea {
-	if templates > 0 {
-		return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "ok", Score: 82, Detail: "Studio has plan/canvas views, integrity checks, repair, local-model guardrails, templates, and build-until-it-works.", Next: "Make graph editing feel secondary to the guided plan and plain-English run evidence.", Benchmark: "Soulacy differentiator", Href: "#studio"}
+func parityStudio(templates int, contracts studioContractReadiness) parityArea {
+	if contracts.Status == "fail" {
+		return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "fail", Score: contracts.Score, Detail: studioContractDetail(contracts), Next: "Open the weakest agent in Studio, run the contract fixes, and do not ship until saved workflows have no contract blockers.", Benchmark: "Soulacy differentiator", Href: "#studio"}
 	}
-	return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "warn", Score: 62, Detail: "Studio exists, but starter templates are missing, which weakens guided authoring.", Next: "Restore templates and keep the plan-first authoring path front and center.", Benchmark: "Soulacy differentiator", Href: "#studio"}
+	if contracts.Status == "warn" {
+		score := contracts.Score
+		if templates == 0 && score > 62 {
+			score = 62
+		}
+		next := "Use Studio contract checks as the release gate for every saved agent."
+		if templates == 0 {
+			next = "Restore starter templates, then use Studio contract checks as the release gate for every saved agent."
+		}
+		return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "warn", Score: score, Detail: studioContractDetail(contracts), Next: next, Benchmark: "Soulacy differentiator", Href: "#studio"}
+	}
+	if templates > 0 {
+		score := contracts.Score
+		if score < 82 {
+			score = 82
+		}
+		return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "ok", Score: score, Detail: studioContractDetail(contracts), Next: "Keep graph editing secondary to guided plans and keep the contract gate enabled before every save/build.", Benchmark: "Soulacy differentiator", Href: "#studio"}
+	}
+	return parityArea{Key: "studio", Label: "Intent-First Studio", Status: "warn", Score: 62, Detail: "Studio can scan saved workflow contracts, but starter templates are missing, which weakens guided authoring.", Next: "Restore templates and keep the plan-first authoring path front and center.", Benchmark: "Soulacy differentiator", Href: "#studio"}
 }
 
 func parityLearning(learningAgents, enabledAgents int) parityArea {
@@ -578,6 +605,71 @@ func (s *Server) agentReadinessCounts() (agents, enabled, chat, scheduled, learn
 	return
 }
 
+func (s *Server) studioContractReadiness(c *fiber.Ctx) studioContractReadiness {
+	out := studioContractReadiness{Status: "warn", Score: 65}
+	if s == nil || s.loader == nil {
+		out.WorstSummary = "Agent loader is not available, so saved workflows could not be contract-scanned."
+		return out
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+
+	totalScore := 0
+	worstScore := 101
+	for _, def := range s.loader.All() {
+		if def == nil || s.loader.IsBuiltin(def.ID) {
+			continue
+		}
+		out.Agents++
+		draft := studio.FromAgentDefinition(*def)
+		res := studio.AssessContract(draft, cat, in)
+		out.Checked++
+		totalScore += res.Score
+		out.Blockers += res.Blockers
+		out.Warnings += res.Warnings
+		if res.OK {
+			out.Passing++
+		}
+		if res.Score < worstScore {
+			worstScore = res.Score
+			out.WorstAgent = strings.TrimSpace(def.Name)
+			if out.WorstAgent == "" {
+				out.WorstAgent = strings.TrimSpace(def.ID)
+			}
+			out.WorstSummary = res.Summary
+		}
+	}
+	if out.Checked == 0 {
+		out.WorstSummary = "No saved user agents were available for Studio contract scanning."
+		return out
+	}
+	out.Score = totalScore / out.Checked
+	switch {
+	case out.Blockers == 0 && out.Score >= 80:
+		out.Status = "ok"
+	case out.Blockers > 0 && out.Score < 50:
+		out.Status = "fail"
+	default:
+		out.Status = "warn"
+	}
+	return out
+}
+
+func studioReadinessItem(templateCount int, contracts studioContractReadiness) readinessItem {
+	item := readinessItem{
+		Key:    "studio",
+		Label:  "Studio",
+		Status: contracts.Status,
+		Detail: detailStudio(templateCount, contracts),
+		Href:   "#studio",
+	}
+	if item.Status == "" {
+		item.Status = statusFromBool(templateCount > 0)
+	}
+	return item
+}
+
 func agentHasChatSurface(trigger any, channels, surfaces []string) bool {
 	for _, s := range surfaces {
 		if strings.EqualFold(s, "chat") {
@@ -781,11 +873,28 @@ func detailTemplates(count int) string {
 	return plural(count, "template") + " available for guided setup."
 }
 
-func detailStudio(templateCount int) string {
+func detailStudio(templateCount int, contracts studioContractReadiness) string {
+	if contracts.Checked > 0 {
+		return studioContractDetail(contracts)
+	}
 	if templateCount == 0 {
 		return "Studio is available, but starter templates are missing."
 	}
 	return "Studio is the command center for designing, testing, debugging, and saving agents."
+}
+
+func studioContractDetail(contracts studioContractReadiness) string {
+	if contracts.Checked == 0 {
+		if contracts.WorstSummary != "" {
+			return contracts.WorstSummary
+		}
+		return "No saved agents were available for Studio contract scanning."
+	}
+	detail := fmt.Sprintf("Studio contract scanned %d saved agent(s): %d passing, %d blocker(s), %d warning(s).", contracts.Checked, contracts.Passing, contracts.Blockers, contracts.Warnings)
+	if contracts.WorstAgent != "" && contracts.WorstSummary != "" {
+		detail += " Weakest: " + contracts.WorstAgent + " — " + contracts.WorstSummary
+	}
+	return detail
 }
 
 func plural(n int, label string) string {
