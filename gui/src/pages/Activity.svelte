@@ -53,9 +53,11 @@
         selectedId === ALL_AGENTS
           ? api.runs.events({ limit: 1000, sessionId: sessionFilter })
           : api.agents.actions(selectedId, 500),
-        selectedId === ALL_AGENTS
-          ? Promise.resolve({ runs: [] })
-          : api.studio.runHistory(selectedId).catch(() => ({ runs: [] })),
+        api.runs.ledger({
+          agentId: selectedId === ALL_AGENTS ? '' : selectedId,
+          limit: 250,
+          eventLimit: 50000,
+        }).catch(() => ({ runs: [] })),
       ])
       events = res.events || []
       path   = selectedId === ALL_AGENTS ? '' : (res.path || '')
@@ -344,11 +346,11 @@
     </div>
   {/if}
 
-  {#if selectedId !== ALL_AGENTS && runHistory.length > 0}
+  {#if runHistory.length > 0}
     <div class="run-strip" aria-label="Canonical run history">
       <div class="run-strip-head">
-        <span class="source-label">Canonical runs</span>
-        <span class="source-count">{runHistory.length} retained</span>
+        <span class="source-label">Unified runs</span>
+        <span class="source-count">{runHistory.length} from durable ledger</span>
         {#if runFilter}
           <button class="row-action" on:click={clearRunFilter}>Show all events</button>
         {/if}

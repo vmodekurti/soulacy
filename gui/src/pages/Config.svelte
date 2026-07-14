@@ -900,8 +900,8 @@
         <div class="section">
           <h2 class="section-title">Support</h2>
           <p class="hint">
-            Download a redacted diagnostic bundle with doctor output, masked configuration,
-            masked agent manifests, and recent log tails.
+            Download a redacted diagnostic bundle with doctor output, launch readiness,
+            unified run ledger, masked configuration, agent manifests, and recent log tails.
           </p>
           <button class="btn-secondary support-download" on:click={downloadSupportBundle} disabled={downloadingSupport}>
             {downloadingSupport ? 'Preparing bundle...' : 'Download support bundle'}
