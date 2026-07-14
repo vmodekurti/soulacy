@@ -31,6 +31,8 @@ type runLedgerRow struct {
 	DeliveryTo      string    `json:"deliveryTo,omitempty"`
 	DeliveryStatus  string    `json:"deliveryStatus,omitempty"`
 	DeliveryError   string    `json:"deliveryError,omitempty"`
+	HasBrowserTrace bool      `json:"hasBrowserTrace,omitempty"`
+	BrowserEvents   int       `json:"browserEvents,omitempty"`
 	EventCount      int       `json:"eventCount,omitempty"`
 	DurationMS      int64     `json:"durationMs,omitempty"`
 }
@@ -197,6 +199,8 @@ func (s *Server) buildRunLedger(events []message.Event, limit int) []runLedgerRo
 			DeliveryTo:      base.DeliveryTo,
 			DeliveryStatus:  base.DeliveryStatus,
 			DeliveryError:   base.DeliveryError,
+			HasBrowserTrace: runLedgerHasBrowserTrace(byRun[runID]),
+			BrowserEvents:   runLedgerBrowserEventCount(byRun[runID]),
 			EventCount:      len(byRun[runID]),
 		}
 		if row.UpdatedAt.IsZero() {
@@ -342,6 +346,8 @@ func mergeRunLedgerRow(a, b runLedgerRow) runLedgerRow {
 	out.DeliveryTo = studioFirstNonEmpty(out.DeliveryTo, b.DeliveryTo)
 	out.DeliveryStatus = studioFirstNonEmpty(out.DeliveryStatus, b.DeliveryStatus)
 	out.DeliveryError = studioFirstNonEmpty(out.DeliveryError, b.DeliveryError)
+	out.HasBrowserTrace = out.HasBrowserTrace || b.HasBrowserTrace
+	out.BrowserEvents += b.BrowserEvents
 	if out.Status == "" || out.Status == "unknown" || (out.Status == "success" && b.Status == "failed") {
 		out.Status = b.Status
 		out.Ok = b.Ok
@@ -351,6 +357,44 @@ func mergeRunLedgerRow(a, b runLedgerRow) runLedgerRow {
 	}
 	out.EventCount += b.EventCount
 	return out
+}
+
+func runLedgerHasBrowserTrace(events []message.Event) bool {
+	return runLedgerBrowserEventCount(events) > 0
+}
+
+func runLedgerBrowserEventCount(events []message.Event) int {
+	count := 0
+	for _, ev := range events {
+		if runLedgerIsBrowserEvent(ev) {
+			count++
+		}
+	}
+	return count
+}
+
+func runLedgerIsBrowserEvent(ev message.Event) bool {
+	if !strings.HasPrefix(ev.Type, "tool.") {
+		return false
+	}
+	name := strings.ToLower(runLedgerPayloadString(ev.Payload, "name"))
+	return strings.Contains(name, "browser") ||
+		strings.Contains(name, "playwright") ||
+		strings.Contains(name, "puppeteer") ||
+		strings.Contains(name, "computer") ||
+		strings.Contains(name, "navigate") ||
+		strings.Contains(name, "screenshot") ||
+		strings.Contains(name, "page_")
+}
+
+func runLedgerPayloadString(payload any, key string) string {
+	if m, ok := payload.(map[string]any); ok {
+		return fmt.Sprint(m[key])
+	}
+	if m, ok := payload.(map[string]string); ok {
+		return m[key]
+	}
+	return ""
 }
 
 func runLedgerContainsString(vals []string, want string) bool {

@@ -108,6 +108,45 @@ func TestRunLedgerFiltersAgent(t *testing.T) {
 	}
 }
 
+func TestRunLedgerMarksBrowserTraceRuns(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	base := time.Date(2026, 7, 4, 7, 0, 0, 0, time.UTC)
+	s.actions = &fakeTailBackend{events: []message.Event{
+		{Type: "message.in", AgentID: "browser-agent", SessionID: "sess-browser", Timestamp: base, Payload: message.Message{Channel: "http"}},
+		{
+			Type:      "tool.call",
+			AgentID:   "browser-agent",
+			SessionID: "sess-browser",
+			Timestamp: base.Add(time.Second),
+			Payload:   map[string]any{"name": "mcp__playwright__browser_navigate", "arguments": map[string]any{"url": "https://example.com"}},
+		},
+		{
+			Type:      "tool.result",
+			AgentID:   "browser-agent",
+			SessionID: "sess-browser",
+			Timestamp: base.Add(2 * time.Second),
+			Payload:   map[string]any{"name": "mcp__playwright__browser_navigate", "content": "ok"},
+		},
+		{Type: "message.out", AgentID: "browser-agent", SessionID: "sess-browser", Timestamp: base.Add(3 * time.Second), Payload: message.Message{Parts: message.Text("done")}},
+	}}
+
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/runs/ledger?agent_id=browser-agent", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("ledger status = %d body=%v", status, body)
+	}
+	rawRuns := body["runs"].([]any)
+	if len(rawRuns) != 1 {
+		t.Fatalf("runs len = %d, want 1: %#v", len(rawRuns), rawRuns)
+	}
+	run := rawRuns[0].(map[string]any)
+	if got := run["hasBrowserTrace"]; got != true {
+		t.Fatalf("hasBrowserTrace = %v, want true: %#v", got, run)
+	}
+	if got := run["browserEvents"]; got != float64(2) {
+		t.Fatalf("browserEvents = %v, want 2: %#v", got, run)
+	}
+}
+
 func TestRunLedgerMergesFlowHistory(t *testing.T) {
 	s := newTestGateway(t, "secret")
 	s.engine.TagFlowRun("history-agent", "flow-only", "http")
