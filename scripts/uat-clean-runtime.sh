@@ -133,6 +133,12 @@ for label in "Deployed" "Learning" "Delivery" "Automations" "Runs" "Browser"; do
     exit 1
   fi
 done
+for needle in "Failed to fetch dynamically imported module" "__soulacy_reload" "soulacy:stale-asset-reload"; do
+  if ! grep -Fq "$needle" <<<"$GUI_JS"; then
+    echo "GUI entry bundle does not contain stale-asset recovery marker: $needle" >&2
+    exit 1
+  fi
+done
 DASHBOARD_PATH="$(printf '%s' "$GUI_JS" | python3 -c '
 import re, sys
 js = sys.stdin.read()
@@ -187,6 +193,23 @@ fi
 for label in "Screenshot Gallery" "Export JSON" "Copy link"; do
   if ! grep -Fq "$label" <<<"$BROWSER_JS"; then
     echo "BrowserTrace chunk does not contain expected trace tool: $label" >&2
+    exit 1
+  fi
+done
+SKILLS_PATH="$(printf '%s' "$GUI_JS" | python3 -c '
+import re, sys
+js = sys.stdin.read()
+m = re.search(r"assets/Skills-[^\"'"'"']+\.js", js)
+print("/" + m.group(0) if m else "")
+')"
+if [[ -z "$SKILLS_PATH" ]]; then
+  echo "could not locate lazy Skills chunk in GUI entry bundle" >&2
+  exit 1
+fi
+SKILLS_JS="$(curl -fsS "$URL$SKILLS_PATH")"
+for label in "Skill sources" "Find skills" "Try direct install" "skills.sh"; do
+  if ! grep -Fq "$label" <<<"$SKILLS_JS"; then
+    echo "Skills chunk does not contain expected registry guidance: $label" >&2
     exit 1
   fi
 done
