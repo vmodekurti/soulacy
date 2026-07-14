@@ -25,6 +25,10 @@
     return ''
   }
 
+  function screenshotSrc(step) {
+    return step?.screenshot_url || imageSrc(step?.screenshot)
+  }
+
   function routeParams() {
     const h = location.hash || ''
     const i = h.indexOf('?')
@@ -270,9 +274,9 @@
         </div>
         <div class="gallery-grid">
           {#each screenshotSteps as s}
-            <a class="shot-card" href={imageSrc(s.screenshot) || undefined} target="_blank" rel="noreferrer" title={s.screenshot}>
-              {#if imageSrc(s.screenshot)}
-                <img src={imageSrc(s.screenshot)} alt="Browser screenshot step {s.seq}" />
+            <a class="shot-card" href={screenshotSrc(s) || undefined} target="_blank" rel="noreferrer" title={s.screenshot}>
+              {#if screenshotSrc(s)}
+                <img src={screenshotSrc(s)} alt="Browser screenshot step {s.seq}" />
               {:else}
                 <div class="shot-path">Screenshot path<br><code>{s.screenshot}</code></div>
               {/if}
@@ -300,8 +304,8 @@
               {#if s.output}<div class="step-output">{s.output}</div>{/if}
               {#if s.screenshot}
                 <div class="screenshot-ref">
-                  {#if imageSrc(s.screenshot)}
-                    <img src={imageSrc(s.screenshot)} alt="Browser screenshot" />
+                  {#if screenshotSrc(s)}
+                    <img src={screenshotSrc(s)} alt="Browser screenshot" />
                   {:else}
                     <span>Screenshot</span><code>{s.screenshot}</code>
                   {/if}
