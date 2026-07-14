@@ -791,6 +791,44 @@ func TestOpenAICompleteRetriesWithoutUnsupportedParallelToolCalls(t *testing.T) 
 	}
 }
 
+func TestOpenAICompleteRetriesWithoutUnsupportedToolChoice(t *testing.T) {
+	attempts := 0
+	var retried map[string]any
+	p := NewOpenAIProvider("openroute", "http://openroute.test/v1", "key", "router-model")
+	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			if _, ok := got["tool_choice"]; !ok {
+				t.Fatalf("first request should include tool_choice: %#v", got)
+			}
+			return jsonResponse(400, `{"error":{"message":"Unsupported parameter: tool_choice","type":"invalid_request_error"}}`), nil
+		}
+		retried = got
+		return jsonResponse(200, `{"choices":[{"message":{"content":"ok"}}],"usage":{}}`), nil
+	})
+	resp, err := p.Complete(context.Background(), CompletionRequest{
+		Messages:   []ChatMessage{{Role: "user", Content: "hi"}},
+		Tools:      []ToolSchema{{Name: "lookup", Parameters: map[string]any{"type": "object"}}},
+		ToolChoice: "required",
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	if _, ok := retried["tool_choice"]; ok {
+		t.Fatalf("retry should omit unsupported tool_choice: %#v", retried)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+}
+
 // TestOpenAIModelsReturnsListFromServer verifies that /models is called and
 // IDs are extracted.
 func TestOpenAIModelsReturnsListFromServer(t *testing.T) {

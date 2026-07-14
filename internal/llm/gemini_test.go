@@ -142,6 +142,89 @@ func TestGeminiCompleteSerializesToolsSchemaSafetyAndParsesFunctionCalls(t *test
 	}
 }
 
+func TestGeminiCompleteRetriesWithoutUnsupportedGenerationConfig(t *testing.T) {
+	attempts := 0
+	var retried map[string]any
+	provider := NewGeminiProviderWithOptions("http://google.test", "gm-key", "gemini-flash", 0, "")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			cfg := got["generationConfig"].(map[string]any)
+			if _, ok := cfg["topP"]; !ok {
+				t.Fatalf("first request should include topP: %#v", cfg)
+			}
+			return jsonResponse(400, `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"topP is not supported for this model"}}`), nil
+		}
+		retried = got
+		return jsonResponse(200, `{
+			"candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+			"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+		}`), nil
+	})
+
+	resp, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages:    []ChatMessage{{Role: "user", Content: "hi"}},
+		Temperature: 0.2,
+		TopP:        0.9,
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	cfg := retried["generationConfig"].(map[string]any)
+	if _, ok := cfg["topP"]; ok {
+		t.Fatalf("retry should omit unsupported topP: %#v", cfg)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+}
+
+func TestGeminiCompleteRetriesWithoutUnsupportedThinkingConfig(t *testing.T) {
+	attempts := 0
+	var retried map[string]any
+	provider := NewGeminiProviderWithOptions("http://google.test", "gm-key", "gemini-flash", 0, "")
+	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		attempts++
+		var got map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if attempts == 1 {
+			cfg := got["generationConfig"].(map[string]any)
+			if _, ok := cfg["thinkingConfig"]; !ok {
+				t.Fatalf("first request should include thinkingConfig: %#v", cfg)
+			}
+			return jsonResponse(400, `{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"generationConfig.thinkingConfig.thinkingBudget is not supported"}}`), nil
+		}
+		retried = got
+		return jsonResponse(200, `{
+			"candidates": [{"content": {"parts": [{"text": "ok"}]}}],
+			"usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}
+		}`), nil
+	})
+
+	_, err := provider.Complete(context.Background(), CompletionRequest{
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("attempts = %d, want 2", attempts)
+	}
+	cfg := retried["generationConfig"].(map[string]any)
+	if _, ok := cfg["thinkingConfig"]; ok {
+		t.Fatalf("retry should omit unsupported thinkingConfig: %#v", cfg)
+	}
+}
+
 func TestGeminiModelsFiltersGenerateContentAndStripsPrefix(t *testing.T) {
 	provider := NewGeminiProvider("http://google.test", "gm-key", "fallback")
 	provider.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {

@@ -368,6 +368,7 @@ func openAIUnsupportedOptionalParam(body []byte) string {
 		"response_format",
 		"presence_penalty",
 		"frequency_penalty",
+		"tool_choice",
 		"top_p",
 		"temperature",
 		"max_tokens",
