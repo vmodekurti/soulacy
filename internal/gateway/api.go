@@ -1299,6 +1299,13 @@ var channelSpecs = []channelSpec{
 		{Key: "default_output_to", Label: "Default output destination", Type: "password", Required: false, Secret: true, Help: "Optional alternate webhook URL used by scheduled agents. Leave empty to use Webhook / Workflow URL."},
 		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional scheduled-output wrapper; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
 	}},
+	{ID: "google_chat", Name: "Google Chat", Fields: []channelField{
+		{Key: "webhook_url", Label: "Webhook URL", Type: "password", Required: true, Secret: true, Help: "Google Chat incoming webhook URL used for outbound agent and schedule messages"},
+		{Key: "prefix", Label: "Message prefix", Type: "text", Required: false, Help: "Optional text prepended to each Google Chat message"},
+		{Key: "timeout_seconds", Label: "Timeout seconds", Type: "text", Required: false, Help: "Request timeout; defaults to 10"},
+		{Key: "default_output_to", Label: "Default output destination", Type: "password", Required: false, Secret: true, Help: "Optional alternate webhook URL used by scheduled agents. Leave empty to use Webhook URL."},
+		{Key: "default_output_template", Label: "Default output template", Type: "text", Required: false, Help: "Optional scheduled-output wrapper; use {reply}, {agent_id}, {agent_name}, {trigger}, {timestamp}"},
+	}},
 	{ID: "whatsapp", Name: "WhatsApp", Fields: []channelField{
 		{Key: "bot_name", Label: "Bot name", Type: "text", Required: false, Help: "Friendly name shown in mappings and schedules"},
 		{Key: "phone_number_id", Label: "Phone number ID", Type: "text", Required: true},
@@ -1703,7 +1710,7 @@ func (s *Server) handleTestChannelDelivery(c *fiber.Ctx) error {
 	if to == "" {
 		to = channelDefaultDestination(cfg, id, adapterID)
 	}
-	if to == "" && adapterID != "webhook" && adapterID != "teams" {
+	if to == "" && adapterID != "webhook" && adapterID != "teams" && adapterID != "google_chat" {
 		return s.errMsg(c, fiber.StatusBadRequest, "destination is required; provide to or configure default_output_to")
 	}
 
@@ -1786,7 +1793,7 @@ func (s *Server) handleDiagnoseChannelDelivery(c *fiber.Ctx) error {
 	}
 
 	// Precondition problems short-circuit before any send attempt.
-	if to == "" && adapterID != "webhook" && adapterID != "teams" {
+	if to == "" && adapterID != "webhook" && adapterID != "teams" && adapterID != "google_chat" {
 		return respond(channels.DiagnoseDelivery(adapterID, "", registered, status.Connected, nil))
 	}
 	if !registered {
