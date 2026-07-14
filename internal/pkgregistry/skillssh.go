@@ -119,7 +119,7 @@ func (p *skillsShProvider) Search(ctx context.Context, query string) ([]sdkpkg.P
 	var out []sdkpkg.Package
 	var lastErr error
 	seen := map[string]bool{}
-	for i, q := range queries {
+	for _, q := range queries {
 		results, err := p.searchOnce(ctx, q)
 		if err != nil {
 			lastErr = err
@@ -133,9 +133,6 @@ func (p *skillsShProvider) Search(ctx context.Context, query string) ([]sdkpkg.P
 					out = append(out, pkg)
 				}
 				return out, nil
-			}
-			if i == 0 {
-				return nil, err
 			}
 			continue
 		}
@@ -194,18 +191,38 @@ func (p *skillsShProvider) searchPublicCatalog(ctx context.Context, query string
 	return skillsShCatalogMatches(text, query, p.id)
 }
 
-var skillsShCatalogEntryRE = regexp.MustCompile(`"source":"([^"]+)","skillId":"([^"]+)","name":"([^"]+)","installs":([0-9]+)`)
+var skillsShCatalogSkillIDRE = regexp.MustCompile(`"skillId"\s*:\s*"([^"]+)"`)
 
 func skillsShCatalogMatches(catalog, query, providerID string) []sdkpkg.Package {
 	q := normalizeSkillsShQuery(query)
 	if q == "" {
 		return nil
 	}
-	matches := skillsShCatalogEntryRE.FindAllStringSubmatch(catalog, -1)
 	out := make([]sdkpkg.Package, 0, 10)
 	seen := map[string]bool{}
-	for _, m := range matches {
-		source, skillID, name, installs := m[1], m[2], m[3], m[4]
+	for _, loc := range skillsShCatalogSkillIDRE.FindAllStringSubmatchIndex(catalog, -1) {
+		start := loc[0] - 1000
+		if start < 0 {
+			start = 0
+		}
+		end := loc[1] + 1000
+		if end > len(catalog) {
+			end = len(catalog)
+		}
+		window := catalog[start:end]
+		source := skillsShCatalogField(window, "source")
+		skillID := catalog[loc[2]:loc[3]]
+		name := skillsShCatalogField(window, "name")
+		installs := skillsShCatalogField(window, "installs")
+		if source == "" || skillID == "" {
+			continue
+		}
+		if name == "" {
+			name = skillID
+		}
+		if installs == "" {
+			installs = "unknown"
+		}
 		slug := source + "/" + skillID
 		haystack := normalizeSkillsShQuery(strings.Join([]string{source, skillID, name, slug}, " "))
 		if !strings.Contains(haystack, q) {
@@ -228,6 +245,18 @@ func skillsShCatalogMatches(catalog, query, providerID string) []sdkpkg.Package 
 		}
 	}
 	return out
+}
+
+func skillsShCatalogField(window, field string) string {
+	re := regexp.MustCompile(`"` + regexp.QuoteMeta(field) + `"\s*:\s*(?:"([^"]*)"|([0-9]+))`)
+	m := re.FindStringSubmatch(window)
+	if len(m) == 0 {
+		return ""
+	}
+	if m[1] != "" {
+		return m[1]
+	}
+	return m[2]
 }
 
 func normalizeSkillsShQuery(s string) string {

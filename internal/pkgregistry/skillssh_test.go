@@ -215,6 +215,44 @@ func TestSkillsShCatalogMatchesNormalizesQuery(t *testing.T) {
 	}
 }
 
+func TestSkillsShCatalogMatchesToleratesFieldOrder(t *testing.T) {
+	catalog := `"name":"Options Strategy Advisor","installs":42,"skillId":"options-strategy-advisor","source":"acme/options"`
+	pkgs := skillsShCatalogMatches(catalog, "options-strategy-advisor", "skills-sh")
+	if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
+		t.Fatalf("pkgs = %+v", pkgs)
+	}
+}
+
+func TestSkillsShSearchContinuesAfterFirstVariantFailure(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("q") == "options strategy advisor" {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": []map[string]any{{
+					"id":       "acme/options/options-strategy-advisor",
+					"name":     "Options Strategy Advisor",
+					"source":   "acme/options",
+					"installs": 12,
+				}},
+			})
+			return
+		}
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"authentication_required","message":"token required"}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	p := newTestSkillsShProvider(t, srv.URL)
+	pkgs, err := p.Search(context.Background(), "options-strategy-advisor")
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
+		t.Fatalf("pkgs = %+v", pkgs)
+	}
+}
+
 func TestSkillsSh_ResolveKnownAndUnknown(t *testing.T) {
 	srv := fakeSkillsSh(t)
 	p := newTestSkillsShProvider(t, srv.URL)
