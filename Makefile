@@ -2,8 +2,9 @@ BINARY_GATEWAY := soulacy
 BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
+PLAYWRIGHT_RUNNER ?= $(shell if [ -e .cache ] && [ ! -d .cache ]; then echo tmp/playwright-runner; else echo .cache/playwright-runner; fi)
 
-.PHONY: all build build-gateway build-cli gui up install which test regression uat docs-build release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install which test regression uat docs-build docs-screenshots release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 release-package \
@@ -190,6 +191,20 @@ docs-build:
 	@python3 -c "import mkdocs" >/dev/null 2>&1 || { echo "mkdocs not found — install with: python3 -m pip install mkdocs-material"; exit 1; }
 	@cp install.sh docs/install.sh
 	python3 -m mkdocs build --strict
+
+## Capture launch screenshots for the public docs using the production GUI bundle.
+docs-screenshots: build
+	@echo "→ Capturing docs screenshots..."
+	@mkdir -p docs/assets/screenshots
+	@if [ ! -d "$(PLAYWRIGHT_RUNNER)/node_modules/playwright" ]; then \
+	  echo "→ Installing ephemeral Playwright runner into $(PLAYWRIGHT_RUNNER)..."; \
+	  mkdir -p "$(PLAYWRIGHT_RUNNER)"; \
+	  npm install --prefix "$(PLAYWRIGHT_RUNNER)" --silent playwright >/dev/null; \
+	fi
+	@echo "→ Ensuring Playwright Chromium browser is installed..."
+	@"$(PLAYWRIGHT_RUNNER)/node_modules/.bin/playwright" install chromium
+	SOULACY_PLAYWRIGHT_REQUIRE_FROM="$(CURDIR)/$(PLAYWRIGHT_RUNNER)" SOULACY_BROWSER_RENDER_OUT="$(CURDIR)/docs/assets/screenshots" node scripts/browser-render-smoke.mjs
+	@echo "✓ Screenshot manifest: docs/assets/screenshots/manifest.json"
 
 ## Install-like release smoke: copies built binaries to a temp PATH and runs clean-runtime UAT.
 release-smoke: build

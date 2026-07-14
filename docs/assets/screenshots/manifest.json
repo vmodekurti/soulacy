@@ -1,0 +1,87 @@
+{
+  "generated_at": "2026-07-14T10:47:21.621Z",
+  "base_url": "http://127.0.0.1:18894",
+  "viewport": {
+    "width": 1440,
+    "height": 960
+  },
+  "routes": [
+    {
+      "name": "dashboard",
+      "path": "/",
+      "screenshot": "dashboard.png",
+      "bytes": 151008,
+      "text_length": 6046
+    },
+    {
+      "name": "studio",
+      "path": "/#studio",
+      "screenshot": "studio.png",
+      "bytes": 139147,
+      "text_length": 4844
+    },
+    {
+      "name": "agents",
+      "path": "/#agents",
+      "screenshot": "agents.png",
+      "bytes": 66796,
+      "text_length": 444
+    },
+    {
+      "name": "chat",
+      "path": "/#chat",
+      "screenshot": "chat.png",
+      "bytes": 80667,
+      "text_length": 486
+    },
+    {
+      "name": "channels",
+      "path": "/#channels",
+      "screenshot": "channels.png",
+      "bytes": 179401,
+      "text_length": 3900
+    },
+    {
+      "name": "knowledge",
+      "path": "/#knowledge",
+      "screenshot": "knowledge.png",
+      "bytes": 74382,
+      "text_length": 496
+    },
+    {
+      "name": "schedule",
+      "path": "/#schedule",
+      "screenshot": "schedule.png",
+      "bytes": 120101,
+      "text_length": 1103
+    },
+    {
+      "name": "providers",
+      "path": "/#providers",
+      "screenshot": "providers.png",
+      "bytes": 135986,
+      "text_length": 1632
+    },
+    {
+      "name": "activity",
+      "path": "/#activity",
+      "screenshot": "activity.png",
+      "bytes": 68784,
+      "text_length": 579
+    },
+    {
+      "name": "skills",
+      "path": "/#skills",
+      "screenshot": "skills.png",
+      "bytes": 168214,
+      "text_length": 23244
+    },
+    {
+      "name": "config",
+      "path": "/#config",
+      "screenshot": "config.png",
+      "bytes": 201953,
+      "text_length": 6974
+    }
+  ]
+}

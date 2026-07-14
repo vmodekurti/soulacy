@@ -184,6 +184,12 @@ run_live_optional() {
     skip_check "browser render smoke" "Set SOULACY_PARITY_BROWSER_RENDER=1 and install Playwright to screenshot/check every main GUI route."
   fi
 
+  if [[ "${SOULACY_PARITY_DOCS_SCREENSHOTS:-0}" == "1" ]]; then
+    run_check "docs screenshot refresh" true "make docs-screenshots"
+  else
+    skip_check "docs screenshot refresh" "Set SOULACY_PARITY_DOCS_SCREENSHOTS=1 to refresh docs/assets/screenshots from the production GUI bundle."
+  fi
+
   if [[ "${SOULACY_PARITY_STUDIO_LIVE:-0}" == "1" ]]; then
     run_check "Studio build/live UAT" true "SOULACY_UAT_PORT=\${SOULACY_UAT_PORT:-18893} SOULACY_UAT_STUDIO_BUILD=1 SOULACY_UAT_STUDIO_LIVE=1 bash scripts/uat-clean-runtime.sh"
   else
