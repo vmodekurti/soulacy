@@ -112,6 +112,7 @@ type BuildReport struct {
 	Verified bool           `json:"verified"` // a real/dry run actually passed
 	Attempts []BuildAttempt `json:"attempts"`
 	Summary  string         `json:"summary"`
+	Contract ContractResult `json:"contract"`
 	Residual []string       `json:"residual,omitempty"` // problems still unresolved at the end
 	// Diagnosis, when set, is a plain-language explanation of WHY the build could
 	// not be fixed automatically — and what to do about it. It is set when the
@@ -315,6 +316,7 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 
 	rep.Verified = verified
 	rep.OK = preflightClean && (opts.Verifier == nil || verified)
+	rep.Contract = AssessContract(rep.Workflow, cat, opts.In)
 	rep.Summary = buildSummary(rep)
 	tr.Snapshot("final", 0, rep.Workflow)
 	tr.Logd("result", "done", 0, rep.Summary, map[string]any{
