@@ -19,6 +19,17 @@ type VoiceMinter interface {
 	Mint(ctx context.Context) (voice.EphemeralKey, error)
 }
 
+type voiceReadiness struct {
+	Status   string `json:"status"`
+	Score    int    `json:"score"`
+	Enabled  bool   `json:"enabled"`
+	Ready    bool   `json:"ready"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Detail   string `json:"detail"`
+	Next     string `json:"next,omitempty"`
+}
+
 // SetVoiceMinter wires the realtime voice provider. Call after New(),
 // before Start(). When nil the voice routes degrade gracefully
 // (status: unavailable; ephemeral: 503).
@@ -54,6 +65,57 @@ func (s *Server) handleVoiceStatus(c *fiber.Ctx) error {
 		out["model"] = mm.Model()
 	}
 	return c.JSON(out)
+}
+
+func (s *Server) voiceReadiness() voiceReadiness {
+	provider := ""
+	if s != nil && s.cfg != nil {
+		provider = s.cfg.Voice.Provider
+	}
+	m := s.voiceMinterRef()
+	if m == nil {
+		if provider == "" {
+			return voiceReadiness{
+				Status:  "warn",
+				Score:   55,
+				Enabled: false,
+				Ready:   false,
+				Detail:  "Realtime voice is disabled; text chat and channel agents still work.",
+				Next:    "Set voice.provider: openai and configure an OpenAI API key when voice is part of launch scope.",
+			}
+		}
+		return voiceReadiness{
+			Status:   "fail",
+			Score:    35,
+			Enabled:  true,
+			Ready:    false,
+			Provider: provider,
+			Detail:   "Realtime voice is configured with an unsupported or unwired provider.",
+			Next:     "Use voice.provider: openai for the current voice MVP, or install a compatible voice sidecar.",
+		}
+	}
+	ready, detail := m.Ready()
+	out := voiceReadiness{
+		Enabled:  true,
+		Ready:    ready,
+		Provider: m.Provider(),
+		Detail:   "Realtime voice control plane is configured.",
+	}
+	if mm, ok := m.(interface{ Model() string }); ok {
+		out.Model = mm.Model()
+	}
+	if ready {
+		out.Status = "ok"
+		out.Score = 86
+		out.Detail = "Chat can mint ephemeral realtime voice sessions; browser audio connects directly to the provider."
+		out.Next = "Run one credential-backed voice session before launch if voice is part of the product promise."
+		return out
+	}
+	out.Status = "warn"
+	out.Score = 60
+	out.Detail = detail
+	out.Next = "Fix the voice provider credential, then verify /api/v1/voice/status reports available."
+	return out
 }
 
 // handleVoiceEphemeral mints a short-lived client key for the browser's

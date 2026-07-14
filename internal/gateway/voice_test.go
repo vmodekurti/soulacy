@@ -12,12 +12,14 @@ import (
 type fakeMinter struct {
 	ready  bool
 	detail string
+	model  string
 	key    voice.EphemeralKey
 	err    error
 }
 
 func (f *fakeMinter) Provider() string      { return "openai" }
 func (f *fakeMinter) Ready() (bool, string) { return f.ready, f.detail }
+func (f *fakeMinter) Model() string         { return f.model }
 func (f *fakeMinter) Mint(context.Context) (voice.EphemeralKey, error) {
 	return f.key, f.err
 }
@@ -54,6 +56,35 @@ func TestVoiceStatus_Ready(t *testing.T) {
 	status, body := gatewayJSON(t, s, "GET", "/api/v1/voice/status", "", "")
 	if status != 200 || body["available"] != true || body["provider"] != "openai" {
 		t.Fatalf("status=%d body=%v", status, body)
+	}
+}
+
+func TestVoiceReadinessNoMinterWarns(t *testing.T) {
+	s := newTestGateway(t, "")
+	got := s.voiceReadiness()
+	if got.Status != "warn" || got.Ready || got.Enabled {
+		t.Fatalf("voice readiness = %#v, want disabled warning", got)
+	}
+}
+
+func TestVoiceReadinessConfiguredButNotReady(t *testing.T) {
+	s := newTestGateway(t, "")
+	s.SetVoiceMinter(&fakeMinter{ready: false, detail: "no API key configured"})
+	got := s.voiceReadiness()
+	if got.Status != "warn" || got.Ready || !got.Enabled {
+		t.Fatalf("voice readiness = %#v, want enabled warning", got)
+	}
+	if got.Detail != "no API key configured" {
+		t.Fatalf("detail = %q", got.Detail)
+	}
+}
+
+func TestVoiceReadinessReady(t *testing.T) {
+	s := newTestGateway(t, "")
+	s.SetVoiceMinter(&fakeMinter{ready: true, model: "gpt-realtime-mini"})
+	got := s.voiceReadiness()
+	if got.Status != "ok" || !got.Ready || got.Provider != "openai" || got.Model != "gpt-realtime-mini" {
+		t.Fatalf("voice readiness = %#v, want ready openai model", got)
 	}
 }
 

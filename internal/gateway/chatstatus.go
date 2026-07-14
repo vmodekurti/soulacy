@@ -171,6 +171,47 @@ func parityChat(chat chatExperienceReadiness) parityArea {
 	}
 }
 
+func parityVoice(voice voiceReadiness) parityArea {
+	if voice.Ready {
+		model := voice.Model
+		if model == "" {
+			model = "configured realtime model"
+		}
+		return parityArea{
+			Key:       "voice",
+			Label:     "Realtime Voice",
+			Status:    "ok",
+			Score:     maxInt(voice.Score, 82),
+			Detail:    fmt.Sprintf("Voice is configured for %s (%s); Chat can mint ephemeral sessions without exposing the API key.", voice.Provider, model),
+			Next:      "Run a credential-backed mic session before launch if voice is in the product promise.",
+			Benchmark: "OpenClaw",
+			Href:      "#chat",
+		}
+	}
+	if voice.Enabled {
+		return parityArea{
+			Key:       "voice",
+			Label:     "Realtime Voice",
+			Status:    voice.Status,
+			Score:     voice.Score,
+			Detail:    voice.Detail,
+			Next:      voice.Next,
+			Benchmark: "OpenClaw",
+			Href:      "#chat",
+		}
+	}
+	return parityArea{
+		Key:       "voice",
+		Label:     "Realtime Voice",
+		Status:    "warn",
+		Score:     55,
+		Detail:    "Voice is an optional OpenClaw-style differentiator; text chat remains fully usable without it.",
+		Next:      "Decide whether voice is launch scope. If yes, configure voice.provider: openai and run a real mic session.",
+		Benchmark: "OpenClaw",
+		Href:      "#chat",
+	}
+}
+
 func chatExperienceNextAction(key string) string {
 	switch key {
 	case "agents":

@@ -39,6 +39,9 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if got, _ := summary["deployment_profile"].(string); got == "" {
 		t.Fatalf("missing deployment_profile: %#v", summary)
 	}
+	if _, ok := summary["voice_ready"].(bool); !ok {
+		t.Fatalf("missing voice_ready: %#v", summary)
+	}
 	release, ok := body["release"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing release metadata: %#v", body)
@@ -81,6 +84,11 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	}
 	if _, ok := body["browser"].(map[string]any); !ok {
 		t.Fatalf("missing browser readiness: %#v", body)
+	}
+	if voice, ok := body["voice"].(map[string]any); !ok {
+		t.Fatalf("missing voice readiness: %#v", body)
+	} else if voice["status"] == "" || voice["score"] == nil {
+		t.Fatalf("voice readiness incomplete: %#v", voice)
 	}
 	if docs, ok := body["docs"].(map[string]any); !ok {
 		t.Fatalf("missing docs readiness: %#v", body)
