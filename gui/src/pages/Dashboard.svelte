@@ -151,7 +151,7 @@
       a.click()
       a.remove()
       URL.revokeObjectURL(url)
-      supportMessage = 'Support bundle includes readiness, doctor output, redacted config, agent manifests, and recent logs.'
+      supportMessage = 'Support bundle includes readiness, doctor output, run ledger, redacted config, agent manifests, and recent logs.'
     } catch (e) {
       supportMessage = e.message || 'Could not prepare support bundle.'
     } finally {
