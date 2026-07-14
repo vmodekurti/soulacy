@@ -3,7 +3,7 @@
   import { api } from '../lib/api.js'
   import { modelAvailability } from '../lib/agentmodel.js'
   import { parseMarkdown, richRenderer } from '../lib/markdown.js'
-  import { apiKey, editAgent } from '../lib/stores.js'
+  import { apiKey, editAgent, studioSession } from '../lib/stores.js'
   import ChipPicker from '../lib/ChipPicker.svelte'
   import FilePicker from '../lib/FilePicker.svelte'
 
@@ -805,6 +805,16 @@
     showHistory = false
   }
 
+  function openStudioStarter() {
+    const starterIntent = [
+      'Build a production-ready Soulacy agent.',
+      'Ask for the trigger, required tools, memory, delivery channel, schedule, and safety level if they are missing.',
+      'Prefer Studio guided workflow generation, validate the whole workflow, and include a simple live test before saving.',
+    ].join(' ')
+    studioSession.set(null)
+    location.hash = 'studio?intent=' + encodeURIComponent(starterIntent)
+  }
+
   async function validateEditing() {
     if (!editing || validating) return
     validating = true
@@ -1192,7 +1202,13 @@ console.log(reply);` : ''
     <!-- ── Agent list ── -->
     <div class="list-col">
       {#if agents.length === 0}
-        <div class="empty">No agents loaded.<br>Click "New Agent" to create one.</div>
+        <div class="empty empty-onboard">
+          <div class="empty-kicker">No deployed agents yet</div>
+          <p>Start in Studio for a guided build, deploy a proven template, or import an agent package.</p>
+          <button class="empty-primary" type="button" on:click={openStudioStarter}>Open Studio</button>
+          <button class="empty-secondary" type="button" on:click={openTemplates}>Use a template</button>
+          <button class="empty-secondary" type="button" on:click={triggerPackageImport}>Import package</button>
+        </div>
       {/if}
       {#each agents as agent}
         <div class="agent-card" class:active={selected?.id === agent.id}
@@ -2773,6 +2789,49 @@ console.log(reply);` : ''
   .toggle      { background: none; font-size: 1rem; color: #6b7294; padding: .15rem; }
   .toggle.on   { color: #4caf82; }
   .empty       { color: #6b7294; text-align: center; padding: 2rem .5rem; font-size: .875rem; line-height: 1.6; }
+  .empty-onboard {
+    text-align: left;
+    padding: .9rem;
+    border: 1px solid #24294a;
+    border-radius: 8px;
+    background: #141626;
+    color: #9ca3c8;
+  }
+  .empty-onboard p {
+    margin: .35rem 0 .75rem;
+    font-size: .78rem;
+    line-height: 1.45;
+  }
+  .empty-kicker {
+    color: #d7dcf5;
+    font-weight: 700;
+    font-size: .86rem;
+  }
+  .empty-primary,
+  .empty-secondary {
+    width: 100%;
+    display: block;
+    border-radius: 6px;
+    padding: .5rem .65rem;
+    margin-top: .4rem;
+    font-size: .78rem;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .empty-primary {
+    background: #6c63ff;
+    color: white;
+    border: 1px solid #8178ff;
+  }
+  .empty-secondary {
+    background: #171a2e;
+    color: #c8cadf;
+    border: 1px solid #2a2f4a;
+  }
+  .empty-primary:hover,
+  .empty-secondary:hover {
+    border-color: #8b85ff;
+  }
 
   /* Editor */
   .editor-col  { flex: 1; overflow-y: auto; min-width: 0; }
