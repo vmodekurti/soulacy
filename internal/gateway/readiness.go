@@ -38,6 +38,7 @@ type readinessSummary struct {
 	Templates         int    `json:"templates"`
 	UpdatesReady      bool   `json:"updates_ready"`
 	DeploymentProfile string `json:"deployment_profile"`
+	OpsAlertsReady    bool   `json:"ops_alerts_ready"`
 }
 
 type parityArea struct {
@@ -77,6 +78,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	chat := s.chatExperienceReadiness(c)
 	costs := s.costReadiness(c)
 	slo := s.sloReadiness(c)
+	opsAlerts := s.opsAlertReadiness()
 	deployment := s.deploymentReadiness(providersReady, usableOutbound, enabledAgents, updateManifest, costs, slo)
 
 	journey := []readinessItem{
@@ -129,7 +131,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo, opsAlerts)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	sort.SliceStable(next, func(i, j int) bool {
@@ -168,6 +170,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 			Templates:         len(templates),
 			UpdatesReady:      updateManifest != "",
 			DeploymentProfile: deployment.Profile,
+			OpsAlertsReady:    opsAlerts.Status == "ok",
 		},
 		"journey":      journey,
 		"next_actions": next,
@@ -180,6 +183,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"chat":         chat,
 		"costs":        costs,
 		"slo":          slo,
+		"ops_alerts":   opsAlerts,
 		"deployment":   deployment,
 		"parity": fiber.Map{
 			"score":    parityScore,
@@ -204,7 +208,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness, slo sloReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness, slo sloReadiness, opsAlerts opsAlertReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -212,7 +216,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, sche
 		parityChat(chat),
 		parityLearning(learningAgents, enabledAgents),
 		parityAutomation(scheduledAgents, usableOutbound),
-		parityOps(providersReady, enabledAgents, updateManifest, costs, slo),
+		parityOps(providersReady, enabledAgents, updateManifest, costs, slo, opsAlerts),
 		parityBrowserAutomation(browser),
 		parityRemoteExecution(executors),
 		parityMobileCompanion(mobile),

@@ -97,6 +97,9 @@ export const api = {
   opsSummary: (window = '24h') => apiFetch('/runs/ops-summary?window=' + encodeURIComponent(window)),
   sloStatus: (window = '') => apiFetch('/runs/slo-status' + (window ? '?window=' + encodeURIComponent(window) : '')),
   costStatus: () => apiFetch('/costs/status'),
+  opsAlertStatus: () => apiFetch('/ops/alerts/status'),
+  opsAlertTest: () => apiFetch('/ops/alerts/test', { method: 'POST' }),
+  opsAlertEvaluate: () => apiFetch('/ops/alerts/evaluate', { method: 'POST' }),
   deploymentStatus: () => apiFetch('/deployment/status'),
 
   agents: {

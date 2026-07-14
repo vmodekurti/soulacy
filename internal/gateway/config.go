@@ -113,6 +113,9 @@ func (s *Server) safeConfigView() fiber.Map {
 			"max_incomplete_rate":  cfg.Ops.MaxIncompleteRate,
 			"max_p95_run_duration": cfg.Ops.MaxP95RunDuration,
 			"min_runs_for_signal":  cfg.Ops.MinRunsForSignal,
+			"alert_channel":        cfg.Ops.AlertChannel,
+			"alert_to":             cfg.Ops.AlertTo,
+			"alert_min_status":     cfg.Ops.AlertMinStatus,
 		},
 		"deployment": fiber.Map{
 			"profile": cfg.Deployment.Profile,
@@ -283,6 +286,9 @@ type PatchableConfig struct {
 		MaxIncompleteRate float64 `json:"max_incomplete_rate" yaml:"max_incomplete_rate"`
 		MaxP95RunDuration string  `json:"max_p95_run_duration" yaml:"max_p95_run_duration"`
 		MinRunsForSignal  int     `json:"min_runs_for_signal" yaml:"min_runs_for_signal"`
+		AlertChannel      string  `json:"alert_channel" yaml:"alert_channel"`
+		AlertTo           string  `json:"alert_to" yaml:"alert_to"`
+		AlertMinStatus    string  `json:"alert_min_status" yaml:"alert_min_status"`
 	} `json:"ops" yaml:"ops"`
 
 	Deployment *struct {
@@ -520,6 +526,9 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		ops["max_incomplete_rate"] = patch.Ops.MaxIncompleteRate
 		ops["max_p95_run_duration"] = patch.Ops.MaxP95RunDuration
 		ops["min_runs_for_signal"] = patch.Ops.MinRunsForSignal
+		ops["alert_channel"] = patch.Ops.AlertChannel
+		ops["alert_to"] = patch.Ops.AlertTo
+		ops["alert_min_status"] = patch.Ops.AlertMinStatus
 	}
 	if patch.Deployment != nil {
 		dep := getOrCreateMap(dst, "deployment")

@@ -949,6 +949,9 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/costs", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetCosts)
 	api.Get("/costs/status", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleCostStatus)
 	api.Get("/costs/:agent_id", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleGetAgentCosts)
+	api.Get("/ops/alerts/status", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleOpsAlertStatus)
+	api.Post("/ops/alerts/test", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleOpsAlertTest)
+	api.Post("/ops/alerts/evaluate", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleOpsAlertEvaluate)
 
 	// --- Chat checkpoints & branching (Story 8) ---
 	// Fork a session's conversation at a checkpoint entry into a new branch.
