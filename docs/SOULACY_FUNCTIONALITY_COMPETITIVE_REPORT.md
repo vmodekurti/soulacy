@@ -365,7 +365,7 @@ Competitive implication:
 4. Learning proposals, background reflection, session search, accepted procedures, and accepted learned-skill injection exist; longitudinal evidence is now surfaced through the learning Evidence panel (skill reuse counts and repeated-error reduction over time). Remaining work is broadening the evidence to cross-agent and multi-week trend views.
 5. Channel breadth is narrower than OpenClaw.
 6. Native/mobile companion story is absent or not productized.
-7. Voice exists as spike/MVP infrastructure but is not a differentiating user experience.
+7. Voice now has a Chat push-to-talk MVP, ephemeral OpenAI Realtime key flow, and readiness/parity visibility; it still needs credential-backed mic UAT plus native/wake/talk-back polish if positioned as a differentiator.
 8. Browser/computer control exists through MCP, but needs a polished session viewer, domain policy, and trace UX.
 9. Provider/key flows are better with the doctor, but onboarding still needs to prevent broken state before users hit failures.
 10. Documentation has many deep docs, but needs a crisp public product guide.
