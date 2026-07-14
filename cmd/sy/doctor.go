@@ -107,6 +107,7 @@ func collectDoctorReport() doctorReport {
 
 	add(checkConfig())
 	add(checkRuntimeDir(runtimeDir))
+	add(checkInstallLayout())
 	add(checkAgentDirs())
 	add(checkAgentCount())
 	add(checkPort())
@@ -300,6 +301,164 @@ func checkRuntimeDir(runtimeDir string) doctorCheck {
 		}
 	}
 	return doctorCheck{Name: "runtime directories", Status: doctorOK, Detail: runtimeDir}
+}
+
+func checkInstallLayout() doctorCheck {
+	bin, err := resolveSoulacyBinary()
+	if err != nil {
+		return doctorCheck{
+			Name:   "install",
+			Status: doctorFail,
+			Detail: err.Error(),
+			Remedy: "run `make install`, `bash scripts/install.sh`, or set SOULACY_BIN to the intended gateway binary",
+		}
+	}
+	if st, statErr := os.Stat(bin); statErr != nil {
+		return doctorCheck{Name: "install", Status: doctorFail, Detail: statErr.Error()}
+	} else if st.Mode()&0o111 == 0 {
+		return doctorCheck{
+			Name:   "install",
+			Status: doctorFail,
+			Detail: bin + " is not executable",
+			Remedy: "run `chmod +x " + bin + "` or reinstall Soulacy",
+		}
+	}
+
+	syPath, syErr := exec.LookPath("sy")
+	copies := pathCopies("soulacy")
+	status := doctorOK
+	var issues []string
+	var remedy []string
+	if syErr != nil {
+		status = doctorWarn
+		issues = append(issues, "sy not found on PATH")
+		remedy = append(remedy, "install both binaries with `make install`")
+	}
+	if len(copies) > 1 {
+		status = doctorWarn
+		issues = append(issues, fmt.Sprintf("%d soulacy binaries on PATH", len(copies)))
+		remedy = append(remedy, "remove stale copies so `command -v soulacy` resolves to the intended install")
+	}
+	if servicePath, serviceBin, serviceOK := serviceBinaryConfig(); servicePath == "" {
+		status = doctorWarn
+		issues = append(issues, "daemon service not installed")
+		remedy = append(remedy, "run `sy daemon install` for login/boot startup")
+	} else if serviceOK && serviceBin != "" && serviceBin != bin {
+		status = doctorWarn
+		issues = append(issues, "daemon points at "+serviceBin)
+		remedy = append(remedy, "run `sy daemon install` again after installing the desired binary")
+	} else if !serviceOK {
+		status = doctorWarn
+		issues = append(issues, "could not read daemon service file "+servicePath)
+		remedy = append(remedy, "check service file permissions or reinstall with `sy daemon install`")
+	}
+
+	detail := "soulacy=" + bin
+	if syErr == nil {
+		if abs, absErr := filepath.Abs(syPath); absErr == nil {
+			detail += "; sy=" + abs
+		} else {
+			detail += "; sy=" + syPath
+		}
+	}
+	if len(issues) > 0 {
+		detail += "; " + strings.Join(issues, "; ")
+	}
+	return doctorCheck{Name: "install", Status: status, Detail: detail, Remedy: strings.Join(uniqueStrings(remedy), "; ")}
+}
+
+func serviceBinaryConfig() (path, bin string, ok bool) {
+	switch runtime.GOOS {
+	case "darwin":
+		p, err := launchAgentPath()
+		if err != nil {
+			return "", "", false
+		}
+		data, err := os.ReadFile(p)
+		if os.IsNotExist(err) {
+			return "", "", true
+		}
+		if err != nil {
+			return p, "", false
+		}
+		return p, configuredServiceBinary(string(data), runtime.GOOS), true
+	case "linux":
+		p, err := systemdUnitPath()
+		if err != nil {
+			return "", "", false
+		}
+		data, err := os.ReadFile(p)
+		if os.IsNotExist(err) {
+			return "", "", true
+		}
+		if err != nil {
+			return p, "", false
+		}
+		return p, configuredServiceBinary(string(data), runtime.GOOS), true
+	default:
+		return "", "", true
+	}
+}
+
+func configuredServiceBinary(content, goos string) string {
+	switch goos {
+	case "darwin":
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "<string>") || !strings.HasSuffix(line, "</string>") {
+				continue
+			}
+			v := strings.TrimSuffix(strings.TrimPrefix(line, "<string>"), "</string>")
+			if filepath.IsAbs(v) && filepath.Base(v) == "soulacy" {
+				return v
+			}
+		}
+	case "linux":
+		for _, line := range strings.Split(content, "\n") {
+			line = strings.TrimSpace(line)
+			if !strings.HasPrefix(line, "ExecStart=") {
+				continue
+			}
+			fields := strings.Fields(strings.TrimPrefix(line, "ExecStart="))
+			if len(fields) > 0 && filepath.Base(fields[0]) == "soulacy" {
+				return fields[0]
+			}
+		}
+	}
+	return ""
+}
+
+func pathCopies(name string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if strings.TrimSpace(dir) == "" {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		if st, err := os.Stat(p); err == nil && !st.IsDir() && st.Mode()&0o111 != 0 {
+			abs, _ := filepath.Abs(p)
+			if !seen[abs] {
+				seen[abs] = true
+				out = append(out, abs)
+			}
+		}
+	}
+	return out
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
 }
 
 func checkAgentDirs() doctorCheck {
