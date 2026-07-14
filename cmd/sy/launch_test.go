@@ -17,6 +17,18 @@ func TestLaunchStrictError(t *testing.T) {
 	}
 }
 
+func TestLaunchGateErrorUsesMinScore(t *testing.T) {
+	r := launchReadiness{}
+	r.Summary.Status = "ready"
+	r.Summary.Score = 74
+	if err := launchGateError(r, false, 70); err != nil {
+		t.Fatalf("score above minimum should pass: %v", err)
+	}
+	if err := launchGateError(r, false, 80); err == nil {
+		t.Fatal("score below minimum should fail")
+	}
+}
+
 func TestLaunchCertifyEnv(t *testing.T) {
 	env := launchCertifyEnv(launchCertifyOptions{
 		ReportDir:     "/tmp/soulacy-cert",
@@ -47,6 +59,9 @@ func TestLaunchReadinessParsesParityPayload(t *testing.T) {
 	payload := []byte(`{
 		"summary": {"status":"at_risk","score":72},
 		"deployment": {"profile":"production","label":"Production","status":"warn","score":78,"ready":7,"total":9,"strict":true,"owner":"platform","region":"us-central"},
+		"launch_checklist": [
+			{"key":"provider:openai","label":"Provider · openai","status":"warn","detail":"model list failed","remedy":"Check the API key."}
+		],
 		"parity": {
 			"score": 64,
 			"top_gaps": [
@@ -62,6 +77,9 @@ func TestLaunchReadinessParsesParityPayload(t *testing.T) {
 	}
 	if r.Deployment.Profile != "production" || !r.Deployment.Strict || r.Deployment.Ready != 7 {
 		t.Fatalf("deployment payload = %#v", r.Deployment)
+	}
+	if len(r.LaunchChecklist) != 1 || r.LaunchChecklist[0].Remedy == "" {
+		t.Fatalf("launch checklist payload = %#v", r.LaunchChecklist)
 	}
 	if r.Parity.TopGaps[0].Benchmark != "OpenClaw" {
 		t.Fatalf("benchmark = %q", r.Parity.TopGaps[0].Benchmark)

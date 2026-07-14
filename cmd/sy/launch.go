@@ -56,6 +56,7 @@ type launchReadiness struct {
 		Owner   string `json:"owner"`
 		Region  string `json:"region"`
 	} `json:"deployment"`
+	LaunchChecklist []launchChecklistItem `json:"launch_checklist"`
 }
 
 type launchParityArea struct {
@@ -77,8 +78,18 @@ type launchReadinessItem struct {
 	Href   string `json:"href,omitempty"`
 }
 
+type launchChecklistItem struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+	Remedy string `json:"remedy,omitempty"`
+	Href   string `json:"href,omitempty"`
+}
+
 func buildLaunchCmd() *cobra.Command {
 	var strict bool
+	var minScore int
 	cmd := &cobra.Command{
 		Use:   "launch",
 		Short: "Check production launch readiness",
@@ -90,12 +101,14 @@ func buildLaunchCmd() *cobra.Command {
 
 The default mode is advisory and exits 0 when the gateway responds. Use
 --strict in CI or before a production rollout to fail unless Soulacy reports
-status=ready.`,
+status=ready. Use --min-score to enforce a minimum readiness score while
+still showing the full operator checklist.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runLaunchCheck(strict)
+			return runLaunchCheck(strict, minScore)
 		},
 	})
 	cmd.Commands()[0].Flags().BoolVar(&strict, "strict", false, "Exit non-zero unless launch readiness is ready")
+	cmd.Commands()[0].Flags().IntVar(&minScore, "min-score", 0, "Exit non-zero unless launch readiness score is at least this value")
 	cmd.AddCommand(buildLaunchCertifyCmd())
 	return cmd
 }
@@ -192,7 +205,7 @@ func launchCertifyEnv(opts launchCertifyOptions) []string {
 	return env
 }
 
-func runLaunchCheck(strict bool) error {
+func runLaunchCheck(strict bool, minScore int) error {
 	data, err := apiCall("GET", "/readiness", nil)
 	if err != nil {
 		return err
@@ -203,14 +216,14 @@ func runLaunchCheck(strict bool) error {
 		if err := json.Unmarshal(data, &r); err != nil {
 			return err
 		}
-		return launchStrictError(r.Summary.Status, strict)
+		return launchGateError(r, strict, minScore)
 	}
 	var r launchReadiness
 	if err := json.Unmarshal(data, &r); err != nil {
 		return err
 	}
 	printLaunchReadiness(r)
-	return launchStrictError(r.Summary.Status, strict)
+	return launchGateError(r, strict, minScore)
 }
 
 func printLaunchReadiness(r launchReadiness) {
@@ -291,6 +304,20 @@ func printLaunchReadiness(r launchReadiness) {
 		}
 	}
 
+	if len(r.LaunchChecklist) > 0 {
+		fmt.Println("\nLaunch checklist:")
+		ctw := tabwriter.NewWriter(stdoutWriter{}, 0, 0, 2, ' ', 0)
+		fmt.Fprintln(ctw, "CHECK\tSTATUS\tDETAIL\tREMEDY")
+		for _, item := range r.LaunchChecklist {
+			remedy := item.Remedy
+			if remedy == "" {
+				remedy = "—"
+			}
+			fmt.Fprintf(ctw, "%s\t%s\t%s\t%s\n", item.Label, item.Status, item.Detail, remedy)
+		}
+		_ = ctw.Flush()
+	}
+
 	if len(r.NextActions) == 0 {
 		fmt.Println("\nNext actions: none. Core launch path is ready.")
 		return
@@ -310,6 +337,13 @@ func valueOr(v, fallback string) string {
 		return fallback
 	}
 	return v
+}
+
+func launchGateError(r launchReadiness, strict bool, minScore int) error {
+	if minScore > 0 && r.Summary.Score < minScore {
+		return fmt.Errorf("launch readiness score is %d%%, below required %d%%", r.Summary.Score, minScore)
+	}
+	return launchStrictError(r.Summary.Status, strict)
 }
 
 func launchStrictError(status string, strict bool) error {
