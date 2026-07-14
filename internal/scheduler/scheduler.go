@@ -65,9 +65,9 @@ type Scheduler struct {
 	defaultMu      sync.RWMutex
 	defaultOutputs map[string]agent.ScheduleOutput
 
-	// sink, when set, receives a schedule.output event for every scheduled
-	// delivery attempt (delivered or not) so results are visible in Activity and
-	// never silently vanish. Wired to the gateway EventHub.
+	// sink, when set, receives schedule telemetry events for delivery, failures,
+	// and auto-disable decisions so scheduled work is visible in Activity and
+	// never silently vanishes. Wired to the gateway EventHub.
 	sink EventSink
 }
 
@@ -77,7 +77,7 @@ type EventSink interface {
 	Emit(message.Event)
 }
 
-// SetEventSink wires an event sink so scheduled-delivery outcomes are recorded.
+// SetEventSink wires an event sink so scheduled-run outcomes are recorded.
 // Safe to call once at startup.
 func (s *Scheduler) SetEventSink(sink EventSink) {
 	s.mu.Lock()
@@ -163,22 +163,23 @@ func (s *Scheduler) SetConsecutiveFailLimit(n int) {
 }
 
 // recordFireResult updates the consecutive-failure counter for a cron agent and
-// auto-disables it once the limit is reached. Returns true if the agent was
-// just disabled. A successful run (ok=true) resets the counter.
-func (s *Scheduler) recordFireResult(agentID string, ok bool) bool {
+// auto-disables it once the limit is reached. It returns whether the agent was
+// just disabled and the current consecutive failure count. A successful run
+// (ok=true) resets the counter.
+func (s *Scheduler) recordFireResult(agentID string, ok bool) (bool, int) {
 	s.failMu.Lock()
 	limit := s.consecutiveFailLimit
 	if ok {
 		delete(s.failCounts, agentID)
 		s.failMu.Unlock()
-		return false
+		return false, 0
 	}
 	s.failCounts[agentID]++
 	count := s.failCounts[agentID]
 	s.failMu.Unlock()
 
 	if limit <= 0 || count < limit {
-		return false
+		return false, count
 	}
 	// Quarantine the agent: stop it firing and disable it in memory so a fixed
 	// SOUL.yaml (saved later) re-enables it via the normal reload path.
@@ -194,7 +195,7 @@ func (s *Scheduler) recordFireResult(agentID string, ok bool) bool {
 		zap.String("agent", agentID),
 		zap.Int("consecutive_failures", count),
 		zap.Bool("disabled", disabled))
-	return true
+	return true, count
 }
 
 // SetStatePath enables durable scheduler bookkeeping. The scheduler uses this
@@ -468,7 +469,8 @@ func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
 		if isCron {
 			// Track consecutive failures; auto-disable a chronically-failing
 			// cron agent so it stops firing on a loop nobody is watching.
-			s.recordFireResult(agentID, false)
+			disabled, failures := s.recordFireResult(agentID, false)
+			s.reportRunFailure(def, msg, triggerType, err, elapsed, failures, disabled)
 		}
 		return
 	}
@@ -508,6 +510,47 @@ func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
 			return replyText
 		}()),
 	)
+}
+
+func (s *Scheduler) reportRunFailure(def *agent.Definition, source message.Message, triggerType string, runErr error, elapsed time.Duration, consecutiveFailures int, autoDisabled bool) {
+	if def == nil || runErr == nil {
+		return
+	}
+	s.mu.Lock()
+	sink := s.sink
+	s.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	payload := map[string]any{
+		"trigger":              triggerType,
+		"error":                runErr.Error(),
+		"elapsed_ms":           elapsed.Milliseconds(),
+		"consecutive_failures": consecutiveFailures,
+		"auto_disabled":        autoDisabled,
+		"runbook":              "Open Activity, use Debug in Studio, fix the failing node/provider/channel, then re-enable the cron agent.",
+	}
+	sink.Emit(message.Event{
+		Type:      "schedule.run_failed",
+		AgentID:   def.ID,
+		SessionID: source.SessionID,
+		Timestamp: time.Now().UTC(),
+		Payload:   payload,
+	})
+	if autoDisabled {
+		sink.Emit(message.Event{
+			Type:      "schedule.auto_disabled",
+			AgentID:   def.ID,
+			SessionID: source.SessionID,
+			Timestamp: time.Now().UTC(),
+			Payload: map[string]any{
+				"trigger":              triggerType,
+				"error":                runErr.Error(),
+				"consecutive_failures": consecutiveFailures,
+				"runbook":              "The scheduler quarantined this cron agent after repeated failures. Fix the agent, then re-enable it from Studio or Agents.",
+			},
+		})
+	}
 }
 
 func (s *Scheduler) runMissedOnStartup() {
