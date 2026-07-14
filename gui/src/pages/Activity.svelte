@@ -162,6 +162,12 @@
     window.location.hash = `#browser?${params.toString()}`
   }
 
+  function openRunBrowserTrace(run) {
+    if (!run?.agentId || !run?.sessionId) return
+    const params = new URLSearchParams({ agent_id: run.agentId, session_id: run.sessionId })
+    window.location.hash = `#browser?${params.toString()}`
+  }
+
   onMount(() => {
     const params = hashParams()
     routeAgentId = params.get('agent_id') || ''
@@ -191,6 +197,7 @@
   function normalizeRunHistory(rows) {
     return (rows || []).map(r => ({
       id: r.runId || r.sessionId || '',
+      agentId: r.agentId || '',
       sessionId: r.sessionId || r.runId || '',
       trigger: r.trigger || r.channel || '',
       source: r.source || 'run-history',
@@ -205,6 +212,8 @@
       deliveryChannel: r.deliveryChannel || '',
       deliveryTo: r.deliveryTo || '',
       deliveryError: r.deliveryError || '',
+      hasBrowserTrace: !!r.hasBrowserTrace,
+      browserEvents: r.browserEvents || 0,
     })).filter(r => r.id).sort((a, b) => new Date(b.updatedAt || b.startedAt || 0) - new Date(a.updatedAt || a.startedAt || 0))
   }
 
@@ -372,6 +381,9 @@
             {#if run.deliveryChannel || run.deliveryStatus}
               <span class="run-delivery">{run.deliveryChannel || 'delivery'} · {run.deliveryStatus || 'unknown'}</span>
             {/if}
+            {#if run.hasBrowserTrace}
+              <span class="run-browser">Browser trace · {run.browserEvents || 1} event{(run.browserEvents || 1) === 1 ? '' : 's'}</span>
+            {/if}
           </button>
         {/each}
       </div>
@@ -383,6 +395,9 @@
       <span class="source-label">Run</span>
       <code class="source-path">{runTitle(runFilter)}</code>
       <span class="source-count">session {runFilter.sessionId || '—'}</span>
+      {#if runFilter.hasBrowserTrace}
+        <button class="row-action browser" on:click={() => openRunBrowserTrace(runFilter)}>Browser trace</button>
+      {/if}
     </div>
   {/if}
 
@@ -504,9 +519,10 @@
   .run-card.success { border-left: 3px solid #4caf82; }
   .run-status { font-size: .68rem; text-transform: uppercase; letter-spacing: .05em; color: #8b85ff; font-weight: 700; }
   .run-time { font-size: .66rem; color: #6b7294; justify-self: end; }
-  .run-trigger, .run-preview, .run-delivery { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .run-trigger, .run-preview, .run-delivery, .run-browser { grid-column: 1 / -1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .run-trigger { color: #e7e8f5; font-size: .76rem; }
   .run-preview, .run-delivery { color: #7b82a8; font-size: .68rem; }
+  .run-browser { color: #8bdcff; font-size: .68rem; }
 
   .log-panel {
     flex: 1; min-height: 0; overflow-y: auto;
