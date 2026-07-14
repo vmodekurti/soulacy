@@ -121,6 +121,10 @@ Open **Channels** in the web UI:
 
 - Channel cards show **Agent mappings**, including adapter ID, agent ID, and connection state.
 - Channel cards show **Delivery checks** with failures, warnings, and remedies for missing tokens, missing default destinations, offline adapters, and broken bot mappings.
+- Channel cards expose **Test** and **Diagnose** paths for outbound delivery.
+  Failed tests return the same structured diagnosis used in Activity and support
+  bundles, so `chat not found`, `missing scope`, bad webhook URLs, and rate
+  limits are visible before a cron job depends on them.
 - Click **Edit** on Telegram, Slack, or Discord to manage **Bot mappings**.
 - Bot mapping rows record a friendly bot name and provide an agent ID dropdown populated from your installed agents.
 - After saving channel settings, click **Restart Gateway** from the banner to reconnect adapters.
@@ -141,7 +145,7 @@ schedule:
     bot_name: "Finance Bot"
 ```
 
-`channel` is the adapter ID shown in **Channels -> Agent mappings**. `to` is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, WhatsApp recipient number, email address, or an override webhook URL for outbound webhook-style channels.
+`channel` is the adapter ID shown in **Channels -> Agent mappings**. `to` is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, WhatsApp recipient number, email address, or an override webhook URL for outbound webhook-style channels such as Teams, Google Chat, and generic outgoing webhooks.
 
 If a scheduled run succeeds but no message appears in the destination, check the
 channel card's **Delivery checks** first. The most common causes are:
@@ -151,6 +155,7 @@ channel card's **Delivery checks** first. The most common causes are:
 - The bot token is missing or invalid.
 - `schedule.output.to` or the channel-level default output destination is missing.
 - The bot is not allowed to post to the target group/channel.
+- A webhook-style channel URL was rotated or deleted in the destination app.
 
 ## Generic outbound send
 
