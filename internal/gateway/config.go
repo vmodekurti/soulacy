@@ -343,6 +343,9 @@ func (s *Server) handlePatchConfig(c *fiber.Ctx) error {
 	}
 
 	s.log.Info("config updated via API", zap.String("path", s.cfgPath))
+	s.recordAdminAudit(c, "config.patch", "config", s.cfgPath, "ok", map[string]any{
+		"sections": configPatchSections(patch),
+	})
 
 	return c.JSON(fiber.Map{
 		"ok":      true,

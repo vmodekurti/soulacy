@@ -640,6 +640,7 @@ func (s *Server) buildApp() *fiber.App {
 	//   curl -H 'Authorization: Bearer <key>' http://gw/api/v1/metrics
 	api.Get("/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), adaptor.HTTPHandler(metrics.Handler()))
 	api.Post("/admin/restart", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleRestart)
+	api.Get("/admin/audit", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleAdminAudit)
 	api.Get("/onboarding/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleOnboardingStatus)
 	api.Get("/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleReadiness)
 	api.Get("/deployment/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleDeploymentStatus)

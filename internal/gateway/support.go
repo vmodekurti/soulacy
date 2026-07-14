@@ -44,8 +44,9 @@ func (s *Server) supportBundleOptions(c *fiber.Ctx) supportbundle.Options {
 			"channels":  s.channelDoctorChecks(),
 		},
 		ExtraJSON: map[string]any{
-			"readiness":  s.readinessPayload(c),
-			"run_ledger": s.supportRunLedger(),
+			"readiness":   s.readinessPayload(c),
+			"run_ledger":  s.supportRunLedger(),
+			"admin_audit": s.supportAdminAudit(),
 			"release": fiber.Map{
 				"version":         config.Version,
 				"update_manifest": s.updateManifestSource(),
@@ -54,6 +55,46 @@ func (s *Server) supportBundleOptions(c *fiber.Ctx) supportbundle.Options {
 				"install_command": "sy update install --yes",
 			},
 		},
+	}
+}
+
+func (s *Server) supportAdminAudit() fiber.Map {
+	if s == nil || s.actions == nil {
+		return fiber.Map{
+			"available": false,
+			"reason":    "action log disabled",
+		}
+	}
+	q, ok := s.actions.(eventQuerier)
+	if !ok {
+		return fiber.Map{
+			"available": false,
+			"reason":    "durable action log backend does not support event queries",
+		}
+	}
+	events, err := q.QueryEvents(adminAuditAgentID, "", 1000, adminAuditEventTypes())
+	if err != nil {
+		return fiber.Map{
+			"available": false,
+			"reason":    err.Error(),
+		}
+	}
+	records := make([]adminAuditRecord, 0, len(events))
+	for _, ev := range events {
+		rec, ok := adminAuditRecordFromPayload(ev.Payload)
+		if !ok {
+			continue
+		}
+		if rec.Timestamp.IsZero() {
+			rec.Timestamp = ev.Timestamp
+		}
+		records = append(records, rec)
+	}
+	return fiber.Map{
+		"available": true,
+		"source":    "action-log",
+		"count":     len(records),
+		"events":    records,
 	}
 }
 

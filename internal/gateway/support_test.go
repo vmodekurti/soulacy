@@ -53,6 +53,10 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 			Type: "schedule.output", AgentID: "demo", SessionID: "cron-1", Timestamp: base.Add(2 * time.Second),
 			Payload: map[string]any{"delivered": false, "channel": "telegram", "to": "123", "reason": "chat not found", "reply_preview": "daily support report"},
 		},
+		{
+			Type: "admin.audit", AgentID: adminAuditAgentID, SessionID: "req-1", Timestamp: base.Add(3 * time.Second),
+			Payload: adminAuditRecord{Timestamp: base.Add(3 * time.Second), Action: "config.patch", Resource: "config", Actor: "api-key", Status: "ok", Details: map[string]any{"sections": []string{"log"}}},
+		},
 	}}
 
 	req, err := http.NewRequest(http.MethodGet, "/api/v1/support/bundle", nil)
@@ -94,7 +98,7 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 		files[f.Name] = string(body)
 		joined.Write(body)
 	}
-	for _, want := range []string{"manifest.json", "doctor.json", "readiness.json", "release.json", "run_ledger.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
+	for _, want := range []string{"manifest.json", "doctor.json", "readiness.json", "release.json", "run_ledger.json", "admin_audit.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
 		if !names[want] {
 			t.Fatalf("bundle missing %s; got %#v", want, names)
 		}
@@ -119,6 +123,16 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 	}
 	if got := run["output"]; got != "daily support report" {
 		t.Fatalf("output = %v, want daily support report", got)
+	}
+	var audit map[string]any
+	if err := json.Unmarshal([]byte(files["admin_audit.json"]), &audit); err != nil {
+		t.Fatalf("admin_audit.json is not JSON: %v\n%s", err, files["admin_audit.json"])
+	}
+	if audit["available"] != true || audit["source"] != "action-log" {
+		t.Fatalf("admin audit unavailable or wrong source: %#v", audit)
+	}
+	if got := int(audit["count"].(float64)); got != 1 {
+		t.Fatalf("admin audit count = %d, want 1", got)
 	}
 	all := joined.String()
 	for _, forbidden := range []string{"top-secret-api-key", "xoxb-agent-secret", "xoxb-log-secret"} {

@@ -112,7 +112,7 @@ type fakeTailBackend struct {
 	events []message.Event
 }
 
-func (f *fakeTailBackend) Append(ev message.Event)     {}
+func (f *fakeTailBackend) Append(ev message.Event)     { f.events = append(f.events, ev) }
 func (f *fakeTailBackend) EventFilePath(string) string { return "" }
 func (f *fakeTailBackend) Close() error                { return nil }
 func (f *fakeTailBackend) Tail(agentID string, limit int) ([]message.Event, error) {
