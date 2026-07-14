@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-14T10:47:21.621Z",
+  "generated_at": "2026-07-14T11:14:43.159Z",
   "base_url": "http://127.0.0.1:18894",
   "viewport": {
     "width": 1440,
@@ -10,77 +10,77 @@
       "name": "dashboard",
       "path": "/",
       "screenshot": "dashboard.png",
-      "bytes": 151008,
-      "text_length": 6046
+      "bytes": 151104,
+      "text_length": 6092
     },
     {
       "name": "studio",
       "path": "/#studio",
       "screenshot": "studio.png",
-      "bytes": 139147,
+      "bytes": 139119,
       "text_length": 4844
     },
     {
       "name": "agents",
       "path": "/#agents",
       "screenshot": "agents.png",
-      "bytes": 66796,
+      "bytes": 66793,
       "text_length": 444
     },
     {
       "name": "chat",
       "path": "/#chat",
       "screenshot": "chat.png",
-      "bytes": 80667,
+      "bytes": 80396,
       "text_length": 486
     },
     {
       "name": "channels",
       "path": "/#channels",
       "screenshot": "channels.png",
-      "bytes": 179401,
+      "bytes": 53396,
       "text_length": 3900
     },
     {
       "name": "knowledge",
       "path": "/#knowledge",
       "screenshot": "knowledge.png",
-      "bytes": 74382,
+      "bytes": 73751,
       "text_length": 496
     },
     {
       "name": "schedule",
       "path": "/#schedule",
       "screenshot": "schedule.png",
-      "bytes": 120101,
-      "text_length": 1103
+      "bytes": 117829,
+      "text_length": 1121
     },
     {
       "name": "providers",
       "path": "/#providers",
       "screenshot": "providers.png",
-      "bytes": 135986,
+      "bytes": 136437,
       "text_length": 1632
     },
     {
       "name": "activity",
       "path": "/#activity",
       "screenshot": "activity.png",
-      "bytes": 68784,
+      "bytes": 76812,
       "text_length": 579
     },
     {
       "name": "skills",
       "path": "/#skills",
       "screenshot": "skills.png",
-      "bytes": 168214,
+      "bytes": 92919,
       "text_length": 23244
     },
     {
       "name": "config",
       "path": "/#config",
       "screenshot": "config.png",
-      "bytes": 201953,
+      "bytes": 201649,
       "text_length": 6974
     }
   ]
