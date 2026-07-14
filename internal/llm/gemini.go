@@ -337,32 +337,49 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		body["tools"] = []map[string]any{{"functionDeclarations": funcs}}
 	}
 
-	payload, err := json.Marshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("google: marshal request: %w", err)
-	}
-
 	// Use the x-goog-api-key header rather than a ?key=... URL param so the
 	// key can't end up in any access log along the outbound chain.
 	// (PRODUCTION_AUDIT → HIGH/Security)
 	endpoint := fmt.Sprintf("%s/v1beta/models/%s:generateContent",
 		p.baseURL, url.PathEscape(model))
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
-	if err != nil {
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-goog-api-key", p.apiKey)
 
-	resp, err := DoWithRetry(ctx, p.client, httpReq, RetryConfig{})
-	if err != nil {
-		return nil, fmt.Errorf("google: request failed: %w", err)
-	}
-	defer resp.Body.Close()
+	strippedOptional := map[string]bool{}
+	var bodyBytes []byte
+	for {
+		payload, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("google: marshal request: %w", err)
+		}
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		httpReq.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(payload)), nil
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("x-goog-api-key", p.apiKey)
 
-	bodyBytes, _ := io.ReadAll(resp.Body)
+		resp, err := DoWithRetry(ctx, p.client, httpReq, RetryConfig{})
+		if err != nil {
+			return nil, fmt.Errorf("google: request failed: %w", err)
+		}
+		bodyBytes, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
 
-	if resp.StatusCode >= 300 {
+		if resp.StatusCode < 300 {
+			break
+		}
+		param := geminiUnsupportedOptionalParam(bodyBytes)
+		if param != "" && !strippedOptional[param] {
+			if param == "safetySettings" {
+				delete(body, "safetySettings")
+			} else if cfg, ok := body["generationConfig"].(map[string]any); ok {
+				delete(cfg, param)
+			}
+			strippedOptional[param] = true
+			continue
+		}
 		if len(bodyBytes) == 0 {
 			return nil, fmt.Errorf("google: http %d (empty response body — request may be malformed or too large)", resp.StatusCode)
 		}
@@ -576,4 +593,40 @@ func sanitizeSchemaForGemini(s map[string]any) map[string]any {
 	}
 
 	return out
+}
+
+func geminiUnsupportedOptionalParam(body []byte) string {
+	msg := strings.ToLower(string(body))
+	if msg == "" {
+		return ""
+	}
+	if !(strings.Contains(msg, "unsupported") ||
+		strings.Contains(msg, "unrecognized") ||
+		strings.Contains(msg, "unknown") ||
+		strings.Contains(msg, "deprecated") ||
+		strings.Contains(msg, "not supported") ||
+		strings.Contains(msg, "invalid_argument") ||
+		strings.Contains(msg, "bad request") ||
+		strings.Contains(msg, "bad_request")) {
+		return ""
+	}
+	for _, candidate := range []struct {
+		key     string
+		markers []string
+	}{
+		{"thinkingConfig", []string{"thinkingconfig", "thinking_config", "thinking budget", "thinkingbudget", "thinking mode", "thinkingmode"}},
+		{"responseSchema", []string{"responseschema", "response_schema", "response schema"}},
+		{"responseMimeType", []string{"responsemimetype", "response_mime_type", "response mime", "response mime type"}},
+		{"topP", []string{"topp", "top_p", "top p"}},
+		{"temperature", []string{"temperature"}},
+		{"maxOutputTokens", []string{"maxoutputtokens", "max_output_tokens", "max output tokens"}},
+		{"safetySettings", []string{"safetysettings", "safety_settings", "safety settings", "block_none"}},
+	} {
+		for _, marker := range candidate.markers {
+			if strings.Contains(msg, marker) {
+				return candidate.key
+			}
+		}
+	}
+	return ""
 }
