@@ -6,6 +6,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"github.com/soulacy/soulacy/internal/mcp"
+	"github.com/soulacy/soulacy/pkg/agent"
 )
 
 type browserAutomationReadiness struct {
@@ -15,6 +16,7 @@ type browserAutomationReadiness struct {
 	Total       int                       `json:"total"`
 	Checks      []browserAutomationCheck  `json:"checks"`
 	Sidecars    []browserAutomationServer `json:"sidecars"`
+	Policy      browserPolicyPosture      `json:"policy"`
 	NextActions []executorAction          `json:"next_actions,omitempty"`
 }
 
@@ -36,12 +38,21 @@ type browserAutomationServer struct {
 	Detail   string   `json:"detail,omitempty"`
 }
 
+type browserPolicyPosture struct {
+	Status          string   `json:"status"`
+	ManagedAgents   int      `json:"managed_agents"`
+	UnmanagedAgents int      `json:"unmanaged_agents"`
+	UnmanagedIDs    []string `json:"unmanaged_ids,omitempty"`
+	Detail          string   `json:"detail"`
+}
+
 func (s *Server) handleBrowserStatus(c *fiber.Ctx) error {
 	return c.JSON(s.browserAutomationReadiness())
 }
 
 func (s *Server) browserAutomationReadiness() browserAutomationReadiness {
 	servers := s.browserAutomationServers()
+	policyPosture := s.browserPolicyPosture(servers)
 	hasSidecar, connectedSidecar, hasHeadless, hasTools := false, false, false, false
 	for _, srv := range servers {
 		hasSidecar = true
@@ -88,8 +99,8 @@ func (s *Server) browserAutomationReadiness() browserAutomationReadiness {
 		{
 			Key:    "policy",
 			Label:  "Domain policy",
-			Status: "ok",
-			Detail: "The Browser page shows each agent's allow/deny/prompt policy next to the trace.",
+			Status: policyPosture.Status,
+			Detail: policyPosture.Detail,
 			Href:   "#browser",
 		},
 	}
@@ -120,7 +131,50 @@ func (s *Server) browserAutomationReadiness() browserAutomationReadiness {
 		Total:       len(checks),
 		Checks:      checks,
 		Sidecars:    servers,
+		Policy:      policyPosture,
 		NextActions: actions,
+	}
+}
+
+func (s *Server) browserPolicyPosture(servers []browserAutomationServer) browserPolicyPosture {
+	if s == nil || s.loader == nil {
+		return browserPolicyPosture{Status: "warn", Detail: "Agent loader is unavailable, so browser policy coverage could not be verified."}
+	}
+	hasBrowserSidecar := len(servers) > 0
+	managed, unmanaged := 0, make([]string, 0)
+	for _, def := range s.loader.All() {
+		if def == nil || !agentUsesBrowserAutomation(def, hasBrowserSidecar) {
+			continue
+		}
+		if hasExplicitBrowserPolicy(def) {
+			managed++
+		} else {
+			unmanaged = append(unmanaged, def.ID)
+		}
+	}
+	if len(unmanaged) == 0 {
+		if managed == 0 {
+			return browserPolicyPosture{
+				Status: "ok",
+				Detail: "No browser-capable agents are currently detected; future browser agents should declare network/domain policy.",
+			}
+		}
+		return browserPolicyPosture{
+			Status:        "ok",
+			ManagedAgents: managed,
+			Detail:        "All detected browser-capable agents declare explicit network/domain policy.",
+		}
+	}
+	ids := unmanaged
+	if len(ids) > 6 {
+		ids = ids[:6]
+	}
+	return browserPolicyPosture{
+		Status:          "warn",
+		ManagedAgents:   managed,
+		UnmanagedAgents: len(unmanaged),
+		UnmanagedIDs:    ids,
+		Detail:          "Some browser-capable agents can navigate without explicit allow/deny/prompt policy. Add policy.network plus allow_domains or deny_domains before production.",
 	}
 }
 
@@ -187,6 +241,60 @@ func browserServerMode(srv mcp.ServerStatus) string {
 		return "remote"
 	}
 	return "visible"
+}
+
+func agentUsesBrowserAutomation(def *agent.Definition, hasBrowserSidecar bool) bool {
+	if def == nil {
+		return false
+	}
+	if strPtrHasBrowser(def.MCPServers) || strPtrHasBrowser(def.MCPTools) {
+		return true
+	}
+	if strPtrHasWildcard(def.MCPServers) || strPtrHasWildcard(def.MCPTools) {
+		return hasBrowserSidecar
+	}
+	for _, t := range def.Tools {
+		hay := strings.ToLower(t.Name + " " + t.Description)
+		if strings.Contains(hay, "browser") || strings.Contains(hay, "playwright") || strings.Contains(hay, "puppeteer") {
+			return true
+		}
+	}
+	return false
+}
+
+func hasExplicitBrowserPolicy(def *agent.Definition) bool {
+	if def == nil || !def.Policy.Enabled {
+		return false
+	}
+	return strings.TrimSpace(def.Policy.Network) != "" ||
+		len(def.Policy.AllowDomains) > 0 ||
+		len(def.Policy.DenyDomains) > 0
+}
+
+func strPtrHasBrowser(values *[]string) bool {
+	if values == nil {
+		return false
+	}
+	for _, v := range *values {
+		hay := strings.ToLower(strings.TrimSpace(v))
+		if strings.Contains(hay, "browser") || strings.Contains(hay, "playwright") || strings.Contains(hay, "puppeteer") || strings.Contains(hay, "screenshot") || strings.Contains(hay, "navigate") {
+			return true
+		}
+	}
+	return false
+}
+
+func strPtrHasWildcard(values *[]string) bool {
+	if values == nil {
+		return false
+	}
+	for _, v := range *values {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "*", "all":
+			return true
+		}
+	}
+	return false
 }
 
 func parityBrowserAutomation(b browserAutomationReadiness) parityArea {
