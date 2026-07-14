@@ -1,19 +1,23 @@
 package gateway
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 type publicDocsReadiness struct {
-	Status      string   `json:"status"`
-	Score       int      `json:"score"`
-	SiteURL     string   `json:"site_url,omitempty"`
-	Checks      []string `json:"checks"`
-	Missing     []string `json:"missing,omitempty"`
-	Detail      string   `json:"detail"`
-	NextActions []string `json:"next_actions,omitempty"`
+	Status                string   `json:"status"`
+	Score                 int      `json:"score"`
+	SiteURL               string   `json:"site_url,omitempty"`
+	Checks                []string `json:"checks"`
+	Missing               []string `json:"missing,omitempty"`
+	Detail                string   `json:"detail"`
+	ScreenshotGeneratedAt string   `json:"screenshot_generated_at,omitempty"`
+	ScreenshotAgeHours    int      `json:"screenshot_age_hours,omitempty"`
+	NextActions           []string `json:"next_actions,omitempty"`
 }
 
 func (s *Server) publicDocsReadiness() publicDocsReadiness {
@@ -50,6 +54,7 @@ func (s *Server) publicDocsReadiness() publicDocsReadiness {
 	makefile := readText(filepath.Join(root, "Makefile"))
 	installer := readText(filepath.Join(root, "docs", "install.sh"))
 	manifest := readText(filepath.Join(root, "docs", "assets", "screenshots", "manifest.json"))
+	screenshotGeneratedAt, screenshotAgeHours, screenshotFresh := screenshotManifestFreshness(manifest, 14*24*time.Hour)
 
 	siteURL := docsSetting(mkdocs, "site_url:")
 	if siteURL != "" {
@@ -77,6 +82,11 @@ func (s *Server) publicDocsReadiness() publicDocsReadiness {
 	} else {
 		missing = append(missing, "repeatable GUI screenshot evidence")
 	}
+	if screenshotFresh {
+		checks = append(checks, "fresh GUI screenshot evidence")
+	} else {
+		missing = append(missing, "fresh GUI screenshot evidence")
+	}
 
 	status, score := "ok", 96
 	detail := "Public docs build strictly, deploy through GitHub Pages with the canonical installer, and include repeatable GUI screenshot evidence."
@@ -89,13 +99,15 @@ func (s *Server) publicDocsReadiness() publicDocsReadiness {
 	}
 
 	return publicDocsReadiness{
-		Status:      status,
-		Score:       score,
-		SiteURL:     siteURL,
-		Checks:      checks,
-		Missing:     missing,
-		Detail:      detail,
-		NextActions: next,
+		Status:                status,
+		Score:                 score,
+		SiteURL:               siteURL,
+		Checks:                checks,
+		Missing:               missing,
+		Detail:                detail,
+		ScreenshotGeneratedAt: screenshotGeneratedAt,
+		ScreenshotAgeHours:    screenshotAgeHours,
+		NextActions:           next,
 	}
 }
 
@@ -166,4 +178,23 @@ func docsSetting(text, key string) string {
 		}
 	}
 	return ""
+}
+
+func screenshotManifestFreshness(manifest string, maxAge time.Duration) (string, int, bool) {
+	var payload struct {
+		GeneratedAt string `json:"generated_at"`
+		Routes      []any  `json:"routes"`
+	}
+	if err := json.Unmarshal([]byte(manifest), &payload); err != nil || payload.GeneratedAt == "" || len(payload.Routes) == 0 {
+		return "", 0, false
+	}
+	generated, err := time.Parse(time.RFC3339, payload.GeneratedAt)
+	if err != nil {
+		return payload.GeneratedAt, 0, false
+	}
+	age := time.Since(generated)
+	if age < 0 {
+		age = 0
+	}
+	return payload.GeneratedAt, int(age.Hours()), age <= maxAge
 }
