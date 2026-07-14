@@ -1,6 +1,6 @@
 import App from './App.svelte'
 import { installPrompt, appInstalled } from './lib/stores.js'
-import { looksLikeStaleAssetError, recoverFromStaleAssets } from './lib/stalerecovery.js'
+import { clearStaleAssetRecoveryMarker, looksLikeStaleAssetError, recoverFromStaleAssets } from './lib/stalerecovery.js'
 
 window.addEventListener('error', (event) => {
   if (looksLikeStaleAssetError(event.error || event.message)) recoverFromStaleAssets()
@@ -10,6 +10,7 @@ window.addEventListener('unhandledrejection', (event) => {
 })
 
 const app = new App({ target: document.getElementById('app') })
+clearStaleAssetRecoveryMarker()
 
 if ('serviceWorker' in navigator && import.meta.env.PROD) {
   window.addEventListener('load', () => {
