@@ -59,6 +59,9 @@ func (s *Server) channelDeliveryReadiness() channelDeliveryReadiness {
 		if spec.ID == "webhook" && defaultTo == "" && valuePresent(cfg["url"]) {
 			defaultTo = "configured webhook URL"
 		}
+		if spec.ID == "teams" && defaultTo == "" && (valuePresent(cfg["webhook_url"]) || valuePresent(cfg["url"])) {
+			defaultTo = "configured Teams webhook"
+		}
 		if channelHasDefaultDeliveryTarget(spec.ID, cfg) {
 			targets = append(targets, s.channelDeliveryTarget(spec, spec.ID, "Default outbound", "default", "", defaultTo, false, true, enabled, statuses))
 		}
@@ -119,6 +122,9 @@ func channelHasDefaultDeliveryTarget(channelID string, cfg map[string]any) bool 
 	if channelID == "webhook" && valuePresent(cfg["url"]) {
 		return true
 	}
+	if channelID == "teams" && (valuePresent(cfg["webhook_url"]) || valuePresent(cfg["url"])) {
+		return true
+	}
 	return valuePresent(cfg["default_output_to"]) || valuePresent(cfg["token"]) || valuePresent(cfg["bot_token"]) || valuePresent(cfg["access_token"])
 }
 
@@ -163,7 +169,7 @@ func (s *Server) channelDeliveryTarget(spec channelSpec, adapterID, label, mode,
 		target.Next = "Select an agent for this bot mapping or mark it send-only."
 		return target
 	}
-	if outbound && strings.TrimSpace(to) == "" && adapterID != "webhook" {
+	if outbound && strings.TrimSpace(to) == "" && adapterID != "webhook" && adapterID != "teams" {
 		target.Status = "fail"
 		target.Issue = "Outbound destination is missing."
 		target.Next = "Set default_output_to for this channel or bot mapping."
