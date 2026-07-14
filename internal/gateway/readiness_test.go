@@ -82,6 +82,11 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if _, ok := body["browser"].(map[string]any); !ok {
 		t.Fatalf("missing browser readiness: %#v", body)
 	}
+	if docs, ok := body["docs"].(map[string]any); !ok {
+		t.Fatalf("missing docs readiness: %#v", body)
+	} else if docs["status"] == "" || docs["score"] == nil {
+		t.Fatalf("docs readiness incomplete: %#v", docs)
+	}
 	if deployment, ok := body["deployment"].(map[string]any); !ok {
 		t.Fatalf("missing deployment readiness: %#v", body)
 	} else if deployment["profile"] == "" || deployment["status"] == "" {

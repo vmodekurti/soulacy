@@ -103,6 +103,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	slo := s.sloReadiness(c)
 	opsAlerts := s.opsAlertReadiness()
 	studioContracts := s.studioContractReadiness(c)
+	docs := s.publicDocsReadiness()
 	deployment := s.deploymentReadiness(providersReady, usableOutbound, enabledAgents, updateManifest, costs, slo)
 
 	journey := []readinessItem{
@@ -149,7 +150,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	score := readinessScore(journey)
 	readyItems, warningItems, blockerItems := readinessStatusCounts(journey)
 	enterprise := s.enterpriseParityPosture()
-	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo, opsAlerts, studioContracts)
+	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo, opsAlerts, studioContracts, docs)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
 	checklist := buildLaunchChecklist(providers, channels, vault, deployment)
@@ -206,6 +207,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"slo":              slo,
 		"ops_alerts":       opsAlerts,
 		"studio_contracts": studioContracts,
+		"docs":             docs,
 		"deployment":       deployment,
 		"parity": fiber.Map{
 			"score":    parityScore,
@@ -230,7 +232,7 @@ type enterpriseParityPosture struct {
 	Status   string
 }
 
-func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness, slo sloReadiness, opsAlerts opsAlertReadiness, contracts studioContractReadiness) []parityArea {
+func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, templates int, updateManifest string, enterprise enterpriseParityPosture, executors executorReadiness, browser browserAutomationReadiness, marketplace marketplaceReadiness, mobile mobileCompanionReadiness, chat chatExperienceReadiness, costs costReadiness, slo sloReadiness, opsAlerts opsAlertReadiness, contracts studioContractReadiness, docs publicDocsReadiness) []parityArea {
 	areas := []parityArea{
 		parityOnboarding(providersReady, enabledAgents, templates, updateManifest),
 		parityChannels(usableOutbound),
@@ -243,6 +245,7 @@ func (s *Server) parityAreas(providersReady, usableOutbound, enabledAgents, sche
 		parityRemoteExecution(executors),
 		parityMobileCompanion(mobile),
 		parityMarketplace(marketplace),
+		parityDocsPublishing(docs),
 		parityEnterprise(enterprise),
 	}
 	return areas
