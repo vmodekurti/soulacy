@@ -568,6 +568,16 @@ export const api = {
         body: JSON.stringify({ workflow }),
       }),
     /**
+     * Studio generation contract: fixed graph validation + runtime preflight +
+     * authoring-rule hygiene in one deterministic report.
+     * @returns {Promise<{ok:boolean,score:number,blockers:number,warnings:number,summary:string,checks:{id,title,status,nodeId?,message,fix?}[]}>}
+     */
+    contract: ({ workflow } = {}) =>
+      apiFetch('/studio/contract', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+    /**
      * Deterministic data-flow repair: fill empty required tool args + reconcile
      * dangling {{ .var }} references to the right upstream output.
      * @returns {Promise<{workflow, fixed:number}>}

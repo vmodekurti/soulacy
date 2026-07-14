@@ -823,6 +823,8 @@ func (s *Server) buildApp() *fiber.App {
 	// Studio plugin backend: consolidated pre-save validation (missing tools/MCP/
 	// channels/secrets, empty required args, invalid schedules).
 	api.Post("/studio/preflight", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioPreflight)
+	// Studio generation contract: graph + runtime preflight + authoring rules.
+	api.Post("/studio/contract", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioContract)
 	// Studio plugin backend: builder-model strength advice (warn on weak models).
 	api.Get("/studio/model-advice", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioModelAdvice)
 	// Studio plugin backend: deterministic + iterative-LLM repair for the "Fix
