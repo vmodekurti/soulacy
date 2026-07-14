@@ -9,7 +9,7 @@ Think of it as Ollama — but for agents.
 ## Build it. Run it. Fix and learn.
 
 - **Build it** — describe what you want in plain English in [Studio](using/studio.md),
-  or start from a [template](templates/index.md). Soulacy drafts the plan,
+  or start from a [template](template-guides/index.md). Soulacy drafts the plan,
   generates the workflow, and checks it end-to-end before you save.
 - **Run it** — deploy to Telegram, Slack, Discord, WhatsApp, HTTP, or a schedule.
   One binary, no cloud required.
