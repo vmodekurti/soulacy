@@ -71,6 +71,7 @@
   let proposals      = []
   let learningSummary = null
   let learningEvidence = null
+  let fleetLearningEvidence = null
   let learningBusy   = false
   let reflectingRuns = false
   let proposalStatus = 'pending'
@@ -196,14 +197,16 @@
   async function loadLearning() {
     learningBusy = true
     try {
-      const [res, summaryRes, evidenceRes] = await Promise.all([
+      const [res, summaryRes, evidenceRes, fleetEvidenceRes] = await Promise.all([
         api.brainMemory.learningProposals(selectedID, proposalStatus),
         api.brainMemory.learningSummary(selectedID),
         api.brainMemory.learningEvidence(selectedID),
+        api.brainMemory.learningEvidence(''),
       ])
       proposals = res.proposals || []
       learningSummary = summaryRes.summary || null
       learningEvidence = evidenceRes.evidence || null
+      fleetLearningEvidence = fleetEvidenceRes.evidence || null
     } catch (e) { error = e.message }
     learningBusy = false
   }
@@ -340,6 +343,22 @@
     return Object.entries(obj || {})
       .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
       .slice(0, limit)
+  }
+
+  function agentName(id) {
+    const a = agentStats.find(x => x.agent_id === id)
+    return a?.agent_name || id
+  }
+
+  function maxTrend(ev) {
+    return Math.max(1, ...((ev?.trend || []).map(b => Math.max(b.runs || 0, b.skill_uses || 0, b.errors || 0, b.accepted || 0))))
+  }
+
+  function trendLabel(iso) {
+    if (!iso) return ''
+    try {
+      return new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+    } catch { return iso }
   }
 
   $: if (selectedID || activeTab) loadTab()
@@ -687,6 +706,50 @@
         {/if}
       </div>
     {/if}
+    {#if fleetLearningEvidence && ((fleetLearningEvidence.agents && fleetLearningEvidence.agents.length) || (fleetLearningEvidence.trend && fleetLearningEvidence.trend.length))}
+      <div class="learning-evidence fleet">
+        <div class="le-head">
+          <span class="le-title">Across agents</span>
+          <span class="le-sub">Portfolio view of accepted learning, reuse, and recurring-error movement across Soulacy.</span>
+        </div>
+        {#if fleetLearningEvidence.trend && fleetLearningEvidence.trend.length}
+          <div class="trend-grid" style={`--trend-max:${maxTrend(fleetLearningEvidence)}`}>
+            {#each fleetLearningEvidence.trend as b}
+              <div class="trend-week" title={`${trendLabel(b.start)}: ${b.runs || 0} runs, ${b.skill_uses || 0} skill uses, ${b.errors || 0} errors, ${b.accepted || 0} accepted`}>
+                <div class="trend-bars">
+                  <span class="bar runs" style={`height:${Math.max(3, ((b.runs || 0) / maxTrend(fleetLearningEvidence)) * 46)}px`}></span>
+                  <span class="bar reuse" style={`height:${Math.max(3, ((b.skill_uses || 0) / maxTrend(fleetLearningEvidence)) * 46)}px`}></span>
+                  <span class="bar errors" style={`height:${Math.max(3, ((b.errors || 0) / maxTrend(fleetLearningEvidence)) * 46)}px`}></span>
+                </div>
+                <span>{trendLabel(b.start)}</span>
+              </div>
+            {/each}
+          </div>
+          <div class="trend-legend">
+            <span><i class="runs"></i>Runs</span>
+            <span><i class="reuse"></i>Skill reuse</span>
+            <span><i class="errors"></i>Errors</span>
+          </div>
+        {/if}
+        {#if fleetLearningEvidence.agents && fleetLearningEvidence.agents.length}
+          <div class="agent-evidence-grid">
+            {#each fleetLearningEvidence.agents.slice(0, 8) as a}
+              <div class="agent-evidence-card" class:active={a.agent_id === selectedID}>
+                <div class="agent-evidence-head">
+                  <strong>{agentName(a.agent_id)}</strong>
+                  {#if a.last_activity}<span>{relTime(a.last_activity)}</span>{/if}
+                </div>
+                <div class="agent-evidence-metrics">
+                  <span>{a.accepted || 0}<em>accepted</em></span>
+                  <span>{a.total_skill_uses || 0}<em>uses</em></span>
+                  <span class:green={(a.error_reduction || 0) > 0}>{pct(a.error_reduction)}<em>fewer errors</em></span>
+                </div>
+              </div>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {/if}
     {#if learningBusy}
       <div class="empty-state"><div class="spinner"></div></div>
     {:else if proposals.length === 0}
@@ -929,6 +992,7 @@
   .lh-provenance{display:flex;align-items:center;gap:.35rem;flex-wrap:wrap;font-size:.7rem;color:#6b7294}
   .lh-provenance span{font-weight:700;text-transform:uppercase;letter-spacing:.05em}
   .learning-evidence{background:#12142250;border:1px solid #1a1e36;border-radius:10px;padding:.8rem .9rem;margin-top:.65rem;display:flex;flex-direction:column;gap:.7rem;flex-shrink:0}
+  .learning-evidence.fleet{border-color:rgba(95,206,154,.26);background:linear-gradient(180deg,rgba(95,206,154,.055),rgba(18,20,34,.32))}
   .le-head{display:flex;flex-direction:column;gap:.15rem}
   .le-title{font-size:.82rem;font-weight:750;color:#c5c9e8}
   .le-sub{font-size:.7rem;color:#6b7294}
@@ -946,6 +1010,27 @@
   .le-row code.le-err{color:#e6b17a}
   .le-row-meta{color:#8a91b8;white-space:nowrap}
   .le-row-meta.green{color:#5fce9a}
+  .trend-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:.45rem;align-items:end}
+  .trend-week{min-height:78px;background:#141626;border:1px solid #1a1e36;border-radius:8px;padding:.45rem .45rem .35rem;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;gap:.25rem}
+  .trend-week > span{font-size:.62rem;color:#6b7294;white-space:nowrap}
+  .trend-bars{height:50px;display:flex;align-items:flex-end;gap:3px}
+  .bar{display:block;width:8px;min-height:3px;border-radius:3px 3px 0 0;opacity:.9}
+  .bar.runs,.trend-legend i.runs{background:#8b85ff}
+  .bar.reuse,.trend-legend i.reuse{background:#5fce9a}
+  .bar.errors,.trend-legend i.errors{background:#ff8b9c}
+  .trend-legend{display:flex;gap:.8rem;flex-wrap:wrap;font-size:.66rem;color:#8a91b8}
+  .trend-legend span{display:flex;align-items:center;gap:.25rem}
+  .trend-legend i{display:inline-block;width:8px;height:8px;border-radius:2px}
+  .agent-evidence-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.5rem}
+  .agent-evidence-card{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.55rem .65rem;display:flex;flex-direction:column;gap:.45rem}
+  .agent-evidence-card.active{border-color:rgba(139,133,255,.45);background:rgba(139,133,255,.06)}
+  .agent-evidence-head{display:flex;align-items:center;justify-content:space-between;gap:.55rem}
+  .agent-evidence-head strong{font-size:.77rem;color:#c5c9e8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .agent-evidence-head span{font-size:.62rem;color:#6b7294;white-space:nowrap}
+  .agent-evidence-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:.35rem}
+  .agent-evidence-metrics span{font-size:.85rem;font-weight:750;color:#c5c9e8;display:flex;flex-direction:column;gap:.1rem;min-width:0}
+  .agent-evidence-metrics span.green{color:#5fce9a}
+  .agent-evidence-metrics em{font-style:normal;font-size:.56rem;font-weight:650;color:#6b7294;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
   .proposal-card{background:#141626;border:1px solid #1a1e36;border-radius:9px;padding:.8rem .95rem;display:flex;flex-direction:column;gap:.55rem}
   .proposal-head{display:flex;align-items:center;gap:.55rem;flex-wrap:wrap}
   .proposal-head strong{font-size:.86rem;color:#c5c9e8}
