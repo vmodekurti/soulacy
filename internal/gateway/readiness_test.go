@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +52,12 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	}
 	if _, ok := body["next_actions"].([]any); !ok {
 		t.Fatalf("missing next_actions: %#v", body)
+	}
+	if checklist, ok := body["launch_checklist"].([]any); !ok || len(checklist) == 0 {
+		t.Fatalf("missing launch_checklist: %#v", body)
+	}
+	if _, ok := body["vault"].(map[string]any); !ok {
+		t.Fatalf("missing vault readiness: %#v", body)
 	}
 	parity, ok := body["parity"].(map[string]any)
 	if !ok {
@@ -113,6 +120,45 @@ func TestReadinessUsesConfiguredUpdateManifest(t *testing.T) {
 	release := body["release"].(map[string]any)
 	if got := release["update_manifest"]; got != "https://releases.example.test/soulacy/manifest.json" {
 		t.Fatalf("update_manifest = %#v", got)
+	}
+}
+
+func TestLaunchChecklistSurfacesProviderAndVaultRemedies(t *testing.T) {
+	s := newTestGateway(t, "secret")
+
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/readiness", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("readiness status = %d body=%v", status, body)
+	}
+	checklist, ok := body["launch_checklist"].([]any)
+	if !ok || len(checklist) == 0 {
+		t.Fatalf("launch_checklist missing: %#v", body)
+	}
+	var sawProvider, sawVault bool
+	for _, raw := range checklist {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("checklist item is not object: %#v", raw)
+		}
+		key, _ := item["key"].(string)
+		if strings.HasPrefix(key, "provider:") {
+			sawProvider = true
+			if item["status"] != "fail" {
+				t.Fatalf("provider checklist status = %v, want fail; item=%v", item["status"], item)
+			}
+			if item["remedy"] == "" {
+				t.Fatalf("provider checklist missing remedy: %v", item)
+			}
+		}
+		if key == "vault" {
+			sawVault = true
+			if item["remedy"] == "" {
+				t.Fatalf("vault checklist missing remedy: %v", item)
+			}
+		}
+	}
+	if !sawProvider || !sawVault {
+		t.Fatalf("expected provider and vault items, saw provider=%v vault=%v checklist=%v", sawProvider, sawVault, checklist)
 	}
 }
 
