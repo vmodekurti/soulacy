@@ -21,15 +21,16 @@ import (
 
 // Step is one browser action in the trace.
 type Step struct {
-	Seq        int    `json:"seq"`
-	Tool       string `json:"tool"`
-	Action     string `json:"action"`               // normalized verb: navigate|click|type|extract|screenshot|other
-	URL        string `json:"url,omitempty"`        // target url when the step carried one
-	Target     string `json:"target,omitempty"`     // selector / element / text argument
-	Output     string `json:"output,omitempty"`     // short tool observation/result preview
-	Screenshot string `json:"screenshot,omitempty"` // resource ref/path/URL if this step captured one
-	IsError    bool   `json:"is_error,omitempty"`
-	At         string `json:"at,omitempty"`
+	Seq           int    `json:"seq"`
+	Tool          string `json:"tool"`
+	Action        string `json:"action"`                   // normalized verb: navigate|click|type|extract|screenshot|other
+	URL           string `json:"url,omitempty"`            // target url when the step carried one
+	Target        string `json:"target,omitempty"`         // selector / element / text argument
+	Output        string `json:"output,omitempty"`         // short tool observation/result preview
+	Screenshot    string `json:"screenshot,omitempty"`     // resource ref/path/URL if this step captured one
+	ScreenshotURL string `json:"screenshot_url,omitempty"` // authenticated local download URL when gateway can serve the ref
+	IsError       bool   `json:"is_error,omitempty"`
+	At            string `json:"at,omitempty"`
 }
 
 // Trace is the reconstructed browser session.
