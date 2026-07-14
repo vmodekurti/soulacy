@@ -24,6 +24,7 @@ var builtins = []string{
 	// channels
 	"github.com/soulacy/soulacy/internal/channels/discord",
 	"github.com/soulacy/soulacy/internal/channels/email",
+	"github.com/soulacy/soulacy/internal/channels/googlechat",
 	"github.com/soulacy/soulacy/internal/channels/slack",
 	"github.com/soulacy/soulacy/internal/channels/teams",
 	"github.com/soulacy/soulacy/internal/channels/telegram",

@@ -75,3 +75,24 @@ func TestChannelSpecs_TeamsIsOfferedAsOutboundWebhook(t *testing.T) {
 		t.Fatal("teams should expose default_output_to for schedule output overrides")
 	}
 }
+
+func TestChannelSpecs_GoogleChatIsOfferedAsOutboundWebhook(t *testing.T) {
+	spec := channelSpecByID("google_chat")
+	if spec == nil {
+		t.Fatal("no channelSpec for google_chat — Google Chat would be invisible in the GUI")
+	}
+	if spec.Name != "Google Chat" {
+		t.Fatalf("google_chat display name = %q", spec.Name)
+	}
+	keys := map[string]channelField{}
+	for _, f := range spec.Fields {
+		keys[f.Key] = f
+	}
+	webhook := keys["webhook_url"]
+	if !webhook.Required || !webhook.Secret || webhook.Type != "password" {
+		t.Fatalf("google_chat webhook_url must be required, secret, and password typed: %#v", webhook)
+	}
+	if _, ok := keys["prefix"]; !ok {
+		t.Fatal("google_chat should expose a message prefix field")
+	}
+}

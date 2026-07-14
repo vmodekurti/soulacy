@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	_ "github.com/soulacy/soulacy/internal/channels/discord"
+	_ "github.com/soulacy/soulacy/internal/channels/googlechat"
 	httpchan "github.com/soulacy/soulacy/internal/channels/http"
 	_ "github.com/soulacy/soulacy/internal/channels/slack"
 	_ "github.com/soulacy/soulacy/internal/channels/teams"
@@ -51,6 +52,11 @@ func TestConformance_Discord(t *testing.T) {
 func TestConformance_Slack(t *testing.T) {
 	channeltest.RunAdapterSuite(t, registryAdapter(t, "slack",
 		map[string]any{"bot_token": "xoxb-conformance", "app_token": "xapp-conformance", "agent_id": "a"}))
+}
+
+func TestConformance_GoogleChat(t *testing.T) {
+	channeltest.RunAdapterSuite(t, registryAdapter(t, "google_chat",
+		map[string]any{"webhook_url": "https://example.invalid/soulacy"}))
 }
 
 func TestConformance_Teams(t *testing.T) {
