@@ -51,7 +51,10 @@ func (s *Server) rawRegistries() ([]map[string]any, error) {
 }
 
 // configuredOrDefaultRegistries mirrors the CLI's behaviour: with no
-// registries: block, the native defaults (skills.sh + git) apply.
+// registries: block, the native defaults (skills.sh + git) apply. With an
+// explicit registries: block, keep the operator's searchable sources but retain
+// the safe git resolver as an addressable fallback so direct GitHub/source URL
+// installs keep working from the GUI.
 func (s *Server) configuredOrDefaultRegistries() []config.RegistryConfig {
 	var regs []config.RegistryConfig
 	if s.cfgPath != "" {
@@ -71,7 +74,29 @@ func (s *Server) configuredOrDefaultRegistries() []config.RegistryConfig {
 	if len(regs) == 0 {
 		return pkgregistry.DefaultRegistries()
 	}
+	if !hasRegistryType(regs, "git") {
+		regs = append(regs, config.RegistryConfig{ID: "git", Type: "git", Priority: fallbackRegistryPriority(regs)})
+	}
 	return regs
+}
+
+func hasRegistryType(regs []config.RegistryConfig, typ string) bool {
+	for _, r := range regs {
+		if strings.EqualFold(strings.TrimSpace(r.Type), typ) || (strings.TrimSpace(r.Type) == "" && typ == "http") {
+			return true
+		}
+	}
+	return false
+}
+
+func fallbackRegistryPriority(regs []config.RegistryConfig) int {
+	max := 100
+	for _, r := range regs {
+		if r.Priority > max {
+			max = r.Priority
+		}
+	}
+	return max + 100
 }
 
 // handleSearchRegistries searches every configured (or default) skill
