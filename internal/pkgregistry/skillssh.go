@@ -191,11 +191,11 @@ func (p *skillsShProvider) searchPublicCatalog(ctx context.Context, query string
 	return skillsShCatalogMatches(text, query, p.id)
 }
 
-var skillsShCatalogSkillIDRE = regexp.MustCompile(`"skillId"\s*:\s*"([^"]+)"`)
+var skillsShCatalogSkillIDRE = regexp.MustCompile(`"(?:skillId|skill_id|slug|id)"\s*:\s*"([^"]+)"`)
 
 func skillsShCatalogMatches(catalog, query, providerID string) []sdkpkg.Package {
-	q := normalizeSkillsShQuery(query)
-	if q == "" {
+	needle := newSkillsShMatcher(query)
+	if needle.empty() {
 		return nil
 	}
 	out := make([]sdkpkg.Package, 0, 10)
@@ -212,7 +212,14 @@ func skillsShCatalogMatches(catalog, query, providerID string) []sdkpkg.Package 
 		window := catalog[start:end]
 		source := skillsShCatalogField(window, "source")
 		skillID := catalog[loc[2]:loc[3]]
+		skillID = strings.TrimPrefix(skillID, source+"/")
 		name := skillsShCatalogField(window, "name")
+		if source == "" {
+			source = skillsShCatalogSourceFromID(skillID)
+			if source != "" {
+				skillID = strings.TrimPrefix(skillID, source+"/")
+			}
+		}
 		installs := skillsShCatalogField(window, "installs")
 		if source == "" || skillID == "" {
 			continue
@@ -224,8 +231,8 @@ func skillsShCatalogMatches(catalog, query, providerID string) []sdkpkg.Package 
 			installs = "unknown"
 		}
 		slug := source + "/" + skillID
-		haystack := normalizeSkillsShQuery(strings.Join([]string{source, skillID, name, slug}, " "))
-		if !strings.Contains(haystack, q) {
+		haystack := strings.Join([]string{source, skillID, name, slug}, " ")
+		if !needle.matches(haystack) {
 			continue
 		}
 		key := strings.ToLower(slug)
@@ -247,6 +254,56 @@ func skillsShCatalogMatches(catalog, query, providerID string) []sdkpkg.Package 
 	return out
 }
 
+type skillsShMatcher struct {
+	phrase  string
+	compact string
+	tokens  []string
+}
+
+func newSkillsShMatcher(query string) skillsShMatcher {
+	phrase := normalizeSkillsShQuery(query)
+	tokens := skillsShTokens(query)
+	return skillsShMatcher{
+		phrase:  phrase,
+		compact: compactSkillsShQuery(query),
+		tokens:  tokens,
+	}
+}
+
+func (m skillsShMatcher) empty() bool {
+	return m.phrase == "" && m.compact == "" && len(m.tokens) == 0
+}
+
+func (m skillsShMatcher) matches(candidate string) bool {
+	hayPhrase := normalizeSkillsShQuery(candidate)
+	hayCompact := compactSkillsShQuery(candidate)
+	switch {
+	case m.phrase != "" && strings.Contains(hayPhrase, m.phrase):
+		return true
+	case m.compact != "" && strings.Contains(hayCompact, m.compact):
+		return true
+	case m.compact != "" && strings.Contains(m.compact, hayCompact) && len(hayCompact) >= 8:
+		return true
+	}
+	if len(m.tokens) == 0 {
+		return false
+	}
+	hayTokens := map[string]bool{}
+	for _, tok := range skillsShTokens(candidate) {
+		hayTokens[tok] = true
+	}
+	matched := 0
+	for _, tok := range m.tokens {
+		if hayTokens[tok] || strings.Contains(hayCompact, tok) {
+			matched++
+		}
+	}
+	if len(m.tokens) <= 2 {
+		return matched == len(m.tokens)
+	}
+	return matched >= len(m.tokens)-1
+}
+
 func skillsShCatalogField(window, field string) string {
 	re := regexp.MustCompile(`"` + regexp.QuoteMeta(field) + `"\s*:\s*(?:"([^"]*)"|([0-9]+))`)
 	m := re.FindStringSubmatch(window)
@@ -263,6 +320,47 @@ func normalizeSkillsShQuery(s string) string {
 	s = strings.ToLower(strings.TrimSpace(s))
 	s = strings.NewReplacer("-", " ", "_", " ", "/", " ", ".", " ").Replace(s)
 	return strings.Join(strings.Fields(s), " ")
+}
+
+func compactSkillsShQuery(s string) string {
+	return strings.Join(skillsShTokens(s), "")
+}
+
+var skillsShTokenRE = regexp.MustCompile(`[a-z0-9]+`)
+
+func skillsShTokens(s string) []string {
+	s = splitSkillsShCamel(s)
+	s = strings.ToLower(s)
+	raw := skillsShTokenRE.FindAllString(s, -1)
+	out := raw[:0]
+	for _, tok := range raw {
+		if len(tok) <= 1 {
+			continue
+		}
+		out = append(out, tok)
+	}
+	return out
+}
+
+func splitSkillsShCamel(s string) string {
+	var b strings.Builder
+	var prev rune
+	for i, r := range s {
+		if i > 0 && prev >= 'a' && prev <= 'z' && r >= 'A' && r <= 'Z' {
+			b.WriteByte(' ')
+		}
+		b.WriteRune(r)
+		prev = r
+	}
+	return b.String()
+}
+
+func skillsShCatalogSourceFromID(id string) string {
+	parts := strings.Split(strings.Trim(id, "/"), "/")
+	if len(parts) < 2 {
+		return ""
+	}
+	return strings.Join(parts[:len(parts)-1], "/")
 }
 
 func (p *skillsShProvider) searchOnce(ctx context.Context, query string) ([]sdkpkg.Package, error) {
@@ -306,6 +404,13 @@ func skillsShSearchQueries(query string) []string {
 		variants = append(variants, v)
 	}
 	add(q)
+	normalized := normalizeSkillsShQuery(q)
+	if normalized != "" && normalized != q {
+		add(normalized)
+	}
+	if normalized != "" && strings.Contains(normalized, " ") {
+		add(strings.ReplaceAll(normalized, " ", "-"))
+	}
 	if strings.ContainsAny(q, "-_") {
 		add(strings.NewReplacer("-", " ", "_", " ").Replace(q))
 	}
