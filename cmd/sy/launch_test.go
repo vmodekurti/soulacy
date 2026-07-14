@@ -46,6 +46,7 @@ func TestLaunchReadinessParsesParityPayload(t *testing.T) {
 	var r launchReadiness
 	payload := []byte(`{
 		"summary": {"status":"at_risk","score":72},
+		"deployment": {"profile":"production","label":"Production","status":"warn","score":78,"ready":7,"total":9,"strict":true,"owner":"platform","region":"us-central"},
 		"parity": {
 			"score": 64,
 			"top_gaps": [
@@ -58,6 +59,9 @@ func TestLaunchReadinessParsesParityPayload(t *testing.T) {
 	}
 	if r.Parity.Score != 64 || len(r.Parity.TopGaps) != 1 {
 		t.Fatalf("parity payload = %#v", r.Parity)
+	}
+	if r.Deployment.Profile != "production" || !r.Deployment.Strict || r.Deployment.Ready != 7 {
+		t.Fatalf("deployment payload = %#v", r.Deployment)
 	}
 	if r.Parity.TopGaps[0].Benchmark != "OpenClaw" {
 		t.Fatalf("benchmark = %q", r.Parity.TopGaps[0].Benchmark)

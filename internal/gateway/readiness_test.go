@@ -35,6 +35,9 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if _, ok := summary["updates_ready"].(bool); !ok {
 		t.Fatalf("missing updates_ready: %#v", summary)
 	}
+	if got, _ := summary["deployment_profile"].(string); got == "" {
+		t.Fatalf("missing deployment_profile: %#v", summary)
+	}
 	release, ok := body["release"].(map[string]any)
 	if !ok {
 		t.Fatalf("missing release metadata: %#v", body)
@@ -65,8 +68,33 @@ func TestReadinessEndpointReturnsProductJourney(t *testing.T) {
 	if _, ok := body["browser"].(map[string]any); !ok {
 		t.Fatalf("missing browser readiness: %#v", body)
 	}
+	if deployment, ok := body["deployment"].(map[string]any); !ok {
+		t.Fatalf("missing deployment readiness: %#v", body)
+	} else if deployment["profile"] == "" || deployment["status"] == "" {
+		t.Fatalf("deployment readiness incomplete: %#v", deployment)
+	}
 	if gaps, ok := parity["top_gaps"].([]any); !ok || len(gaps) == 0 {
 		t.Fatalf("parity top gaps = %#v", parity["top_gaps"])
+	}
+}
+
+func TestDeploymentStatusProductionIsStrict(t *testing.T) {
+	s, _ := newTestGatewayWithLLM(t, "secret")
+	s.cfg.Deployment.Profile = "production"
+
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/deployment/status", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("deployment status = %d body=%v", status, body)
+	}
+	if body["profile"] != "production" || body["strict"] != true {
+		t.Fatalf("deployment body = %#v", body)
+	}
+	if body["status"] != "fail" {
+		t.Fatalf("production deployment status = %v, want fail with missing launch prerequisites", body["status"])
+	}
+	checks, ok := body["checks"].([]any)
+	if !ok || len(checks) == 0 {
+		t.Fatalf("missing checks: %#v", body)
 	}
 }
 

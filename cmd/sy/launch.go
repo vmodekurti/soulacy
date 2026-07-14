@@ -45,6 +45,17 @@ type launchReadiness struct {
 		DryRunCommand  string `json:"dry_run_command"`
 		InstallCommand string `json:"install_command"`
 	} `json:"release"`
+	Deployment struct {
+		Profile string `json:"profile"`
+		Label   string `json:"label"`
+		Status  string `json:"status"`
+		Score   int    `json:"score"`
+		Ready   int    `json:"ready"`
+		Total   int    `json:"total"`
+		Strict  bool   `json:"strict"`
+		Owner   string `json:"owner"`
+		Region  string `json:"region"`
+	} `json:"deployment"`
 }
 
 type launchParityArea struct {
@@ -222,6 +233,25 @@ func printLaunchReadiness(r launchReadiness) {
 		r.Summary.LearningAgents,
 		r.Summary.Templates,
 	)
+	if r.Deployment.Profile != "" || r.Deployment.Label != "" {
+		mode := "advisory"
+		if r.Deployment.Strict {
+			mode = "strict"
+		}
+		label := valueOr(r.Deployment.Label, r.Deployment.Profile)
+		fmt.Printf("Deployment: %s · %s · %s · %d/%d checks",
+			valueOr(label, "local"),
+			mode,
+			valueOr(r.Deployment.Status, "unknown"),
+			r.Deployment.Ready,
+			r.Deployment.Total,
+		)
+		if r.Deployment.Owner != "" || r.Deployment.Region != "" {
+			fmt.Printf(" · %s/%s", valueOr(r.Deployment.Owner, "unowned"), valueOr(r.Deployment.Region, "no-region"))
+		}
+		fmt.Println()
+		fmt.Println()
+	}
 	if r.Release.Version != "" || r.Release.UpdateManifest != "" || r.Release.UpdateHint != "" {
 		fmt.Printf("Release: %s", valueOr(r.Release.Version, "unknown"))
 		if r.Release.UpdatesReady {

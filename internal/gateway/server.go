@@ -642,6 +642,7 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/admin/restart", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleRestart)
 	api.Get("/onboarding/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleOnboardingStatus)
 	api.Get("/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleReadiness)
+	api.Get("/deployment/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleDeploymentStatus)
 	api.Get("/executors", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleExecutors)
 
 	// Agents

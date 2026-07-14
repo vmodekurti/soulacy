@@ -112,6 +112,10 @@ type Config struct {
 	// Ops configures production reliability guardrails for recent runs.
 	Ops OpsConfig `mapstructure:"ops"`
 
+	// Deployment describes how strict launch-readiness checks should be for
+	// this workspace.
+	Deployment DeploymentConfig `mapstructure:"deployment"`
+
 	// Updates configures release manifest discovery for `sy update` and the
 	// launch-readiness checklist.
 	Updates UpdateConfig `mapstructure:"updates"`
@@ -227,6 +231,20 @@ type OpsConfig struct {
 	MaxIncompleteRate float64 `mapstructure:"max_incomplete_rate"`
 	MaxP95RunDuration string  `mapstructure:"max_p95_run_duration"`
 	MinRunsForSignal  int     `mapstructure:"min_runs_for_signal"`
+}
+
+// DeploymentConfig identifies the intended operating posture for a workspace.
+//
+//	deployment:
+//	  profile: production   # local, development, staging, production
+//	  owner: platform-team
+//	  region: us-central
+//	  notes: "Customer-facing workspace"
+type DeploymentConfig struct {
+	Profile string `mapstructure:"profile"`
+	Owner   string `mapstructure:"owner"`
+	Region  string `mapstructure:"region"`
+	Notes   string `mapstructure:"notes"`
 }
 
 // UpdateConfig points Soulacy at a signed or checksum-backed release manifest.

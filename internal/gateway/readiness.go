@@ -22,21 +22,22 @@ type readinessItem struct {
 }
 
 type readinessSummary struct {
-	Status          string `json:"status"`
-	Score           int    `json:"score"`
-	ReadyItems      int    `json:"ready_items"`
-	WarningItems    int    `json:"warning_items"`
-	BlockerItems    int    `json:"blocker_items"`
-	TotalItems      int    `json:"total_items"`
-	ProvidersReady  int    `json:"providers_ready"`
-	ChannelsReady   int    `json:"channels_ready"`
-	Agents          int    `json:"agents"`
-	EnabledAgents   int    `json:"enabled_agents"`
-	ChatAgents      int    `json:"chat_agents"`
-	ScheduledAgents int    `json:"scheduled_agents"`
-	LearningAgents  int    `json:"learning_agents"`
-	Templates       int    `json:"templates"`
-	UpdatesReady    bool   `json:"updates_ready"`
+	Status            string `json:"status"`
+	Score             int    `json:"score"`
+	ReadyItems        int    `json:"ready_items"`
+	WarningItems      int    `json:"warning_items"`
+	BlockerItems      int    `json:"blocker_items"`
+	TotalItems        int    `json:"total_items"`
+	ProvidersReady    int    `json:"providers_ready"`
+	ChannelsReady     int    `json:"channels_ready"`
+	Agents            int    `json:"agents"`
+	EnabledAgents     int    `json:"enabled_agents"`
+	ChatAgents        int    `json:"chat_agents"`
+	ScheduledAgents   int    `json:"scheduled_agents"`
+	LearningAgents    int    `json:"learning_agents"`
+	Templates         int    `json:"templates"`
+	UpdatesReady      bool   `json:"updates_ready"`
+	DeploymentProfile string `json:"deployment_profile"`
 }
 
 type parityArea struct {
@@ -76,6 +77,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	chat := s.chatExperienceReadiness(c)
 	costs := s.costReadiness(c)
 	slo := s.sloReadiness(c)
+	deployment := s.deploymentReadiness(providersReady, usableOutbound, enabledAgents, updateManifest, costs, slo)
 
 	journey := []readinessItem{
 		providerReadinessItem(providers, providersReady),
@@ -104,10 +106,10 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		},
 		learningReadinessItem(learningAgents, enabledAgents),
 		{
-			Key:    "release",
-			Label:  "Production Launch",
-			Status: releaseStatus(providersReady, enabledAgents, usableOutbound, updateManifest),
-			Detail: releaseDetail(providersReady, enabledAgents, usableOutbound, updateManifest),
+			Key:    "deployment",
+			Label:  "Deployment Profile",
+			Status: deployment.Status,
+			Detail: deploymentReadinessDetail(deployment),
 			Href:   "#config",
 		},
 	}
@@ -150,21 +152,22 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 
 	return fiber.Map{
 		"summary": readinessSummary{
-			Status:          status,
-			Score:           score,
-			ReadyItems:      readyItems,
-			WarningItems:    warningItems,
-			BlockerItems:    blockerItems,
-			TotalItems:      len(journey),
-			ProvidersReady:  providersReady,
-			ChannelsReady:   channelsReady,
-			Agents:          agents,
-			EnabledAgents:   enabledAgents,
-			ChatAgents:      chatAgents,
-			ScheduledAgents: scheduledAgents,
-			LearningAgents:  learningAgents,
-			Templates:       len(templates),
-			UpdatesReady:    updateManifest != "",
+			Status:            status,
+			Score:             score,
+			ReadyItems:        readyItems,
+			WarningItems:      warningItems,
+			BlockerItems:      blockerItems,
+			TotalItems:        len(journey),
+			ProvidersReady:    providersReady,
+			ChannelsReady:     channelsReady,
+			Agents:            agents,
+			EnabledAgents:     enabledAgents,
+			ChatAgents:        chatAgents,
+			ScheduledAgents:   scheduledAgents,
+			LearningAgents:    learningAgents,
+			Templates:         len(templates),
+			UpdatesReady:      updateManifest != "",
+			DeploymentProfile: deployment.Profile,
 		},
 		"journey":      journey,
 		"next_actions": next,
@@ -177,6 +180,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"chat":         chat,
 		"costs":        costs,
 		"slo":          slo,
+		"deployment":   deployment,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -283,7 +287,7 @@ func parityEnterprise(posture enterpriseParityPosture) parityArea {
 	if len(posture.Controls) > 0 {
 		detail = "Enterprise foundations present: " + strings.Join(posture.Controls, ", ") + ". Multi-org tenancy is still not productized."
 	}
-	next := "Introduce workspaces/orgs, environment separation, admin audit views, and deployment profiles."
+	next := "Introduce workspaces/orgs, environment separation, and admin audit views; deployment profiles are now visible in launch readiness."
 	if len(posture.Missing) > 0 {
 		next = "Complete " + strings.Join(posture.Missing, ", ") + "; then add workspaces/orgs, environment separation, and admin audit views."
 	}
@@ -627,6 +631,22 @@ func releaseDetail(providersReady, enabledAgents, outbound int, updateManifest s
 		return "Core runtime is usable; configure updates.manifest_url or SOULACY_UPDATE_MANIFEST for production upgrades."
 	}
 	return "Core launch path is ready: provider, enabled agent, delivery, monitoring, diagnostics, and update manifest."
+}
+
+func deploymentReadinessDetail(deployment deploymentReadiness) string {
+	label := strings.TrimSpace(deployment.Label)
+	if label == "" {
+		label = "Local"
+	}
+	mode := "advisory"
+	if deployment.Strict {
+		mode = "strict"
+	}
+	total := deployment.Total
+	if total == 0 {
+		total = len(deployment.Checks)
+	}
+	return fmt.Sprintf("%s profile is %s: %d/%d deployment checks ready.", label, mode, deployment.Ready, total)
 }
 
 func updateManifestHint(src string) string {
