@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -83,5 +84,43 @@ func TestLaunchReadinessParsesParityPayload(t *testing.T) {
 	}
 	if r.Parity.TopGaps[0].Benchmark != "OpenClaw" {
 		t.Fatalf("benchmark = %q", r.Parity.TopGaps[0].Benchmark)
+	}
+}
+
+func TestRenderLaunchProofMarkdownIncludesReleaseEvidence(t *testing.T) {
+	r := launchReadiness{}
+	r.Summary.Status = "at_risk"
+	r.Summary.Score = 81
+	r.Summary.ProvidersReady = 2
+	r.Summary.ChannelsReady = 1
+	r.Summary.EnabledAgents = 3
+	r.Summary.Agents = 4
+	r.Deployment.Label = "Production"
+	r.Deployment.Status = "warn"
+	r.Parity.Score = 76
+	r.Journey = []launchReadinessItem{{Label: "Studio", Status: "warn", Detail: "1 contract warning"}}
+	r.LaunchChecklist = []launchChecklistItem{{Label: "Provider · openai", Status: "ok", Detail: "ready"}}
+	r.Parity.TopGaps = []launchParityArea{{Label: "Enterprise", Score: 50, Next: "Add tenancy"}}
+	r.NextActions = []launchReadinessItem{{Label: "Studio", Status: "warn", Detail: "Review contract warning"}}
+
+	md := renderLaunchProofMarkdown(r, "20260713T120000Z")
+	for _, want := range []string{
+		"# Soulacy Launch Proof",
+		"Readiness score: `81%`",
+		"Competitive parity score: `76%`",
+		"| Studio | warn | 1 contract warning |",
+		"| Enterprise | 50% | Add tenancy |",
+		"Review contract warning",
+	} {
+		if !strings.Contains(md, want) {
+			t.Fatalf("proof markdown missing %q:\n%s", want, md)
+		}
+	}
+}
+
+func TestEscapeMarkdownCellKeepsTablesValid(t *testing.T) {
+	got := escapeMarkdownCell("line one\nline | two")
+	if got != "line one line \\| two" {
+		t.Fatalf("escapeMarkdownCell = %q", got)
 	}
 }
