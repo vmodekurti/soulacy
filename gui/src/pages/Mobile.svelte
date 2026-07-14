@@ -8,6 +8,7 @@
   let health = null
   let schedule = []
   let agents = []
+  let agentInterfaces = {}
   let doctor = null
   let learning = null
   let queues = []
@@ -24,6 +25,12 @@
   let channelDiagnoses = {}
   let recentRuns = []
   let recentRunsError = ''
+  let pocketAgentId = ''
+  let pocketText = ''
+  let pocketBusy = false
+  let pocketReply = ''
+  let pocketError = ''
+  let pocketSessionId = ''
 
   $: installEvt = $installPrompt
   $: sessionExpired = $authRequired
@@ -159,7 +166,10 @@
       ])
       if (h.status === 'fulfilled') health = h.value
       if (s.status === 'fulfilled') schedule = s.value?.schedule || []
-      if (a.status === 'fulfilled') agents = a.value?.agents || []
+      if (a.status === 'fulfilled') {
+        agents = a.value?.agents || []
+        agentInterfaces = a.value?.interfaces || {}
+      }
       if (d.status === 'fulfilled') doctor = d.value
       if (l.status === 'fulfilled') learning = l.value
       if (q.status === 'fulfilled') queues = q.value?.queues || []
@@ -223,6 +233,11 @@
     window.location.hash = '#' + page
   }
 
+  function openChat(agentId = '') {
+    const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : ''
+    window.location.hash = `#chat${q}`
+  }
+
   function scheduleAgentId(item) {
     return item?.agent_id || item?.id || item?.agentId || ''
   }
@@ -266,6 +281,44 @@
       companionMsg = e.message || String(e)
     } finally {
       scheduleBusy = ''
+    }
+  }
+
+  function isChatEligible(agent) {
+    const iface = agentInterfaces?.[agent?.id]
+    if (iface && typeof iface.chat_eligible === 'boolean') return iface.chat_eligible
+    return agent?.trigger !== 'cron' && agent?.trigger !== 'oneshot'
+  }
+
+  function ensurePocketAgent() {
+    if (pocketAgentId && chatAgents.some(a => a.id === pocketAgentId)) return
+    pocketAgentId = chatAgents[0]?.id || ''
+  }
+
+  async function sendPocketChat() {
+    const text = pocketText.trim()
+    if (!text || !pocketAgentId || pocketBusy) return
+    pocketBusy = true
+    pocketError = ''
+    pocketReply = ''
+    try {
+      const res = await api.chat(pocketAgentId, text, 'mobile-user', null, pocketSessionId)
+      pocketReply = res?.reply || 'Done.'
+      pocketSessionId = res?.session_id || pocketSessionId
+      pocketText = ''
+      companionMsg = 'Pocket chat finished.'
+      await Promise.all([loadActiveRuns(), loadRecentRuns(agents)])
+    } catch (e) {
+      pocketError = e.message || String(e)
+    } finally {
+      pocketBusy = false
+    }
+  }
+
+  function pocketKeydown(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      sendPocketChat()
     }
   }
 
@@ -334,6 +387,8 @@
   $: channelIssues = (doctor?.channels || []).filter(x => x.status !== 'ok')
   $: deliveryChannels = channels.filter(ch => ch.id !== 'http' && (ch.configured || ch.enabled || ch.registered || (ch.bots || []).length)).slice(0, 5)
   $: enabledAgents = agents.filter(a => a.enabled)
+  $: chatAgents = enabledAgents.filter(isChatEligible)
+  $: ensurePocketAgent()
   $: riskCount = providerIssues.length + channelIssues.length + recentErrors.length
   $: pendingLearning = learning?.pending || 0
   $: readinessSummary = readiness?.summary || {}
@@ -446,6 +501,45 @@
       </div>
     </section>
   {/if}
+
+  <section class="m-card pocket-chat">
+    <div class="m-card-hd split">
+      <span>Pocket chat</span>
+      <button class="btn-secondary small" type="button" on:click={() => openChat(pocketAgentId)}>Full chat</button>
+    </div>
+    {#if !chatAgents.length}
+      <p class="m-empty">No chat-ready agents are enabled.</p>
+    {:else}
+      <div class="pocket-controls">
+        <select bind:value={pocketAgentId} aria-label="Pocket chat agent">
+          {#each chatAgents as agent}
+            <option value={agent.id}>{agent.name || agent.id}</option>
+          {/each}
+        </select>
+        <textarea
+          bind:value={pocketText}
+          on:keydown={pocketKeydown}
+          rows="2"
+          placeholder="Ask an agent or send a quick instruction…"
+          aria-label="Pocket chat message"
+        />
+        <button class="btn-primary" type="button" on:click={sendPocketChat} disabled={pocketBusy || !pocketText.trim() || !pocketAgentId}>
+          {pocketBusy ? 'Sending…' : 'Send'}
+        </button>
+      </div>
+      {#if pocketError}
+        <button class="pocket-result err" type="button" on:click={() => openActivity(pocketAgentId)}>
+          <strong>Needs attention</strong>
+          <small>{pocketError}</small>
+        </button>
+      {:else if pocketReply}
+        <button class="pocket-result" type="button" on:click={() => openChat(pocketAgentId)}>
+          <strong>Latest reply</strong>
+          <small>{pocketReply}</small>
+        </button>
+      {/if}
+    {/if}
+  </section>
 
   <!-- Active runs -->
   <section class="m-card" class:active={activeRuns.length}>
@@ -772,6 +866,7 @@
   .m-card { background: #141626; border: 1px solid #1a1e36; border-radius: 12px; padding: .8rem .95rem; }
   .m-card.active { border-color: rgba(240,160,96,.4); }
   .m-card-hd { display: flex; align-items: center; gap: .5rem; font-size: .8rem; font-weight: 700; color: #c5c9e8; margin-bottom: .6rem; }
+  .m-card-hd.split { justify-content: space-between; }
   .m-badge { font-size: .68rem; padding: .1rem .45rem; border-radius: 999px; background: #1c1f35; color: #8a91b8; }
   .m-badge.urgent { background: rgba(240,160,96,.18); color: #f0b070; }
   .m-empty { color: #6b7294; font-size: .82rem; margin: 0; }
@@ -793,6 +888,48 @@
   .approval-actions button { border: 0; border-radius: 7px; padding: .38rem .7rem; font-size: .78rem; font-weight: 650; cursor: pointer; }
   .approval-actions .approve { background: #2e7d5b; color: #eafff4; }
   .approval-actions .deny { background: #3a2030; color: #f0a0a0; }
+  .pocket-chat { display: flex; flex-direction: column; gap: .65rem; }
+  .pocket-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .55rem; align-items: stretch; }
+  .pocket-controls select,
+  .pocket-controls textarea {
+    min-width: 0;
+    background: #0e1020;
+    color: #d7dcf5;
+    border: 1px solid #252a46;
+    border-radius: 8px;
+    padding: .55rem .65rem;
+    font: inherit;
+    font-size: .82rem;
+  }
+  .pocket-controls select { grid-column: 1 / -1; }
+  .pocket-controls textarea { resize: vertical; line-height: 1.35; }
+  .pocket-controls button { min-width: 82px; border-radius: 8px; }
+  .pocket-result {
+    display: block;
+    width: 100%;
+    text-align: left;
+    background: #15182a;
+    border: 1px solid #252a46;
+    color: inherit;
+    border-radius: 8px;
+    padding: .65rem .75rem;
+    cursor: pointer;
+  }
+  .pocket-result.err { border-color: rgba(255,90,90,.42); background: rgba(255,90,90,.1); }
+  .pocket-result strong,
+  .pocket-result small { display: block; }
+  .pocket-result strong { color: #dfe2f5; font-size: .82rem; }
+  .pocket-result small {
+    color: #aeb4d2;
+    margin-top: .25rem;
+    font-size: .76rem;
+    line-height: 1.35;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 5;
+    -webkit-box-orient: vertical;
+    word-break: break-word;
+  }
   .device-row { display: flex; align-items: center; justify-content: space-between; gap: .6rem; padding: .5rem 0; border-top: 1px solid #1a1e36; }
   .device-row:first-of-type { border-top: 0; }
   .device-label { font-size: .84rem; color: #c5c9e8; font-weight: 600; }
@@ -871,5 +1008,6 @@
     .schedule-actions { display: grid; grid-template-columns: 1fr 1fr; }
     .delivery-target { grid-template-columns: 1fr; }
     .target-actions { display: grid; grid-template-columns: 1fr 1fr; }
+    .pocket-controls { grid-template-columns: 1fr; }
   }
 </style>
