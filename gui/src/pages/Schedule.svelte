@@ -31,6 +31,7 @@
   let now         = Date.now()
   let promptedFires = new Set()  // "id@nextISO" already auto-prompted
   let recentRuns = []
+  let recentLimit = 25
   let recentLoading = false
   let recentError = ''
 
@@ -241,7 +242,7 @@
     recentLoading = true
     recentError = ''
     try {
-      const res = await api.runs.ledger({ limit: 12, eventLimit: 50000 })
+      const res = await api.runs.ledger({ limit: recentLimit, eventLimit: 50000 })
       recentRuns = (res.runs || []).map(normalizeLedgerRun)
       if (res.event_truncated) {
         recentError = `Recent run list scanned ${res.event_limit || 50000} events and may be truncated. Use Activity for exact log tails.`
@@ -252,7 +253,7 @@
         limit: 5000,
         types: 'message.in,message.out,error,tool.result,reasoning.step,reasoning.result,schedule.output',
       }).catch(() => ({ events: [] }))
-      recentRuns = groupRuns(res.events || []).slice(0, 12)
+      recentRuns = groupRuns(res.events || []).slice(0, recentLimit)
       recentError = recentRuns.length ? '' : ledgerError
     } finally {
       recentLoading = false
@@ -616,6 +617,16 @@
     <div class="section-hdr">
       <span>Recent runs</span>
       <span class="pill">{recentRuns.length}</span>
+      <label class="history-depth" title="How many unified runs to show. Includes manual, chat/channel, cron, and scheduled-output runs when durable history is available.">
+        <span>Show</span>
+        <select bind:value={recentLimit} on:change={loadRecentRuns} disabled={recentLoading}
+                title="How many unified runs to show. Includes manual, chat/channel, cron, and scheduled-output runs when durable history is available.">
+          <option value={12}>12</option>
+          <option value={25}>25</option>
+          <option value={50}>50</option>
+          <option value={100}>100</option>
+        </select>
+      </label>
       <button class="btn-secondary xs hdr-action" on:click={loadRecentRuns} disabled={recentLoading}>↺ Refresh</button>
     </div>
     {#if recentLoading}
@@ -956,6 +967,15 @@ schedule:
     font-size: .875rem; font-weight: 600;
   }
   .hdr-action { margin-left: auto; }
+  .history-depth {
+    margin-left: auto; display: inline-flex; align-items: center; gap: .35rem;
+    color: #6b7294; font-size: .75rem; font-weight: 500;
+  }
+  .history-depth select {
+    background: #1c1f35; border: 1px solid #2a2f4a; color: #c8cadf;
+    border-radius: 6px; padding: .22rem .45rem; font-size: .75rem;
+  }
+  .history-depth + .hdr-action { margin-left: 0; }
   .pill    { font-size: .7rem; padding: .15rem .5rem; border-radius: 999px; background: #1c1f35; color: #6b7294; }
   .pill-ok { background: rgba(76,175,130,.15); color: #4caf82; }
 
