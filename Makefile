@@ -249,50 +249,19 @@ SUDO_CMD  := $(if $(SUDO_USER),sudo -u $(SUDO_USER) ,)
 
 ## Install soulacy as a system service (starts on login/boot)
 service-install: install
-ifeq ($(OS),Darwin)
-	@echo "→ Installing Mac LaunchAgent..."
-	@$(SUDO_CMD)mkdir -p $(REAL_HOME)/Library/LaunchAgents
-	@sed "s|__INSTALL_DIR__|/usr/local/bin|g" scripts/com.soulacy.gateway.plist \
-	    > /tmp/com.soulacy.soulacy.plist
-	@$(SUDO_CMD)cp /tmp/com.soulacy.soulacy.plist $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
-	@rm -f /tmp/com.soulacy.soulacy.plist
-	$(LAUNCHCTL) bootstrap gui/$(REAL_UID) $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || \
-	$(LAUNCHCTL) load -w $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
-	@echo "✓ Soulacy LaunchAgent installed — starts automatically on login"
-else
-	@echo "→ Installing systemd service..."
-	@sed "s|__INSTALL_DIR__|/usr/local/bin|g" scripts/soulacy.service \
-	    | sudo tee /etc/systemd/system/soulacy.service > /dev/null
-	sudo systemctl daemon-reload
-	sudo systemctl enable --now soulacy
-	@echo "✓ Soulacy systemd service installed and started"
-endif
+	@echo "→ Installing user-scoped Soulacy service..."
+	@"$(BINDIR)/$(BINARY_CLI)" daemon install
 
 ## Remove soulacy system service
 service-uninstall:
-ifeq ($(OS),Darwin)
-	$(LAUNCHCTL) unload $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || true
-	$(SUDO_CMD)rm -f $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
-	@echo "✓ LaunchAgent removed"
-else
-	sudo systemctl disable --now soulacy 2>/dev/null || true
-	sudo rm -f /etc/systemd/system/soulacy.service
-	sudo systemctl daemon-reload
-	@echo "✓ systemd service removed"
-endif
+	@echo "→ Removing user-scoped Soulacy service..."
+	@$(BINARY_CLI) daemon uninstall
 
 ## Build, install, and restart the gateway service
 deploy: install
-ifeq ($(OS),Darwin)
-	@echo "→ Restarting Mac LaunchAgent..."
-	$(LAUNCHCTL) unload $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist 2>/dev/null || true
-	$(LAUNCHCTL) load -w $(REAL_HOME)/Library/LaunchAgents/com.soulacy.soulacy.plist
-	@echo "✓ Gateway service restarted"
-else
-	@echo "→ Restarting systemd service..."
-	sudo systemctl restart soulacy
-	@echo "✓ Gateway service restarted"
-endif
+	@echo "→ Restarting user-scoped Soulacy service..."
+	@$(BINARY_CLI) daemon stop || true
+	@$(BINARY_CLI) daemon start
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Release pipeline — produces platform-tagged binaries under bin/release/.
