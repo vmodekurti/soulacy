@@ -408,6 +408,27 @@
         </div>
       {/if}
 
+      {#if readiness.launch_checklist?.length}
+        <div class="launch-checklist">
+          <div class="section-hdr inline">
+            <span>Production gate</span>
+            <span class="pill">{readiness.launch_checklist.length}</span>
+          </div>
+          <div class="launch-list">
+            {#each readiness.launch_checklist as item}
+              <button class="launch-row {item.status}" type="button" on:click={() => openHref(item.href)}>
+                <span class="journey-status">{statusLabel(item.status)}</span>
+                <strong>{item.label}</strong>
+                <small>{item.detail}</small>
+                {#if item.remedy}
+                  <em>{item.remedy}</em>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        </div>
+      {/if}
+
       {#if readiness.parity}
         <div class="parity-cockpit">
           <div class="parity-head">
@@ -681,6 +702,31 @@
   }
   .parity-gaps {
     border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
+  }
+  .launch-checklist {
+    background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
+  }
+  .launch-list {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .55rem;
+    padding: .7rem;
+  }
+  .launch-row {
+    text-align: left; background: #14182c; border: 1px solid #252a4a; border-radius: 8px;
+    color: #dfe2ff; padding: .7rem; cursor: pointer; min-height: 126px;
+    display: grid; grid-template-columns: auto 1fr; align-content: start; gap: .35rem .55rem;
+  }
+  .launch-row:hover { border-color: #6c63ff; }
+  .launch-row.ok { border-color: rgba(76,175,130,.35); }
+  .launch-row.warn { border-color: rgba(240,160,96,.42); }
+  .launch-row.fail { border-color: rgba(240,96,96,.45); }
+  .launch-row strong { font-size: .8rem; align-self: center; }
+  .launch-row small {
+    grid-column: 1 / -1; color: #8a91b8; font-size: .72rem; line-height: 1.35;
+  }
+  .launch-row em {
+    grid-column: 1 / -1; color: #bfc5ff; font-style: normal; font-size: .7rem;
+    line-height: 1.35; background: #0a0d19; border: 1px solid #1a1e36;
+    border-radius: 6px; padding: .35rem .45rem;
   }
   .ok-note,
   .err-note {

@@ -41,6 +41,15 @@ type readinessSummary struct {
 	OpsAlertsReady    bool   `json:"ops_alerts_ready"`
 }
 
+type launchChecklistItem struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Status string `json:"status"`
+	Detail string `json:"detail"`
+	Remedy string `json:"remedy,omitempty"`
+	Href   string `json:"href,omitempty"`
+}
+
 type parityArea struct {
 	Key       string `json:"key"`
 	Label     string `json:"label"`
@@ -63,6 +72,7 @@ func (s *Server) handleReadiness(c *fiber.Ctx) error {
 func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	providers := s.providerDoctorChecks(c)
 	channels := s.channelDoctorChecks()
+	vault := s.vaultDoctorCheck(c)
 	templates, _ := s.templatesCatalog().List()
 	s.applyTemplateRuntimeDefaults(templates)
 
@@ -134,6 +144,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	parityAreas := s.parityAreas(providersReady, usableOutbound, enabledAgents, scheduledAgents, learningAgents, len(templates), updateManifest, enterprise, executors, browser, marketplace, mobile, chat, costs, slo, opsAlerts)
 	parityScore := parityScore(parityAreas)
 	parityGaps := topParityGaps(parityAreas, 5)
+	checklist := buildLaunchChecklist(providers, channels, vault, deployment)
 	sort.SliceStable(next, func(i, j int) bool {
 		return next[i].Priority < next[j].Priority
 	})
@@ -172,19 +183,21 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 			DeploymentProfile: deployment.Profile,
 			OpsAlertsReady:    opsAlerts.Status == "ok",
 		},
-		"journey":      journey,
-		"next_actions": next,
-		"providers":    providers,
-		"channels":     channels,
-		"executors":    executors,
-		"browser":      browser,
-		"marketplace":  marketplace,
-		"mobile":       mobile,
-		"chat":         chat,
-		"costs":        costs,
-		"slo":          slo,
-		"ops_alerts":   opsAlerts,
-		"deployment":   deployment,
+		"journey":          journey,
+		"next_actions":     next,
+		"launch_checklist": checklist,
+		"providers":        providers,
+		"channels":         channels,
+		"vault":            vault,
+		"executors":        executors,
+		"browser":          browser,
+		"marketplace":      marketplace,
+		"mobile":           mobile,
+		"chat":             chat,
+		"costs":            costs,
+		"slo":              slo,
+		"ops_alerts":       opsAlerts,
+		"deployment":       deployment,
 		"parity": fiber.Map{
 			"score":    parityScore,
 			"areas":    parityAreas,
@@ -437,6 +450,107 @@ func readinessScore(items []readinessItem) int {
 		}
 	}
 	return points / len(items)
+}
+
+func buildLaunchChecklist(providers []doctorProviderCheck, channels []doctorChannelCheck, vault doctorVaultCheck, deployment deploymentReadiness) []launchChecklistItem {
+	var out []launchChecklistItem
+	add := func(item launchChecklistItem) {
+		if item.Status == "" {
+			item.Status = "warn"
+		}
+		out = append(out, item)
+	}
+
+	if vault.Status != "ok" {
+		add(launchChecklistItem{
+			Key:    "vault",
+			Label:  "Credential vault",
+			Status: vault.Status,
+			Detail: vault.Detail,
+			Remedy: vault.Remedy,
+			Href:   "#secrets",
+		})
+	}
+
+	for _, p := range providers {
+		if p.Status == "ok" {
+			continue
+		}
+		add(launchChecklistItem{
+			Key:    "provider:" + p.ID,
+			Label:  "Provider · " + p.ID,
+			Status: p.Status,
+			Detail: p.Detail,
+			Remedy: p.Remedy,
+			Href:   "#providers",
+		})
+	}
+
+	for _, ch := range channels {
+		if ch.ID == "http" || ch.Status == "ok" {
+			continue
+		}
+		remedy := ""
+		if len(ch.Diagnostics) > 0 {
+			remedy = ch.Diagnostics[0].Remedy
+		}
+		add(launchChecklistItem{
+			Key:    "channel:" + ch.ID,
+			Label:  "Channel · " + ch.ID,
+			Status: ch.Status,
+			Detail: ch.Detail,
+			Remedy: remedy,
+			Href:   "#channels",
+		})
+	}
+
+	for _, check := range deployment.Checks {
+		if check.Status == "ok" {
+			continue
+		}
+		add(launchChecklistItem{
+			Key:    "deployment:" + check.Key,
+			Label:  check.Label,
+			Status: check.Status,
+			Detail: check.Detail,
+			Remedy: deploymentNextAction(check.Key),
+			Href:   "#config",
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := checklistRank(out[i].Status), checklistRank(out[j].Status)
+		if ri != rj {
+			return ri < rj
+		}
+		return out[i].Key < out[j].Key
+	})
+	if len(out) == 0 {
+		return []launchChecklistItem{{
+			Key:    "ready",
+			Label:  "Production gate",
+			Status: "ok",
+			Detail: "Provider, delivery, vault, and deployment checks have no launch blockers.",
+			Href:   "#dashboard",
+		}}
+	}
+	if len(out) > 8 {
+		out = out[:8]
+	}
+	return out
+}
+
+func checklistRank(status string) int {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "fail":
+		return 0
+	case "warn":
+		return 1
+	case "ok":
+		return 3
+	default:
+		return 2
+	}
 }
 
 func (s *Server) agentReadinessCounts() (agents, enabled, chat, scheduled, learning int) {
