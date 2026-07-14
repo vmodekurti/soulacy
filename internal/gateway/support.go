@@ -44,7 +44,8 @@ func (s *Server) supportBundleOptions(c *fiber.Ctx) supportbundle.Options {
 			"channels":  s.channelDoctorChecks(),
 		},
 		ExtraJSON: map[string]any{
-			"readiness": s.readinessPayload(c),
+			"readiness":  s.readinessPayload(c),
+			"run_ledger": s.supportRunLedger(),
 			"release": fiber.Map{
 				"version":         config.Version,
 				"update_manifest": s.updateManifestSource(),
@@ -53,6 +54,37 @@ func (s *Server) supportBundleOptions(c *fiber.Ctx) supportbundle.Options {
 				"install_command": "sy update install --yes",
 			},
 		},
+	}
+}
+
+func (s *Server) supportRunLedger() fiber.Map {
+	if s == nil || s.actions == nil {
+		return fiber.Map{
+			"available": false,
+			"reason":    "action log disabled",
+		}
+	}
+	q, ok := s.actions.(eventQuerier)
+	if !ok {
+		return fiber.Map{
+			"available": false,
+			"reason":    "durable action log backend does not support event queries",
+		}
+	}
+	events, err := q.QueryEvents("", "", 10000, runLedgerEventTypes())
+	if err != nil {
+		return fiber.Map{
+			"available": false,
+			"reason":    err.Error(),
+		}
+	}
+	rows := s.buildRunLedger(events, 250)
+	return fiber.Map{
+		"available":   true,
+		"source":      "action-log",
+		"event_count": len(events),
+		"count":       len(rows),
+		"runs":        rows,
 	}
 }
 

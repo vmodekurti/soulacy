@@ -3,12 +3,16 @@ package gateway
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/soulacy/soulacy/pkg/message"
 )
 
 func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
@@ -35,6 +39,21 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
 	s.cfg.AgentDirs = []string{agentDir}
 	s.cfg.Log.File = filepath.Join(logDir, "soulacy.log")
+	base := time.Date(2026, 7, 13, 7, 0, 0, 0, time.UTC)
+	s.actions = &fakeTailBackend{events: []message.Event{
+		{
+			Type: "message.in", AgentID: "demo", SessionID: "cron-1", Timestamp: base,
+			Payload: message.Message{Channel: "http", Metadata: map[string]string{"trigger": "cron"}, Parts: message.Text("__trigger:cron__")},
+		},
+		{
+			Type: "message.out", AgentID: "demo", SessionID: "cron-1", Timestamp: base.Add(time.Second),
+			Payload: message.Message{Parts: message.Text("daily support report")},
+		},
+		{
+			Type: "schedule.output", AgentID: "demo", SessionID: "cron-1", Timestamp: base.Add(2 * time.Second),
+			Payload: map[string]any{"delivered": false, "channel": "telegram", "to": "123", "reason": "chat not found", "reply_preview": "daily support report"},
+		},
+	}}
 
 	req, err := http.NewRequest(http.MethodGet, "/api/v1/support/bundle", nil)
 	if err != nil {
@@ -62,6 +81,7 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 		t.Fatalf("zip reader: %v", err)
 	}
 	names := map[string]bool{}
+	files := map[string]string{}
 	var joined strings.Builder
 	for _, f := range zr.File {
 		names[f.Name] = true
@@ -71,12 +91,34 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 		}
 		body, _ := io.ReadAll(rc)
 		_ = rc.Close()
+		files[f.Name] = string(body)
 		joined.Write(body)
 	}
-	for _, want := range []string{"manifest.json", "doctor.json", "readiness.json", "release.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
+	for _, want := range []string{"manifest.json", "doctor.json", "readiness.json", "release.json", "run_ledger.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
 		if !names[want] {
 			t.Fatalf("bundle missing %s; got %#v", want, names)
 		}
+	}
+	var ledger map[string]any
+	if err := json.Unmarshal([]byte(files["run_ledger.json"]), &ledger); err != nil {
+		t.Fatalf("run_ledger.json is not JSON: %v\n%s", err, files["run_ledger.json"])
+	}
+	if ledger["available"] != true || ledger["source"] != "action-log" {
+		t.Fatalf("run ledger unavailable or wrong source: %#v", ledger)
+	}
+	runs, ok := ledger["runs"].([]any)
+	if !ok || len(runs) != 1 {
+		t.Fatalf("run ledger runs = %#v, want one run", ledger["runs"])
+	}
+	run := runs[0].(map[string]any)
+	if got := run["deliveryStatus"]; got != "failed" {
+		t.Fatalf("deliveryStatus = %v, want failed", got)
+	}
+	if got := run["deliveryError"]; got != "chat not found" {
+		t.Fatalf("deliveryError = %v, want chat not found", got)
+	}
+	if got := run["output"]; got != "daily support report" {
+		t.Fatalf("output = %v, want daily support report", got)
 	}
 	all := joined.String()
 	for _, forbidden := range []string{"top-secret-api-key", "xoxb-agent-secret", "xoxb-log-secret"} {
