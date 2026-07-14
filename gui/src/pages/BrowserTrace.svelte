@@ -152,6 +152,37 @@
         {/each}
       </div>
     </section>
+    <section class="browser-ops">
+      <div class="ops-card {status.policy?.status || 'ok'}">
+        <div class="ops-label">Policy Coverage</div>
+        <strong>{status.policy?.status === 'warn' ? 'Needs review' : 'Governed'}</strong>
+        <p>{status.policy?.detail || 'Browser policy coverage is available when agents and sidecars are loaded.'}</p>
+        <div class="mini-stats">
+          <span>{status.policy?.managed_agents || 0} managed</span>
+          <span>{status.policy?.unmanaged_agents || 0} unmanaged</span>
+        </div>
+        {#if status.policy?.unmanaged_ids?.length}
+          <div class="chips denied">{#each status.policy.unmanaged_ids as id}<span>{id}</span>{/each}</div>
+        {/if}
+      </div>
+      <div class="ops-card">
+        <div class="ops-label">Sidecars</div>
+        <strong>{status.sidecars?.length || 0} detected</strong>
+        {#if status.sidecars?.length}
+          <div class="sidecar-list">
+            {#each status.sidecars as srv}
+              <div class="sidecar-row {srv.status}">
+                <span>{srv.id}</span>
+                <em>{srv.mode}{srv.headless ? ' · headless' : ''}</em>
+                <small>{srv.tools?.length || 0} tool{(srv.tools?.length || 0) === 1 ? '' : 's'}</small>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <p>No Playwright/Puppeteer/browser MCP sidecar is connected yet.</p>
+        {/if}
+      </div>
+    </section>
   {:else if statusError}
     <div class="banner err">⚠ Browser readiness unavailable: {statusError}</div>
   {/if}
@@ -312,6 +343,22 @@
   .ready-checks span.ok { color: #71e3a1; background: rgba(69, 217, 139, .08); border-color: rgba(69, 217, 139, .28); }
   .ready-checks span.warn { color: #f0c778; background: rgba(240, 188, 96, .08); border-color: rgba(240, 188, 96, .3); }
   .ready-checks span.fail { color: #f0a0a0; background: rgba(240, 96, 96, .08); border-color: rgba(240, 96, 96, .35); }
+  .browser-ops { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .75rem; margin: -.35rem 0 1rem; }
+  .ops-card { background: #111426; border: 1px solid #20243d; border-radius: 9px; padding: .75rem; min-width: 0; }
+  .ops-card.warn { border-color: rgba(240, 188, 96, .34); }
+  .ops-card.fail { border-color: rgba(240, 96, 96, .35); }
+  .ops-label { font-size: .62rem; color: #6b7294; text-transform: uppercase; letter-spacing: .06em; margin-bottom: .28rem; }
+  .ops-card strong { display: block; color: #d7dcf5; font-size: .86rem; margin-bottom: .32rem; }
+  .ops-card p { margin: 0 0 .55rem; color: #8a91b8; font-size: .76rem; line-height: 1.42; }
+  .mini-stats { display: flex; gap: .35rem; flex-wrap: wrap; margin-bottom: .45rem; }
+  .mini-stats span { border: 1px solid #252a46; background: #15182a; color: #9aa0c8; border-radius: 999px; padding: .13rem .45rem; font-size: .68rem; }
+  .sidecar-list { display: flex; flex-direction: column; gap: .35rem; }
+  .sidecar-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: .5rem; align-items: center; border: 1px solid #252a46; background: #15182a; border-radius: 7px; padding: .45rem .55rem; }
+  .sidecar-row.ok { border-color: rgba(69, 217, 139, .24); }
+  .sidecar-row.warn { border-color: rgba(240, 188, 96, .3); }
+  .sidecar-row span { color: #d7dcf5; font-size: .74rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sidecar-row em { color: #8a91b8; font-style: normal; font-size: .68rem; }
+  .sidecar-row small { color: #6b7294; font-size: .66rem; white-space: nowrap; }
   .policy-panel {
     display: grid; grid-template-columns: minmax(260px, 1fr) minmax(260px, 1.25fr); gap: 1rem;
     background: #111426; border: 1px solid #20243d; border-radius: 9px; padding: .85rem; margin-bottom: 1rem;

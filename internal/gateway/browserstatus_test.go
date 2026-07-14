@@ -3,6 +3,8 @@ package gateway
 import (
 	"net/http"
 	"testing"
+
+	"github.com/soulacy/soulacy/pkg/agent"
 )
 
 func TestBrowserStatusEndpointReturnsChecks(t *testing.T) {
@@ -60,5 +62,39 @@ func TestParityBrowserAutomationScoresReadyPosture(t *testing.T) {
 	})
 	if area.Status != "fail" || area.Next == "" {
 		t.Fatalf("browser parity = %#v, want fail with next action", area)
+	}
+}
+
+func TestBrowserPolicyPostureWarnsForUnmanagedBrowserAgents(t *testing.T) {
+	s, _ := newTestGatewayWithLLM(t, "secret")
+	tools := []string{"mcp__browser__navigate"}
+	s.loader.Register(&agent.Definition{ID: "browser-bot", Name: "Browser Bot", MCPTools: &tools})
+
+	posture := s.browserPolicyPosture(nil)
+	if posture.Status != "warn" || posture.UnmanagedAgents != 1 {
+		t.Fatalf("policy posture = %#v, want warn with one unmanaged agent", posture)
+	}
+	if len(posture.UnmanagedIDs) != 1 || posture.UnmanagedIDs[0] != "browser-bot" {
+		t.Fatalf("unmanaged ids = %#v", posture.UnmanagedIDs)
+	}
+}
+
+func TestBrowserPolicyPostureAcceptsExplicitDomainPolicy(t *testing.T) {
+	s, _ := newTestGatewayWithLLM(t, "secret")
+	tools := []string{"mcp__browser__navigate"}
+	s.loader.Register(&agent.Definition{
+		ID:       "browser-bot",
+		Name:     "Browser Bot",
+		MCPTools: &tools,
+		Policy: agent.ToolPolicyConfig{
+			Enabled:      true,
+			Network:      "prompt",
+			AllowDomains: []string{"example.com"},
+		},
+	})
+
+	posture := s.browserPolicyPosture(nil)
+	if posture.Status != "ok" || posture.ManagedAgents != 1 || posture.UnmanagedAgents != 0 {
+		t.Fatalf("policy posture = %#v, want ok with one managed agent", posture)
 	}
 }
