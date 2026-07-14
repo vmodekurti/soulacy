@@ -215,11 +215,51 @@ func TestSkillsShCatalogMatchesNormalizesQuery(t *testing.T) {
 	}
 }
 
+func TestSkillsShCatalogMatchesTokenOrderAndCompactForms(t *testing.T) {
+	catalog := `"source":"acme/options","skillId":"options-strategy-advisor","name":"Options Strategy Advisor","installs":42`
+	for _, q := range []string{
+		"options advisor",
+		"advisor options",
+		"optionsStrategyAdvisor",
+		"acme/options/options-strategy-advisor",
+	} {
+		t.Run(q, func(t *testing.T) {
+			pkgs := skillsShCatalogMatches(catalog, q, "skills-sh")
+			if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
+				t.Fatalf("pkgs = %+v", pkgs)
+			}
+		})
+	}
+}
+
+func TestSkillsShCatalogMatchesFullIDField(t *testing.T) {
+	catalog := `"id":"acme/options/options-strategy-advisor","name":"Options Strategy Advisor","installs":42`
+	pkgs := skillsShCatalogMatches(catalog, "options-strategy-advisor", "skills-sh")
+	if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
+		t.Fatalf("pkgs = %+v", pkgs)
+	}
+}
+
 func TestSkillsShCatalogMatchesToleratesFieldOrder(t *testing.T) {
 	catalog := `"name":"Options Strategy Advisor","installs":42,"skillId":"options-strategy-advisor","source":"acme/options"`
 	pkgs := skillsShCatalogMatches(catalog, "options-strategy-advisor", "skills-sh")
 	if len(pkgs) != 1 || pkgs[0].Slug != "acme/options/options-strategy-advisor" {
 		t.Fatalf("pkgs = %+v", pkgs)
+	}
+}
+
+func TestSkillsShSearchQueriesAddsSlugAndReadableForms(t *testing.T) {
+	got := strings.Join(skillsShSearchQueries("acme/options/options-strategy-advisor"), "|")
+	for _, want := range []string{
+		"acme/options/options-strategy-advisor",
+		"acme options options strategy advisor",
+		"acme-options-options-strategy-advisor",
+		"options-strategy-advisor",
+		"options strategy advisor",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("queries = %q, missing %q", got, want)
+		}
 	}
 }
 
