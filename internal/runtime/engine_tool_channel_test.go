@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -219,6 +220,36 @@ func TestChannelSendBuiltinRejectsUnknownChannel(t *testing.T) {
 	}
 }
 
+func TestChannelSendBuiltinErrorIncludesDeliveryDiagnosis(t *testing.T) {
+	e := newMinimalEngine(t)
+	reg := channels.NewRegistry(1)
+	adp := &channelSendCaptureAdapter{
+		id:      "telegram",
+		sendErr: errors.New("telegram: send: API returned status 400: Bad Request: chat not found"),
+	}
+	reg.Register(adp)
+	e.SetChannelRegistry(reg)
+
+	tool := builtinByName(t, e.buildBuiltins(), "channel.send")
+	_, err := tool.Handler(context.Background(), map[string]any{
+		"channel": "telegram",
+		"to":      "8546291328",
+		"text":    "hello",
+	})
+	if err == nil {
+		t.Fatal("expected channel.send failure")
+	}
+	for _, want := range []string{
+		`diagnosis category=invalid_destination`,
+		`destination ID is invalid`,
+		`bot cannot see that chat/channel`,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q: %v", want, err)
+		}
+	}
+}
+
 func TestChannelStatusBuiltinDiagnosesConfiguredDefault(t *testing.T) {
 	e := newMinimalEngine(t)
 	reg := channels.NewRegistry(1)
@@ -317,8 +348,9 @@ func builtinByName(t *testing.T, tools []BuiltinTool, name string) BuiltinTool {
 }
 
 type channelSendCaptureAdapter struct {
-	id   string
-	sent message.Message
+	id      string
+	sendErr error
+	sent    message.Message
 }
 
 func (a *channelSendCaptureAdapter) ID() string { return a.id }
@@ -329,7 +361,7 @@ func (a *channelSendCaptureAdapter) Start(context.Context, chan<- message.Messag
 
 func (a *channelSendCaptureAdapter) Send(_ context.Context, msg message.Message) error {
 	a.sent = msg
-	return nil
+	return a.sendErr
 }
 
 func (a *channelSendCaptureAdapter) Stop() error { return nil }

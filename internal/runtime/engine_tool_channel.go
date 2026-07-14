@@ -166,7 +166,17 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 				CreatedAt: time.Now().UTC(),
 			}
 			if err := e.channelRegistry.Send(ctx, out); err != nil {
-				return "", fmt.Errorf("channel.send: send failed through channel %q to %q: %w", channelID, to, err)
+				status := e.channelRegistry.Statuses()[channelID]
+				diag := channels.DiagnoseDelivery(channelID, to, true, status.Connected, err)
+				return "", fmt.Errorf(
+					"channel.send: send failed through channel %q to %q: %w; diagnosis category=%s reason=%s fix=%s",
+					channelID,
+					to,
+					err,
+					diag.Category,
+					diag.Reason,
+					diag.Fix,
+				)
 			}
 			b, _ := json.Marshal(map[string]any{
 				"ok":           true,
