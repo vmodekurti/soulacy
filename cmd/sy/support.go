@@ -82,6 +82,7 @@ func supportBundleOptions() supportbundle.Options {
 		Workspace:  supportWorkspaceMap(ws),
 		Doctor:     collectDoctorReport(),
 		ExtraJSON: map[string]any{
+			"operator_evidence": supportOperatorEvidence(gatewayURL),
 			"release": map[string]any{
 				"version":         config.Version,
 				"update_manifest": resolveUpdateManifestSource(""),
@@ -90,6 +91,28 @@ func supportBundleOptions() supportbundle.Options {
 				"install_command": "sy update install --yes",
 			},
 		},
+	}
+}
+
+func supportOperatorEvidence(baseURL string) map[string]any {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	endpoint := func(path string) string {
+		if baseURL == "" {
+			return path
+		}
+		return baseURL + path
+	}
+	return map[string]any{
+		"source": "cli",
+		"note":   "This bundle was created from the CLI. Live browser, mobile, chat, run-ledger, and admin-audit evidence is richer when downloaded from the running gateway.",
+		"live_gateway_artifacts": []map[string]string{
+			{"name": "readiness.json", "endpoint": endpoint("/api/v1/readiness")},
+			{"name": "browser_status.json", "endpoint": endpoint("/api/v1/browser/status")},
+			{"name": "mobile_status.json", "endpoint": endpoint("/api/v1/mobile/status")},
+			{"name": "chat_status.json", "endpoint": endpoint("/api/v1/chat/status")},
+			{"name": "support_bundle.zip", "endpoint": endpoint("/api/v1/support/bundle")},
+		},
+		"bundle_command": "sy support bundle",
 	}
 }
 
