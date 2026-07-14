@@ -430,13 +430,15 @@
         <span>{companionStatus.chat_agents || 0} chat agents</span>
         <span>{companionStatus.scheduled_agents || 0} schedules</span>
         <span>{companionStatus.delivery_channels || 0} channels</span>
+        <span>{companionStatus.recent_runs || 0} runs</span>
+        <span>{companionStatus.installable ? 'installable' : 'browser only'}</span>
       </div>
       {#if companionStatus.next_actions?.length}
         <div class="companion-next">{companionStatus.next_actions[0]}</div>
       {/if}
       <div class="companion-checks">
-        {#each (companionStatus.checks || []).slice(0, 4) as check}
-          <button class="companion-check {check.status}" type="button" on:click={() => check.key === 'delivery' ? go('channels') : check.key === 'schedules' ? go('schedule') : check.key === 'chat_agents' ? go('agents') : null}>
+        {#each (companionStatus.checks || []).slice(0, 6) as check}
+          <button class="companion-check {check.status}" type="button" on:click={() => check.key === 'delivery' ? go('channels') : check.key === 'schedules' ? go('schedule') : check.key === 'chat_agents' ? go('agents') : check.key === 'run_review' ? go('activity') : null}>
             <span>{check.label}</span>
             <small>{check.detail}</small>
           </button>
