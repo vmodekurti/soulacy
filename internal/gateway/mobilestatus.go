@@ -68,7 +68,7 @@ func (s *Server) mobileCompanionReadiness() mobileCompanionReadiness {
 			Key:    "surface",
 			Label:  "Companion Surface",
 			Status: "ok",
-			Detail: "Mobile operations page is available for approvals, schedules, delivery, and run review.",
+			Detail: "Mobile operations page is available for Pocket Chat, approvals, schedules, delivery, and run review.",
 		},
 		{
 			Key:    "approvals",
@@ -102,9 +102,9 @@ func (s *Server) mobileCompanionReadiness() mobileCompanionReadiness {
 		},
 		{
 			Key:    "chat_agents",
-			Label:  "Interactive Agents",
+			Label:  "Pocket Chat",
 			Status: statusIf(chatAgents > 0, "ok", "warn"),
-			Detail: countDetail(chatAgents, "interactive agent", "No agent is exposed to chat/channel triggers yet."),
+			Detail: countDetail(chatAgents, "chat-ready agent", "No agent is exposed to Mobile Pocket Chat yet."),
 		},
 		{
 			Key:    "schedules",
