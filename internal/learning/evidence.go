@@ -54,19 +54,46 @@ type ErrorTrend struct {
 	Reduction float64 `json:"reduction"`
 }
 
+// AgentEvidence is the cross-agent evidence rollup used by the product UI to
+// show which agents are benefiting from learning without opening each agent.
+type AgentEvidence struct {
+	AgentID        string     `json:"agent_id"`
+	Accepted       int        `json:"accepted"`
+	AcceptedSkills int        `json:"accepted_skills"`
+	ReusedSkills   int        `json:"reused_skills"`
+	TotalSkillUses int        `json:"total_skill_uses"`
+	ErrorsBefore   int        `json:"errors_before"`
+	ErrorsAfter    int        `json:"errors_after"`
+	ErrorReduction float64    `json:"error_reduction"`
+	LastActivity   *time.Time `json:"last_activity,omitempty"`
+}
+
+// EvidenceBucket captures weekly learning evidence so improvement is visible as
+// a trend instead of a single snapshot.
+type EvidenceBucket struct {
+	Start     time.Time `json:"start"`
+	End       time.Time `json:"end"`
+	Runs      int       `json:"runs"`
+	SkillUses int       `json:"skill_uses"`
+	Errors    int       `json:"errors"`
+	Accepted  int       `json:"accepted"`
+}
+
 // Evidence is the product-facing snapshot proving the learning loop reduces
 // repeat work and repeat failures over time.
 type Evidence struct {
-	AgentID        string       `json:"agent_id,omitempty"`
-	ReferenceAt    *time.Time   `json:"reference_at,omitempty"` // first accepted proposal = "learning on"
-	SkillReuse     []SkillReuse `json:"skill_reuse"`
-	ReusedSkills   int          `json:"reused_skills"`
-	AcceptedSkills int          `json:"accepted_skills"`
-	TotalSkillUses int          `json:"total_skill_uses"`
-	RepeatedErrors []ErrorTrend `json:"repeated_errors"`
-	ErrorsBefore   int          `json:"errors_before"`
-	ErrorsAfter    int          `json:"errors_after"`
-	ErrorReduction float64      `json:"error_reduction"` // aggregate over repeated signatures
+	AgentID        string           `json:"agent_id,omitempty"`
+	ReferenceAt    *time.Time       `json:"reference_at,omitempty"` // first accepted proposal = "learning on"
+	SkillReuse     []SkillReuse     `json:"skill_reuse"`
+	ReusedSkills   int              `json:"reused_skills"`
+	AcceptedSkills int              `json:"accepted_skills"`
+	TotalSkillUses int              `json:"total_skill_uses"`
+	RepeatedErrors []ErrorTrend     `json:"repeated_errors"`
+	ErrorsBefore   int              `json:"errors_before"`
+	ErrorsAfter    int              `json:"errors_after"`
+	ErrorReduction float64          `json:"error_reduction"` // aggregate over repeated signatures
+	Agents         []AgentEvidence  `json:"agents"`
+	Trend          []EvidenceBucket `json:"trend"`
 }
 
 // BuildEvidence aggregates reuse and error-reduction evidence for one agent from
@@ -246,7 +273,167 @@ func BuildEvidence(agentID string, events []message.Event, accepted []Proposal) 
 	if out.RepeatedErrors == nil {
 		out.RepeatedErrors = []ErrorTrend{}
 	}
+	out.Trend = buildEvidenceTrend(agentID, events, accepted)
+	if agentID == "" {
+		out.Agents = buildAgentEvidence(events, accepted)
+	} else {
+		out.Agents = []AgentEvidence{}
+	}
 	return out
+}
+
+func buildAgentEvidence(events []message.Event, accepted []Proposal) []AgentEvidence {
+	ids := map[string]bool{}
+	lastActivity := map[string]time.Time{}
+	acceptedCount := map[string]int{}
+	for _, p := range accepted {
+		if p.Status != StatusAccepted || strings.TrimSpace(p.AgentID) == "" {
+			continue
+		}
+		ids[p.AgentID] = true
+		acceptedCount[p.AgentID]++
+		at := proposalTime(p)
+		if at.After(lastActivity[p.AgentID]) {
+			lastActivity[p.AgentID] = at
+		}
+	}
+	for _, ev := range events {
+		if strings.TrimSpace(ev.AgentID) == "" {
+			continue
+		}
+		ids[ev.AgentID] = true
+		if ev.Timestamp.After(lastActivity[ev.AgentID]) {
+			lastActivity[ev.AgentID] = ev.Timestamp
+		}
+	}
+	out := make([]AgentEvidence, 0, len(ids))
+	for id := range ids {
+		ev := BuildEvidence(id, events, accepted)
+		item := AgentEvidence{
+			AgentID:        id,
+			Accepted:       acceptedCount[id],
+			AcceptedSkills: ev.AcceptedSkills,
+			ReusedSkills:   ev.ReusedSkills,
+			TotalSkillUses: ev.TotalSkillUses,
+			ErrorsBefore:   ev.ErrorsBefore,
+			ErrorsAfter:    ev.ErrorsAfter,
+			ErrorReduction: ev.ErrorReduction,
+		}
+		if !lastActivity[id].IsZero() {
+			t := lastActivity[id]
+			item.LastActivity = &t
+		}
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].TotalSkillUses != out[j].TotalSkillUses {
+			return out[i].TotalSkillUses > out[j].TotalSkillUses
+		}
+		if out[i].Accepted != out[j].Accepted {
+			return out[i].Accepted > out[j].Accepted
+		}
+		return out[i].AgentID < out[j].AgentID
+	})
+	return out
+}
+
+func buildEvidenceTrend(agentID string, events []message.Event, accepted []Proposal) []EvidenceBucket {
+	latest := latestEvidenceTime(agentID, events, accepted)
+	if latest.IsZero() {
+		return []EvidenceBucket{}
+	}
+	latestWeek := weekStart(latest.UTC())
+	start := latestWeek.AddDate(0, 0, -7*7)
+	buckets := make([]EvidenceBucket, 8)
+	for i := range buckets {
+		st := start.AddDate(0, 0, i*7)
+		buckets[i] = EvidenceBucket{Start: st, End: st.AddDate(0, 0, 7)}
+	}
+	runSessions := make([]map[string]bool, len(buckets))
+	for i := range runSessions {
+		runSessions[i] = map[string]bool{}
+	}
+	for _, p := range accepted {
+		if agentID != "" && p.AgentID != agentID {
+			continue
+		}
+		if p.Status != StatusAccepted {
+			continue
+		}
+		if idx := bucketIndex(proposalTime(p), start); idx >= 0 && idx < len(buckets) {
+			buckets[idx].Accepted++
+		}
+	}
+	for _, ev := range events {
+		if agentID != "" && ev.AgentID != agentID {
+			continue
+		}
+		idx := bucketIndex(ev.Timestamp, start)
+		if idx < 0 || idx >= len(buckets) {
+			continue
+		}
+		if sid := strings.TrimSpace(ev.SessionID); sid != "" {
+			runSessions[idx][sid] = true
+		}
+		switch ev.Type {
+		case "tool.call":
+			if skillReadTools[payloadString(ev.Payload, "name")] {
+				buckets[idx].SkillUses++
+			}
+		case "error":
+			buckets[idx].Errors++
+		case "tool.result":
+			if toolResultIsError(ev.Payload) {
+				buckets[idx].Errors++
+			}
+		}
+	}
+	for i := range buckets {
+		buckets[i].Runs = len(runSessions[i])
+	}
+	return buckets
+}
+
+func latestEvidenceTime(agentID string, events []message.Event, accepted []Proposal) time.Time {
+	var latest time.Time
+	for _, p := range accepted {
+		if agentID != "" && p.AgentID != agentID {
+			continue
+		}
+		if at := proposalTime(p); at.After(latest) {
+			latest = at
+		}
+	}
+	for _, ev := range events {
+		if agentID != "" && ev.AgentID != agentID {
+			continue
+		}
+		if ev.Timestamp.After(latest) {
+			latest = ev.Timestamp
+		}
+	}
+	return latest
+}
+
+func proposalTime(p Proposal) time.Time {
+	if !p.UpdatedAt.IsZero() {
+		return p.UpdatedAt.UTC()
+	}
+	return p.CreatedAt.UTC()
+}
+
+func weekStart(t time.Time) time.Time {
+	y, m, d := t.Date()
+	day := time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+	offset := (int(day.Weekday()) + 6) % 7
+	return day.AddDate(0, 0, -offset)
+}
+
+func bucketIndex(t, start time.Time) int {
+	if t.IsZero() {
+		return -1
+	}
+	return int(t.UTC().Sub(start) / (7 * 24 * time.Hour))
 }
 
 // errAcc accumulates before/after counts for one normalized error signature.

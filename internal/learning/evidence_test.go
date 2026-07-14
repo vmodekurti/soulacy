@@ -119,6 +119,46 @@ func TestBuildEvidence_MapRoundTripPayloads(t *testing.T) {
 	}
 }
 
+func TestBuildEvidence_FleetBreakdownAndTrend(t *testing.T) {
+	base := time.Date(2026, 7, 6, 9, 0, 0, 0, time.UTC) // Monday
+	accepted := []Proposal{
+		{
+			ID: "pa", AgentID: "a", Kind: "skill", Status: StatusAccepted,
+			Meta: map[string]string{"skill_name": "brief"}, UpdatedAt: base, CreatedAt: base,
+		},
+		{
+			ID: "pb", AgentID: "b", Kind: "procedure", Status: StatusAccepted,
+			UpdatedAt: base.AddDate(0, 0, 7), CreatedAt: base.AddDate(0, 0, 7),
+		},
+	}
+	events := []message.Event{
+		ev("tool.call", "a", "s1", base.Add(2*time.Hour), message.ToolCall{Name: "read_skill", Arguments: map[string]any{"skill_name": "brief"}}),
+		ev("error", "a", "s0", base.Add(-24*time.Hour), map[string]any{"error": "provider test failed with 500"}),
+		ev("error", "a", "s2", base.Add(3*time.Hour), map[string]any{"error": "provider test failed with 500"}),
+		ev("message.out", "b", "s3", base.AddDate(0, 0, 7).Add(time.Hour), map[string]any{"text": "done"}),
+	}
+
+	got := BuildEvidence("", events, accepted)
+	if len(got.Agents) != 2 {
+		t.Fatalf("agents len = %d, want 2: %+v", len(got.Agents), got.Agents)
+	}
+	if got.Agents[0].AgentID != "a" || got.Agents[0].TotalSkillUses != 1 {
+		t.Fatalf("first agent = %+v, want agent a with one skill use", got.Agents[0])
+	}
+	if len(got.Trend) != 8 {
+		t.Fatalf("trend len = %d, want 8", len(got.Trend))
+	}
+	var acceptedCount, skillUses, runs int
+	for _, b := range got.Trend {
+		acceptedCount += b.Accepted
+		skillUses += b.SkillUses
+		runs += b.Runs
+	}
+	if acceptedCount != 2 || skillUses != 1 || runs != 4 {
+		t.Fatalf("trend totals accepted=%d skillUses=%d runs=%d", acceptedCount, skillUses, runs)
+	}
+}
+
 func TestErrorSignature_GroupsVariants(t *testing.T) {
 	a := errorSignature(`Error: dial tcp 10.0.0.1:5432: connection refused`)
 	b := errorSignature(`Error: dial tcp 192.168.1.9:5432: connection refused`)
