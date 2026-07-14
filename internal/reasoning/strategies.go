@@ -65,7 +65,7 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 				ID:      fmt.Sprintf("step-%d", i+1),
 				Thought: "The model returned an invalid reasoning step.",
 				Obs: Observation{
-					Content: thinkErrorInstruction(err, consecutiveThinkErrors, totalThinkErrors),
+					Content: thinkErrorInstruction(err, consecutiveThinkErrors, totalThinkErrors, env.Config.ToolNames),
 					Source:  "controller",
 				},
 				Duration: time.Since(stepStart),
@@ -157,7 +157,7 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 				ID:      fmt.Sprintf("step-%d", i+1),
 				Thought: firstNonEmpty(think.Thought, "The model returned an invalid reasoning step."),
 				Obs: Observation{
-					Content: invalidActionInstruction(consecutiveThinkErrors, totalThinkErrors),
+					Content: invalidActionInstruction(consecutiveThinkErrors, totalThinkErrors, env.Config.ToolNames),
 					Source:  "controller",
 				},
 				Duration: time.Since(stepStart),
@@ -272,12 +272,54 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 	return steps, resp
 }
 
-func thinkErrorInstruction(err error, consecutive, total int) string {
-	return fmt.Sprintf("controller: Think failed (%s). Return one short valid JSON object only. Keep thought under 25 words. If a tool is needed, use action with concise arguments. Invalid response %d in a row, %d total this run.", err.Error(), consecutive, total)
+func thinkErrorInstruction(err error, consecutive, total int, toolNames []string) string {
+	return fmt.Sprintf("controller: Think failed (%s). Return exactly one valid JSON object. %s Keep thought under 25 words. If a tool is needed, use action with concise arguments. Invalid response %d in a row, %d total this run.", err.Error(), reactJSONRepairGuide(toolNames), consecutive, total)
 }
 
-func invalidActionInstruction(consecutive, total int) string {
-	return fmt.Sprintf("controller: invalid reasoning step. is_done=false requires an action.tool that names one available tool. Either return is_done=true with a final_answer, or return action with concise arguments. Invalid response %d in a row, %d total this run.", consecutive, total)
+func invalidActionInstruction(consecutive, total int, toolNames []string) string {
+	return fmt.Sprintf("controller: invalid reasoning step. is_done=false requires an action.tool that names one available tool. %s Invalid response %d in a row, %d total this run.", reactJSONRepairGuide(toolNames), consecutive, total)
+}
+
+func reactJSONRepairGuide(toolNames []string) string {
+	tools := compactToolList(toolNames, 14)
+	if tools == "" {
+		tools = "the available tool list"
+	} else {
+		tools = "one of these tools exactly: " + tools
+	}
+	return `Use ` + tools + `. Valid shapes: {"thought":"short reason","is_done":false,"action":{"tool":"TOOL_NAME","arguments":{}}} or {"thought":"done","is_done":true,"final_answer":"answer"}. Do not include Markdown, code fences, prose before JSON, or progress-only final answers.`
+}
+
+func compactToolList(toolNames []string, limit int) string {
+	if limit <= 0 || len(toolNames) == 0 {
+		return ""
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, minInt(len(toolNames), limit))
+	for _, tool := range toolNames {
+		tool = strings.TrimSpace(tool)
+		if tool == "" || seen[tool] {
+			continue
+		}
+		seen[tool] = true
+		if len(out) < limit {
+			out = append(out, tool)
+		}
+	}
+	if len(out) == 0 {
+		return ""
+	}
+	if len(seen) > len(out) {
+		return strings.Join(out, ", ") + fmt.Sprintf(", +%d more", len(seen)-len(out))
+	}
+	return strings.Join(out, ", ")
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func toolCallKey(call ToolCall) string {

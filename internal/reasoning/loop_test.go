@@ -527,6 +527,20 @@ func TestReActStopsAfterRepeatedMissingAction(t *testing.T) {
 	if !strings.Contains(result.Output, "invalid ReAct JSON too many times") {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
+	if len(result.Steps) == 0 {
+		t.Fatalf("expected controller repair steps")
+	}
+	repairHint := result.Steps[0].Obs.Content
+	for _, want := range []string{
+		`"is_done":false`,
+		`"action":{"tool":"TOOL_NAME","arguments":{}}`,
+		"queue_list",
+		"Do not include Markdown",
+	} {
+		if !strings.Contains(repairHint, want) {
+			t.Fatalf("controller repair hint missing %q: %s", want, repairHint)
+		}
+	}
 	if result.Confident {
 		t.Fatalf("missing action controller errors should mark the run not confident")
 	}
