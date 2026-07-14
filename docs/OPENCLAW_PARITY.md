@@ -16,7 +16,7 @@ Soulacy has closed the original load-bearing parity gaps from the June analysis:
 - Studio now has validation, autowiring, runtime diagnosis, and build-until-it-works repair loops.
 - Verified update checks and installs exist through `sy update check/install`, release workflows sign artifacts, generate an SBOM, optionally codesign/notarize macOS binaries when secrets are present, and launch readiness reports whether a production update manifest is configured.
 
-The remaining parity work is not "add more primitives." It is productization: live credential-backed regression, screenshot refresh, mobile chat polish, and broader channel/community polish.
+The remaining parity work is not "add more primitives." It is productization: live credential-backed regression, screenshot refresh, richer Activity-to-Browser affordances, and broader channel/community polish.
 
 ## Updated Parity Matrix
 
@@ -34,7 +34,7 @@ The remaining parity work is not "add more primitives." It is productization: li
 | Studio/canvas | Assistant canvas/workflow surfaces | Studio workflow canvas, ReAct/Plan-Execute authoring, self-heal, run traces | Stronger for auditable workflows |
 | Memory/learning | Persistent memory and skill learning | Episodic/semantic/procedural memory, proposals, accepted skill injection | Strong, still needs polished narrative |
 | Queues | Plugin/storage primitives | Built-in ephemeral queue tools and GUI | Closed |
-| Mobile companion | Native apps | Responsive Mobile operations page with approvals, active runs, retained run history, schedule actions, delivery checks, PWA install signals, and run-review readiness | MVP closed; native app remains deferred |
+| Mobile companion | Native apps | Responsive Mobile operations page with Pocket Chat, approvals, active runs, retained run history, schedule actions, delivery checks, PWA install signals, and run-review readiness | MVP closed; native app remains deferred |
 | Voice | Voice/wake/talk-back | Voice spike and API foundations, not productized | Intentional deferral |
 | Auto-update | npm/Sparkle-style update story | Manifest-backed `sy update check/install`, checksum verification, dry-run, backups, rollback docs, readiness/support-bundle visibility, signed release artifacts, SBOM, and optional macOS codesign/notarization | MVP closed |
 
@@ -51,7 +51,7 @@ The remaining parity work is not "add more primitives." It is productization: li
 
 1. **Release packaging:** Release archives, install smoke tests, checksums, manifest, update check, verified `sy update install`, launch-readiness update-manifest checks, support-bundle release metadata, upgrade docs, rollback docs, Sigstore signing, SBOM, Homebrew tap update, and macOS codesign/notarization hooks now exist. Remaining work is running the release workflow with production secrets and publishing the first production tag.
 2. **Regression suite:** Clean-runtime UAT now covers launch readiness, GUI/PWA, golden template presence/instantiation, queues, schedule, support bundles, update checks, Browser trace wiring, and opt-in live-model Studio build/repair traces. `sy eval` now supports reusable golden suites, tag filtering, repeat-based benchmark runs, fail-fast, secret-aware skips, latency p50/p95, token summaries, tool assertions, and channel-delivery assertions. Opt-in golden smokes now prove real Slack/Telegram/Discord delivery and Playwright MCP browser sidecar startup/tool discovery when credentials or local sidecar dependencies are available.
-3. **Mobile/PWA companion:** Core phone-sized operations are now usable: approvals, active run links, recent run history, schedule run/test actions, delivery health checks, PWA install signals, and run-review readiness. Remaining work is richer mobile chat polish and native app packaging if native presence becomes a launch requirement.
+3. **Mobile/PWA companion:** Core phone-sized operations are now usable: Pocket Chat for enabled interactive agents, approvals, active run links, recent run history, schedule run/test actions, delivery health checks, PWA install signals, and run-review readiness. Remaining work is native app packaging if native presence becomes a launch requirement.
 4. **Channel polish:** Default outbound routing, agent-specific bot mappings, dry diagnosis, live delivery tests, companion-surface checks, Teams/Google Chat/Email outbound adapters, and opt-in credential-backed golden delivery smoke exist. Remaining work is collecting more real-world failure signatures into the doctor and keeping setup docs current as adapters are added.
 5. **Public docs:** Quickstarts, production deployment guide, channel setup guides, troubleshooting playbooks, strict docs build, GitHub Pages deploy workflow, canonical published installer, and launch-readiness docs checks now exist. Remaining work is keeping screenshots current.
 6. **Browser control hardening:** Domain policies, Browser trace wiring, action filters, trace export, screenshot gallery, deep links, and authenticated local screenshot artifacts exist. Remaining work is more Activity-to-Browser affordances and opt-in live browser smoke coverage in release runs.
@@ -59,4 +59,4 @@ The remaining parity work is not "add more primitives." It is productization: li
 
 ## Current Recommendation
 
-Do not add new architectural primitives unless they directly improve reliability or launch polish. The platform now has enough core machinery; the next competitive leap is running credential-backed UAT repeatedly, polishing mobile chat/activity, keeping docs screenshots fresh, and making every failure explainable and recoverable from Studio or Activity.
+Do not add new architectural primitives unless they directly improve reliability or launch polish. The platform now has enough core machinery; the next competitive leap is running credential-backed UAT repeatedly, polishing Activity-to-Browser handoffs, keeping docs screenshots fresh, and making every failure explainable and recoverable from Studio or Activity.
