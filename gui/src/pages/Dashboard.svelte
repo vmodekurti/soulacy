@@ -408,6 +408,33 @@
         </div>
       {/if}
 
+      {#if readiness.studio_contracts}
+        <div class:release-strip={true}
+             class:ok={readiness.studio_contracts.status === 'ok'}
+             class:warn={readiness.studio_contracts.status === 'warn'}
+             class:fail={readiness.studio_contracts.status === 'fail'}>
+          <div>
+            <div class="release-title">
+              <span>Studio contract health</span>
+              <small>{readiness.studio_contracts.score || 0}% · {statusLabel(readiness.studio_contracts.status)}</small>
+            </div>
+            <p>
+              {readiness.studio_contracts.checked || 0} checked ·
+              {readiness.studio_contracts.passing || 0} passing ·
+              {readiness.studio_contracts.blockers || 0} blockers ·
+              {readiness.studio_contracts.warnings || 0} warnings
+            </p>
+            {#if readiness.studio_contracts.worst_agent || readiness.studio_contracts.worst_summary}
+              <code>
+                {readiness.studio_contracts.worst_agent || 'Saved agents'}
+                {#if readiness.studio_contracts.worst_summary} · {readiness.studio_contracts.worst_summary}{/if}
+              </code>
+            {/if}
+          </div>
+          <button class="btn-secondary" on:click={() => openHref('#studio')}>Open Studio</button>
+        </div>
+      {/if}
+
       {#if readiness.launch_checklist?.length}
         <div class="launch-checklist">
           <div class="section-hdr inline">
@@ -653,6 +680,7 @@
   }
   .release-strip.ok { border-color: rgba(76,175,130,.3); background: rgba(76,175,130,.06); }
   .release-strip.warn { border-color: rgba(240,160,96,.35); background: rgba(240,160,96,.07); }
+  .release-strip.fail { border-color: rgba(240,96,96,.42); background: rgba(240,96,96,.07); }
   .release-title {
     display: flex; align-items: baseline; gap: .6rem; color: #dfe2ff;
     font-weight: 700; font-size: .82rem;
