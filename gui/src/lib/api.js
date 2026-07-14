@@ -355,6 +355,7 @@ export const api = {
   channels: {
     list:    ()          => apiFetch('/channels'),
     metrics: ()          => apiFetch('/channels/metrics'),
+    deliveryReadiness: () => apiFetch('/channels/delivery-readiness'),
     update:  (id, patch) => apiFetch(`/channels/${id}`, { method: 'PATCH', body: JSON.stringify(patch) }),
     test:    (id, body = {}) => apiFetch(`/channels/${id}/test`, { method: 'POST', body: JSON.stringify(body) }),
     diagnose: (id, body = {}) => apiFetch(`/channels/${id}/diagnose`, { method: 'POST', body: JSON.stringify(body) }),
