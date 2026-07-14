@@ -524,7 +524,7 @@ func TestReActStopsAfterRepeatedMissingAction(t *testing.T) {
 	if len(exec.calls) != 0 {
 		t.Fatalf("empty tool action should not dispatch, got calls=%+v", exec.calls)
 	}
-	if !strings.Contains(result.Output, "invalid ReAct JSON too many times") {
+	if !strings.Contains(result.Output, "without a usable action.tool") {
 		t.Fatalf("unexpected output: %q", result.Output)
 	}
 	if len(result.Steps) == 0 {
@@ -543,6 +543,47 @@ func TestReActStopsAfterRepeatedMissingAction(t *testing.T) {
 	}
 	if result.Confident {
 		t.Fatalf("missing action controller errors should mark the run not confident")
+	}
+}
+
+func TestReActFallsBackToUsefulObservationAfterRepeatedMissingAction(t *testing.T) {
+	llm := &scriptedLLM{
+		responses: []reasoning.ThinkResponse{
+			{Thought: "check queue", IsDone: false, Action: reasoning.ToolCall{Tool: "queue_list", Input: map[string]string{"queue": "pending_resources"}}},
+			{Thought: "I should continue", IsDone: false},
+			{Thought: "Still continuing", IsDone: false},
+			{IsDone: true, FinalAnswer: "should not get here"},
+		},
+		reflectOutputs: []string{
+			"I will continue processing the queue now.",
+			"I will continue processing the queue now.",
+		},
+	}
+	exec := &recordingExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     30,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"queue_list"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
+
+	if llm.thinkCalls != 3 {
+		t.Fatalf("think calls = %d, want stop after two missing actions following useful work", llm.thinkCalls)
+	}
+	if llm.reflectCalls != 2 {
+		t.Fatalf("reflect calls = %d, want one failed recovery reflection per missing action", llm.reflectCalls)
+	}
+	if len(exec.calls) != 1 {
+		t.Fatalf("tool calls = %d, want the initial valid call only", len(exec.calls))
+	}
+	if !strings.Contains(result.Output, "without a usable action.tool") || !strings.Contains(result.Output, "best available result") {
+		t.Fatalf("unexpected fallback output: %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("invalid action fallback should mark the run not confident")
 	}
 }
 

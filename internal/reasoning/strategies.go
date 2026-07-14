@@ -168,11 +168,11 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 					return steps, resp
 				}
 				if consecutiveThinkErrors >= 2 {
-					return steps, ReflectResponse{Output: synthesizeAfterThinkErrors(steps)}
+					return steps, ReflectResponse{Output: synthesizeAfterInvalidActions(steps)}
 				}
 			}
 			if consecutiveThinkErrors >= maxConsecutiveThinkErrors || totalThinkErrors >= maxTotalThinkErrors {
-				return steps, ReflectResponse{Output: thinkErrorStopMessage(steps)}
+				return steps, ReflectResponse{Output: invalidActionStopMessage(steps)}
 			}
 			continue
 		}
@@ -277,7 +277,7 @@ func thinkErrorInstruction(err error, consecutive, total int, toolNames []string
 }
 
 func invalidActionInstruction(consecutive, total int, toolNames []string) string {
-	return fmt.Sprintf("controller: invalid reasoning step. is_done=false requires an action.tool that names one available tool. %s Invalid response %d in a row, %d total this run.", reactJSONRepairGuide(toolNames), consecutive, total)
+	return fmt.Sprintf("controller: invalid reasoning step. is_done=false requires action.tool and action.arguments. Choose one available tool, or set is_done=true with final_answer if the work is complete. %s Invalid action %d in a row, %d total this run.", reactJSONRepairGuide(toolNames), consecutive, total)
 }
 
 func reactJSONRepairGuide(toolNames []string) string {
@@ -391,6 +391,14 @@ func thinkErrorStopMessage(steps []Step) string {
 	return "The run stopped because the model returned invalid ReAct JSON too many times before producing a usable tool result. Retry with a smaller input, choose a more reliable model, or switch this workflow step to a deterministic tool/flow node."
 }
 
+func invalidActionStopMessage(steps []Step) string {
+	last := lastUsefulObservation(steps)
+	if last != "" {
+		return "The run stopped because the model repeatedly returned is_done=false without a usable action.tool. The last useful observation was: " + last
+	}
+	return "The run stopped because the model repeatedly returned is_done=false without a usable action.tool. Retry with a smaller input, choose a more reliable model, or switch this workflow step to a deterministic tool/flow node."
+}
+
 func synthesizeAfterThinkErrors(steps []Step) string {
 	observations := recentUsefulObservations(steps, 3)
 	if len(observations) == 0 {
@@ -398,6 +406,23 @@ func synthesizeAfterThinkErrors(steps []Step) string {
 	}
 	var b strings.Builder
 	b.WriteString("The run stopped because the model repeatedly returned invalid ReAct JSON after useful work was already completed. Here is the best available result from the successful steps:\n\n")
+	for i, obs := range observations {
+		if len(observations) > 1 {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, obs)
+		} else {
+			b.WriteString(obs)
+		}
+	}
+	return b.String()
+}
+
+func synthesizeAfterInvalidActions(steps []Step) string {
+	observations := recentUsefulObservations(steps, 3)
+	if len(observations) == 0 {
+		return invalidActionStopMessage(steps)
+	}
+	var b strings.Builder
+	b.WriteString("The run stopped because the model repeatedly returned is_done=false without a usable action.tool after useful work was already completed. Here is the best available result from the successful steps:\n\n")
 	for i, obs := range observations {
 		if len(observations) > 1 {
 			fmt.Fprintf(&b, "%d. %s\n", i+1, obs)
