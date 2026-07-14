@@ -1328,7 +1328,7 @@ var channelSpecs = []channelSpec{
 		{Key: "subject", Label: "Default subject", Type: "text"},
 		{Key: "tls", Label: "TLS", Type: "text", Help: "starttls | implicit | none (inferred from the port when blank)."},
 	}},
-	{ID: "webhook", Name: "Webhook", Fields: []channelField{
+	{ID: "webhook", Name: "Outgoing Webhook", Fields: []channelField{
 		{Key: "url", Label: "Webhook URL", Type: "password", Required: true, Secret: true, Help: "Absolute http(s) endpoint that receives outbound JSON messages from agents and schedules"},
 		{Key: "method", Label: "HTTP method", Type: "text", Required: false, Help: "Defaults to POST"},
 		{Key: "headers", Label: "Headers", Type: "text", Required: false, Secret: true, Help: "Optional request headers as Key: value lines; useful for Authorization or shared secrets"},
