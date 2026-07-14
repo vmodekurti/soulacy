@@ -390,8 +390,10 @@ func (l *Logger) QueryFiltered(agentID string, limit int, allowed map[string]boo
 func (l *Logger) QueryEvents(agentID, sessionID string, limit int, allowed map[string]bool) ([]message.Event, error) {
 	agentID = strings.TrimSpace(agentID)
 	sessionID = strings.TrimSpace(sessionID)
-	if limit <= 0 || limit > 10000 {
+	if limit <= 0 {
 		limit = 1000
+	} else if limit > 50000 {
+		limit = 50000
 	}
 	args := []any{}
 	where := "1 = 1"

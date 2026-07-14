@@ -107,3 +107,34 @@ func TestRunLedgerFiltersAgent(t *testing.T) {
 		t.Fatalf("agentId = %v, want a", got)
 	}
 }
+
+func TestRunLedgerMergesFlowHistory(t *testing.T) {
+	s := newTestGateway(t, "secret")
+	s.engine.TagFlowRun("history-agent", "flow-only", "http")
+	base := time.Date(2026, 7, 4, 7, 0, 0, 0, time.UTC)
+	s.actions = &fakeTailBackend{events: []message.Event{
+		{Type: "message.in", AgentID: "history-agent", SessionID: "durable-run", Timestamp: base, Payload: message.Message{Channel: "slack"}},
+		{Type: "message.out", AgentID: "history-agent", SessionID: "durable-run", Timestamp: base.Add(time.Second), Payload: message.Message{Parts: message.Text("ok")}},
+	}}
+
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/runs/ledger?agent_id=history-agent&limit=20", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("ledger status = %d body=%v", status, body)
+	}
+	rawRuns := body["runs"].([]any)
+	if len(rawRuns) != 2 {
+		t.Fatalf("runs len = %d, want 2: %#v", len(rawRuns), rawRuns)
+	}
+	seen := map[string]bool{}
+	for _, raw := range rawRuns {
+		run := raw.(map[string]any)
+		id, _ := run["runId"].(string)
+		seen[id] = true
+	}
+	if !seen["flow-only"] || !seen["durable-run"] {
+		t.Fatalf("merged ledger missing flow or durable run: %#v", rawRuns)
+	}
+	if got := body["source"]; got != "action-log+flow" {
+		t.Fatalf("source = %v, want action-log+flow", got)
+	}
+}

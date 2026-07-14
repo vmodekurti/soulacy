@@ -41,17 +41,6 @@ type runLedgerRow struct {
 // schedule.output records. The goal is that a run appears in one place even
 // when the UI that initiated it is not the UI that later inspects it.
 func (s *Server) handleRunLedger(c *fiber.Ctx) error {
-	if s.actions == nil {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-			"error": "run ledger not available (action log disabled)",
-		})
-	}
-	q, ok := s.actions.(eventQuerier)
-	if !ok {
-		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{
-			"error": "run ledger requires a durable action log backend",
-		})
-	}
 	limit := c.QueryInt("limit", 100)
 	if limit <= 0 {
 		limit = 100
@@ -68,17 +57,53 @@ func (s *Server) handleRunLedger(c *fiber.Ctx) error {
 	}
 
 	agentID := strings.TrimSpace(c.Query("agent_id"))
-	events, err := q.QueryEvents(agentID, strings.TrimSpace(c.Query("session_id")), eventLimit, runLedgerEventTypes())
-	if err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	sessionID := strings.TrimSpace(c.Query("session_id"))
+	var (
+		events    []message.Event
+		rows      []runLedgerRow
+		sources   []string
+		queryNote string
+	)
+	if s.actions != nil {
+		q, ok := s.actions.(eventQuerier)
+		if !ok {
+			queryNote = "action log backend does not support durable event queries"
+		} else {
+			got, err := q.QueryEvents(agentID, sessionID, eventLimit, runLedgerEventTypes())
+			if err != nil {
+				return s.errJSON(c, fiber.StatusInternalServerError, err)
+			}
+			events = got
+			rows = append(rows, s.buildRunLedger(events, 0)...)
+			sources = append(sources, "action-log")
+		}
 	}
-	rows := s.buildRunLedger(events, limit)
+	if sessionID == "" {
+		flowRows := s.flowRunLedgerRows(agentID)
+		if len(flowRows) > 0 {
+			rows = append(rows, flowRows...)
+			sources = append(sources, "flow")
+		}
+	}
+	if len(sources) == 0 {
+		status := fiber.StatusServiceUnavailable
+		msg := "run ledger not available (no action log or flow history)"
+		if queryNote != "" {
+			msg = queryNote
+		}
+		return c.Status(status).JSON(fiber.Map{"error": msg})
+	}
+	rows = mergeRunLedgerRows(rows, limit)
 	return c.JSON(fiber.Map{
-		"agent_id": agentID,
-		"runs":     rows,
-		"count":    len(rows),
-		"durable":  true,
-		"source":   "action-log",
+		"agent_id":        agentID,
+		"session_id":      sessionID,
+		"runs":            rows,
+		"count":           len(rows),
+		"event_count":     len(events),
+		"event_limit":     eventLimit,
+		"event_truncated": len(events) >= eventLimit,
+		"durable":         runLedgerContainsString(sources, "action-log"),
+		"source":          strings.Join(studioUniqueStrings(sources), "+"),
 	})
 }
 
@@ -202,4 +227,137 @@ func (s *Server) runLedgerAgentNames() map[string]string {
 		}
 	}
 	return out
+}
+
+func (s *Server) flowRunLedgerRows(agentID string) []runLedgerRow {
+	if s == nil || s.engine == nil {
+		return nil
+	}
+	agentNames := s.runLedgerAgentNames()
+	ids := []string{}
+	if strings.TrimSpace(agentID) != "" {
+		ids = append(ids, strings.TrimSpace(agentID))
+	} else {
+		for id := range agentNames {
+			ids = append(ids, id)
+		}
+		sort.Strings(ids)
+	}
+	rows := []runLedgerRow{}
+	for _, id := range ids {
+		for _, r := range s.engine.FlowRunHistory(id) {
+			status := "success"
+			if !r.Ok {
+				status = "failed"
+			}
+			row := runLedgerRow{
+				RunID:     r.RunID,
+				ID:        r.RunID,
+				AgentID:   id,
+				AgentName: studioFirstNonEmpty(agentNames[id], id),
+				SessionID: r.RunID,
+				Trigger:   r.Trigger,
+				Channel:   r.Trigger,
+				Source:    "flow",
+				StartedAt: r.StartedAt,
+				UpdatedAt: r.UpdatedAt,
+				Steps:     r.Steps,
+				Ok:        r.Ok,
+				Status:    status,
+				Error:     r.Error,
+			}
+			if row.UpdatedAt.IsZero() {
+				row.UpdatedAt = row.StartedAt
+			}
+			if row.Error != "" {
+				row.Output = row.Error
+			}
+			if !row.StartedAt.IsZero() && !row.UpdatedAt.IsZero() {
+				row.DurationMS = row.UpdatedAt.Sub(row.StartedAt).Milliseconds()
+			}
+			rows = append(rows, row)
+		}
+	}
+	return rows
+}
+
+func mergeRunLedgerRows(rows []runLedgerRow, limit int) []runLedgerRow {
+	byKey := map[string]runLedgerRow{}
+	for _, row := range rows {
+		key := row.AgentID + "\x00" + row.RunID
+		if cur, ok := byKey[key]; ok {
+			byKey[key] = mergeRunLedgerRow(cur, row)
+		} else {
+			byKey[key] = row
+		}
+	}
+	out := make([]runLedgerRow, 0, len(byKey))
+	for _, row := range byKey {
+		if row.ID == "" {
+			row.ID = row.RunID
+		}
+		if row.UpdatedAt.IsZero() {
+			row.UpdatedAt = row.StartedAt
+		}
+		if row.Status == "" {
+			row.Status = "unknown"
+		}
+		if !row.StartedAt.IsZero() && !row.UpdatedAt.IsZero() {
+			row.DurationMS = row.UpdatedAt.Sub(row.StartedAt).Milliseconds()
+		}
+		out = append(out, row)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func mergeRunLedgerRow(a, b runLedgerRow) runLedgerRow {
+	out := a
+	out.ID = studioFirstNonEmpty(out.ID, b.ID)
+	out.RunID = studioFirstNonEmpty(out.RunID, b.RunID)
+	out.AgentID = studioFirstNonEmpty(out.AgentID, b.AgentID)
+	out.AgentName = studioFirstNonEmpty(out.AgentName, b.AgentName)
+	out.SessionID = studioFirstNonEmpty(out.SessionID, b.SessionID)
+	out.Trigger = studioFirstNonEmpty(out.Trigger, b.Trigger)
+	out.Channel = studioFirstNonEmpty(out.Channel, b.Channel, out.Trigger)
+	out.Source = strings.Join(studioUniqueStrings([]string{out.Source, b.Source}), "+")
+	out.StartedAt = studioFirstNonZeroTime(out.StartedAt, b.StartedAt)
+	if !b.StartedAt.IsZero() && (out.StartedAt.IsZero() || b.StartedAt.Before(out.StartedAt)) {
+		out.StartedAt = b.StartedAt
+	}
+	if b.UpdatedAt.After(out.UpdatedAt) {
+		out.UpdatedAt = b.UpdatedAt
+	}
+	if b.Steps > out.Steps {
+		out.Steps = b.Steps
+	}
+	out.Output = studioFirstNonEmpty(out.Output, b.Output)
+	out.Error = studioFirstNonEmpty(out.Error, b.Error)
+	out.DeliveryChannel = studioFirstNonEmpty(out.DeliveryChannel, b.DeliveryChannel)
+	out.DeliveryTo = studioFirstNonEmpty(out.DeliveryTo, b.DeliveryTo)
+	out.DeliveryStatus = studioFirstNonEmpty(out.DeliveryStatus, b.DeliveryStatus)
+	out.DeliveryError = studioFirstNonEmpty(out.DeliveryError, b.DeliveryError)
+	if out.Status == "" || out.Status == "unknown" || (out.Status == "success" && b.Status == "failed") {
+		out.Status = b.Status
+		out.Ok = b.Ok
+	}
+	if out.Status == "failed" {
+		out.Ok = false
+	}
+	out.EventCount += b.EventCount
+	return out
+}
+
+func runLedgerContainsString(vals []string, want string) bool {
+	for _, v := range vals {
+		if v == want {
+			return true
+		}
+	}
+	return false
 }
