@@ -17,18 +17,19 @@ import (
 )
 
 // buildChannelSendBuiltin sends a canonical outbound message through any
-// registered channel adapter: telegram, slack, discord, WhatsApp, sidecars, etc.
+// registered channel adapter: Telegram, Slack, Discord, Email, Teams,
+// Google Chat, WhatsApp, webhooks, sidecars, etc.
 func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 	return BuiltinTool{
 		Name:        "channel.send",
 		Gate:        "",
-		Description: "Send text to a configured outbound channel adapter. Use for final delivery to Telegram, Slack, Discord, WhatsApp, or a sidecar channel. In interactive runs, channel and to default to the inbound channel/chat. Use text for the message body; message is accepted as a compatibility alias.",
+		Description: "Send text to a configured outbound channel adapter. Use for final delivery to Telegram, Slack, Discord, Email, Teams, Google Chat, WhatsApp, webhooks, or a sidecar channel. In interactive runs, channel and to default to the inbound channel/chat. Scheduled jobs usually use the configured default output, so pass only text unless you are overriding the route. Prefer text for the message body; message/body/content are accepted as compatibility aliases.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"channel": map[string]any{
 					"type":        "string",
-					"description": "Registered channel adapter id, such as telegram, slack, discord, whatsapp, or a sidecar id. Optional in interactive channel runs; defaults to the inbound adapter id.",
+					"description": "Registered channel adapter id, such as telegram, slack, discord, email, teams, google_chat, webhook, whatsapp, or an agent-specific mapping id. Optional in interactive channel runs; defaults to the inbound adapter id.",
 				},
 				"adapter": map[string]any{
 					"type":        "string",
@@ -36,7 +37,7 @@ func (e *Engine) buildChannelSendBuiltin() BuiltinTool {
 				},
 				"to": map[string]any{
 					"type":        "string",
-					"description": "Destination id for the platform: chat id, channel id, user id, phone number, or sidecar thread id. Optional in interactive channel runs; defaults to the inbound chat/thread id.",
+					"description": "Destination id for the platform: Telegram chat id, Slack/Discord channel id, email address, phone number, or sidecar thread id. Optional when the inbound route or default_output_to is configured. Webhook/Teams/Google Chat usually do not need to.",
 				},
 				"destination": map[string]any{
 					"type":        "string",
@@ -203,7 +204,7 @@ func (e *Engine) buildChannelStatusBuiltin() BuiltinTool {
 			"properties": map[string]any{
 				"channel": map[string]any{
 					"type":        "string",
-					"description": "Channel adapter id such as telegram, slack, discord, or an agent-specific mapping id. Optional when an inbound channel or single default outbound channel is available.",
+					"description": "Channel adapter id such as telegram, slack, discord, email, teams, google_chat, webhook, or an agent-specific mapping id. Optional when an inbound channel or single default outbound channel is available.",
 				},
 				"adapter": map[string]any{
 					"type":        "string",
@@ -211,7 +212,7 @@ func (e *Engine) buildChannelStatusBuiltin() BuiltinTool {
 				},
 				"to": map[string]any{
 					"type":        "string",
-					"description": "Destination id such as a Telegram chat id, Slack channel id, Discord channel id, or thread id. Optional when an inbound route or configured default output exists.",
+					"description": "Destination id such as a Telegram chat id, Slack/Discord channel id, email address, or thread id. Optional when an inbound route or configured default output exists. Webhook/Teams/Google Chat usually do not need to.",
 				},
 				"destination": map[string]any{
 					"type":        "string",

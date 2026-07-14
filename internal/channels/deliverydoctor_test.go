@@ -2,6 +2,7 @@ package channels
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -24,6 +25,10 @@ func TestClassifyDeliveryError(t *testing.T) {
 		{"discord-unknown-channel", "discord: send: API returned status 404: Unknown Channel (code 10003)", DeliveryInvalidDest},
 		{"discord-unauthorized", "discord: send: API returned status 401: 401: Unauthorized", DeliveryBadToken},
 		{"discord-missing-access", "discord: send: API returned status 403: Missing Access (code 50001)", DeliveryForbidden},
+		// Webhook-style destinations.
+		{"teams-webhook-not-found", "teams: send: API returned status 404: Not Found", DeliveryInvalidDest},
+		{"google-chat-webhook-forbidden", "google_chat: send: API returned status 403: Forbidden", DeliveryForbidden},
+		{"provider-rate-limit", "slack: send: rate_limited", DeliveryRateLimited},
 		// Transport
 		{"network-timeout", "telegram: send: context deadline exceeded", DeliveryNetwork},
 		{"network-refused", "slack: send: dial tcp: connection refused", DeliveryNetwork},
@@ -71,5 +76,41 @@ func TestDiagnoseDeliveryPreconditions(t *testing.T) {
 	}
 	if d.Detail == "" {
 		t.Errorf("expected raw detail to be preserved")
+	}
+}
+
+func TestDiagnoseDeliveryAdapterSpecificFixes(t *testing.T) {
+	cases := []struct {
+		name    string
+		adapter string
+		raw     string
+		want    string
+	}{
+		{
+			name:    "telegram-chat-id-guidance",
+			adapter: "telegram-research",
+			raw:     "telegram: send: API returned status 400: Bad Request: chat not found",
+			want:    "-100",
+		},
+		{
+			name:    "slack-channel-id-guidance",
+			adapter: "slack-research",
+			raw:     "slack: send: channel_not_found",
+			want:    "Slack channel ID",
+		},
+		{
+			name:    "webhook-regenerate-guidance",
+			adapter: "teams",
+			raw:     "teams: send: API returned status 404: Not Found",
+			want:    "fresh incoming webhook",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := DiagnoseDelivery(tc.adapter, "dest", true, true, errors.New(tc.raw))
+			if got.Fix == "" || !strings.Contains(got.Fix, tc.want) {
+				t.Fatalf("fix = %q, want substring %q", got.Fix, tc.want)
+			}
+		})
 	}
 }
