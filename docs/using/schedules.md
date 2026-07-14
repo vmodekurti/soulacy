@@ -50,7 +50,7 @@ Per-row actions:
 
 - **▶ Run** — manual trigger. If the next scheduled fire is imminent, a prompt asks whether to run now or wait (so you don't double-run). A running job can't be started again, and a scheduled fire is skipped while one is in progress.
 - **Test output** — sends a clearly marked smoke-test message through the configured `schedule.output` channel without invoking the LLM. Use it after adding or rotating a Telegram/Slack/Discord/WhatsApp destination.
-- **📋 History** — slide-out panel of past runs, each with a ✓ success / ✗ failed badge, timestamp, channel, expandable full output, and token/cost metrics. A run counts as failed if any tool returned an error, even when the agent still produced a reply.
+- **📋 History** — slide-out panel of past runs, each with a ✓ success / ✗ failed badge, timestamp, trigger source, delivery status, expandable full output, and token/cost metrics. A run counts as failed if any tool returned an error, even when the agent still produced a reply.
 - **👁 Watch** — jumps to the Activity page with live polling already on.
 - **Edit / Clone / Delete** — clone creates a disabled copy; delete removes the SOUL.yaml from disk.
 
@@ -89,3 +89,19 @@ By default a cron run's result stays internal (visible in History/Activity). To 
 
 !!! note
     Manual **▶ Run** returns the result to the page banner; only cron-fired runs are delivered through `schedule.output`. Use **Test output** to validate the channel and destination before waiting for the next cron fire.
+
+## Run history and support evidence
+
+Schedule history is backed by the shared run ledger used by Activity and support
+bundles. It merges:
+
+- durable action-log events from cron, HTTP, Slack, Telegram, Discord, and other
+  inbound channels;
+- workflow run history captured by Studio and the runtime;
+- schedule delivery records such as channel, destination, status, and failure
+  reason.
+
+The panel shows the ledger source and warns if the event scan was truncated. If
+you need to debug a production issue, download a support bundle; its
+`run_ledger.json` contains the same merged evidence with event counts and row
+limits.
