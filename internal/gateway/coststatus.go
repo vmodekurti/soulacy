@@ -145,9 +145,9 @@ func (s *Server) sumCostSince(c *fiber.Ctx, since time.Time) float64 {
 	return total
 }
 
-func parityOps(providersReady, enabledAgents int, updateManifest string, cost costReadiness, slo sloReadiness) parityArea {
-	if providersReady > 0 && enabledAgents > 0 && updateManifest != "" && cost.Status == "ok" && slo.Status == "ok" {
-		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 92, Detail: "Readiness, doctor, support bundles, action logs, parity harness, updates, cost guardrails, deployment profiles, and SLO checks are wired.", Next: "Wire alert delivery for SLO breaches and budget threshold changes.", Benchmark: "Commercial launch", Href: "#dashboard"}
+func parityOps(providersReady, enabledAgents int, updateManifest string, cost costReadiness, slo sloReadiness, alerts opsAlertReadiness) parityArea {
+	if providersReady > 0 && enabledAgents > 0 && updateManifest != "" && cost.Status == "ok" && slo.Status == "ok" && alerts.Status == "ok" {
+		return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: "ok", Score: 95, Detail: "Readiness, doctor, support bundles, action logs, parity harness, updates, cost guardrails, deployment profiles, SLO checks, and ops alert delivery are wired.", Next: "Keep clean-runtime UAT and alert tests in the release checklist.", Benchmark: "Commercial launch", Href: "#dashboard"}
 	}
 	status := "warn"
 	score := 62
@@ -169,7 +169,15 @@ func parityOps(providersReady, enabledAgents int, updateManifest string, cost co
 	if len(slo.NextActions) > 0 && (slo.Status == "fail" || cost.Status == "ok") {
 		next = slo.NextActions[0]
 	}
-	return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: status, Score: score, Detail: fmt.Sprintf("Diagnostics, run metrics, and support bundles exist; cost guardrails are %s and SLO status is %s.", cost.Status, slo.Status), Next: next, Benchmark: "Commercial launch", Href: "#dashboard"}
+	if alerts.Status != "ok" {
+		if status == "warn" && cost.Status == "ok" && slo.Status == "ok" {
+			score = 78
+		}
+		if len(alerts.NextActions) > 0 {
+			next = alerts.NextActions[0]
+		}
+	}
+	return parityArea{Key: "ops", Label: "Ops & Release Confidence", Status: status, Score: score, Detail: fmt.Sprintf("Diagnostics, run metrics, and support bundles exist; cost guardrails are %s, SLO status is %s, and ops alert delivery is %s.", cost.Status, slo.Status, alerts.Status), Next: next, Benchmark: "Commercial launch", Href: "#dashboard"}
 }
 
 func costBudgetDetail(daily, monthly, threshold float64) string {

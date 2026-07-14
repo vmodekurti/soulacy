@@ -225,12 +225,18 @@ type CostConfig struct {
 //	  max_incomplete_rate: 0.05
 //	  max_p95_run_duration: 5m
 //	  min_runs_for_signal: 3
+//	  alert_channel: telegram
+//	  alert_to: "-1001234567890"
+//	  alert_min_status: fail
 type OpsConfig struct {
 	SLOWindow         string  `mapstructure:"slo_window"`
 	MaxFailureRate    float64 `mapstructure:"max_failure_rate"`
 	MaxIncompleteRate float64 `mapstructure:"max_incomplete_rate"`
 	MaxP95RunDuration string  `mapstructure:"max_p95_run_duration"`
 	MinRunsForSignal  int     `mapstructure:"min_runs_for_signal"`
+	AlertChannel      string  `mapstructure:"alert_channel"`
+	AlertTo           string  `mapstructure:"alert_to"`
+	AlertMinStatus    string  `mapstructure:"alert_min_status"`
 }
 
 // DeploymentConfig identifies the intended operating posture for a workspace.

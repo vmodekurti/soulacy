@@ -16,6 +16,7 @@
   let readiness = null
   let ops = null
   let opsError = ''
+  let alertTestStatus = ''
   let downloadingSupport = false
   let supportMessage = ''
 
@@ -125,6 +126,16 @@
   function openHref(href) {
     if (!href) return
     window.location.hash = href.replace(/^#/, '')
+  }
+
+  async function sendOpsAlertTest() {
+    alertTestStatus = 'Sending test alert...'
+    try {
+      const res = await api.opsAlertTest()
+      alertTestStatus = `Sent to ${res.channel || 'channel'} ${res.to || ''}`.trim()
+    } catch (e) {
+      alertTestStatus = e.message || 'Alert test failed.'
+    }
   }
 
   async function downloadSupportBundle() {
@@ -257,6 +268,23 @@
               </span>
             </div>
             <button class="btn-secondary" on:click={() => openHref('#config')}>Tune SLOs</button>
+          </div>
+        {/if}
+        {#if readiness?.ops_alerts}
+          <div class="slo-strip {readiness.ops_alerts.status}">
+            <div>
+              <div class="ops-label">Ops Alert Delivery</div>
+              <strong>{statusLabel(readiness.ops_alerts.status)} · {readiness.ops_alerts.channel || 'not configured'}</strong>
+              <span>
+                {readiness.ops_alerts.to ? `destination ${readiness.ops_alerts.to}` : 'No destination configured'} ·
+                alerts fire at {readiness.ops_alerts.min_status || 'fail'}
+              </span>
+              {#if alertTestStatus}<span>{alertTestStatus}</span>{/if}
+            </div>
+            <div class="inline-actions">
+              <button class="btn-secondary" on:click={() => openHref('#config')}>Configure</button>
+              <button class="btn-secondary" on:click={sendOpsAlertTest}>Send test</button>
+            </div>
           </div>
         {/if}
         <div class="ops-grid">
@@ -562,6 +590,12 @@
     display: block; color: #e8ebff; font-size: .86rem; margin-bottom: .2rem;
   }
   .slo-strip span { color: #8a91b8; font-size: .74rem; }
+  .inline-actions {
+    display: flex;
+    align-items: center;
+    gap: .45rem;
+    flex-wrap: wrap;
+  }
   .ops-panel {
     background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
   }

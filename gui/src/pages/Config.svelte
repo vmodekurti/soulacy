@@ -58,6 +58,9 @@
   let sloMaxIncompleteRate = 0.05
   let sloMaxP95RunDuration = '5m'
   let sloMinRunsForSignal = 3
+  let opsAlertChannel = ''
+  let opsAlertTo = ''
+  let opsAlertMinStatus = 'fail'
   let deploymentProfile = 'local'
   let deploymentOwner = ''
   let deploymentRegion = ''
@@ -257,6 +260,9 @@
       sloMaxIncompleteRate = config.ops?.max_incomplete_rate || 0.05
       sloMaxP95RunDuration = config.ops?.max_p95_run_duration || '5m'
       sloMinRunsForSignal = config.ops?.min_runs_for_signal || 3
+      opsAlertChannel = config.ops?.alert_channel || ''
+      opsAlertTo = config.ops?.alert_to || ''
+      opsAlertMinStatus = config.ops?.alert_min_status || 'fail'
       deploymentProfile = config.deployment?.profile || 'local'
       deploymentOwner = config.deployment?.owner || ''
       deploymentRegion = config.deployment?.region || ''
@@ -317,6 +323,9 @@
           max_incomplete_rate: Number(sloMaxIncompleteRate || 0),
           max_p95_run_duration: sloMaxP95RunDuration,
           min_runs_for_signal: Number(sloMinRunsForSignal || 0),
+          alert_channel: opsAlertChannel,
+          alert_to: opsAlertTo,
+          alert_min_status: opsAlertMinStatus,
         },
         deployment: {
           profile: deploymentProfile,
@@ -603,6 +612,23 @@
             <label class="field">
               <span title="Minimum number of recent runs before the SLO signal is treated as reliable instead of sample-starved.">Minimum runs</span>
               <input type="number" min="1" max="1000" step="1" bind:value={sloMinRunsForSignal} disabled={!writable} />
+            </label>
+          </div>
+          <div class="slo-row compact">
+            <label class="field">
+              <span title="Channel adapter used for production alerts when budget or SLO posture reaches the selected threshold. Examples: telegram, slack, discord, webhook.">Alert channel</span>
+              <input bind:value={opsAlertChannel} placeholder="telegram" disabled={!writable} />
+            </label>
+            <label class="field">
+              <span title="Destination for alert messages. Use a Telegram chat ID, Slack channel ID, Discord channel ID, or webhook destination depending on the channel.">Alert destination</span>
+              <input bind:value={opsAlertTo} placeholder="-1001234567890" disabled={!writable} />
+            </label>
+            <label class="field">
+              <span title="warn sends alerts for warning and failure posture; fail sends only when a budget or SLO check is failing.">Alert threshold</span>
+              <select bind:value={opsAlertMinStatus} disabled={!writable}>
+                <option value="fail">fail only</option>
+                <option value="warn">warn or fail</option>
+              </select>
             </label>
           </div>
         </div>
