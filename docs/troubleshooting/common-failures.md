@@ -85,9 +85,15 @@ when asking for help. The live gateway bundle includes:
 
 - `doctor.json`: provider and channel readiness, including delivery checks.
 - `readiness.json`: launch-readiness score and blocking checks.
+- `browser_status.json`, `mobile_status.json`, and `chat_status.json`: live
+  experience readiness for browser automation, phone/PWA operations, and Chat.
 - `run_ledger.json`: merged action-log + workflow history, including trigger
   source, delivery status, output preview, event count, and truncation metadata.
 - `admin_audit.json`: recent config/security/admin changes.
 
 The same bundle can be downloaded from **Dashboard → Launch Readiness** or
 **Config → Support**. It never includes secret values.
+
+If you create the bundle from the CLI while the gateway is offline, it includes
+`operator_evidence.json` with the live endpoints to capture after the gateway is
+running.
