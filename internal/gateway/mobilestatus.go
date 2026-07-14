@@ -24,6 +24,9 @@ type mobileCompanionReadiness struct {
 	ChatAgents        int                    `json:"chat_agents"`
 	DeliveryChannels  int                    `json:"delivery_channels"`
 	ManagedCredential bool                   `json:"managed_credential"`
+	Installable       bool                   `json:"installable"`
+	DurableRunLedger  bool                   `json:"durable_run_ledger"`
+	RecentRuns        int                    `json:"recent_runs"`
 	Checks            []mobileCompanionCheck `json:"checks"`
 	NextActions       []string               `json:"next_actions"`
 }
@@ -57,6 +60,8 @@ func (s *Server) mobileCompanionReadiness() mobileCompanionReadiness {
 	_, _, chatAgents, scheduledAgents, _ := s.agentReadinessCounts()
 	deliveryChannels := countUsableOutboundChannels(s.channelDoctorChecks())
 	managedCredential := s != nil && s.apiKeyStore != nil
+	recentRuns, durableRunLedger := s.mobileRecentRuns()
+	installable := true
 
 	checks := []mobileCompanionCheck{
 		{
@@ -82,6 +87,18 @@ func (s *Server) mobileCompanionReadiness() mobileCompanionReadiness {
 			Label:  "Device Pairing",
 			Status: statusIf(managedCredential, "ok", "warn"),
 			Detail: statusDetail(managedCredential, "Pairing can issue scoped mobile credentials.", "Pairing works locally, but managed API keys are not enabled for scoped phone tokens."),
+		},
+		{
+			Key:    "pwa_install",
+			Label:  "Installable App",
+			Status: statusIf(installable, "ok", "warn"),
+			Detail: statusDetail(installable, "PWA manifest and service worker are bundled for phone install.", "Mobile is available in browser, but install assets are missing."),
+		},
+		{
+			Key:    "run_review",
+			Label:  "Run Review",
+			Status: statusIf(durableRunLedger || recentRuns > 0, "ok", "warn"),
+			Detail: statusDetail(durableRunLedger || recentRuns > 0, fmt.Sprintf("%d recent run(s) can be reviewed from Mobile.", recentRuns), "Enable durable action logging or run at least one agent so Mobile can review history."),
 		},
 		{
 			Key:    "chat_agents",
@@ -137,14 +154,17 @@ func (s *Server) mobileCompanionReadiness() mobileCompanionReadiness {
 		ChatAgents:        chatAgents,
 		DeliveryChannels:  deliveryChannels,
 		ManagedCredential: managedCredential,
+		Installable:       installable,
+		DurableRunLedger:  durableRunLedger,
+		RecentRuns:        recentRuns,
 		Checks:            checks,
 		NextActions:       compactStrings(next),
 	}
 }
 
 func parityMobileCompanion(m mobileCompanionReadiness) parityArea {
-	detail := fmt.Sprintf("%d/%d companion checks are ready: %d push device(s), %d chat agent(s), %d scheduled agent(s), %d outbound channel(s).",
-		m.Ready, m.Total, m.PushSubscriptions, m.ChatAgents, m.ScheduledAgents, m.DeliveryChannels)
+	detail := fmt.Sprintf("%d/%d companion checks are ready: %d push device(s), %d chat agent(s), %d scheduled agent(s), %d outbound channel(s), %d recent run(s).",
+		m.Ready, m.Total, m.PushSubscriptions, m.ChatAgents, m.ScheduledAgents, m.DeliveryChannels, m.RecentRuns)
 	next := "Use Mobile as the default approval, alert, schedule, and lightweight chat companion."
 	if len(m.NextActions) > 0 {
 		next = m.NextActions[0]
@@ -194,15 +214,38 @@ func mobileCompanionNextAction(key string) string {
 		return "Open Mobile on your phone and enable push notifications."
 	case "pairing":
 		return "Enable managed API keys so pairing can issue scoped phone credentials."
+	case "pwa_install":
+		return "Open Mobile on your phone and install Soulacy from the browser menu."
+	case "run_review":
+		return "Enable durable action logging so Mobile can review cron, chat, and manual runs."
 	case "chat_agents":
 		return "Expose at least one agent to chat or a channel trigger."
 	case "schedules":
 		return "Add a scheduled agent so Mobile can operate daily jobs."
 	case "delivery":
-		return "Configure Telegram, Slack, Discord, or another outbound channel for alerts."
+		return "Configure Telegram, Slack, Discord, Email, Teams, Google Chat, or Webhook for alerts."
 	default:
 		return "Review the Mobile companion setup."
 	}
+}
+
+func (s *Server) mobileRecentRuns() (int, bool) {
+	if s == nil {
+		return 0, false
+	}
+	rows := []runLedgerRow{}
+	durable := false
+	if s.actions != nil {
+		if q, ok := s.actions.(eventQuerier); ok {
+			if events, err := q.QueryEvents("", "", 500, runLedgerEventTypes()); err == nil {
+				rows = append(rows, s.buildRunLedger(events, 25)...)
+				durable = true
+			}
+		}
+	}
+	rows = append(rows, s.flowRunLedgerRows("")...)
+	rows = mergeRunLedgerRows(rows, 25)
+	return len(rows), durable
 }
 
 func compactStrings(values []string) []string {

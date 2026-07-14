@@ -27,6 +27,25 @@ func TestMobileStatusReportsCompanionReadiness(t *testing.T) {
 	if _, ok := body["push_subscriptions"].(float64); !ok {
 		t.Fatalf("expected push subscription count: %v", body)
 	}
+	if _, ok := body["installable"].(bool); !ok {
+		t.Fatalf("expected installable flag: %v", body)
+	}
+	if _, ok := body["durable_run_ledger"].(bool); !ok {
+		t.Fatalf("expected durable run ledger flag: %v", body)
+	}
+	if _, ok := body["recent_runs"].(float64); !ok {
+		t.Fatalf("expected recent run count: %v", body)
+	}
+	keys := map[string]bool{}
+	for _, raw := range checks {
+		check, _ := raw.(map[string]any)
+		keys[check["key"].(string)] = true
+	}
+	for _, key := range []string{"pwa_install", "run_review"} {
+		if !keys[key] {
+			t.Fatalf("expected companion check %q in %v", key, checks)
+		}
+	}
 }
 
 func TestReadinessIncludesMobileCompanionParity(t *testing.T) {
