@@ -357,12 +357,12 @@ func parityOnboarding(providersReady, enabledAgents, templates int, updateManife
 
 func parityChannels(usableOutbound int) parityArea {
 	if usableOutbound >= 3 {
-		return parityArea{Key: "channels", Label: "Channel Reach", Status: "ok", Score: 80, Detail: plural(usableOutbound, "outbound channel") + " configured; reliability and generic sidecars are now the main work.", Next: "Add generic sidecar packs for Signal, Matrix, Google Chat, iMessage, and Teams.", Benchmark: "OpenClaw", Href: "#channels"}
+		return parityArea{Key: "channels", Label: "Channel Reach", Status: "ok", Score: 84, Detail: plural(usableOutbound, "outbound channel") + " configured; reliability and generic sidecars are now the main work.", Next: "Add generic sidecar packs for Signal, Matrix, iMessage, LINE, and WeChat while keeping delivery diagnostics first-class.", Benchmark: "OpenClaw", Href: "#channels"}
 	}
 	if usableOutbound > 0 {
 		return parityArea{Key: "channels", Label: "Channel Reach", Status: "warn", Score: 55, Detail: plural(usableOutbound, "outbound channel") + " configured; OpenClaw still wins broad reach.", Next: "Add guided setup and delivery tests for more channel adapters and sidecars.", Benchmark: "OpenClaw", Href: "#channels"}
 	}
-	return parityArea{Key: "channels", Label: "Channel Reach", Status: "fail", Score: 25, Detail: "No outbound messaging channel is production-ready.", Next: "Configure at least one default outbound channel, then expand with Slack/Discord/WhatsApp sidecars.", Benchmark: "OpenClaw", Href: "#channels"}
+	return parityArea{Key: "channels", Label: "Channel Reach", Status: "fail", Score: 25, Detail: "No outbound messaging channel is production-ready.", Next: "Configure at least one default outbound channel such as Telegram, Slack, Discord, Email, Teams, Google Chat, or Webhook.", Benchmark: "OpenClaw", Href: "#channels"}
 }
 
 func parityStudio(templates int, contracts studioContractReadiness) parityArea {

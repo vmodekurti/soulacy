@@ -13,6 +13,8 @@ Channels are adapters that connect agents to messaging platforms. Each channel h
 | [Discord](discord.md) | ✅ Stable | `channels.discord` |
 | [WhatsApp](whatsapp.md) | ✅ Stable | `channels.whatsapp` |
 | [Email](email.md) | ✅ Stable | `channels.email` |
+| [Microsoft Teams](teams.md) | ✅ Stable outbound | `channels.teams` |
+| [Google Chat](google-chat.md) | ✅ Stable outbound | `channels.google_chat` |
 | [Outgoing Webhook](webhook.md#outbound-webhook-delivery) | ✅ Stable | `channels.webhook` |
 
 ## How channels route to agents
@@ -139,7 +141,7 @@ schedule:
     bot_name: "Finance Bot"
 ```
 
-`channel` is the adapter ID shown in **Channels -> Agent mappings**. `to` is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, or WhatsApp recipient number.
+`channel` is the adapter ID shown in **Channels -> Agent mappings**. `to` is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, WhatsApp recipient number, email address, or an override webhook URL for outbound webhook-style channels.
 
 If a scheduled run succeeds but no message appears in the destination, check the
 channel card's **Delivery checks** first. The most common causes are:
@@ -177,7 +179,7 @@ Tool input:
 `channel` is the adapter ID shown in **Channels**. `to` is the platform-native
 destination: Telegram chat ID, Slack channel/user ID, Discord channel ID,
 WhatsApp recipient, email recipient, custom sidecar thread ID, or an override
-HTTP URL for the outgoing webhook adapter.
+HTTP URL for the outgoing webhook, Teams, or Google Chat adapters.
 
 If `to` is omitted, Soulacy can only infer it when the run came from an inbound
 chat/thread or the selected channel mapping has `default_output_to` configured.
