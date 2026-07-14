@@ -2973,6 +2973,32 @@ Use null for fields that are not present.`
   }
   onMount(hydrateSession)
 
+  function hydrateRouteIntent() {
+    const h = location.hash || ''
+    const idx = h.indexOf('?')
+    if (idx < 0) return
+    const params = new URLSearchParams(h.slice(idx + 1))
+    const routeIntent = (params.get('intent') || '').trim()
+    if (!routeIntent) return
+    intent = routeIntent
+    rawPrompt = routeIntent
+    refinement = null
+    questions = []
+    answers = {}
+    notes = []
+    explanation = null
+    compileError = ''
+    promptViewer = true
+    viewMode = 'canvas'
+    codeYaml = ''
+    codeOrig = ''
+    codeValidation = null
+    codeWarnings = []
+    setWorkflow(null)
+    history.replaceState({}, '', '#studio')
+  }
+  onMount(hydrateRouteIntent)
+
   onMount(() => {
     const pending = get(studioDebugRun)
     if (!pending || !pending.agentId || !pending.sessionId) return
