@@ -26,7 +26,7 @@ The remaining parity work is not "add more primitives." It is productization: mo
 | Onboarding | `openclaw onboard` | `sy onboard` plus GUI First Run | Closed |
 | Daemon | CLI-managed daemon | `sy daemon` for service lifecycle | Closed |
 | Doctor | Broad doctor checks | `sy doctor`, GUI/API provider and channel doctor, support bundle, mobile delivery checks | Mostly closed; keep expanding from real failures |
-| Channels | Very broad channel list | HTTP, Telegram, Slack, Discord, WhatsApp/WhatsApp Web, plus webhook/MCP extension path | Deliberate narrower core |
+| Channels | Very broad channel list | HTTP, Telegram, Slack, Discord, Email/SMTP, Teams, Google Chat, WhatsApp/WhatsApp Web, plus webhook/MCP extension path | Strong MVP coverage; keep adding adapters from real demand |
 | MCP client | External MCP tools | External MCP tools | Closed |
 | MCP server | Exposes OpenClaw to MCP clients | `sy mcp serve` exposes agents, chat, schedules, Workboard, KB, queues | Closed |
 | Browser automation | Native/plugin browser control | Playwright MCP sidecar, headless template, process cleanup, per-agent domain policy docs, Browser trace page/API pinned in UAT | Closed for MVP |
@@ -34,7 +34,7 @@ The remaining parity work is not "add more primitives." It is productization: mo
 | Studio/canvas | Assistant canvas/workflow surfaces | Studio workflow canvas, ReAct/Plan-Execute authoring, self-heal, run traces | Stronger for auditable workflows |
 | Memory/learning | Persistent memory and skill learning | Episodic/semantic/procedural memory, proposals, accepted skill injection | Strong, still needs polished narrative |
 | Queues | Plugin/storage primitives | Built-in ephemeral queue tools and GUI | Closed |
-| Mobile companion | Native apps | Responsive Mobile operations page with approvals, active runs, retained run history, schedule actions, and delivery checks | MVP closed; native app remains deferred |
+| Mobile companion | Native apps | Responsive Mobile operations page with approvals, active runs, retained run history, schedule actions, delivery checks, PWA install signals, and run-review readiness | MVP closed; native app remains deferred |
 | Voice | Voice/wake/talk-back | Voice spike and API foundations, not productized | Intentional deferral |
 | Auto-update | npm/Sparkle-style update story | Manifest-backed `sy update check/install`, checksum verification, dry-run, backups, rollback docs, and readiness/support-bundle visibility | MVP closed; signed/notarized distribution remains |
 
@@ -51,8 +51,8 @@ The remaining parity work is not "add more primitives." It is productization: mo
 
 1. **Release packaging:** Signed/notarized builds remain open; release archives, install smoke tests, checksums, manifest, update check, verified `sy update install`, launch-readiness update-manifest checks, support-bundle release metadata, upgrade docs, and rollback now exist.
 2. **Regression suite:** Clean-runtime UAT now covers launch readiness, GUI/PWA, golden template presence/instantiation, queues, schedule, support bundles, update checks, Browser trace wiring, and opt-in live-model Studio build/repair traces. `sy eval` now supports reusable golden suites, tag filtering, repeat-based benchmark runs, fail-fast, secret-aware skips, latency p50/p95, token summaries, tool assertions, and channel-delivery assertions. Opt-in golden smokes now prove real Slack/Telegram/Discord delivery and Playwright MCP browser sidecar startup/tool discovery when credentials or local sidecar dependencies are available.
-3. **Mobile/PWA companion:** Core phone-sized operations are now usable: approvals, active run links, recent run history, schedule run/test actions, and delivery health checks. Remaining work is richer mobile chat polish and native push packaging.
-4. **Channel polish:** Default outbound routing, agent-specific bot mappings, dry diagnosis, live delivery tests, companion-surface checks, and opt-in credential-backed golden delivery smoke exist. Remaining work is sharper setup docs and collecting more real-world failure signatures into the doctor.
+3. **Mobile/PWA companion:** Core phone-sized operations are now usable: approvals, active run links, recent run history, schedule run/test actions, delivery health checks, PWA install signals, and run-review readiness. Remaining work is richer mobile chat polish and native app packaging.
+4. **Channel polish:** Default outbound routing, agent-specific bot mappings, dry diagnosis, live delivery tests, companion-surface checks, Teams/Google Chat/Email outbound adapters, and opt-in credential-backed golden delivery smoke exist. Remaining work is collecting more real-world failure signatures into the doctor and keeping setup docs current as adapters are added.
 5. **Public docs:** A hosted docs site, quickstarts, production deployment guide, channel setup guides, and troubleshooting playbooks.
 6. **Browser control hardening:** Domain policies, Browser trace wiring, action filters, trace export, screenshot gallery, and deep links exist. Remaining work is richer artifact capture from sidecars and more Activity-to-Browser affordances.
 7. **Voice/product narrative:** Decide whether voice is a launch requirement or a post-launch differentiator.
