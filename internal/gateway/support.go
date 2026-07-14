@@ -46,9 +46,12 @@ func (s *Server) supportBundleOptions(c *fiber.Ctx) supportbundle.Options {
 			"channels":  s.channelDoctorChecks(),
 		},
 		ExtraJSON: map[string]any{
-			"readiness":   s.readinessPayload(c),
-			"run_ledger":  s.supportRunLedger(),
-			"admin_audit": s.supportAdminAudit(),
+			"readiness":      s.readinessPayload(c),
+			"browser_status": s.browserAutomationReadiness(),
+			"mobile_status":  s.mobileCompanionReadiness(),
+			"chat_status":    s.chatExperienceReadiness(c),
+			"run_ledger":     s.supportRunLedger(),
+			"admin_audit":    s.supportAdminAudit(),
 			"release": fiber.Map{
 				"version":         config.Version,
 				"update_manifest": s.updateManifestSource(),

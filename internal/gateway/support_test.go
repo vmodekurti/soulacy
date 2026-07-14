@@ -99,9 +99,21 @@ func TestGatewaySupportBundleDownloadsRedactedZip(t *testing.T) {
 		files[f.Name] = string(body)
 		joined.Write(body)
 	}
-	for _, want := range []string{"manifest.json", "doctor.json", "readiness.json", "release.json", "run_ledger.json", "admin_audit.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
+	for _, want := range []string{"manifest.json", "doctor.json", "readiness.json", "browser_status.json", "mobile_status.json", "chat_status.json", "release.json", "run_ledger.json", "admin_audit.json", "config.redacted.yaml", "agents/demo.SOUL.redacted.yaml"} {
 		if !names[want] {
 			t.Fatalf("bundle missing %s; got %#v", want, names)
+		}
+	}
+	for _, artifact := range []string{"browser_status.json", "mobile_status.json", "chat_status.json"} {
+		var posture map[string]any
+		if err := json.Unmarshal([]byte(files[artifact]), &posture); err != nil {
+			t.Fatalf("%s is not JSON: %v\n%s", artifact, err, files[artifact])
+		}
+		if _, ok := posture["status"].(string); !ok {
+			t.Fatalf("%s missing status: %#v", artifact, posture)
+		}
+		if _, ok := posture["checks"].([]any); !ok {
+			t.Fatalf("%s missing checks: %#v", artifact, posture)
 		}
 	}
 	var ledger map[string]any
