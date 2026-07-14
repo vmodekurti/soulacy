@@ -57,7 +57,11 @@
       ])
       channels = channelRes.channels || []
       agents = agentRes.agents || []
-      channelMetrics = metricsRes || { inbound: [], outbound: [], inbox_drops: [] }
+      channelMetrics = {
+        inbound: Array.isArray(metricsRes?.inbound) ? metricsRes.inbound : [],
+        outbound: Array.isArray(metricsRes?.outbound) ? metricsRes.outbound : [],
+        inbox_drops: Array.isArray(metricsRes?.inbox_drops) ? metricsRes.inbox_drops : [],
+      }
       deliveryReadiness = deliveryRes
       loadTiers(agents)
     } catch (e) {
@@ -301,6 +305,10 @@
 
   function connectedInteractiveBots(ch) {
     return interactiveBots(ch).filter(bot => bot._connected)
+  }
+
+  function schemaFields(ch) {
+    return Array.isArray(ch?.schema) ? ch.schema : []
   }
 
   function plural(count, label) {
@@ -802,7 +810,7 @@
 
           {#if advancedWhatsAppWeb}
             <div class="advanced-panel">
-              {#each editing.schema.filter(f => !['agent_id', 'trigger_phrase', 'ignore_groups'].includes(f.key)) as f}
+              {#each schemaFields(editing).filter(f => !['agent_id', 'trigger_phrase', 'ignore_groups'].includes(f.key)) as f}
                 <label class="field">
                   <span class="field-label">
                     {f.label}{#if f.required}<span class="req">*</span>{/if}
@@ -816,7 +824,7 @@
         </div>
       {:else}
         <div class="fields">
-          {#each editing.schema as f}
+          {#each schemaFields(editing) as f}
             {#if shouldShowChannelField(f, form)}
               <label class="field">
                 <span class="field-label">

@@ -1,10 +1,19 @@
 #!/usr/bin/env node
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { spawn } from 'node:child_process'
 
 async function loadPlaywright() {
+  if (process.env.SOULACY_PLAYWRIGHT_REQUIRE_FROM) {
+    try {
+      const require = createRequire(join(process.env.SOULACY_PLAYWRIGHT_REQUIRE_FROM, 'package.json'))
+      return require('playwright')
+    } catch {
+      // Fall back to normal resolution below.
+    }
+  }
   try {
     return await import('playwright')
   } catch (err) {
@@ -80,6 +89,10 @@ try {
   const { chromium } = await loadPlaywright()
   browser = await chromium.launch({ headless: true })
   const page = await browser.newPage({ viewport: { width: 1440, height: 960 } })
+  await page.addInitScript(key => {
+    window.localStorage.setItem('soulacy_api_key', key)
+    window.localStorage.setItem('soulacy-onboarding-seen', '1')
+  }, apiKey)
   const consoleErrors = []
   page.on('console', msg => {
     if (msg.type() === 'error') consoleErrors.push(msg.text())
@@ -102,10 +115,18 @@ try {
     ['config', '/#config'],
   ]
 
+  const manifest = {
+    generated_at: new Date().toISOString(),
+    base_url: baseURL,
+    viewport: { width: 1440, height: 960 },
+    routes: [],
+  }
+
   for (const [name, path] of routes) {
     consoleErrors.length = 0
     await page.goto(`${baseURL}${path}`, { waitUntil: 'networkidle', timeout: 30000 })
-    await page.screenshot({ path: join(outDir, `${name}.png`), fullPage: true })
+    const screenshotPath = join(outDir, `${name}.png`)
+    await page.screenshot({ path: screenshotPath, fullPage: true })
     const text = await page.locator('body').innerText({ timeout: 10000 })
     if (!text || text.length < 20) {
       throw new Error(`${name} rendered too little text`)
@@ -116,7 +137,18 @@ try {
     if (serious.length) {
       throw new Error(`${name} console error: ${serious[0]}`)
     }
+    const file = basename(screenshotPath)
+    const stats = statSync(screenshotPath)
+    manifest.routes.push({
+      name,
+      path,
+      screenshot: file,
+      bytes: stats.size,
+      text_length: text.length,
+    })
   }
+  writeFileSync(join(outDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+  writeFileSync(join(outDir, 'index.md'), renderMarkdownIndex(manifest))
   console.log(`browser render smoke passed; screenshots: ${outDir}`)
 } finally {
   if (browser) await browser.close()
@@ -129,4 +161,20 @@ try {
 
 if (stderr.includes('panic:') || stderr.includes('fatal error:')) {
   throw new Error(`gateway emitted fatal stderr: ${stderr.slice(-1000)}`)
+}
+
+function renderMarkdownIndex(manifest) {
+  const rows = manifest.routes.map(route =>
+    `| ${route.name} | \`${route.path}\` | [${route.screenshot}](${route.screenshot}) | ${route.bytes} | ${route.text_length} |`
+  ).join('\n')
+  return `# Soulacy GUI Screenshot Evidence
+
+Generated: ${manifest.generated_at}
+
+Viewport: ${manifest.viewport.width}x${manifest.viewport.height}
+
+| Route | Path | Screenshot | Bytes | Text length |
+|---|---|---|---:|---:|
+${rows}
+`
 }

@@ -42,11 +42,14 @@ func (s *Server) publicDocsReadiness() publicDocsReadiness {
 	checkFile("docs/index.md", "public docs index")
 	checkFile("docs/install.sh", "published installer copy")
 	checkFile(".github/workflows/docs.yml", "GitHub Pages deploy workflow")
+	checkFile("docs/assets/screenshots/manifest.json", "GUI screenshot manifest")
+	checkFile("docs/assets/screenshots/index.md", "GUI screenshot gallery")
 
 	mkdocs := readText(filepath.Join(root, "mkdocs.yml"))
 	workflow := readText(filepath.Join(root, ".github/workflows/docs.yml"))
 	makefile := readText(filepath.Join(root, "Makefile"))
 	installer := readText(filepath.Join(root, "docs", "install.sh"))
+	manifest := readText(filepath.Join(root, "docs", "assets", "screenshots", "manifest.json"))
 
 	siteURL := docsSetting(mkdocs, "site_url:")
 	if siteURL != "" {
@@ -69,9 +72,14 @@ func (s *Server) publicDocsReadiness() publicDocsReadiness {
 	} else {
 		missing = append(missing, "published installer uses canonical installer")
 	}
+	if strings.Contains(makefile, "docs-screenshots") && strings.Contains(manifest, `"routes"`) {
+		checks = append(checks, "repeatable GUI screenshot evidence")
+	} else {
+		missing = append(missing, "repeatable GUI screenshot evidence")
+	}
 
-	status, score := "ok", 92
-	detail := "Public docs build strictly and deploy through GitHub Pages with the canonical installer."
+	status, score := "ok", 96
+	detail := "Public docs build strictly, deploy through GitHub Pages with the canonical installer, and include repeatable GUI screenshot evidence."
 	var next []string
 	if len(missing) > 0 {
 		status = "warn"
@@ -98,8 +106,8 @@ func parityDocsPublishing(docs publicDocsReadiness) parityArea {
 			Label:     "Docs & Launch Guidance",
 			Status:    "ok",
 			Score:     maxInt(docs.Score, 88),
-			Detail:    "Public docs, setup guides, troubleshooting, and verified GitHub Pages publishing are wired.",
-			Next:      "Keep screenshots and real-world troubleshooting signatures current as adapters mature.",
+			Detail:    "Public docs, setup guides, troubleshooting, verified GitHub Pages publishing, and GUI screenshot evidence are wired.",
+			Next:      "Run `make docs-screenshots` before launch tags and keep real-world troubleshooting signatures current.",
 			Benchmark: "Commercial launch",
 			Href:      "https://vmodekurti.github.io/soulacy",
 		}
