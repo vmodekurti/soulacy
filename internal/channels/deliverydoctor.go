@@ -30,6 +30,7 @@ const (
 	DeliveryInvalidDest       DeliveryCategory = "invalid_destination"
 	DeliveryForbidden         DeliveryCategory = "forbidden"
 	DeliveryNetwork           DeliveryCategory = "network"
+	DeliveryRateLimited       DeliveryCategory = "rate_limited"
 	DeliveryUnknown           DeliveryCategory = "unknown"
 )
 
@@ -80,7 +81,7 @@ func DiagnoseDelivery(adapterID, to string, registered, connected bool, sendErr 
 		return Diagnosis{OK: true, Category: DeliveryOK, Reason: "Delivery succeeded."}
 	}
 
-	d := ClassifyDeliveryError(sendErr.Error())
+	d := ClassifyDeliveryErrorForAdapter(adapterID, sendErr.Error())
 	d.Detail = sendErr.Error()
 	return d
 }
@@ -91,7 +92,15 @@ func DiagnoseDelivery(adapterID, to string, registered, connected bool, sendErr 
 // more specific signals (missing scope, not-invited) are checked before the
 // broad auth/not-found buckets.
 func ClassifyDeliveryError(raw string) Diagnosis {
+	return ClassifyDeliveryErrorForAdapter("", raw)
+}
+
+// ClassifyDeliveryErrorForAdapter is the adapter-aware form used by live sends.
+// It keeps the generic classifier stable for tests while allowing richer fixes
+// for platform-specific errors that otherwise look identical (HTTP 400/403/404).
+func ClassifyDeliveryErrorForAdapter(adapterID, raw string) Diagnosis {
 	s := strings.ToLower(raw)
+	adapter := strings.ToLower(strings.TrimSpace(adapterID))
 
 	contains := func(subs ...string) bool {
 		for _, sub := range subs {
@@ -100,6 +109,13 @@ func ClassifyDeliveryError(raw string) Diagnosis {
 			}
 		}
 		return false
+	}
+	isWebhookLike := func() bool {
+		return strings.Contains(adapter, "webhook") ||
+			strings.Contains(adapter, "teams") ||
+			strings.Contains(adapter, "google_chat") ||
+			strings.Contains(adapter, "google-chat") ||
+			strings.Contains(adapter, "email")
 	}
 
 	switch {
@@ -116,11 +132,18 @@ func ClassifyDeliveryError(raw string) Diagnosis {
 		return Diagnosis{
 			Category: DeliveryBotNotInvited,
 			Reason:   "The bot has not been added to this channel, so it cannot post there.",
-			Fix:      "Invite the bot to the channel/group (e.g. `/invite @yourbot` in Slack, or add it to the Telegram group / Discord channel), then try again.",
+			Fix:      "Invite the app/bot to the destination (Slack: `/invite @yourbot`; Telegram/Discord: add the bot to the group/channel), then try again.",
 		}
 
 	// Bad / rotated / missing token.
 	case contains("unauthorized", "invalid_auth", "invalid auth", "invalid token", "token_revoked", "account_inactive", "401"):
+		if isWebhookLike() {
+			return Diagnosis{
+				Category: DeliveryBadToken,
+				Reason:   "The webhook endpoint rejected the request. The URL may be expired, revoked, or from a different workspace.",
+				Fix:      "Regenerate the incoming webhook URL in the provider, paste it into the channel settings, save, restart the gateway, and run the delivery test again.",
+			}
+		}
 		return Diagnosis{
 			Category: DeliveryBadToken,
 			Reason:   "The provider rejected the bot token — it is missing, wrong, or has been revoked.",
@@ -129,23 +152,90 @@ func ClassifyDeliveryError(raw string) Diagnosis {
 
 	// Destination doesn't exist (or bot can't see it). Telegram "chat not found",
 	// Slack "channel_not_found", Discord "Unknown Channel".
-	case contains("chat not found", "channel_not_found", "unknown channel", "unknown_channel", "chat_not_found", "peer_id_invalid", "user not found"):
+	case contains("chat not found", "channel_not_found", "unknown channel", "unknown_channel", "chat_not_found", "peer_id_invalid", "user not found", "not found", "404"):
+		switch {
+		case strings.Contains(adapter, "telegram"):
+			return Diagnosis{
+				Category: DeliveryInvalidDest,
+				Reason:   "Telegram could not find this chat, or the bot is not allowed to see it.",
+				Fix:      "For DMs, open the bot and send `/start`. For groups/channels, add the bot, grant post access, then use the numeric chat id (channels and supergroups usually start with `-100`).",
+			}
+		case strings.Contains(adapter, "slack"):
+			return Diagnosis{
+				Category: DeliveryInvalidDest,
+				Reason:   "Slack could not find this channel, or the app cannot see it.",
+				Fix:      "Use the Slack channel ID (usually `C...` or `G...`), invite the app to the channel, and confirm the app was installed in the same workspace.",
+			}
+		case strings.Contains(adapter, "discord"):
+			return Diagnosis{
+				Category: DeliveryInvalidDest,
+				Reason:   "Discord could not find this channel, or the bot cannot access it.",
+				Fix:      "Use the numeric Discord channel ID, invite the bot to the server, and grant it View Channel and Send Messages permissions.",
+			}
+		case isWebhookLike():
+			return Diagnosis{
+				Category: DeliveryInvalidDest,
+				Reason:   "The configured webhook URL no longer points to a valid destination.",
+				Fix:      "Create a fresh incoming webhook for this destination, update the channel settings, save, restart the gateway, and test delivery.",
+			}
+		}
 		return Diagnosis{
 			Category: DeliveryInvalidDest,
 			Reason:   "The destination ID is invalid, or the bot cannot see that chat/channel.",
-			Fix:      "Double-check the chat/channel ID. For Telegram, the bot must have received at least one message in that chat first; for Slack/Discord, the bot must be able to access the channel.",
+			Fix:      "Double-check the destination ID and confirm the bot/app has access to that destination.",
 		}
 
 	// Forbidden / blocked / lacks permission (but token itself is valid).
 	case contains("forbidden", "403", "missing permissions", "missing access", "bot was blocked", "cannot initiate conversation", "not enough rights"):
+		switch {
+		case strings.Contains(adapter, "telegram"):
+			return Diagnosis{
+				Category: DeliveryForbidden,
+				Reason:   "Telegram accepted the bot token but refused delivery to this chat.",
+				Fix:      "Unblock the bot for DMs, or add it back to the group/channel and grant permission to post.",
+			}
+		case strings.Contains(adapter, "slack"):
+			return Diagnosis{
+				Category: DeliveryForbidden,
+				Reason:   "Slack accepted the token but the app is not permitted to post here.",
+				Fix:      "Invite the app to the channel and verify it has `chat:write` plus any workspace-required posting permissions.",
+			}
+		case strings.Contains(adapter, "discord"):
+			return Diagnosis{
+				Category: DeliveryForbidden,
+				Reason:   "Discord accepted the bot token but denied access to this channel.",
+				Fix:      "Grant the bot View Channel and Send Messages permissions in that channel, then test again.",
+			}
+		case isWebhookLike():
+			return Diagnosis{
+				Category: DeliveryForbidden,
+				Reason:   "The webhook exists but refused the post.",
+				Fix:      "Check whether the webhook was disabled, deleted, or restricted by workspace policy; regenerate it if needed.",
+			}
+		}
 		return Diagnosis{
 			Category: DeliveryForbidden,
 			Reason:   "The bot is authenticated but is not permitted to post to this destination (blocked, or lacking the right permissions).",
 			Fix:      "Grant the bot permission to post in this channel, or ensure the user hasn't blocked the bot.",
 		}
 
+	// Provider throttling.
+	case contains("too many requests", "rate_limited", "rate limited", "retry_after", "429"):
+		return Diagnosis{
+			Category: DeliveryRateLimited,
+			Reason:   "The provider is throttling outbound messages for this bot or webhook.",
+			Fix:      "Wait for the provider retry window, reduce burst sends, or route scheduled reports through a less busy channel mapping.",
+		}
+
 	// Generic bad request — usually a malformed chat/channel id on Telegram.
 	case contains("bad request", "400"):
+		if strings.Contains(adapter, "telegram") {
+			return Diagnosis{
+				Category: DeliveryInvalidDest,
+				Reason:   "Telegram rejected the delivery request, usually because the chat id is malformed or the bot cannot address it yet.",
+				Fix:      "Use the numeric chat id, not the bot username. For channels/groups, add the bot first and use the `-100...` id; for DMs, send `/start` to the bot.",
+			}
+		}
 		return Diagnosis{
 			Category: DeliveryInvalidDest,
 			Reason:   "The provider rejected the request — most often a malformed or wrong destination ID.",

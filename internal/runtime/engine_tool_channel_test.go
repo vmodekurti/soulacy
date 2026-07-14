@@ -241,8 +241,8 @@ func TestChannelSendBuiltinErrorIncludesDeliveryDiagnosis(t *testing.T) {
 	}
 	for _, want := range []string{
 		`diagnosis category=invalid_destination`,
-		`destination ID is invalid`,
-		`bot cannot see that chat/channel`,
+		`Telegram could not find this chat`,
+		`-100`,
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error missing %q: %v", want, err)

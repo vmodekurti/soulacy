@@ -61,6 +61,13 @@ func TestNormalizeToolCallCommonAliases(t *testing.T) {
 			want: map[string]any{"channel": "telegram", "to": "123", "text": "queued"},
 		},
 		{
+			name: "teams send alias",
+			call: message.ToolCall{Name: "teams.send", Arguments: map[string]any{
+				"message": "deployment complete",
+			}},
+			want: map[string]any{"text": "deployment complete"},
+		},
+		{
 			name: "queue enqueue alias preserves payload as item",
 			call: message.ToolCall{Name: "enqueue", Arguments: map[string]any{
 				"topic":   "pending_resources",
@@ -84,6 +91,9 @@ func TestNormalizeToolCallCommonAliases(t *testing.T) {
 				if !reflect.DeepEqual(got.Arguments[key], want) {
 					t.Fatalf("Arguments[%q] = %#v, want %#v; full args=%#v", key, got.Arguments[key], want, got.Arguments)
 				}
+			}
+			if strings.Contains(tt.name, "teams send") && got.Name != "channel.send" {
+				t.Fatalf("normalized name = %q, want channel.send", got.Name)
 			}
 		})
 	}

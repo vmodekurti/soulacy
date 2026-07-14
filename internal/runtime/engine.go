@@ -3485,7 +3485,7 @@ func normalizeToolCallName(name string) string {
 	switch strings.ToLower(name) {
 	case "google:search", "google_search", "browser.search", "browser_search", "search", "web.search", "web-search", "search_web", "websearch", "internet_search", "internet.search":
 		return "web_search"
-	case "send_message", "send.notification", "send_notification", "notify", "notification.send", "channel_send", "channel-send", "send_channel", "send.channel", "telegram_send", "telegram.send", "slack_send", "slack.send", "discord_send", "discord.send":
+	case "send_message", "send.notification", "send_notification", "notify", "notification.send", "channel_send", "channel-send", "send_channel", "send.channel", "telegram_send", "telegram.send", "slack_send", "slack.send", "discord_send", "discord.send", "email_send", "email.send", "teams_send", "teams.send", "google_chat_send", "google_chat.send", "googlechat_send", "googlechat.send", "webhook_send", "webhook.send", "whatsapp_send", "whatsapp.send":
 		return "channel.send"
 	case "channel_status", "channel.status", "channel_diagnose", "channel.diagnose", "channel_doctor", "channel.doctor", "diagnose_channel", "delivery_doctor", "delivery.doctor":
 		return "channel.status"
