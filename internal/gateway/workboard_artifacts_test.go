@@ -131,6 +131,25 @@ func (f *fakeTailBackend) QueryFiltered(agentID string, limit int, allowed map[s
 	}
 	return out, nil
 }
+func (f *fakeTailBackend) QueryEvents(agentID, sessionID string, limit int, allowed map[string]bool) ([]message.Event, error) {
+	out := make([]message.Event, 0, len(f.events))
+	for _, ev := range f.events {
+		if agentID != "" && ev.AgentID != agentID {
+			continue
+		}
+		if sessionID != "" && ev.SessionID != sessionID {
+			continue
+		}
+		if len(allowed) > 0 && !allowed[ev.Type] {
+			continue
+		}
+		out = append(out, ev)
+	}
+	if limit > 0 && len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
 func (f *fakeTailBackend) IncompleteMessageIns(time.Time) ([][]byte, error) { return nil, nil }
 func (f *fakeTailBackend) CountMessageInAttempts(string, string, time.Time) (int, error) {
 	return 0, nil

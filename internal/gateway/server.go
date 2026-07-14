@@ -963,6 +963,7 @@ func (s *Server) buildApp() *fiber.App {
 	// is wired, 404 when the session has no recorded data.
 	api.Get("/runs/ops-summary", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleOpsSummary)
 	api.Get("/runs/slo-status", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleSLOStatus)
+	api.Get("/runs/ledger", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunLedger)
 	api.Get("/runs/events", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunEvents)
 	api.Get("/runs/:session_id/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunMetrics)
 
