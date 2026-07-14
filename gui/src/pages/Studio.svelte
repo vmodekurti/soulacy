@@ -2047,10 +2047,10 @@ Use null for fields that are not present.`
     try {
       if (!skipPreflight) {
         let report = null
-        try { report = await bridge.preflight(workflow) } catch (_) { report = null }
+        try { report = await runStudioContract(workflow) } catch (_) { report = null }
         // Open the dialog when there's anything to show. Blockers stop the save;
         // warnings let the user proceed with "Save anyway". A failed/empty
-        // preflight (host error) is non-blocking — fall through to plan/save.
+        // contract check (host error) is non-blocking — fall through to plan/save.
         if (report && ((report.blockers && report.blockers.length) || (report.warnings && report.warnings.length))) {
           preflight = report
           return    // wait for the user to fix blockers or acknowledge warnings
@@ -2101,7 +2101,7 @@ Use null for fields that are not present.`
   // closing the dialog.
   async function rerunPreflight() {
     if (!workflow) return
-    try { preflight = await bridge.preflight(workflow) } catch (_) { /* keep current */ }
+    try { preflight = await runStudioContract(workflow) } catch (_) { /* keep current */ }
   }
 
   // "Fix automatically": run the deterministic data-flow repair (auto-wire empty
@@ -2118,11 +2118,34 @@ Use null for fields that are not present.`
         setWorkflow(res.workflow, { name: workflow.name })
         toast(res.fixed ? `Auto-fixed ${res.fixed} wiring issue${res.fixed === 1 ? '' : 's'}.` : 'No auto-fixable wiring issues found.')
       }
-      preflight = await bridge.preflight(workflow)
+      preflight = await runStudioContract((res && res.workflow) || workflow)
     } catch (e) {
       saveError = e.message || 'auto-fix failed'
     } finally {
       fixing = false
+    }
+  }
+
+  async function runStudioContract(draft) {
+    try {
+      const contract = await bridge.contract(draft)
+      if (!contract) return null
+      const checks = Array.isArray(contract.checks) ? contract.checks : []
+      const toIssue = (c) => ({
+        severity: c.status === 'block' ? 'blocker' : 'warning',
+        kind: c.id || 'studio.contract',
+        nodeId: c.nodeId || '',
+        message: `${c.title || 'Studio contract'}: ${c.message || ''}`.trim(),
+        fix: c.fix || '',
+      })
+      return {
+        ok: !!contract.ok,
+        blockers: checks.filter((c) => c && c.status === 'block').map(toIssue),
+        warnings: checks.filter((c) => c && c.status === 'warn').map(toIssue),
+        contract,
+      }
+    } catch (_) {
+      try { return await bridge.preflight(draft) } catch (_) { return null }
     }
   }
 
@@ -3912,6 +3935,36 @@ Use null for fields that are not present.`
                 {#each buildGlue as g}<li>🧩 {g}</li>{/each}
               </ul>
             {/if}
+            {#if buildReport.contract}
+              <div class="contract-panel" class:ok={buildReport.contract.ok}>
+                <div class="contract-head">
+                  <div>
+                    <div class="contract-title">Studio contract</div>
+                    <div class="contract-summary">{buildReport.contract.summary}</div>
+                  </div>
+                  <span class="contract-score" class:ok={buildReport.contract.ok}>
+                    {buildReport.contract.score}/100
+                  </span>
+                </div>
+                {#if buildReport.contract.checks && buildReport.contract.checks.length}
+                  <ul class="contract-checks">
+                    {#each buildReport.contract.checks as c}
+                      <li class="contract-check" class:pass={c.status === 'pass'} class:warn={c.status === 'warn'} class:block={c.status === 'block'}>
+                        <span class="contract-mark">{c.status === 'pass' ? '✓' : c.status === 'warn' ? '!' : '✕'}</span>
+                        <div class="contract-copy">
+                          <div class="contract-check-title">{c.title}</div>
+                          <div class="contract-message">{c.message}</div>
+                          {#if c.fix}<div class="contract-fix">{c.fix}</div>{/if}
+                        </div>
+                        {#if c.nodeId}
+                          <button class="contract-open" type="button" on:click={() => revealNode(c.nodeId)}>Open</button>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </div>
+            {/if}
             {#if buildReport.attempts && buildReport.attempts.length}
               <ol class="build-attempts">
                 {#each buildReport.attempts as a}
@@ -4735,8 +4788,9 @@ Use null for fields that are not present.`
           {#if preflight.blockers && preflight.blockers.length}Fix these before saving{:else}Ready to save — a few warnings{/if}
         </h2>
         <p class="modal-body">
-          Studio checked this agent against your live setup (tools, MCP servers,
-          channels, schedule, and required inputs).
+          Studio checked this agent against your live setup and generation contract
+          (tools, MCP servers, channels, schedule, required inputs, graph shape,
+          and authoring rules).
         </p>
 
         {#if preflight.blockers && preflight.blockers.length}
@@ -5345,6 +5399,61 @@ Use null for fields that are not present.`
   .build-badge.ok { background: rgba(54, 211, 153, 0.16); color: var(--ok); }
   .build-summary { flex: 1; font-size: 13px; line-height: 1.4; }
   .build-glue { margin: 8px 0 0; padding-left: 18px; font-size: 12px; color: var(--text-muted); }
+  .contract-panel {
+    margin-top: 10px;
+    padding: 10px 12px;
+    border: 1px solid rgba(245, 167, 66, 0.35);
+    border-radius: 8px;
+    background: rgba(245, 167, 66, 0.08);
+  }
+  .contract-panel.ok {
+    border-color: rgba(54, 211, 153, 0.35);
+    background: rgba(54, 211, 153, 0.07);
+  }
+  .contract-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+  .contract-title { font-size: 12px; font-weight: 700; color: var(--text); }
+  .contract-summary { margin-top: 2px; font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+  .contract-score {
+    flex: 0 0 auto;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--warn, #f5a742);
+    border: 1px solid currentColor;
+    border-radius: 999px;
+    padding: 2px 8px;
+  }
+  .contract-score.ok { color: var(--ok); }
+  .contract-checks { list-style: none; padding: 0; margin: 9px 0 0; display: flex; flex-direction: column; gap: 6px; }
+  .contract-check {
+    display: grid;
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: start;
+    padding: 7px 8px;
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    background: rgba(0,0,0,0.10);
+  }
+  .contract-check.pass { opacity: 0.72; }
+  .contract-check.warn { border-color: rgba(245, 167, 66, 0.35); }
+  .contract-check.block { border-color: rgba(255, 107, 129, 0.38); background: rgba(255, 107, 129, 0.08); }
+  .contract-mark { font-weight: 800; text-align: center; color: var(--text-muted); }
+  .contract-check.pass .contract-mark { color: var(--ok); }
+  .contract-check.warn .contract-mark { color: var(--warn, #f5a742); }
+  .contract-check.block .contract-mark { color: var(--error); }
+  .contract-copy { min-width: 0; }
+  .contract-check-title { font-size: 12px; font-weight: 700; color: var(--text); }
+  .contract-message, .contract-fix { font-size: 12px; line-height: 1.4; color: var(--text-muted); }
+  .contract-fix { margin-top: 2px; color: var(--text); opacity: 0.86; }
+  .contract-open {
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 3px 8px;
+    background: var(--bg-elev-2);
+    color: var(--text);
+    font-size: 11px;
+    cursor: pointer;
+  }
   .build-attempts { margin: 8px 0 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; }
   .attempt { font-size: 12px; line-height: 1.4; }
   .attempt-phase {

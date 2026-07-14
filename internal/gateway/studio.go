@@ -391,6 +391,22 @@ func (s *Server) handleStudioPreflight(c *fiber.Ctx) error {
 	return c.JSON(res)
 }
 
+// handleStudioContract implements POST /api/v1/studio/contract. It returns the
+// platform-wide generation contract used by Build Until Works: fixed-graph
+// validation, live runtime readiness, and Studio authoring-rule hygiene.
+func (s *Server) handleStudioContract(c *fiber.Ctx) error {
+	var req studioPreflightRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+
+	res := studio.AssessContract(req.Workflow, cat, s.preflightInput(c, cat))
+	return c.JSON(res)
+}
+
 // preflightInput assembles the live-state PreflightInput from a grounded
 // catalog: connected MCP servers, configured channels, and stored secrets.
 // Shared by the preflight endpoint and the compile handler (which surfaces the

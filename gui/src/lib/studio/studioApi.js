@@ -139,6 +139,9 @@ export const bridge = {
   // args, invalid schedule, unconfigured channels).
   preflight: (workflow) => api.studio.preflight({ workflow }),
 
+  // Studio generation contract: graph + runtime preflight + authoring hygiene.
+  contract: (workflow) => api.studio.contract({ workflow }),
+
   // Deterministic + iterative-LLM repair (auto-wire + reconcile + fix blockers).
   autowire: (workflow) => api.studio.autowire({ workflow }),
 
