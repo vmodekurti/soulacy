@@ -307,11 +307,33 @@ func formatStepHistory(steps []Step) string {
 	for _, s := range steps {
 		sb.WriteString(fmt.Sprintf("Thought: %s\n", s.Thought))
 		if s.Action.Tool != "" {
-			sb.WriteString(fmt.Sprintf("Action: %s(%v)\n", s.Action.Tool, s.Action.Input))
+			sb.WriteString(fmt.Sprintf("Action: %s(%s)\n", s.Action.Tool, formatActionArgsForHistory(s.Action)))
 		}
-		sb.WriteString(fmt.Sprintf("Observation: %s\n\n", s.Obs.Content))
+		obs := strings.TrimSpace(s.Obs.Content)
+		if obs == "" && s.Obs.Error != nil {
+			obs = s.Obs.Error.Error()
+		}
+		sb.WriteString(fmt.Sprintf("Observation: %s\n\n", obs))
 	}
 	return sb.String()
+}
+
+func formatActionArgsForHistory(call ToolCall) string {
+	args := call.Arguments
+	if len(args) == 0 && len(call.Input) > 0 {
+		args = make(map[string]any, len(call.Input))
+		for k, v := range call.Input {
+			args[k] = v
+		}
+	}
+	if len(args) == 0 {
+		return "{}"
+	}
+	raw, err := json.Marshal(args)
+	if err != nil {
+		return "{}"
+	}
+	return string(raw)
 }
 
 // unmarshalJSON strips markdown fences then unmarshals.
