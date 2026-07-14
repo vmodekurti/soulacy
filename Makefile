@@ -3,7 +3,7 @@ BINARY_CLI     := sy
 VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 
-.PHONY: all build build-gateway build-cli gui up install which test regression uat release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install which test regression uat docs-build release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 release-package \
@@ -183,6 +183,13 @@ regression:
 ## Clean-workspace UAT: boots a separate runtime, exercises core APIs, then exits.
 uat: build
 	bash scripts/uat-clean-runtime.sh
+
+## Build the public documentation site locally.
+docs-build:
+	@echo "→ Building docs site..."
+	@python3 -c "import mkdocs" >/dev/null 2>&1 || { echo "mkdocs not found — install with: python3 -m pip install mkdocs-material"; exit 1; }
+	@cp install.sh docs/install.sh
+	python3 -m mkdocs build --strict
 
 ## Install-like release smoke: copies built binaries to a temp PATH and runs clean-runtime UAT.
 release-smoke: build

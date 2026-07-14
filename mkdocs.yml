@@ -46,13 +46,40 @@ plugins:
 
 # Internal working documents — never published to the public site.
 exclude_docs: |
+  AGENT_DESIGN.md
   SESSION_HANDOFF.md
+  STUDIO_*.md
   BACKLOG.md
+  CHANNEL_DESIGN.md
+  CLEAN_RUNTIME_UAT_REPORT_*.md
   CRITIQUE_RESPONSE.md
+  CUSTOM_DISTRIBUTIONS.md
+  EVENTS.md
+  EXTENSIBILITY.md
+  EXTERNAL_CHANNEL_PROTOCOL.md
+  EXTERNAL_STORAGE_PROTOCOL.md
+  FLOW_GRAPHS.md
+  FOUNDER_QA_REPORT_*.md
+  FRAMEWORK_OVERVIEW.md
+  FRAMEWORK_PARITY_BACKLOG.md
+  INSTALL_UX_GAPS.md
+  OPENCLAW_PARITY.md
+  PACKAGE_REGISTRIES.md
+  PLUGIN_*.md
   PRODUCTION_AUDIT.md
+  PRODUCTION_PARITY.md
+  PRODUCT_GUIDE.md
+  REASONING_STRATEGIES.md
   REGRESSION_TESTING.md
+  RULEBOOKS.md
+  SAFETY_INTROSPECTION.md
   SOULACY_*.md
+  TUTORIAL.md
+  UPGRADE_STABILITY.md
   USER_GUIDE.md
+  VASU_OS_FEASIBILITY.md
+  VOICE_SPIKE.md
+  WORKSPACE.md
   *.html
 
 markdown_extensions:
@@ -104,13 +131,13 @@ nav:
     - Evaluations (sy eval): using/evaluations.md
     - Flow View: using/flow-view.md
   - Template Setup Guides:
-    - Overview: templates/index.md
-    - Weather: templates/weather.md
-    - Stock Screener: templates/stock-screener.md
-    - Deal Finder: templates/deal-finder.md
-    - Research Librarian: templates/research-librarian.md
-    - Document Ingestion: templates/document-ingestion.md
-    - Inbox / Meeting Assistant: templates/inbox-meeting.md
+    - Overview: template-guides/index.md
+    - Weather: template-guides/weather.md
+    - Stock Screener: template-guides/stock-screener.md
+    - Deal Finder: template-guides/deal-finder.md
+    - Research Librarian: template-guides/research-librarian.md
+    - Document Ingestion: template-guides/document-ingestion.md
+    - Inbox / Meeting Assistant: template-guides/inbox-meeting.md
   - Agents:
     - SOUL.yaml Reference: agents/soul-yaml.md
     - Agent Tools: agents/tools.md
@@ -133,6 +160,10 @@ nav:
     - Telegram: channels/telegram.md
     - Slack: channels/slack.md
     - Discord: channels/discord.md
+    - Email / SMTP: channels/email.md
+    - Microsoft Teams: channels/teams.md
+    - Google Chat: channels/google-chat.md
+    - Webhook: channels/webhook.md
     - WhatsApp: channels/whatsapp.md
     - HTTP: channels/http.md
     - Custom Sidecar Channels: channels/sidecars.md
