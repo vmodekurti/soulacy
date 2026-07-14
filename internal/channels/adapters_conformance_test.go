@@ -14,6 +14,7 @@ import (
 	_ "github.com/soulacy/soulacy/internal/channels/discord"
 	httpchan "github.com/soulacy/soulacy/internal/channels/http"
 	_ "github.com/soulacy/soulacy/internal/channels/slack"
+	_ "github.com/soulacy/soulacy/internal/channels/teams"
 	_ "github.com/soulacy/soulacy/internal/channels/telegram"
 	_ "github.com/soulacy/soulacy/internal/channels/webhook"
 	_ "github.com/soulacy/soulacy/internal/channels/whatsapp"
@@ -50,6 +51,11 @@ func TestConformance_Discord(t *testing.T) {
 func TestConformance_Slack(t *testing.T) {
 	channeltest.RunAdapterSuite(t, registryAdapter(t, "slack",
 		map[string]any{"bot_token": "xoxb-conformance", "app_token": "xapp-conformance", "agent_id": "a"}))
+}
+
+func TestConformance_Teams(t *testing.T) {
+	channeltest.RunAdapterSuite(t, registryAdapter(t, "teams",
+		map[string]any{"webhook_url": "https://example.invalid/soulacy"}))
 }
 
 func TestConformance_WhatsApp(t *testing.T) {

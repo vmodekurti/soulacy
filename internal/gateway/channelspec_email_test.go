@@ -54,3 +54,24 @@ func TestChannelSpecs_WebhookExposesTheSigningSecret(t *testing.T) {
 	}
 	t.Fatal(`webhook spec has no "secret" field — request signing cannot be enabled from the GUI`)
 }
+
+func TestChannelSpecs_TeamsIsOfferedAsOutboundWebhook(t *testing.T) {
+	spec := channelSpecByID("teams")
+	if spec == nil {
+		t.Fatal("no channelSpec for teams — Microsoft Teams would be invisible in the GUI")
+	}
+	if spec.Name != "Microsoft Teams" {
+		t.Fatalf("teams display name = %q", spec.Name)
+	}
+	keys := map[string]channelField{}
+	for _, f := range spec.Fields {
+		keys[f.Key] = f
+	}
+	webhook := keys["webhook_url"]
+	if !webhook.Required || !webhook.Secret || webhook.Type != "password" {
+		t.Fatalf("teams webhook_url must be required, secret, and password typed: %#v", webhook)
+	}
+	if _, ok := keys["default_output_to"]; !ok {
+		t.Fatal("teams should expose default_output_to for schedule output overrides")
+	}
+}

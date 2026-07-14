@@ -658,7 +658,7 @@ func TestGatewayHandleListChannels_ContainsExpectedChannels(t *testing.T) {
 			}
 		}
 	}
-	for _, expected := range []string{"http", "telegram", "discord", "slack"} {
+	for _, expected := range []string{"http", "telegram", "discord", "slack", "teams"} {
 		if !ids[expected] {
 			t.Fatalf("expected channel %q not found in: %v", expected, ids)
 		}
