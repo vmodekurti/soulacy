@@ -106,3 +106,33 @@ func TestQueryEventsSupportsAllAgentsSessionAndTypes(t *testing.T) {
 		t.Fatalf("filtered events = %#v", filtered)
 	}
 }
+
+func TestQueryEventsHonorsLargeRunLedgerWindow(t *testing.T) {
+	l := newLogger(t)
+	base := time.Date(2026, 7, 4, 14, 0, 0, 0, time.UTC)
+	for i := 0; i < 1200; i++ {
+		l.Append(message.Event{
+			Type:      "message.in",
+			AgentID:   "alpha",
+			SessionID: "s",
+			Timestamp: base.Add(time.Duration(i) * time.Millisecond),
+			Payload:   map[string]any{"n": i},
+		})
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		got, err := l.QueryEvents("alpha", "", 50000, map[string]bool{"message.in": true})
+		if err == nil && len(got) == 1200 {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	got, err := l.QueryEvents("alpha", "", 50000, map[string]bool{"message.in": true})
+	if err != nil {
+		t.Fatalf("QueryEvents large window: %v", err)
+	}
+	if len(got) != 1200 {
+		t.Fatalf("large QueryEvents window returned %d events, want 1200", len(got))
+	}
+}
