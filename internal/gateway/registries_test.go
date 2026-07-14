@@ -126,12 +126,53 @@ registries:
 		t.Fatalf("expected degraded auth-required response, body=%v", body)
 	}
 	checked, ok := body["checked"].([]any)
-	if !ok || len(checked) != 1 || checked[0] != "test-skills" {
+	if !ok || len(checked) != 2 || checked[0] != "test-skills" || checked[1] != "git" {
 		t.Fatalf("checked providers = %#v", body["checked"])
 	}
 	suggestions, ok := body["suggestions"].([]any)
 	if !ok || len(suggestions) == 0 {
 		t.Fatalf("expected auth suggestions, body=%v", body)
+	}
+}
+
+func TestSearchRegistries_KeepsGitFallbackWithConfiguredSources(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/skills/search", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"authentication_required","message":"token required"}`))
+	})
+	dir := httptest.NewServer(mux)
+	defer dir.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	seed := `
+server:
+  port: 18789
+registries:
+  - id: private-skills
+    type: skillssh
+    base_url: ` + dir.URL + `
+    priority: 10
+`
+	if err := os.WriteFile(cfgPath, []byte(seed), 0600); err != nil {
+		t.Fatal(err)
+	}
+	s := newTestGatewayWithCfgPath(t, "secret", cfgPath)
+	status, body := gatewayJSON(t, s, http.MethodGet, "/api/v1/registries/search?q=https%3A%2F%2Fgithub.com%2Facme%2Fskills", "secret", "")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d %v", status, body)
+	}
+	if body["count"].(float64) != 1 {
+		t.Fatalf("count = %v, body = %v", body["count"], body)
+	}
+	pkgs := body["packages"].([]any)
+	pkg := pkgs[0].(map[string]any)
+	if pkg["slug"] != "https://github.com/acme/skills" || pkg["provider"] != "git" || pkg["version"] != "HEAD" {
+		t.Fatalf("git fallback package = %v", pkg)
+	}
+	checked := body["checked"].([]any)
+	if len(checked) != 2 || checked[0] != "private-skills" || checked[1] != "git" {
+		t.Fatalf("checked providers = %#v", checked)
 	}
 }
 
