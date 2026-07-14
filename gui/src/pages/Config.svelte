@@ -11,6 +11,9 @@
   let writable = false
   let restarting = false
   let downloadingSupport = false
+  let auditLoading = false
+  let auditError = ''
+  let adminAudit = null
 
   // Editable fields
   let logLevel  = 'info'
@@ -210,6 +213,19 @@
     }
   }
 
+  async function loadAdminAudit() {
+    auditLoading = true
+    auditError = ''
+    try {
+      adminAudit = await api.admin.audit(25)
+    } catch (e) {
+      adminAudit = null
+      auditError = e.message
+    } finally {
+      auditLoading = false
+    }
+  }
+
   async function load() {
     loading = true
     error   = ''
@@ -271,7 +287,7 @@
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
       seedPluginEditor(config.plugins_config)
-      await loadExecutors()
+      await Promise.all([loadExecutors(), loadAdminAudit()])
     } catch (e) {
       error = e.message
     } finally {
@@ -343,6 +359,7 @@
       config = res.config
       seedPluginEditor(config.plugins_config)
       await loadExecutors()
+      await loadAdminAudit()
       saved  = true
       setTimeout(() => { saved = false }, 3000)
     } catch (e) {
@@ -387,6 +404,24 @@
 
   $: loadModels(effectiveRoleProvider(studioProvider))
   $: loadModels(effectiveRoleProvider(reasonerProvider))
+
+  function formatAuditTime(value) {
+    if (!value) return 'unknown time'
+    const d = new Date(value)
+    if (Number.isNaN(d.getTime())) return value
+    return d.toLocaleString()
+  }
+
+  function auditDetails(details) {
+    if (!details || Object.keys(details).length === 0) return ''
+    const parts = []
+    if (Array.isArray(details.sections) && details.sections.length) parts.push(`sections: ${details.sections.join(', ')}`)
+    if (Array.isArray(details.setting_keys) && details.setting_keys.length) parts.push(`settings: ${details.setting_keys.join(', ')}`)
+    if (details.enabled_changed) parts.push('enabled changed')
+    if (details.bots_changed) parts.push(`bot mappings: ${details.bots_count || 0}`)
+    if (parts.length) return parts.join(' · ')
+    return JSON.stringify(details)
+  }
 
   onMount(load)
 </script>
@@ -901,11 +936,48 @@
           <h2 class="section-title">Support</h2>
           <p class="hint">
             Download a redacted diagnostic bundle with doctor output, launch readiness,
-            unified run ledger, masked configuration, agent manifests, and recent log tails.
+            unified run ledger, admin audit, masked configuration, agent manifests, and recent log tails.
           </p>
           <button class="btn-secondary support-download" on:click={downloadSupportBundle} disabled={downloadingSupport}>
             {downloadingSupport ? 'Preparing bundle...' : 'Download support bundle'}
           </button>
+        </div>
+
+        <div class="section">
+          <div class="section-heading">
+            <h2 class="section-title">Admin audit</h2>
+            <button class="btn-secondary tiny-btn" on:click={loadAdminAudit} disabled={auditLoading}
+                    title="Refresh the recent config, channel, secret, and gateway restart mutations recorded in the durable action log.">
+              {auditLoading ? 'Loading…' : 'Refresh'}
+            </button>
+          </div>
+          <p class="hint">
+            Recent configuration mutations recorded in the durable action log. Secret values are never stored here.
+          </p>
+          {#if auditError}
+            <div class="mini-warn">{auditError}</div>
+          {:else if adminAudit?.events?.length}
+            <div class="audit-list">
+              {#each adminAudit.events as ev}
+                <div class="audit-row">
+                  <div class="audit-main">
+                    <strong>{ev.action}</strong>
+                    <span>{ev.resource}{ev.target ? ` · ${ev.target}` : ''}</span>
+                  </div>
+                  <div class="audit-meta">
+                    <span>{formatAuditTime(ev.timestamp)}</span>
+                    <span>{ev.actor || 'unknown actor'}</span>
+                    <span class={`audit-status ${ev.status || 'ok'}`}>{ev.status || 'ok'}</span>
+                  </div>
+                  {#if auditDetails(ev.details)}
+                    <small>{auditDetails(ev.details)}</small>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="hint">No admin changes recorded yet.</p>
+          {/if}
         </div>
 
         <div class="section">
@@ -986,6 +1058,15 @@
   .executor-card p { margin: 0; color: #9aa1c6; font-size: .74rem; line-height: 1.45; }
   .executor-card small { color: #6b7294; font-size: .7rem; line-height: 1.35; }
   .executor-card code { margin-top: auto; background: #0b0d19; border: 1px solid #1a1e36; padding: .35rem; border-radius: 6px; color: #8b85ff; font-size: .68rem; overflow-wrap: anywhere; }
+  .audit-list { display: flex; flex-direction: column; gap: .5rem; }
+  .audit-row { border: 1px solid #202542; border-radius: 8px; background: #10121f; padding: .65rem .75rem; display: flex; flex-direction: column; gap: .35rem; }
+  .audit-main { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; }
+  .audit-main strong { color: #e5e7ff; font-size: .82rem; }
+  .audit-main span { color: #7b82a8; font-size: .75rem; text-align: right; }
+  .audit-meta { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; color: #68709a; font-size: .72rem; }
+  .audit-status { padding: .08rem .35rem; border-radius: 999px; background: rgba(76,175,130,.12); color: #4caf82; }
+  .audit-status.accepted { background: rgba(139,133,255,.14); color: #aaa5ff; }
+  .audit-row small { color: #8a91b8; font-size: .72rem; line-height: 1.35; }
 
   /* JSON column */
   .json-col {

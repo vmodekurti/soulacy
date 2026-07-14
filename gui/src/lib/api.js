@@ -236,6 +236,7 @@ export const api = {
 
   admin: {
     restart: () => apiFetch('/admin/restart', { method: 'POST' }),
+    audit: (limit = 50) => apiFetch('/admin/audit?limit=' + encodeURIComponent(limit)),
   },
 
   memory: {
