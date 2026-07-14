@@ -689,6 +689,7 @@ func (s *Server) buildApp() *fiber.App {
 	// Channels
 	api.Get("/channels", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleListChannels)
 	api.Get("/channels/metrics", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleChannelMetrics)
+	api.Get("/channels/delivery-readiness", s.rbacMW(rbac.ResourceChannels, rbac.ActionRead), s.handleChannelDeliveryReadiness)
 	api.Patch("/channels/:id", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleUpdateChannel)
 	api.Post("/channels/:id/test", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleTestChannelDelivery)
 	api.Post("/channels/:id/diagnose", s.rbacMW(rbac.ResourceChannels, rbac.ActionWrite), s.handleDiagnoseChannelDelivery)

@@ -15,6 +15,7 @@
   let restarting = false
   let diagnosis = {}   // adapterId → { ok, category, reason, fix, detail, to }
   let channelMetrics = { inbound: [], outbound: [], inbox_drops: [] }
+  let deliveryReadiness = null
 
   // Edit modal state
   let editing   = null   // the channel being edited
@@ -48,14 +49,16 @@
     loading = true
     error   = ''
     try {
-      const [channelRes, agentRes, metricsRes] = await Promise.all([
+      const [channelRes, agentRes, metricsRes, deliveryRes] = await Promise.all([
         api.channels.list(),
         api.agents.list().catch(() => ({ agents })),
         api.channels.metrics().catch(() => ({ inbound: [], outbound: [], inbox_drops: [] })),
+        api.channels.deliveryReadiness().catch(() => null),
       ])
       channels = channelRes.channels || []
       agents = agentRes.agents || []
       channelMetrics = metricsRes || { inbound: [], outbound: [], inbox_drops: [] }
+      deliveryReadiness = deliveryRes
       loadTiers(agents)
     } catch (e) {
       error = e.message
@@ -482,6 +485,29 @@
       <button class="btn-secondary" on:click={restartGateway} disabled={restarting}>
         {restarting ? 'Restarting…' : 'Restart Gateway'}
       </button>
+    </div>
+  {/if}
+
+  {#if deliveryReadiness}
+    <div class="delivery-summary {deliveryReadiness.status}">
+      <div>
+        <div class="summary-kicker">Delivery readiness</div>
+        <strong>{deliveryReadiness.ready || 0}/{deliveryReadiness.total || 0} targets ready · {deliveryReadiness.score || 0}%</strong>
+        <span>
+          {#if deliveryReadiness.next_actions?.length}
+            {deliveryReadiness.next_actions[0]}
+          {:else}
+            Defaults and agent-specific bot mappings are ready for outbound delivery.
+          {/if}
+        </span>
+      </div>
+      <div class="summary-targets">
+        {#each (deliveryReadiness.targets || []).slice(0, 6) as target}
+          <span class="target-pill {target.status}" title={target.issue || target.next || 'Ready'}>
+            {target.family}:{target.mode} {target.status}
+          </span>
+        {/each}
+      </div>
     </div>
   {/if}
 
@@ -914,6 +940,26 @@
   .warn   { background: rgba(240,196,96,.08); border: 1px solid rgba(240,196,96,.3); color: #f0c460; }
   .restart-banner { display: flex; align-items: center; justify-content: space-between; gap: .75rem; flex-wrap: wrap; }
   .empty  { color: #6b7294; padding: 3rem; text-align: center; }
+  .delivery-summary {
+    display: flex;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: .85rem 1rem;
+    border: 1px solid rgba(120,100,255,.22);
+    border-radius: 8px;
+    background: #12162a;
+  }
+  .delivery-summary.ok { border-color: rgba(76,175,130,.36); }
+  .delivery-summary.warn { border-color: rgba(240,196,96,.36); }
+  .delivery-summary.fail { border-color: rgba(240,96,96,.36); }
+  .delivery-summary strong { display: block; font-size: .95rem; margin: .15rem 0; color: #f4f2ff; }
+  .delivery-summary span { color: #9aa0c8; font-size: .8rem; }
+  .summary-kicker { color: #7f8cff; text-transform: uppercase; letter-spacing: .08em; font-size: .68rem; font-weight: 700; }
+  .summary-targets { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: .4rem; max-width: 50%; }
+  .target-pill { border: 1px solid rgba(130,140,190,.22); background: #171c34; border-radius: 999px; padding: .22rem .5rem; font-size: .72rem; color: #aeb4dc; white-space: nowrap; }
+  .target-pill.ok { border-color: rgba(76,175,130,.35); color: #6ee0a6; }
+  .target-pill.warn { border-color: rgba(240,196,96,.38); color: #f0c460; }
+  .target-pill.fail { border-color: rgba(240,96,96,.42); color: #ff7b7b; }
 
   .channel-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
 
