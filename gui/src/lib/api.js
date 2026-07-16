@@ -90,6 +90,14 @@ export async function streamSSE(path, body, onEvent) {
   }
 }
 
+// capabilityAckHeaders returns the X-Acknowledge-Audit header pair when the
+// caller explicitly acknowledges a capability escalation, so the server will
+// permit a save that would otherwise 409. See Server.respondCapabilityAckRequired
+// in internal/gateway/api.go for the paired backend behaviour.
+function capabilityAckHeaders(opts = {}) {
+  return opts && opts.acknowledgeAudit ? { 'X-Acknowledge-Audit': '1' } : {}
+}
+
 export const api = {
   health: () => apiFetch('/health'),
   readiness: () => apiFetch('/readiness'),
@@ -102,16 +110,29 @@ export const api = {
   opsAlertEvaluate: () => apiFetch('/ops/alerts/evaluate', { method: 'POST' }),
   deploymentStatus: () => apiFetch('/deployment/status'),
 
+  // Cohort F — security readiness (S4), doctor (S7), and Studio preflight (S6).
+  // Backend: internal/gateway/securityreadiness.go, internal/securitydoctor,
+  // internal/studio/security_preflight.go. The Studio-side call is exposed
+  // through studio.securityReview so the Studio bridge follows the same shape.
+  security: {
+    readiness: () => apiFetch('/security/readiness'),
+  },
+
   agents: {
     list:    ()        => apiFetch('/agents'),
     get:     (id)      => apiFetch(`/agents/${id}`),
-    create:  (def)     => apiFetch('/agents',     { method: 'POST', body: JSON.stringify(def) }),
-    update:  (id, def) => apiFetch(`/agents/${id}`, { method: 'PUT',  body: JSON.stringify(def) }),
+    // create/update/updateYaml accept an opts.acknowledgeAudit flag. When true
+    // we send X-Acknowledge-Audit: 1 so the server proceeds even if the save
+    // would escalate an agent's capability tier while interactive bindings
+    // exist. The default is false — the server refuses with 409 in that case
+    // and the GUI shows a blocking modal (see Agents.svelte save()).
+    create:  (def, opts = {})     => apiFetch('/agents',     { method: 'POST', body: JSON.stringify(def), headers: capabilityAckHeaders(opts) }),
+    update:  (id, def, opts = {}) => apiFetch(`/agents/${id}`, { method: 'PUT',  body: JSON.stringify(def), headers: capabilityAckHeaders(opts) }),
     validate:(def)     => apiFetch('/agents/validate', { method: 'POST', body: JSON.stringify(def) }),
     // Raw SOUL.yaml view/edit: getYaml returns { id, path, yaml }; updateYaml
     // sends the edited YAML text back (server parses + validates before writing).
     getYaml:   (id)        => apiFetch(`/agents/${id}/yaml`),
-    updateYaml:(id, yaml)  => apiFetch(`/agents/${id}/yaml`, { method: 'PUT', body: yaml }),
+    updateYaml:(id, yaml, opts = {})  => apiFetch(`/agents/${id}/yaml`, { method: 'PUT', body: yaml, headers: capabilityAckHeaders(opts) }),
     versions: (id)         => apiFetch(`/agents/${id}/versions`),
     version:  (id, version) => apiFetch(`/agents/${id}/versions/${encodeURIComponent(version)}`),
     rollback: (id, version) => apiFetch(`/agents/${id}/rollback`, { method: 'POST', body: JSON.stringify({ version }) }),
@@ -123,6 +144,12 @@ export const api = {
     testScheduleOutput: (id) => apiFetch(`/agents/${id}/schedule-output/test`, { method: 'POST' }),
     clone:   (id)      => apiFetch(`/agents/${id}/clone`,   { method: 'POST' }),
     tier:    (id)      => apiFetch(`/agents/${id}/tier`),
+    // Cohort F S7 — full doctor report + dry-run of the S1+S2+S3 pipeline.
+    securityDoctor: (id) => apiFetch(`/agents/${id}/security_doctor`),
+    securityDoctorDryRun: (id, input) => apiFetch(`/agents/${id}/security_doctor/dry_run`, {
+      method: 'POST',
+      body: JSON.stringify(input || {}),
+    }),
     package: (id)      => apiBlob(`/agents/${id}/package`),
     inspectPackage: (pkg) => apiFetch('/agents/package/inspect', { method: 'POST', body: JSON.stringify(pkg) }),
     importPackage:  (pkg, opts = {}) => apiFetch('/agents/package/import', {
@@ -311,21 +338,27 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ task_input: taskInput, max_episodic: maxEpisodic, max_semantic: maxSemantic }),
       }),
-    learningProposals: (agentId = '', status = 'pending', limit = 100) => {
+    // `since` filters to entries at or after the given time. Accepts either a
+    // duration ("24h", "7d") or an RFC3339 timestamp — matches the backend's
+    // parseLearningSince in internal/gateway/learning.go.
+    learningProposals: (agentId = '', status = 'pending', limit = 100, since = '') => {
       const params = new URLSearchParams()
       if (agentId) params.set('agent_id', agentId)
       if (status) params.set('status', status)
       if (limit) params.set('limit', String(limit))
+      if (since) params.set('since', since)
       return apiFetch('/learning/proposals?' + params.toString())
     },
-    learningSummary: (agentId = '') => {
+    learningSummary: (agentId = '', since = '') => {
       const params = new URLSearchParams()
       if (agentId) params.set('agent_id', agentId)
+      if (since) params.set('since', since)
       return apiFetch('/learning/summary?' + params.toString())
     },
-    learningEvidence: (agentId = '') => {
+    learningEvidence: (agentId = '', since = '') => {
       const params = new URLSearchParams()
       if (agentId) params.set('agent_id', agentId)
+      if (since) params.set('since', since)
       return apiFetch('/learning/evidence?' + params.toString())
     },
     proposeFromRun: (agentId, sessionId, maxProposals = 3) =>
@@ -342,8 +375,20 @@ export const api = {
       apiFetch(`/learning/proposals/${encodeURIComponent(id)}`, {
         method: 'PATCH', body: JSON.stringify(patch),
       }),
-    acceptLearning: (id) =>
-      apiFetch(`/learning/proposals/${encodeURIComponent(id)}/accept`, { method: 'POST' }),
+    // opts.promoteToStudioLessons is an explicit override (true/false). Leave
+    // undefined to use the proposal's kind-based default (skill = promote,
+    // procedure = don't). See internal/learning/store.go
+    // EffectivePromoteToStudioLessons.
+    acceptLearning: (id, opts = {}) => {
+      const body = {}
+      if (typeof opts.promoteToStudioLessons === 'boolean') {
+        body.promote_to_studio_lessons = opts.promoteToStudioLessons
+      }
+      return apiFetch(`/learning/proposals/${encodeURIComponent(id)}/accept`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      })
+    },
     rejectLearning: (id) =>
       apiFetch(`/learning/proposals/${encodeURIComponent(id)}/reject`, { method: 'POST' }),
     // Toggle an accepted learning on/off without deleting it.
@@ -578,6 +623,26 @@ export const api = {
         body: JSON.stringify({ workflow }),
       }),
     /**
+     * Cohort F S6 — security preflight. Runs prompt-injection surface,
+     * network/file/channel/privileged/confirmation checks, and returns
+     * structured recommendations (write_file → kb_write, shell_exec →
+     * python_file, http_request → MCP). Backend: internal/studio/security_preflight.go.
+     * @returns {Promise<{ok:boolean,
+     *   blockers:{severity,category,message,fix?}[],
+     *   warnings:{severity,category,message,fix?}[],
+     *   recommendations:{from,suggest,reason}[],
+     *   summary:{untrusted_content_sources:string[],network_tools:string[],
+     *     file_tools:string[],channel_tools:string[],privileged_tools:string[],
+     *     confirm_tools:string[],intent_gate_mode:string,
+     *     requires_system_capability:boolean,declares_system_capability:boolean,
+     *     privileged_channel_exposure:boolean}}>}
+     */
+    securityReview: ({ workflow } = {}) =>
+      apiFetch('/studio/security_review', {
+        method: 'POST',
+        body: JSON.stringify({ workflow }),
+      }),
+    /**
      * Deterministic data-flow repair: fill empty required tool args + reconcile
      * dangling {{ .var }} references to the right upstream output.
      * @returns {Promise<{workflow, fixed:number}>}
@@ -622,6 +687,35 @@ export const api = {
           let parsed
           try { parsed = JSON.parse(data) } catch (_) { return }
           if (event === 'done') { final = parsed; return }
+          if (onEvent) onEvent(parsed)
+        },
+      ).then(() => final)
+    },
+    /**
+     * Story 9 M (Cohort C): streamed generate pipeline. Emits one
+     * PipelineEvent per phase (clarify_intent / choose_strategy /
+     * build_graph / validate / repair) plus a terminating `done` frame
+     * with `{result: PipelineResult}`. `onEvent(ev)` receives phase
+     * events; the returned promise resolves with the `done` payload.
+     */
+    generateStream: (
+      { intent, answers, light, auto_repair } = {},
+      onEvent,
+    ) => {
+      let final = null
+      return streamSSE(
+        '/studio/generate/stream',
+        {
+          intent,
+          ...(answers ? { answers } : {}),
+          ...(light ? { light: true } : {}),
+          ...(auto_repair ? { auto_repair: true } : {}),
+        },
+        ({ event, data }) => {
+          let parsed
+          try { parsed = JSON.parse(data) } catch (_) { return }
+          if (event === 'done') { final = parsed; return }
+          if (parsed && parsed.phase === 'heartbeat') return
           if (onEvent) onEvent(parsed)
         },
       ).then(() => final)
@@ -908,6 +1002,16 @@ export const api = {
       if (types) q.set('types', types)
       return apiFetch('/runs/events?' + q.toString())
     },
+  },
+
+  activity: {
+    // E4c — hung-session tracker snapshot. Returns
+    //   { sessions: [{agent_id, session_id, started_at, last_event_at,
+    //       last_event_type, elapsed_seconds, silent_seconds, hung,
+    //       hung_reason, hung_fix}],
+    //     count, hung_count, hung_threshold }
+    // Safe to poll every few seconds; the backend is an in-memory map.
+    running: () => apiFetch('/activity/running'),
   },
 
   workboard: {

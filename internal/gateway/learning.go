@@ -16,6 +16,7 @@ import (
 	"github.com/soulacy/soulacy/internal/agentmemory"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/learning"
+	"github.com/soulacy/soulacy/internal/studio"
 	"github.com/soulacy/soulacy/pkg/message"
 	"github.com/soulacy/soulacy/pkg/skill"
 )
@@ -30,6 +31,20 @@ func (s *Server) handleListLearningProposals(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
 	}
+	// Story 8 AC4: operators need to see only recent learning activity when
+	// reviewing what changed. `since=` filters to proposals CreatedAt >= since,
+	// accepting either a duration ("24h", "7d") or an RFC3339 timestamp.
+	if since, ok, err := parseLearningSince(c.Query("since")); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid since: "+err.Error())
+	} else if ok {
+		filtered := proposals[:0]
+		for _, p := range proposals {
+			if !p.CreatedAt.Before(since) {
+				filtered = append(filtered, p)
+			}
+		}
+		proposals = filtered
+	}
 	// Augment each proposal with the explicit "affected agent" and a derived
 	// "why it matters" so the UI can show trust context without recomputing it.
 	views := make([]map[string]any, 0, len(proposals))
@@ -39,24 +54,75 @@ func (s *Server) handleListLearningProposals(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"enabled": true, "proposals": views})
 }
 
+// parseLearningSince accepts either a Go duration (e.g. "24h", "7d") or an
+// RFC3339 timestamp and returns the absolute lower-bound "since" time.
+// Empty string returns ok=false so callers can skip the filter.
+func parseLearningSince(raw string) (time.Time, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false, nil
+	}
+	// Extend Go's duration syntax with "d" (days) and "w" (weeks) — the values
+	// the GUI window picker actually uses, and what an operator would type in
+	// a URL bar.
+	if d, ok := parseExtendedDuration(raw); ok {
+		return time.Now().UTC().Add(-d), true, nil
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t.UTC(), true, nil
+	}
+	return time.Time{}, false, fmt.Errorf("expected duration (e.g. 24h, 7d) or RFC3339 timestamp, got %q", raw)
+}
+
+// parseExtendedDuration extends time.ParseDuration with "d" (24h) and "w" (7d)
+// suffixes so operators can type "7d" or "2w" without translating to hours.
+func parseExtendedDuration(raw string) (time.Duration, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, false
+	}
+	if len(raw) >= 2 {
+		suffix := raw[len(raw)-1]
+		if suffix == 'd' || suffix == 'w' {
+			n, err := strconv.Atoi(raw[:len(raw)-1])
+			if err == nil && n >= 0 {
+				unit := 24 * time.Hour
+				if suffix == 'w' {
+					unit = 7 * 24 * time.Hour
+				}
+				return time.Duration(n) * unit, true
+			}
+		}
+	}
+	if d, err := time.ParseDuration(raw); err == nil {
+		return d, true
+	}
+	return 0, false
+}
+
 // learningProposalView renders a proposal as JSON with the extra trust fields.
+// The `promote_to_studio_lessons` pair is the raw operator choice (may be nil);
+// `promote_to_studio_lessons_effective` is the resolved bool the accept path
+// will use so the GUI checkbox reads correctly out-of-the-box (Story 8 AC3).
 func learningProposalView(p learning.Proposal) map[string]any {
 	return map[string]any{
-		"id":             p.ID,
-		"agent_id":       p.AgentID,
-		"affected_agent": p.AgentID,
-		"session_id":     p.SessionID,
-		"kind":           p.Kind,
-		"title":          p.Title,
-		"content":        p.Content,
-		"status":         p.Status,
-		"confidence":     p.Confidence,
-		"source":         p.Source,
-		"meta":           p.Meta,
-		"created_at":     p.CreatedAt,
-		"updated_at":     p.UpdatedAt,
-		"disabled":       p.Disabled,
-		"why":            p.Why(),
+		"id":                                  p.ID,
+		"agent_id":                            p.AgentID,
+		"affected_agent":                      p.AgentID,
+		"session_id":                          p.SessionID,
+		"kind":                                p.Kind,
+		"title":                               p.Title,
+		"content":                             p.Content,
+		"status":                              p.Status,
+		"confidence":                          p.Confidence,
+		"source":                              p.Source,
+		"meta":                                p.Meta,
+		"created_at":                          p.CreatedAt,
+		"updated_at":                          p.UpdatedAt,
+		"disabled":                            p.Disabled,
+		"why":                                 p.Why(),
+		"promote_to_studio_lessons":           p.PromoteToStudioLessons,
+		"promote_to_studio_lessons_effective": p.EffectivePromoteToStudioLessons(),
 	}
 }
 
@@ -103,7 +169,101 @@ func (s *Server) handleLearningSummary(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
 	}
+	// Story 8 AC4 — recompute the summary over a since-filtered proposal set
+	// when the client asks for a time window. Store.Summary aggregates over the
+	// full store; we redo the small accounting here rather than adding a new
+	// store method that would need its own test surface.
+	if since, ok, err := parseLearningSince(c.Query("since")); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid since: "+err.Error())
+	} else if ok {
+		if scoped, err := scopedLearningSummary(store, strings.TrimSpace(c.Query("agent_id")), since); err == nil {
+			summary = scoped
+		}
+	}
 	return c.JSON(fiber.Map{"enabled": true, "summary": summary})
+}
+
+// scopedLearningSummary recomputes a learning.Summary over proposals whose
+// CreatedAt is at or after `since`. Field set matches Store.Summary exactly
+// (Memories/Procedures/Skills/BackgroundRuns/ManualReviews/AverageConfidence/
+// BySource/ByTool/LatestAt/LatestBackground) so the GUI's `learningSummary`
+// binding does not have to branch on shape when a window filter is active.
+func scopedLearningSummary(store *learning.Store, agentID string, since time.Time) (learning.Summary, error) {
+	all, err := store.List(agentID, "", 0)
+	if err != nil {
+		return learning.Summary{}, err
+	}
+	out := learning.Summary{
+		AgentID:  agentID,
+		BySource: map[string]int{},
+		ByTool:   map[string]int{},
+	}
+	var confSum float64
+	for _, p := range all {
+		if p.CreatedAt.Before(since) {
+			continue
+		}
+		out.Total++
+		confSum += p.Confidence
+		switch p.Status {
+		case learning.StatusPending:
+			out.Pending++
+		case learning.StatusAccepted:
+			out.Accepted++
+		case learning.StatusRejected:
+			out.Rejected++
+		}
+		switch strings.ToLower(p.Kind) {
+		case "skill":
+			out.Skills++
+			if strings.TrimSpace(p.Meta["installed_path"]) != "" {
+				out.InstalledSkills++
+			}
+		case "procedure":
+			out.Procedures++
+		default:
+			out.Memories++
+		}
+		if src := strings.TrimSpace(p.Source); src != "" {
+			out.BySource[src]++
+			switch src {
+			case "background_reflection":
+				out.BackgroundRuns++
+				if out.LatestBackground == nil || p.CreatedAt.After(*out.LatestBackground) {
+					t := p.CreatedAt
+					out.LatestBackground = &t
+				}
+			case "manual_run_review", "reflection_sweep":
+				out.ManualReviews++
+			}
+		}
+		if p.Meta["background_reflection"] == "true" && strings.TrimSpace(p.Source) != "background_reflection" {
+			out.BackgroundRuns++
+			if out.LatestBackground == nil || p.CreatedAt.After(*out.LatestBackground) {
+				t := p.CreatedAt
+				out.LatestBackground = &t
+			}
+		}
+		for _, tool := range strings.Split(p.Meta["tools_used"], ",") {
+			if tool = strings.TrimSpace(tool); tool != "" {
+				out.ByTool[tool]++
+			}
+		}
+		if out.LatestAt == nil || p.CreatedAt.After(*out.LatestAt) {
+			t := p.CreatedAt
+			out.LatestAt = &t
+		}
+	}
+	if out.Total > 0 {
+		out.AverageConfidence = confSum / float64(out.Total)
+	}
+	if len(out.BySource) == 0 {
+		out.BySource = nil
+	}
+	if len(out.ByTool) == 0 {
+		out.ByTool = nil
+	}
+	return out, nil
 }
 
 // handleLearningEvidence returns longitudinal proof that accepted learnings are
@@ -124,6 +284,22 @@ func (s *Server) handleLearningEvidence(c *fiber.Ctx) error {
 	if err != nil {
 		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
 	}
+	// Story 8 AC4 — optional time window. When `since` is given, we restrict
+	// both accepted-proposals and event tail so SkillReuse / ErrorTrend reflect
+	// the window operators are asking about (e.g. "last 7 days").
+	since, sinceOK, err := parseLearningSince(c.Query("since"))
+	if err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid since: "+err.Error())
+	}
+	if sinceOK {
+		acceptedFiltered := accepted[:0]
+		for _, p := range accepted {
+			if !p.CreatedAt.Before(since) {
+				acceptedFiltered = append(acceptedFiltered, p)
+			}
+		}
+		accepted = acceptedFiltered
+	}
 	var events []message.Event
 	if s.actions != nil {
 		limit, _ := strconv.Atoi(c.Query("limit", "5000"))
@@ -135,6 +311,15 @@ func (s *Server) handleLearningEvidence(c *fiber.Ctx) error {
 		events, err = s.actions.Tail(agentID, limit)
 		if err != nil {
 			return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
+		}
+		if sinceOK {
+			filtered := events[:0]
+			for _, e := range events {
+				if !e.Timestamp.Before(since) {
+					filtered = append(filtered, e)
+				}
+			}
+			events = filtered
 		}
 	}
 	evidence := learning.BuildEvidence(agentID, events, accepted)
@@ -313,15 +498,74 @@ func (s *Server) handleAcceptLearningProposal(c *fiber.Ctx) error {
 		}
 		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
 	}
+	// Story 8 AC3 — the accept modal may send an override for the "promote to
+	// Studio lessons" flag. When set, we mutate the pending proposal so its
+	// EffectivePromoteToStudioLessons reflects the operator's choice AND the
+	// stored proposal keeps a record of what the operator opted in/out of.
+	var body struct {
+		PromoteToStudioLessons *bool `json:"promote_to_studio_lessons"`
+	}
+	if len(c.Body()) > 0 {
+		_ = c.BodyParser(&body)
+	}
+	if body.PromoteToStudioLessons != nil {
+		pending.PromoteToStudioLessons = body.PromoteToStudioLessons
+	}
 	meta, err := s.applyLearningProposal(pending)
 	if err != nil {
 		return s.errMsg(c, fiber.StatusBadRequest, err.Error())
+	}
+	// Unified lesson surface: any accepted proposal opted-in for Studio
+	// generation gets appended to the same LessonStore Studio-repair-accepted
+	// lessons feed. Best-effort — a lesson-write failure never blocks the
+	// accept side-effect that already ran.
+	if pending.EffectivePromoteToStudioLessons() {
+		s.promoteAcceptedToStudioLesson(pending)
+	}
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	if pending.PromoteToStudioLessons != nil {
+		if *pending.PromoteToStudioLessons {
+			meta["promote_to_studio_lessons"] = "true"
+		} else {
+			meta["promote_to_studio_lessons"] = "false"
+		}
 	}
 	p, err := store.UpdateStatusMeta(pending.ID, learning.StatusAccepted, meta)
 	if err != nil {
 		return s.errMsg(c, fiber.StatusInternalServerError, err.Error())
 	}
-	return c.JSON(fiber.Map{"proposal": p})
+	return c.JSON(fiber.Map{"proposal": learningProposalView(p)})
+}
+
+// promoteAcceptedToStudioLesson bridges a Brain Memory learning proposal into
+// Studio's lesson store so the generation prompt sees one unified set of
+// lessons (Studio-repair-accepted + Brain-Memory-accepted+opted-in). Uses the
+// same keying rules as studio.LessonFromProposal — an operator who accepts
+// the same guidance twice gets Count++ rather than a duplicate.
+func (s *Server) promoteAcceptedToStudioLesson(p learning.Proposal) {
+	store := s.lessonStore()
+	if store == nil {
+		return
+	}
+	guidance := strings.TrimSpace(p.Content)
+	if guidance == "" {
+		return
+	}
+	title := strings.TrimSpace(p.Title)
+	if title != "" {
+		guidance = title + ": " + guidance
+	}
+	now := time.Now().UTC()
+	l := studio.Lesson{
+		Class:     "learning_accept",
+		Guidance:  guidance,
+		Count:     1,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	_ = store.Add(l)
 }
 
 func (s *Server) handleUpdateLearningProposal(c *fiber.Ctx) error {

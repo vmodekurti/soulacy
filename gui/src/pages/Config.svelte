@@ -70,6 +70,15 @@
   let deploymentNotes = ''
   let agentDirs = ''
   let skillDirs = ''
+  // F-GUI-6 — Cohort F: workspace-default enforcement mode for the tool-call
+  // intent gate (S3). This is the same string persisted on each agent's
+  // `security.intent_gate` in SOUL.yaml; we surface it here as a workspace
+  // convention + guidance. Values match internal/intent/intent.go Mode:
+  //   ''       — unset (fall back to prompt at runtime)
+  //   'off'    — bypass the gate (advanced operators only)
+  //   'prompt' — (default) confirm risky calls under High-severity injection
+  //   'deny'   — hard-deny risky calls under injection influence (production)
+  let securityIntentGate = ''
 
   // Plugin settings editor (Story 18): pid → editable rows; originals kept
   // for type-safe round-trips. Secrets arrive redacted as '***' and the
@@ -283,6 +292,7 @@
       deploymentOwner = config.deployment?.owner || ''
       deploymentRegion = config.deployment?.region || ''
       deploymentNotes = config.deployment?.notes || ''
+      securityIntentGate = config.security?.intent_gate || ''
       seedCostEditor(config.costs?.pricing)
       agentDirs       = (config.agent_dirs || []).join('\n')
       skillDirs       = (config.skill_dirs || []).join('\n')
@@ -349,6 +359,11 @@
           region: deploymentRegion,
           notes: deploymentNotes,
         },
+        // F-GUI-6 — Cohort F workspace-default intent-gate mode. Cohort F
+        // backend enforcement reads Security.IntentGate per agent; this key
+        // records the workspace policy the operator wants to apply and is
+        // consumed by future backend work + the doctor's advisory copy.
+        security: { intent_gate: securityIntentGate || '' },
         log: { level: logLevel, format: logFormat, file: logFile },
         agent_dirs: agentDirs.split('\n').map(s => s.trim()).filter(Boolean),
         skill_dirs: skillDirs.split('\n').map(s => s.trim()).filter(Boolean),
@@ -703,6 +718,62 @@
                       disabled={!writable}
                       title="Optional context shown in config and deployment diagnostics."></textarea>
           </div>
+        </div>
+
+        <!-- F-GUI-6 — Security section: workspace-default intent-gate mode + explainer.
+             The intent gate (S3) sits after the prompt-injection scanner (S2) and
+             before the runtime executes any tool call; its mode governs how the
+             gate reacts when a risky call is not clearly justified by the user's
+             stated goal. -->
+        <div class="section">
+          <h2 class="section-title">Security</h2>
+          <p class="hint">
+            The <strong>intent gate</strong> is the last check before a risky tool call runs.
+            It reasons about the user's stated goal, the last untrusted evidence source, and any
+            prompt-injection findings the scanner flagged. This picks your workspace-default policy;
+            individual agents can still override via <code>security.intent_gate</code> in their SOUL.yaml.
+          </p>
+          <div class="field">
+            <label for="intent-gate-mode">Intent gate mode</label>
+            <div class="intent-gate-radio">
+              <label class:on={securityIntentGate === 'off'}>
+                <input type="radio" name="intent-gate-mode" value="off"
+                       bind:group={securityIntentGate} disabled={!writable} />
+                <div>
+                  <strong>Off</strong>
+                  <span>Bypass the gate. Advanced operators only — no guardrails against
+                  injection-driven tool escalation.</span>
+                </div>
+              </label>
+              <label class:on={!securityIntentGate || securityIntentGate === '' || securityIntentGate === 'prompt'}>
+                <input type="radio" name="intent-gate-mode" value="prompt"
+                       bind:group={securityIntentGate} disabled={!writable} />
+                <div>
+                  <strong>Prompt <span class="pill">default</span></strong>
+                  <span>Confirm risky tool calls when a High-severity injection pattern was
+                  detected on the last untrusted source. Runs the confirmation flow through the
+                  bound channel.</span>
+                </div>
+              </label>
+              <label class:on={securityIntentGate === 'deny'}>
+                <input type="radio" name="intent-gate-mode" value="deny"
+                       bind:group={securityIntentGate} disabled={!writable} />
+                <div>
+                  <strong>Deny <span class="pill pill-prod">recommended for production</span></strong>
+                  <span>Hard-deny risky tool calls under any injection-influenced context, and
+                  prompt on Medium-severity findings. Matches S4 production readiness expectations.</span>
+                </div>
+              </label>
+            </div>
+          </div>
+          <p class="hint">
+            To apply the mode across every agent, add
+            <code>security:</code>
+            <code>&nbsp;&nbsp;intent_gate: {securityIntentGate || 'prompt'}</code>
+            to each SOUL.yaml (or open <a href="#agents">Agents</a> and use the YAML editor).
+            Cohort F backend enforcement reads the per-agent value; this workspace default is a
+            future backend hook and a policy record.
+          </p>
         </div>
 
         <div class="section">
@@ -1135,5 +1206,36 @@
     .budget-row { grid-template-columns: 1fr; }
     .slo-row, .slo-row.compact { grid-template-columns: 1fr; }
     .cost-rate input { text-align: left; }
+  }
+
+  /* F-GUI-6 — intent-gate mode radio. Three vertically stacked cards so each
+     mode has room for its one-line explainer alongside the option name. */
+  .intent-gate-radio {
+    display: flex; flex-direction: column; gap: .45rem;
+    margin-top: .35rem;
+  }
+  .intent-gate-radio > label {
+    display: grid; grid-template-columns: auto 1fr;
+    align-items: flex-start; gap: .55rem;
+    padding: .55rem .7rem;
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px;
+    color: #c8cadf; cursor: pointer;
+    transition: border-color .15s ease;
+  }
+  .intent-gate-radio > label:hover { border-color: #2a2f4a; }
+  .intent-gate-radio > label.on {
+    background: rgba(108,99,255,.08); border-color: rgba(108,99,255,.4);
+  }
+  .intent-gate-radio input[type=radio] { margin-top: .25rem; }
+  .intent-gate-radio strong { color: #e7e8f5; font-size: .84rem; display: block; margin-bottom: .15rem; }
+  .intent-gate-radio span { color: #7b82a8; font-size: .76rem; line-height: 1.5; display: block; }
+  .intent-gate-radio .pill {
+    display: inline-block; margin-left: .35rem;
+    padding: .05rem .4rem; border-radius: 999px;
+    font-size: .62rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
+    background: rgba(139,220,255,.15); color: #8bdcff;
+  }
+  .intent-gate-radio .pill.pill-prod {
+    background: rgba(240,96,96,.18); color: #f06060;
   }
 </style>

@@ -42,7 +42,15 @@ func (s *Server) handleDeploymentStatus(c *fiber.Ctx) error {
 }
 
 func (s *Server) deploymentReadiness(providersReady, usableOutbound, enabledAgents int, updateManifest string, costs costReadiness, slo sloReadiness) deploymentReadiness {
-	profile := normalizeDeploymentProfile(s.cfg.Deployment.Profile)
+	// H1 — nil-safe front: s / s.cfg are optional in some test call sites,
+	// so guard the deref before reading Deployment. Matches the same defensive
+	// pattern used below for s.authEngine / s.cfg.Server.
+	profile := ""
+	if s != nil && s.cfg != nil {
+		profile = normalizeDeploymentProfile(s.cfg.Deployment.Profile)
+	} else {
+		profile = normalizeDeploymentProfile("")
+	}
 	strict := profile == "production"
 	statusForRequired := func(ok bool) string {
 		if ok {
@@ -115,6 +123,25 @@ func (s *Server) deploymentReadiness(providersReady, usableOutbound, enabledAgen
 			Detail: "Redacted support bundles include readiness, diagnostics, config, agent manifests, and recent logs.",
 		},
 	}
+
+	// S4 (Cohort F) — Production defaults sub-check. Fails production
+	// mode when the workspace exposes a Privileged agent through a
+	// shared channel without accept_privileged_exposure:true; warns
+	// outside production so operators see the finding when they
+	// eventually flip the profile. Non-destructive migration by
+	// design: we never rewrite the config, only surface the risk.
+	sec := s.evaluateSecurityReadiness()
+	secDetail := "No privileged agent is exposed through a shared external channel."
+	if len(sec.PrivilegedExposures) > 0 {
+		secDetail = fmt.Sprintf("%d privileged agent exposure(s) on shared channels; %d without acceptance.",
+			len(sec.PrivilegedExposures), countUnacceptedExposures(sec.PrivilegedExposures))
+	}
+	checks = append(checks, deploymentCheck{
+		Key:    "security",
+		Label:  "Security defaults",
+		Status: sec.Status,
+		Detail: secDetail,
+	})
 
 	ready := 0
 	status := "ok"
@@ -259,7 +286,23 @@ func deploymentNextAction(key string) string {
 		return "Add pricing and budget guardrails in Config > Cost estimation."
 	case "slo":
 		return "Repair failed agents or tune SLO thresholds after representative runs."
+	case "security":
+		return "Every privileged agent exposed on a shared channel needs accept_privileged_exposure:true on the binding; consult /readiness security for the exact list."
 	default:
 		return "Review deployment readiness before launch."
 	}
+}
+
+// countUnacceptedExposures totals privileged exposures whose binding
+// still lacks accept_privileged_exposure:true. Used by the S4
+// deployment readiness detail so operators see the shape of the
+// remaining work without reading the full report.
+func countUnacceptedExposures(reps []privilegedExposureReport) int {
+	n := 0
+	for _, r := range reps {
+		if !r.Accepted {
+			n++
+		}
+	}
+	return n
 }

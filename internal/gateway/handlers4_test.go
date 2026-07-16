@@ -708,6 +708,43 @@ func TestApplyPatch_ServerAPIKeyMasked(t *testing.T) {
 	}
 }
 
+// F-Bridge — the security.intent_gate patch must round-trip when set, and
+// leave the on-disk value untouched when the payload's IntentGate is empty
+// (the "unset / defer to per-agent" sentinel). Mirrors the Log branch pattern.
+func TestApplyPatch_SecurityIntentGateRoundTrip(t *testing.T) {
+	dst := map[string]any{}
+	patch := PatchableConfig{
+		Security: &struct {
+			IntentGate string `json:"intent_gate" yaml:"intent_gate"`
+		}{IntentGate: "deny"},
+	}
+	applyPatch(dst, patch)
+	sec, ok := dst["security"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected security map, got %T (%v)", dst["security"], dst["security"])
+	}
+	if sec["intent_gate"] != "deny" {
+		t.Fatalf("intent_gate = %v, want deny", sec["intent_gate"])
+	}
+}
+
+func TestApplyPatch_SecurityIntentGateEmptyPreservesExisting(t *testing.T) {
+	// Pre-populate the on-disk value; an empty patch must not clobber it.
+	dst := map[string]any{
+		"security": map[string]any{"intent_gate": "prompt"},
+	}
+	patch := PatchableConfig{
+		Security: &struct {
+			IntentGate string `json:"intent_gate" yaml:"intent_gate"`
+		}{IntentGate: ""},
+	}
+	applyPatch(dst, patch)
+	sec := dst["security"].(map[string]any)
+	if sec["intent_gate"] != "prompt" {
+		t.Fatalf("empty patch clobbered on-disk intent_gate = %v", sec["intent_gate"])
+	}
+}
+
 // ── handleListKnowledge: enabled=false returns [] ─────────────────────────────
 
 func TestHandleListKnowledge_DisabledReturnsEmptyArray(t *testing.T) {

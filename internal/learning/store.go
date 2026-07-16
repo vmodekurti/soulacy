@@ -44,6 +44,24 @@ type Proposal struct {
 	// Rationale is an optional explicit "why this matters" note. When empty, the
 	// UI falls back to Why() derived from the kind/metadata.
 	Rationale string `json:"rationale,omitempty"`
+	// PromoteToStudioLessons opts an accepted proposal into Studio's
+	// generation-prompt lesson injection (see internal/studio/lessons.go).
+	// nil = use kind-based default (skill = true, everything else = false).
+	// Story 8 AC3 — unifies Brain Memory learning and Studio lesson store so
+	// operators see one lesson surface. See PROMOTIONAL_LESSONS in learning.go.
+	PromoteToStudioLessons *bool `json:"promote_to_studio_lessons,omitempty"`
+}
+
+// EffectivePromoteToStudioLessons resolves the per-proposal opt-in flag,
+// falling back to the kind-based default when the operator hasn't chosen:
+// skills promote by default (they're the reusable procedure surface Studio
+// needs), procedural and semantic learnings don't (they're agent-specific
+// runtime rules, not shape/format facts about tools).
+func (p Proposal) EffectivePromoteToStudioLessons() bool {
+	if p.PromoteToStudioLessons != nil {
+		return *p.PromoteToStudioLessons
+	}
+	return strings.EqualFold(strings.TrimSpace(p.Kind), "skill")
 }
 
 // Why returns a plain-language reason the learning matters — the explicit

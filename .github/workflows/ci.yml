@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    branches: [main, develop]
+    # Trigger on the trunk branches AND on the working codex/* branches so
+    # developers see regression + GUI build failures BEFORE they open a PR
+    # to main. Prior configuration only ran CI on push to main/develop, so
+    # a branch like codex/pto-parity-push could accumulate a red regression
+    # suite for days without anyone noticing until merge time — which is
+    # exactly the state the audit report flagged.
+    branches: [main, develop, "codex/**"]
   pull_request:
-    branches: [main]
+    branches: [main, develop]
 
 jobs:
   # ── Secret scanning (gitleaks) ───────────────────────────────────────────────
@@ -137,6 +143,55 @@ jobs:
 
       - name: Build docs
         run: make docs-build
+
+  # ── Clean-runtime UAT (non-secret subset) + regression smoke ────────────────
+  # Story 6 (Cohort B): CI never had `make uat` / `make regression` wired, so
+  # CI could pass while UAT was broken. This job runs the `public` UAT variant
+  # (skips every credential-gated block) plus the focused regression smoke,
+  # and uploads the auto-generated timestamped report as an artifact so
+  # reviewers can inspect the run without local reproduction.
+  uat:
+    name: Clean-runtime UAT (public)
+    runs-on: ubuntu-latest
+    needs: [go, gui]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.12"
+          cache: true
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: gui/package-lock.json
+
+      - name: Install SQLite dev libs (needed for cgo)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev build-essential pkg-config
+
+      - name: Build (gui + gateway + cli)
+        run: make build
+
+      - name: Regression smoke
+        run: make regression
+
+      - name: Clean-runtime UAT (public subset)
+        run: make uat-public
+
+      - name: Upload UAT report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uat-report-${{ github.run_id }}
+          path: .cache/uat-reports/
+          if-no-files-found: warn
+          retention-days: 14
 
   # ── Python SDK lint ──────────────────────────────────────────────────────────
   python:

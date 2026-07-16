@@ -195,6 +195,22 @@ type SecurityConfig struct {
 	// PassphrasePrompt is the message shown to unverified users.
 	// Defaults to "🔒 Please provide your access passphrase to continue."
 	PassphrasePrompt string `yaml:"passphrase_prompt,omitempty" json:"passphrase_prompt,omitempty"`
+
+	// IntentGate is the S3 (Cohort F) tool-call intent enforcement
+	// mode. Empty falls back to "prompt" — the safe default. Values:
+	//
+	//   - "off"    : bypass the gate (advanced operators only)
+	//   - "prompt" : (default) surface a confirmation prompt when
+	//                a privileged tool call is not justified by the
+	//                user's original goal AND the last untrusted
+	//                evidence source carried a High-severity injection
+	//                pattern
+	//   - "deny"   : hard-deny the same class of call, and prompt on
+	//                Medium injection findings under any untrusted
+	//                evidence
+	//
+	// See internal/intent/intent.go for the full decision matrix.
+	IntentGate string `yaml:"intent_gate,omitempty" json:"intent_gate,omitempty"`
 }
 
 // ToolDef describes a tool the agent can invoke.

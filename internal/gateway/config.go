@@ -57,7 +57,20 @@ func (s *Server) safeConfigView() fiber.Map {
 		searchAPIKey = "***"
 	}
 
+	// Cohort G — expose the schema version + drift status so doctor
+	// surfaces / GUI can render the advisory without a second endpoint.
+	schemaStatus := config.CheckSchemaVersion(cfg)
+
 	return fiber.Map{
+		// Cohort G — schema stamp for the config file. See config.CurrentSchemaVersion.
+		"schema_version": cfg.SchemaVersion,
+		"schema_status": fiber.Map{
+			"have":            schemaStatus.Have,
+			"want":            schemaStatus.Want,
+			"out_of_date":     schemaStatus.OutOfDate,
+			"unstamped_fresh": schemaStatus.UnstampedFresh,
+			"message":         schemaStatus.Message,
+		},
 		"server": fiber.Map{
 			"host":        cfg.Server.Host,
 			"port":        cfg.Server.Port,
@@ -122,6 +135,12 @@ func (s *Server) safeConfigView() fiber.Map {
 			"owner":   cfg.Deployment.Owner,
 			"region":  cfg.Deployment.Region,
 			"notes":   cfg.Deployment.Notes,
+		},
+		// F-Bridge — surface the workspace security defaults so the GUI's
+		// F-GUI-6 radio actually seeds from a saved value. IntentGate is not
+		// a secret, so no redaction.
+		"security": fiber.Map{
+			"intent_gate": cfg.Security.IntentGate,
 		},
 		"agent_dirs":     cfg.AgentDirs,
 		"skill_dirs":     cfg.SkillDirs,
@@ -297,6 +316,16 @@ type PatchableConfig struct {
 		Region  string `json:"region" yaml:"region"`
 		Notes   string `json:"notes" yaml:"notes"`
 	} `json:"deployment" yaml:"deployment"`
+
+	// Security is the workspace-scoped security defaults section (Cohort
+	// F-Bridge). Present-only-when-sent by the GUI; empty IntentGate leaves
+	// the on-disk value untouched (mirrors the Log branch's empty-string
+	// preservation, not Deployment's unconditional overwrite, because the
+	// empty string is the meaningful "unset, fall through to per-agent"
+	// sentinel).
+	Security *struct {
+		IntentGate string `json:"intent_gate" yaml:"intent_gate"`
+	} `json:"security" yaml:"security"`
 
 	AgentDirs []string `json:"agent_dirs" yaml:"agent_dirs"`
 	SkillDirs []string `json:"skill_dirs" yaml:"skill_dirs"`
@@ -539,6 +568,17 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		dep["owner"] = patch.Deployment.Owner
 		dep["region"] = patch.Deployment.Region
 		dep["notes"] = patch.Deployment.Notes
+	}
+	if patch.Security != nil {
+		// F-Bridge — mirror the Log branch's empty-string preservation so a
+		// bare PATCH (e.g. saving the Deployment section from the same GUI)
+		// doesn't accidentally clobber the on-disk intent_gate value. The
+		// empty string is the meaningful "unset, defer to per-agent" sentinel;
+		// operators clear it by explicitly removing the key from the YAML.
+		sec := getOrCreateMap(dst, "security")
+		if patch.Security.IntentGate != "" {
+			sec["intent_gate"] = patch.Security.IntentGate
+		}
 	}
 	if patch.Log != nil {
 		lg := getOrCreateMap(dst, "log")

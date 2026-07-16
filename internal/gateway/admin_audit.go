@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"encoding/json"
-	"fmt"
 	"sort"
 	"strings"
 	"time"
@@ -195,6 +194,9 @@ func configPatchSections(p PatchableConfig) []string {
 	if p.Deployment != nil {
 		sections = append(sections, "deployment")
 	}
+	if p.Security != nil {
+		sections = append(sections, "security")
+	}
 	if p.AgentDirs != nil {
 		sections = append(sections, "agent_dirs")
 	}
@@ -231,28 +233,9 @@ func channelSettingKeys(settings map[string]any, spec *channelSpec) []string {
 	return keys
 }
 
-func auditStringList(v []string) string {
-	if len(v) == 0 {
-		return ""
-	}
-	return strings.Join(v, ",")
-}
-
+// H1 — auditStringList, auditCount, and auditFmt were unused helper funcs
+// left behind by an earlier admin-audit refactor. Deleted to satisfy the
+// unused-linter. auditBoolPtrSet retained (still called from configPatchSections).
 func auditBoolPtrSet(v *bool) bool {
 	return v != nil
-}
-
-func auditCount(v any) int {
-	switch x := v.(type) {
-	case []map[string]any:
-		return len(x)
-	case []any:
-		return len(x)
-	default:
-		return 0
-	}
-}
-
-func auditFmt(v any) string {
-	return strings.TrimSpace(fmt.Sprint(v))
 }

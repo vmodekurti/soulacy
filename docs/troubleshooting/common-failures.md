@@ -18,13 +18,39 @@ recent error rate, and prints a specific remedy for each failed check.
 | `sy doctor` warns `no update manifest configured` | Production upgrade path is not wired | Set `updates.manifest_url` in `config.yaml` or export `SOULACY_UPDATE_MANIFEST` |
 | `sy doctor` warns `update manifest could not be checked` | Manifest URL/file is unreachable or invalid | Verify the URL/file path, JSON shape, and artifact links before launch |
 
-## LLM providers
+## LLM providers (Provider Doctor)
 
-| Message | Cause | Fix |
+Click **Test connection** on any card on the **Providers** page (or call `GET
+/api/v1/providers/:id/models`). When the call fails, the response includes a
+structured `diagnosis` — `{category, reason, fix, detail}` — and the GUI
+renders `reason` (bold), `fix` (secondary line), and a **Show raw error**
+toggle for the underlying provider response.
+
+The diagnosis categories mirror what OpenAI / Anthropic / Google / Groq /
+OpenRouter / Together / Mistral / DeepSeek / Grok / Ollama actually return:
+
+| Category | What it means | Fix |
 | --- | --- | --- |
-| `provider auth failed` / `401` | Missing or invalid API key | Set the provider key in the vault; re-run the provider test in the first-run wizard |
-| `model not found` | Model name typo or not enabled for your key | Pick from the model list in the wizard, which is fetched live from the provider |
-| Requests time out | Network egress blocked | Confirm outbound HTTPS to the provider; check any proxy settings |
+| `missing_key` | The provider needs a key and none was sent | Add the key on Providers → *provider*, save to the vault, restart |
+| `bad_key` | 401 / `invalid_api_key` / `authentication_error` / rotated or revoked key | Rotate the key on the provider's dashboard; save + restart. The fix line names the correct URL for each provider (`platform.openai.com/api-keys`, `console.anthropic.com/settings/keys`, `aistudio.google.com/apikey`, etc.) |
+| `forbidden` | 403 / project or org has no access to that model | Enable access to the model on the provider dashboard, or scope the API key to the right project |
+| `region_blocked` | 403 with "country, region, or territory not supported" | Route the gateway through a supported egress or configure a different provider |
+| `rate_limited` | 429 / RPM or TPM ceiling from your key | Slow the call rate, raise your tier, or spread agents across multiple keys/providers |
+| `overloaded` | Anthropic `overloaded_error` / capacity signals | Wait and retry; consider temporarily failing over to another provider via the Studio model picker |
+| `quota_exceeded` | 402 / `insufficient_quota` / no billing | Top up credit or enable billing on the provider's dashboard |
+| `model_not_found` | The model id was renamed, deprecated, or your key has no access | Click **List models** to see what's live on this key and re-Save one of them as default |
+| `context_too_large` | 413 / `context_length_exceeded` | Trim the system prompt, switch to a longer-context model, or summarise older turns via Memory settings |
+| `provider_down` | 5xx / service unavailable | Retry in a minute, check the provider's status page, fail over via the Studio model picker |
+| `bad_endpoint` | DNS lookup, TLS handshake, or malformed URL | Verify the `base_url` on Providers (typos in the host are the common cause) and outbound HTTPS |
+| `network` | Timeout, connection refused, EOF on the provider socket | Check outbound network access, then retry |
+| `local_unreachable` | Ollama / LM Studio / vLLM socket is not answering | `ollama serve` (or your equivalent) and confirm the base URL matches |
+
+For Ollama specifically, `model_not_found` shows the "pull the model first" fix
+because the local runtime speaks a different vocabulary from cloud providers.
+
+If you see a diagnosis of `unknown`, the raw error the provider returned was
+new to us. Please open an issue with the raw error text so we can add the
+category to the doctor.
 
 ## Channel delivery (Delivery Doctor)
 
@@ -70,11 +96,24 @@ before wiring it into a schedule or workflow.
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
+| Save fails with `schedule.cron: "* * *" is not a valid cron expression` | Save-time cron validation caught a malformed expression (wrong field count, out-of-range value, gibberish) | Use 5 fields (`0 9 * * 1-5`), an @descriptor (`@daily`, `@hourly`), or an optional 6-field form (`0 */30 * * * *`) |
 | Scheduled run never fires | Daemon not running | `sy daemon status`; install/start it |
+| "Next run" is blank after Save | Rare — the runtime rejected the expression after Save (pre-validation missed a case) | Check the gateway logs for `scheduler re-registration failed`; open the issue tracker with the cron string |
 | Scheduled output not delivered | No default outbound bot and no per-schedule destination | Set a default outbound bot, or a destination on the schedule |
 | History panel shows fewer runs than expected | Older runs came from another trigger path or the durable event scan hit its cap | Open **Schedule → History** and check the source/truncation note; download a support bundle for the merged action-log + workflow ledger |
 | Manual run works but cron delivery fails | The agent can answer, but scheduled output cannot resolve a destination | Use **Test output** on the schedule row; fix the channel diagnosis before waiting for cron |
+| An unexpected run fired at boot with an `⟳ auto-replayed` chip on the Automations row | `schedule.missed_run_backfilled` — the gateway was down when a scheduled fire came due, and the most recent missed fire in the `missed_startup_window` (default `24h`) was replayed once at startup | Normal after an outage. If the same agent backfills every restart, either widen `schedule.missed_startup_window` (older fires stop qualifying) or check whether the gateway is crashing between runs |
 | Cron fires twice after a restart | Missed-run catch-up and manual testing overlapped | Disable `run_missed_on_startup` or keep the catch-up window narrow for agents you also trigger manually |
+
+## Activity — the "Running now" strip
+
+The **Activity** page polls `/activity/running` every 3s and renders a card per
+in-flight session with elapsed time, silent-for, and the last event type. When
+a session's silent window crosses 5 minutes the card turns red with a
+per-last-event-type reason + fix — for example, an `llm.call` last event says
+"waiting on the LLM provider for X — check Providers for rate-limit/overload",
+while a `tool.call` last event points at MCP/subprocess wedges. Click any
+hung card to jump into the per-session Activity view and inspect the tail.
 
 ## When you're stuck: support bundle
 

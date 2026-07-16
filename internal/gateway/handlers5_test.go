@@ -1068,13 +1068,17 @@ func TestGatewayHandleUpdateAgent_CapabilityAuditForChannelExposure(t *testing.T
 	}
 
 	updateBody := `{"id":"audit-agent","name":"Audit Agent","trigger":"channel","channels":["http"],"llm":{"provider":"test","model":"m"},"system_prompt":"x","enabled":true,"builtins":["write_file"]}`
+
+	// Cohort A — Story 5: without X-Acknowledge-Audit the save-blocking
+	// modal is triggered. Expect a 409 that carries the peeked audit so
+	// the GUI can render the modal, and no action-log side effect yet.
 	status, body := gatewayJSON(t, s, http.MethodPut, "/api/v1/agents/audit-agent", "secret", updateBody)
-	if status != http.StatusOK {
-		t.Fatalf("update status=%d body=%v", status, body)
+	if status != http.StatusConflict {
+		t.Fatalf("expected 409 without ack header, got status=%d body=%v", status, body)
 	}
 	audit, ok := body["capability_audit"].(map[string]any)
 	if !ok {
-		t.Fatalf("missing capability_audit: %v", body)
+		t.Fatalf("missing capability_audit in 409 body: %v", body)
 	}
 	if audit["old_tier"] != "read_only" || audit["new_tier"] != "privileged" || audit["escalated"] != true {
 		t.Fatalf("unexpected audit: %#v", audit)
@@ -1082,8 +1086,26 @@ func TestGatewayHandleUpdateAgent_CapabilityAuditForChannelExposure(t *testing.T
 	if audit["requires_ack"] != true {
 		t.Fatalf("expected requires_ack for interactive channel exposure: %#v", audit)
 	}
-	if len(log.events) == 0 || log.events[len(log.events)-1].Type != "agent.capability_tier_changed" {
-		t.Fatalf("expected capability tier action event, got %#v", log.events)
+	// Snapshot the action-log length AFTER the 409 (the initial create
+	// itself produces an unknown→read_only tier-change event that we
+	// should not confuse with the update-time event we're testing). The
+	// 409 refusal itself must NOT append a new event.
+	preAckLen := len(log.events)
+
+	// Retry with the ack header — the save proceeds and the tier-change
+	// event lands in the action log.
+	status, body = gatewayJSONWithHeader(t, s, http.MethodPut, "/api/v1/agents/audit-agent", "secret", updateBody,
+		"X-Acknowledge-Audit", "1")
+	if status != http.StatusOK {
+		t.Fatalf("ack retry status=%d body=%v", status, body)
+	}
+	if len(log.events) <= preAckLen {
+		t.Fatalf("expected new capability tier action event after ack; pre=%d post=%d events=%#v",
+			preAckLen, len(log.events), log.events)
+	}
+	last := log.events[len(log.events)-1]
+	if last.Type != "agent.capability_tier_changed" {
+		t.Fatalf("expected capability tier action event, got %#v", last)
 	}
 }
 

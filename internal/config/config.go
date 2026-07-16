@@ -18,7 +18,23 @@ import (
 var Version = "dev"
 
 // Config is the top-level configuration object.
+// CurrentSchemaVersion is the config-file schema version this build expects.
+// Bump when a rename/remove/incompatible-shape lands in Config (adding a new
+// optional field does NOT require a bump — old files continue to load fine).
+//
+// The check in CheckSchemaVersion is advisory: a mismatch logs a WARN with
+// upgrade guidance but does not block startup. This is the foundation for a
+// future migration engine — call sites are stable, semantics can be tightened
+// (e.g. hard-fail on downgrades) without touching the wire format.
+const CurrentSchemaVersion = "v1"
+
 type Config struct {
+	// SchemaVersion identifies the config file schema shape this file was
+	// written against. Empty on files created before Cohort G (F-Bridge)
+	// landed — the Load path stamps it lazily so the next write records the
+	// current schema. See CheckSchemaVersion for the boot diagnostic.
+	SchemaVersion string `mapstructure:"schema_version"`
+
 	// Server settings
 	Server ServerConfig `mapstructure:"server"`
 
@@ -116,6 +132,13 @@ type Config struct {
 	// this workspace.
 	Deployment DeploymentConfig `mapstructure:"deployment"`
 
+	// Security holds workspace-scoped security defaults. Today only the
+	// tool-call intent gate mode (S3/F-Bridge) is defined here; individual
+	// agents may still override via `security.intent_gate` in their SOUL.yaml,
+	// and the workspace value is consulted only when the per-agent value is
+	// empty. See internal/intent/intent.go for the mode semantics.
+	Security SecurityConfig `mapstructure:"security"`
+
 	// Updates configures release manifest discovery for `sy update` and the
 	// launch-readiness checklist.
 	Updates UpdateConfig `mapstructure:"updates"`
@@ -133,6 +156,10 @@ type Config struct {
 
 	// Search configures the built-in web_search tool.
 	Search SearchConfig `mapstructure:"search"`
+
+	// Packages configures agent-package versioning trust and cache
+	// behaviour (Story 7, docs/PACKAGE_VERSIONING_DESIGN.md).
+	Packages PackagesConfig `mapstructure:"packages"`
 
 	// Logging
 	Log LogConfig `mapstructure:"log"`
@@ -259,6 +286,21 @@ type DeploymentConfig struct {
 //	  manifest_url: https://releases.example.com/soulacy/release-manifest.json
 type UpdateConfig struct {
 	ManifestURL string `mapstructure:"manifest_url"`
+}
+
+// SecurityConfig holds workspace-scoped security defaults (Cohort F-Bridge).
+//
+//	security:
+//	  intent_gate: deny        # off | prompt | deny — workspace default
+//
+// The intent gate mode is a runtime enforcement policy for high-risk tool
+// calls under prompt-injection influence. Values match the strings persisted
+// on `agent.Definition.Security.IntentGate` in SOUL.yaml: an empty per-agent
+// value falls back to this workspace default; when both are empty the runtime
+// treats it as "prompt". See internal/intent/intent.go for the decision
+// matrix.
+type SecurityConfig struct {
+	IntentGate string `mapstructure:"intent_gate"`
 }
 
 // CostPricing is the YAML face of internal/costs.Pricing.
@@ -595,6 +637,59 @@ type StudioLLMConfig struct {
 	//	  studio:
 	//	    learning: false
 	Learning *bool `mapstructure:"learning"`
+	// Preset is the intent-named runtime preset the operator picked in the
+	// GUI (Story 9). One of `fast_local`, `reliable_local`, `cloud_quality`,
+	// or empty (fall back to model-derived defaults). Only meaningful on the
+	// `studio` block. `cloud_quality` applies even for cloud providers; the
+	// two local intents only apply on local providers.
+	Preset string `mapstructure:"preset"`
+	// BuildUX is the operator's default Studio-generate presentation
+	// (Story 9 M, Cohort C). `streamed` (default) runs the pipeline in one
+	// click with a live-transcript panel; `wizard` opens a stepped modal
+	// that pauses between each of the 5 phases (clarify → strategy → build
+	// → validate → repair) for the operator to review. Per-generation
+	// override is available via the Generate button toggle.
+	BuildUX string `mapstructure:"build_ux"`
+}
+
+// PackagesConfig configures agent-package versioning (Story 7, Cohort C).
+// See docs/PACKAGE_VERSIONING_DESIGN.md §4.6. Scaffolded in Bucket 7A;
+// TrustedKeys and SnapshotRetention become enforceable in 7C.
+type PackagesConfig struct {
+	// CacheTTL is how long the per-package registry index is cached
+	// under ~/.soulacy/registry/packages/<id>/index.json before a
+	// forced refresh. Default 6h; parsed via time.ParseDuration when
+	// non-empty. Zero string keeps the compiled default.
+	CacheTTL string `mapstructure:"cache_ttl"`
+	// AllowUnsigned skips the signed-package trust chain by default; when
+	// true, `sy pull` and the gateway import handler accept unsigned
+	// packages without a per-call flag. Default false. Local-dev
+	// convenience only — production installs should leave this off.
+	AllowUnsigned bool `mapstructure:"allow_unsigned"`
+	// TrustedKeys expands the trust set beyond the registry's declared
+	// publishers. Registry-declared official/community keys always
+	// apply; entries here only ADD trust (cannot override a key the
+	// registry has revoked). Keyed by publisher id.
+	TrustedKeys map[string]TrustedPublisherConfig `mapstructure:"trusted_keys"`
+	// SnapshotRetention controls .agent-history/ and .package-history/
+	// pruning (Story 7 Bucket 7C). Empty defaults keep everything.
+	SnapshotRetention SnapshotRetentionConfig `mapstructure:"snapshot_retention"`
+}
+
+// TrustedPublisherConfig declares a publisher key the operator trusts on top
+// of the registry-declared set.
+type TrustedPublisherConfig struct {
+	DisplayName string   `mapstructure:"display_name"`
+	TrustLevel  string   `mapstructure:"trust_level"` // "official" | "community"
+	Keys        []string `mapstructure:"keys"`
+}
+
+// SnapshotRetentionConfig sets bounds on per-agent / per-package history.
+// Both bounds apply — a snapshot is pruned when it exceeds MaxAge OR when
+// the per-agent count exceeds MaxCount (pinned snapshots always survive).
+type SnapshotRetentionConfig struct {
+	MaxAge   string `mapstructure:"max_age"`   // e.g. "30d"; empty = keep forever
+	MaxCount int    `mapstructure:"max_count"` // 0 = no count limit
 }
 
 type ProviderConfig struct {
@@ -944,4 +1039,71 @@ func EnsureDirs(cfg *Config) error {
 type SearchConfig struct {
 	Provider string `mapstructure:"provider"`
 	APIKey   string `mapstructure:"api_key"`
+}
+
+// SchemaVersionStatus is what CheckSchemaVersion returns to the boot path.
+// The check is intentionally advisory — a mismatch surfaces guidance but does
+// not block startup, so an operator upgrading from a prior version is never
+// stranded with an unstartable gateway. The Migrate field is a placeholder
+// for the future migration engine hook.
+type SchemaVersionStatus struct {
+	// Have is the schema_version string actually written on disk. Empty when
+	// the config file predates Cohort G — a fresh Load() run will stamp the
+	// current version on next write.
+	Have string
+	// Want is the schema version this build expects (CurrentSchemaVersion).
+	Want string
+	// UnstampedFresh is true when the file simply has no schema_version yet.
+	// Typical of files created before Cohort G — informational, not an error.
+	UnstampedFresh bool
+	// OutOfDate is true when Have is non-empty and does not equal Want.
+	// Advisory today; the future migration engine will branch on this.
+	OutOfDate bool
+	// Message is a one-line human-readable summary suitable for a log field
+	// or a doctor report.
+	Message string
+	// Migrate is a placeholder for the migration engine — when non-nil,
+	// callers can invoke it to run schema upgrades in place. Today it's
+	// always nil; the plumbing lets us wire in migrations without changing
+	// the boot API.
+	Migrate func() error
+}
+
+// CheckSchemaVersion inspects the loaded config against CurrentSchemaVersion
+// and returns a structured status. The typical boot flow is:
+//
+//	cfg, path, err := config.Load(cfgPath)
+//	...
+//	st := config.CheckSchemaVersion(cfg)
+//	if st.OutOfDate {
+//	    log.Warn("config schema out of date", zap.String("have", st.Have), zap.String("want", st.Want))
+//	}
+//
+// This is deliberately a pure function so callers can also use it from the
+// doctor CLI and the gateway's readiness surface without side effects.
+func CheckSchemaVersion(cfg *Config) SchemaVersionStatus {
+	if cfg == nil {
+		return SchemaVersionStatus{
+			Want:    CurrentSchemaVersion,
+			Message: "no config loaded",
+		}
+	}
+	have := cfg.SchemaVersion
+	want := CurrentSchemaVersion
+	if have == "" {
+		return SchemaVersionStatus{
+			Have: "", Want: want,
+			UnstampedFresh: true,
+			Message:        "config has no schema_version; next config save will stamp " + want,
+		}
+	}
+	if have != want {
+		return SchemaVersionStatus{
+			Have: have, Want: want,
+			OutOfDate: true,
+			Message: "config schema_version=" + have + " but this build expects " + want +
+				"; review CHANGELOG for breaking changes, then update schema_version in config.yaml",
+		}
+	}
+	return SchemaVersionStatus{Have: have, Want: want, Message: "config schema up to date"}
 }

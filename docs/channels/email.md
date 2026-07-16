@@ -4,6 +4,12 @@ Email is an outbound delivery channel for scheduled reports, alerts, and
 `channel.send`. It does not read an inbox; use a sidecar or external integration
 for inbound mail automation.
 
+!!! tip "Guided setup in the GUI"
+    Prefer the GUI's guided setup card: **Channels → Email → Configure**. It
+    validates every field, saves to the credential vault, and includes a
+    **Test delivery** button. This page is the reference for the same fields
+    when editing `config.yaml` directly.
+
 ## Configuration
 
 ```yaml title="config.yaml"
@@ -66,3 +72,9 @@ Then call:
   or `tls: implicit` when username/password are configured.
 - `no recipient`: set `to` in `schedule.output`, pass `to` to `channel.send`, or
   configure `default_output_to`.
+
+For any live delivery failure, click **Diagnose** on the channel mapping —
+Soulacy's delivery doctor maps SMTP status codes to plain-language reasons
+(bad credentials, relay denied, recipient rejected, quota exceeded, starttls
+required, message rejected). See `internal/channels/deliverydoctor.go` for
+the full classification.

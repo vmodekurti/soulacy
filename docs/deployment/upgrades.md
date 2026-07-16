@@ -27,6 +27,14 @@ your service manager's restart.
 That's it — no migration commands. Stores upgrade their own schemas at
 boot.
 
+!!! note "Agent packages: v1 deprecation timeline"
+    If you install agent packages via `sy pull` / **Agents → Import**, note
+    that the legacy v1 package schema is deprecated and refused after the
+    **2027-06-01** cutoff. v1 imports today still succeed with a warning; move
+    packages you own to v2 (namespaced ids like `owner/name`, calendar
+    versioning `YYYY.MM.DD`, and typed `requires`) before then. Full details
+    in [Packaging](../packaging.md).
+
 ## Why upgrades are safe
 
 Three guard layers (design:

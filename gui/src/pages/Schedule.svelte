@@ -28,6 +28,7 @@
   // Live status (polled)
   let running     = {}      // agentId → ISO start time (currently executing)
   let nextRuns    = {}      // agentId → ISO next scheduled fire
+  let backfills   = {}      // agentId → {missed_at, replayed_at, cron, window, late_by}
   let now         = Date.now()
   let promptedFires = new Set()  // "id@nextISO" already auto-prompted
   let recentRuns = []
@@ -284,8 +285,9 @@
   async function refreshStatus() {
     try {
       const s = await api.schedule.status()
-      running  = s.running || {}
-      nextRuns = s.next    || {}
+      running   = s.running   || {}
+      nextRuns  = s.next      || {}
+      backfills = s.backfills || {}
     } catch (e) {
       // keep last known status on transient errors
     }
@@ -591,7 +593,18 @@
         <tbody>
           {#each schedule as entry}
             <tr>
-              <td class="td-name">{agentName(entry.agent_id)}</td>
+              <td class="td-name">
+                {agentName(entry.agent_id)}
+                {#if backfills[entry.agent_id]}
+                  <!-- E4b — auto-replayed chip: surfaces a startup catch-up so the operator can
+                       spot "wait, this shouldn't have fired at 03:04" without spelunking logs. -->
+                  <span
+                    class="backfill-chip"
+                    title={`Missed a fire at ${new Date(backfills[entry.agent_id].missed_at).toLocaleString()}; replayed at boot on ${new Date(backfills[entry.agent_id].replayed_at).toLocaleString()} (${backfills[entry.agent_id].late_by} late). Within the ${backfills[entry.agent_id].window} missed-startup window.`}>
+                    ⟳ auto-replayed
+                  </span>
+                {/if}
+              </td>
               <td class="td-hint">{entry.next ? new Date(entry.next).toLocaleString() : '—'}</td>
               <td class="td-hint">{entry.prev && !entry.prev.startsWith('0001') ? new Date(entry.prev).toLocaleString() : '—'}</td>
               <td class="td-hint">
@@ -999,6 +1012,19 @@ schedule:
   .td-hint   { color: #555a7a; font-size: .78rem; }
   .catchup        { white-space: nowrap; cursor: help; }
   .catchup.on     { color: #6fbf8f; }
+  /* E4b — startup-catch-up chip on the Automations row */
+  .backfill-chip {
+    display: inline-block;
+    margin-left: .4rem;
+    padding: .05rem .35rem;
+    font-size: .68rem;
+    background: #2a1e12;
+    color: #f0a060;
+    border: 1px solid #4a331d;
+    border-radius: 4px;
+    cursor: help;
+    vertical-align: middle;
+  }
   .missed-help    { margin-top: .5rem; max-width: 70ch; }
   .td-action { text-align: right; }
   .actions   { display: flex; gap: .35rem; justify-content: flex-end; flex-wrap: wrap; }

@@ -213,3 +213,31 @@ func (s *Server) handleRunEvents(c *fiber.Ctx) error {
 		"durable":    true,
 	})
 }
+
+// handleActivityRunning handles GET /api/v1/activity/running and returns the
+// EventHub's per-session heartbeat snapshot: every in-flight session with
+// elapsed / silent-for timers and a `hung` flag when the silent window has
+// crossed the tracker's threshold. Serves the Activity page's "Running now"
+// strip (E4c — Cohort E Activity failure handling). The response is safe to
+// poll at a few-second cadence: it's an in-memory map snapshot with no I/O.
+func (s *Server) handleActivityRunning(c *fiber.Ctx) error {
+	if s.hub == nil {
+		return c.JSON(fiber.Map{
+			"sessions":       []RunningSession{},
+			"hung_threshold": int64(defaultHungSilentThreshold / 1000000000), // seconds
+		})
+	}
+	sessions := s.hub.RunningSessions()
+	hung := 0
+	for _, sess := range sessions {
+		if sess.Hung {
+			hung++
+		}
+	}
+	return c.JSON(fiber.Map{
+		"sessions":       sessions,
+		"count":          len(sessions),
+		"hung_count":     hung,
+		"hung_threshold": int64(defaultHungSilentThreshold / 1000000000), // seconds
+	})
+}

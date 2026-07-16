@@ -29,6 +29,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -253,18 +255,35 @@ default so they can be reviewed before running.`,
 	var overwrite bool
 	var enable bool
 	var idOverride string
+	var acknowledgeMissing bool
 	importCmd := &cobra.Command{
 		Use:   "import <package.json>",
 		Short: "Import an agent package",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return importAgentPackageFile(args[0], overwrite, enable, idOverride)
+			return importAgentPackageFile(args[0], overwrite, enable, idOverride, acknowledgeMissing)
 		},
 	}
 	importCmd.Flags().BoolVar(&overwrite, "overwrite", false, "Overwrite an existing agent with the same ID")
 	importCmd.Flags().BoolVar(&enable, "enable", false, "Enable the imported agent immediately (default: import disabled for review)")
 	importCmd.Flags().StringVar(&idOverride, "id", "", "Import with a different agent ID")
+	importCmd.Flags().BoolVar(&acknowledgeMissing, "acknowledge-missing", false,
+		"Import despite one or more v2 `requires` entries being missing on this workspace (secrets, providers, channels, peer agents). Use only after reviewing the requirements list.")
 	cmd.AddCommand(importCmd)
+
+	// Story 7 Bucket 7A: local-only structural validation of a package
+	// file. No gateway hit — just parses the JSON, checks the schema, the
+	// calendar-versioning regex, the namespaced package_id, and (when
+	// present) the signature. Useful for publishers before shipping.
+	validateCmd := &cobra.Command{
+		Use:   "validate <package.json>",
+		Short: "Validate a package's structural correctness locally (no import)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return validateAgentPackageFile(args[0])
+		},
+	}
+	cmd.AddCommand(validateCmd)
 
 	return cmd
 }
@@ -377,7 +396,7 @@ func inspectAgentPackageFile(path string) error {
 	return nil
 }
 
-func importAgentPackageFile(path string, overwrite, enable bool, idOverride string) error {
+func importAgentPackageFile(path string, overwrite, enable bool, idOverride string, acknowledgeMissing bool) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -390,6 +409,9 @@ func importAgentPackageFile(path string, overwrite, enable bool, idOverride stri
 	}
 	if strings.TrimSpace(idOverride) != "" {
 		body["id_override"] = strings.TrimSpace(idOverride)
+	}
+	if acknowledgeMissing {
+		body["acknowledge_missing"] = true
 	}
 	payload, err := json.Marshal(body)
 	if err != nil {
@@ -424,6 +446,94 @@ func importAgentPackageFile(path string, overwrite, enable bool, idOverride stri
 		fmt.Printf("warning: %s\n", warning)
 	}
 	return nil
+}
+
+// validateAgentPackageFile runs Bucket-7A structural validation on a package
+// file locally — schema tag, calendar-versioning regex, namespaced package_id.
+// Signature verification and integrity checksum recomputation stay local so
+// publishers can validate before pushing.
+func validateAgentPackageFile(path string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var pkg struct {
+		SchemaVersion string `json:"schema_version"`
+		Manifest      struct {
+			PackageID string `json:"package_id"`
+			AgentID   string `json:"agent_id"`
+			Version   string `json:"version"`
+		} `json:"manifest"`
+		Integrity struct {
+			Algorithm string `json:"algorithm"`
+			SHA256    string `json:"sha256"`
+			Signature string `json:"signature"`
+			PublicKey string `json:"public_key"`
+		} `json:"integrity"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	var issues []string
+	switch pkg.SchemaVersion {
+	case "soulacy.agent.package/v1":
+		issues = append(issues, "schema is v1 (deprecated; v2 required after 2027-06-01) — re-publish as v2")
+	case "soulacy.agent.package/v2":
+		// per §4.1 regex — kept inline so this command has no import from
+		// the gateway package.
+		re := regexp.MustCompile(`^(\d{4})\.(\d{2})\.(\d{2})(?:\.(\d+))?$`)
+		if !re.MatchString(strings.TrimSpace(pkg.Manifest.Version)) {
+			issues = append(issues, "manifest.version must match YYYY.MM.DD[.PATCH] — got "+strconv.Quote(pkg.Manifest.Version))
+		}
+		nsRE := regexp.MustCompile(`^([a-z0-9-]{2,32})/([a-z0-9][a-z0-9-]{0,62})$`)
+		if !nsRE.MatchString(strings.TrimSpace(pkg.Manifest.PackageID)) {
+			issues = append(issues, "manifest.package_id must be `<publisher>/<package>` — got "+strconv.Quote(pkg.Manifest.PackageID))
+		}
+		if strings.TrimSpace(pkg.Manifest.AgentID) == "" {
+			issues = append(issues, "manifest.agent_id is required")
+		}
+	default:
+		issues = append(issues, "unknown schema_version "+strconv.Quote(pkg.SchemaVersion))
+	}
+	if pkg.Integrity.Signature != "" && pkg.Integrity.PublicKey == "" {
+		issues = append(issues, "integrity.signature is set but integrity.public_key is missing")
+	}
+	if outputJSON {
+		fmt.Println(string(mustMarshalJSON(map[string]any{
+			"path":           path,
+			"schema_version": pkg.SchemaVersion,
+			"package_id":     pkg.Manifest.PackageID,
+			"version":        pkg.Manifest.Version,
+			"issues":         issues,
+			"ok":             len(issues) == 0,
+		})))
+		return nil
+	}
+	fmt.Printf("package: %s\n", path)
+	fmt.Printf("  schema:     %s\n", valueOrDash(pkg.SchemaVersion))
+	fmt.Printf("  package_id: %s\n", valueOrDash(pkg.Manifest.PackageID))
+	fmt.Printf("  version:    %s\n", valueOrDash(pkg.Manifest.Version))
+	if len(issues) == 0 {
+		fmt.Println("  status:     ok")
+		return nil
+	}
+	fmt.Println("  status:     issues")
+	for _, iss := range issues {
+		fmt.Printf("    - %s\n", iss)
+	}
+	return fmt.Errorf("package has %d issue(s)", len(issues))
+}
+
+func valueOrDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "—"
+	}
+	return s
+}
+
+func mustMarshalJSON(v any) []byte {
+	b, _ := json.MarshalIndent(v, "", "  ")
+	return b
 }
 
 type agentPackageInspectCLI struct {

@@ -48,6 +48,16 @@ func (s *Server) handleMarketplaceStatus(c *fiber.Ctx) error {
 }
 
 func (s *Server) marketplaceReadiness() marketplaceReadiness {
+	// H1 — nil-safe front. The readiness surface is exercised by tests that
+	// construct a zero-value *Server; guarding here means the empty-config
+	// path returns a valid empty readiness rather than panicking on s.cfg
+	// or s.log deref inside configuredOrDefaultRegistries / FromConfig.
+	if s == nil {
+		return marketplaceReadiness{
+			Status:      "warn",
+			NextActions: []string{"server not initialised"},
+		}
+	}
 	regs := s.configuredOrDefaultRegistries()
 	defaults := len(regs) == len(pkgregistry.DefaultRegistries())
 	if defaults {
@@ -92,13 +102,18 @@ func (s *Server) marketplaceReadiness() marketplaceReadiness {
 		sources = append(sources, src)
 	}
 
+	// H6 — s is guaranteed non-nil by the H1 nil-guard at the top of this
+	// function. The prior `s != nil` checks here were dead defense that
+	// tripped staticcheck's SA5011 inference (it saw the later nil-check
+	// and inferred earlier deref sites might be reading a nil). Simplified
+	// to skillLoader-only checks now that the invariant holds.
 	installed := 0
-	if s != nil && s.skillLoader != nil {
+	if s.skillLoader != nil {
 		installed = len(s.skillLoader.All())
 	}
 
 	checks := []marketplaceReadinessCheck{
-		marketplaceCheck("loader", "Skill loader", s != nil && s.skillLoader != nil,
+		marketplaceCheck("loader", "Skill loader", s.skillLoader != nil,
 			"Skill loader is available for installed and newly added skills.",
 			"Skill loader is unavailable; install/rescan flows cannot hot-load skills."),
 		marketplaceCheck("installed_skills", "Installed skills", installed > 0,

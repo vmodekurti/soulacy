@@ -41,6 +41,7 @@ type readinessSummary struct {
 	DeploymentProfile string `json:"deployment_profile"`
 	OpsAlertsReady    bool   `json:"ops_alerts_ready"`
 	VoiceReady        bool   `json:"voice_ready"`
+	SchedulesReady    bool   `json:"schedules_ready"`
 }
 
 type launchChecklistItem struct {
@@ -106,6 +107,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 	opsAlerts := s.opsAlertReadiness()
 	studioContracts := s.studioContractReadiness(c)
 	docs := s.publicDocsReadiness()
+	schedules := s.scheduleReadiness()
 	deployment := s.deploymentReadiness(providersReady, usableOutbound, enabledAgents, updateManifest, costs, slo)
 
 	journey := []readinessItem{
@@ -119,6 +121,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		},
 		studioReadinessItem(len(templates), studioContracts),
 		agentReadinessItem(agents, enabledAgents, chatAgents, scheduledAgents),
+		scheduleReadinessItem(schedules),
 		channelReadinessItem(channels, channelsReady, usableOutbound),
 		{
 			Key:    "monitor",
@@ -135,6 +138,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 			Detail: deploymentReadinessDetail(deployment),
 			Href:   "#config",
 		},
+		securityReadinessJourneyItem(s.evaluateSecurityReadiness()),
 	}
 
 	next := make([]readinessItem, 0)
@@ -194,6 +198,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 			DeploymentProfile: deployment.Profile,
 			OpsAlertsReady:    opsAlerts.Status == "ok",
 			VoiceReady:        voice.Ready,
+			SchedulesReady:    schedules.Status == "ok",
 		},
 		"journey":          journey,
 		"next_actions":     next,
@@ -212,6 +217,7 @@ func (s *Server) readinessPayload(c *fiber.Ctx) fiber.Map {
 		"ops_alerts":       opsAlerts,
 		"studio_contracts": studioContracts,
 		"docs":             docs,
+		"schedules":        schedules,
 		"deployment":       deployment,
 		"parity": fiber.Map{
 			"score":    parityScore,
@@ -825,31 +831,11 @@ func learningReadinessItem(learningAgents, enabledAgents int) readinessItem {
 	}
 }
 
-func releaseStatus(providersReady, enabledAgents, outbound int, updateManifest string) string {
-	if providersReady == 0 || enabledAgents == 0 {
-		return "fail"
-	}
-	if outbound == 0 || strings.TrimSpace(updateManifest) == "" {
-		return "warn"
-	}
-	return "ok"
-}
-
-func releaseDetail(providersReady, enabledAgents, outbound int, updateManifest string) string {
-	if providersReady == 0 {
-		return "A production launch needs at least one tested model provider."
-	}
-	if enabledAgents == 0 {
-		return "A production launch needs at least one enabled agent."
-	}
-	if outbound == 0 {
-		return "Interactive runs can work now; add an outbound channel for cron and alert agents."
-	}
-	if strings.TrimSpace(updateManifest) == "" {
-		return "Core runtime is usable; configure updates.manifest_url or SOULACY_UPDATE_MANIFEST for production upgrades."
-	}
-	return "Core launch path is ready: provider, enabled agent, delivery, monitoring, diagnostics, and update manifest."
-}
+// H1 — releaseStatus and releaseDetail were unreferenced after the readiness
+// surface consolidated onto deployment/launch checklist rows. Deleted to
+// satisfy the unused-linter; if the release lane needs its own status again,
+// use deploymentReadiness / buildLaunchChecklist which are the canonical
+// sources today.
 
 func deploymentReadinessDetail(deployment deploymentReadiness) string {
 	label := strings.TrimSpace(deployment.Label)

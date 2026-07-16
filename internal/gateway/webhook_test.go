@@ -47,7 +47,11 @@ func TestGenericWebhookUsesAgentMapping(t *testing.T) {
 		t.Fatalf("mapped ids body = %#v", body)
 	}
 	req := provider.lastRequest()
-	if len(req.Messages) == 0 || req.Messages[len(req.Messages)-1].Content != "Fix provider auth regression" {
+	// Cohort F S1: webhook messages get an untrusted-content annotation
+	// prefix from annotateInboundForTrust so the model treats the
+	// sender identity conservatively. The original user text is still
+	// there — just preceded by the trust boundary header.
+	if len(req.Messages) == 0 || !strings.Contains(req.Messages[len(req.Messages)-1].Content, "Fix provider auth regression") {
 		t.Fatalf("messages = %#v", req.Messages)
 	}
 }

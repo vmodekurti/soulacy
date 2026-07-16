@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -20,8 +21,16 @@ import (
 	"github.com/soulacy/soulacy/internal/agentvalidate"
 	"github.com/soulacy/soulacy/internal/pkgregistry"
 	"github.com/soulacy/soulacy/internal/runtime"
+	"github.com/soulacy/soulacy/internal/secrets"
 	"github.com/soulacy/soulacy/pkg/agent"
 )
+
+// regexpMustCompilePackage panics on an invalid regex — used only for the
+// package-level `var` initializers below. Wraps regexp.MustCompile so a
+// future rewrite (e.g. lazy init) has a single seam.
+func regexpMustCompilePackage(expr string) *regexp.Regexp {
+	return regexp.MustCompile(expr)
+}
 
 type agentPackageFile struct {
 	Path   string `json:"path"`
@@ -59,6 +68,55 @@ type agentPackageManifest struct {
 	EvalSuites    []string             `json:"eval_suites,omitempty"`
 	SamplePrompts []string             `json:"sample_prompts,omitempty"`
 	Warnings      []string             `json:"warnings,omitempty"`
+
+	// ── v2 additions (Story 7 Bucket 7A) ──────────────────────────────────
+	// PackageID is the namespaced package identifier `<publisher>/<package>`.
+	// Required in schema v2. Distinct from AgentID so a publisher can rename
+	// what they ship without changing the deployed agent's own id.
+	PackageID string `json:"package_id,omitempty"`
+	// PriorVersion forms a linked list so the changelog surface can compute
+	// "since your last install" without walking the whole history. Optional.
+	PriorVersion string `json:"prior_version,omitempty"`
+	// ReleasedAt is when the publisher cut this version. RFC3339 UTC.
+	ReleasedAt string `json:"released_at,omitempty"`
+	// Changelog is a short plain-text summary shown at import time.
+	Changelog string `json:"changelog,omitempty"`
+	// Publisher is the identity that signed and cut this version. See §4.5.
+	Publisher *agentPackagePublisher `json:"publisher,omitempty"`
+	// Requires is the hard-requirements block enforced at import time. See
+	// docs/PACKAGE_VERSIONING_DESIGN.md §4.2.
+	Requires *agentPackageRequires `json:"requires,omitempty"`
+}
+
+// agentPackagePublisher captures who signed a v2 package.
+type agentPackagePublisher struct {
+	ID           string `json:"id"`
+	DisplayName  string `json:"display_name,omitempty"`
+	SignatureKey string `json:"signature_key,omitempty"` // "ed25519:HEX-OR-B64"
+	TrustLevel   string `json:"trust_level,omitempty"`   // "official" | "community"
+}
+
+// agentPackageRequires bundles the install-time gate declared by a v2 package.
+type agentPackageRequires struct {
+	SoulacyVersion string                      `json:"soulacy_version,omitempty"`
+	Providers      []agentPackageRequireItem   `json:"providers,omitempty"`
+	Channels       []agentPackageRequireItem   `json:"channels,omitempty"`
+	Secrets        []agentPackageRequireSecret `json:"secrets,omitempty"`
+	MCPServers     []agentPackageRequireItem   `json:"mcp_servers,omitempty"`
+	PeerAgents     []agentPackageRequireItem   `json:"peer_agents,omitempty"`
+}
+
+type agentPackageRequireItem struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason,omitempty"`
+}
+
+type agentPackageRequireSecret struct {
+	Key      string `json:"key"` // e.g. "telegram.bot_token"
+	Label    string `json:"label,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	Kind     string `json:"kind,omitempty"` // "provider_secret" | "channel_secret" | "env" | "other"
+	Provider string `json:"provider,omitempty"`
 }
 
 type agentPackageIntegrity struct {
@@ -102,6 +160,74 @@ type agentPackageImportRequest struct {
 	IDOverride string               `json:"id_override,omitempty"`
 	Overwrite  bool                 `json:"overwrite,omitempty"`
 	Disabled   bool                 `json:"disabled,omitempty"`
+	// AcknowledgeMissing lets the operator proceed with an import that has
+	// one or more "missing" requirements (secrets, providers, channels,
+	// peer agents). Without this flag a v2 import with any missing entry
+	// is refused with 409 so the GUI can render the requirements list and
+	// prompt for confirmation. v1 packages are import-flow-unchanged.
+	AcknowledgeMissing bool `json:"acknowledge_missing,omitempty"`
+}
+
+// PackageSchemaV1 is the legacy schema-version tag; PackageSchemaV2 is the
+// current one with required calendar version + Requires block. Kept as
+// exported constants so tests, `sy package validate`, and the export path
+// share the same string.
+const (
+	PackageSchemaV1 = "soulacy.agent.package/v1"
+	PackageSchemaV2 = "soulacy.agent.package/v2"
+
+	// PackageV1CutoffDate is when v1 imports flip from warn → error. Change
+	// this in ONE place if the deprecation window shifts. See
+	// docs/PACKAGE_VERSIONING_DESIGN.md §5.1.
+	PackageV1CutoffDate = "2027-06-01"
+)
+
+// calendarVersionRE matches Soulacy's calendar-versioning format YYYY.MM.DD
+// with an optional .PATCH suffix. See docs/PACKAGE_VERSIONING_DESIGN.md §4.1.
+var calendarVersionRE = regexpMustCompilePackage(`^(\d{4})\.(\d{2})\.(\d{2})(?:\.(\d+))?$`)
+
+// packageNamespaceRE matches the two-segment namespaced package_id form
+// `<publisher>/<package>`; publisher is 2-32 lowercase alnum+hyphen chars,
+// package is 1-63 lowercase alnum+hyphen chars starting with alnum. See
+// docs/PACKAGE_VERSIONING_DESIGN.md §4.5.
+var packageNamespaceRE = regexpMustCompilePackage(`^([a-z0-9-]{2,32})/([a-z0-9][a-z0-9-]{0,62})$`)
+
+// validateCalendarVersion returns nil when the string matches the calendar
+// versioning regex AND parses into a real-looking date. Same-day .PATCH
+// suffixes are accepted without upper bound.
+func validateCalendarVersion(v string) error {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return errors.New("version is required")
+	}
+	m := calendarVersionRE.FindStringSubmatch(v)
+	if m == nil {
+		return fmt.Errorf("version %q does not match YYYY.MM.DD[.PATCH]", v)
+	}
+	// Basic sanity: month 01-12, day 01-31; we don't reject Feb 30 here
+	// because publishers may date-shift releases, but we do refuse
+	// obviously-broken values.
+	// time.Parse gives us both the boundary check and a natural way to
+	// spot future-dated releases.
+	if _, err := time.Parse("2006.01.02", m[1]+"."+m[2]+"."+m[3]); err != nil {
+		return fmt.Errorf("version %q has an invalid date component: %w", v, err)
+	}
+	return nil
+}
+
+// validatePackageNamespace enforces the `<publisher>/<package>` shape from
+// §4.5. Empty is rejected — v2 requires it. Reserved namespaces (currently
+// just "soulacy") pass through the regex; enforcement of who can publish
+// under a reserved namespace happens at the registry (in Bucket 7B).
+func validatePackageNamespace(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("package_id is required for schema v2")
+	}
+	if !packageNamespaceRE.MatchString(id) {
+		return fmt.Errorf("package_id %q must be `<publisher>/<package>` with lowercase alnum+hyphen segments", id)
+	}
+	return nil
 }
 
 func (s *Server) handleGetAgentPackage(c *fiber.Ctx) error {
@@ -176,6 +302,30 @@ func (s *Server) handleImportAgentPackage(c *fiber.Ctx) error {
 	if isProtectedSystemAgent(inspected.Agent.ID) {
 		return protectedSystemAgentResponse(c)
 	}
+	// Story 7 Bucket 7A — v1 cutoff. Past PackageV1CutoffDate, v1 imports
+	// are refused unconditionally; before then, they only warn (the warning
+	// is already appended to inspected.Warnings by inspectAgentPackage).
+	if pkg.SchemaVersion == PackageSchemaV1 && time.Now().UTC().After(packageV1CutoffTime()) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error":        "v1 packages are refused after " + PackageV1CutoffDate + " — ask the publisher to re-publish as v2",
+			"requirements": inspected.Requirements,
+			"warnings":     inspected.Warnings,
+		})
+	}
+	// Story 7 Bucket 7A — install-time secret + provider + channel + peer
+	// gate. When the v2 manifest declares a `requires` block, `missing`
+	// entries block import unless the operator explicitly acknowledged them.
+	if pkg.SchemaVersion == PackageSchemaV2 && !req.AcknowledgeMissing {
+		if missing := collectMissingRequirements(inspected.Requirements); len(missing) > 0 {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error":                 "package has missing requirements; set acknowledge_missing:true to import anyway",
+				"missing":               missing,
+				"requirements":          inspected.Requirements,
+				"warnings":              inspected.Warnings,
+				"needs_acknowledgement": true,
+			})
+		}
+	}
 	if s.loader.Get(inspected.Agent.ID) != nil && !req.Overwrite {
 		return s.errMsg(c, fiber.StatusConflict, "agent already exists; set overwrite=true or choose a different id")
 	}
@@ -200,6 +350,16 @@ func (s *Server) handleImportAgentPackage(c *fiber.Ctx) error {
 	if err := writePackageFiles(dir, def.ID, inspected.Files); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	// Story 7 Bucket 7A — write the .soulacy-package.json sidecar so the
+	// origin, version, publisher, and (if applicable) missing-acknowledgement
+	// state are recorded next to the agent. 7C will walk this file to
+	// populate the Package tab and to build the rollback list.
+	if err := writePackageSidecar(dir, def.ID, pkg, req.AcknowledgeMissing); err != nil {
+		// Sidecar write is best-effort — an import that already wrote
+		// SOUL.yaml should not fail because the sidecar couldn't be
+		// persisted. Log at Warn so ops can spot filesystem issues.
+		s.log.Warn("package sidecar write failed", zap.String("agent", def.ID), zap.Error(err))
+	}
 	if err := s.loader.Upsert(dir, def); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -211,6 +371,82 @@ func (s *Server) handleImportAgentPackage(c *fiber.Ctx) error {
 		"requirements": inspected.Requirements,
 		"warnings":     inspected.Warnings,
 	})
+}
+
+// packageV1CutoffTime parses PackageV1CutoffDate at call time so tests can
+// override PackageV1CutoffDate. Always UTC.
+func packageV1CutoffTime() time.Time {
+	t, err := time.Parse("2006-01-02", PackageV1CutoffDate)
+	if err != nil {
+		// Should never happen — the constant is validated by tests.
+		return time.Now().UTC().Add(-1 * time.Hour)
+	}
+	return t
+}
+
+// collectMissingRequirements filters an inspected package's requirement list
+// down to the entries that block import in v2 mode. `verify` and `declared`
+// are informational; anything not "available"/"configured"/"built_in"/
+// "packaged" from a required_* kind is treated as missing.
+func collectMissingRequirements(reqs []agentPackageRequirement) []agentPackageRequirement {
+	var out []agentPackageRequirement
+	for _, r := range reqs {
+		if !strings.HasPrefix(r.Kind, "required_") {
+			continue
+		}
+		switch r.Status {
+		case "available", "configured", "built_in", "packaged":
+			continue
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// packageSidecar is the .soulacy-package.json format stored next to SOUL.yaml
+// on import. Story 7 Bucket 7A ships the write side; 7B/7C will add reader
+// helpers for the Package tab + rollback picker.
+type packageSidecar struct {
+	SchemaVersion       string                 `json:"schema_version"`
+	PackageID           string                 `json:"package_id,omitempty"`
+	InstalledVersion    string                 `json:"installed_version,omitempty"`
+	InstalledFrom       string                 `json:"installed_from,omitempty"`
+	InstalledAt         time.Time              `json:"installed_at"`
+	Publisher           *agentPackagePublisher `json:"publisher,omitempty"`
+	SignatureVerified   bool                   `json:"signature_verified,omitempty"`
+	TrustLevelAtInstall string                 `json:"trust_level_at_install,omitempty"`
+	AcknowledgedMissing bool                   `json:"acknowledged_missing,omitempty"`
+}
+
+// writePackageSidecar persists the .soulacy-package.json file next to SOUL.yaml.
+// It is safe to call for both v1 and v2 packages — v1 packages just have most
+// fields empty, which is honest signal for the operator.
+func writePackageSidecar(agentRoot, agentID string, pkg *agentPackageResponse, ackedMissing bool) error {
+	if pkg == nil {
+		return nil
+	}
+	base := filepath.Join(agentRoot, agentID)
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return err
+	}
+	sc := packageSidecar{
+		SchemaVersion:       pkg.SchemaVersion,
+		PackageID:           pkg.Manifest.PackageID,
+		InstalledVersion:    pkg.Manifest.Version,
+		InstalledAt:         time.Now().UTC(),
+		SignatureVerified:   pkg.Integrity.Verified,
+		AcknowledgedMissing: ackedMissing,
+	}
+	if pkg.Manifest.Publisher != nil {
+		clone := *pkg.Manifest.Publisher
+		sc.Publisher = &clone
+		sc.TrustLevelAtInstall = pkg.Manifest.Publisher.TrustLevel
+	}
+	raw, err := json.MarshalIndent(sc, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(base, ".soulacy-package.json"), append(raw, '\n'), 0644)
 }
 
 func parseAgentPackageBody(body []byte) (*agentPackageResponse, error) {
@@ -231,8 +467,29 @@ func (s *Server) inspectAgentPackage(pkg *agentPackageResponse) (*agentPackageIn
 	if pkg == nil {
 		return nil, errors.New("package is required")
 	}
-	if pkg.SchemaVersion != "soulacy.agent.package/v1" {
+	switch pkg.SchemaVersion {
+	case PackageSchemaV1, PackageSchemaV2:
+		// supported
+	default:
 		return nil, fmt.Errorf("unsupported package schema %q", pkg.SchemaVersion)
+	}
+	// Story 7 Bucket 7A: v1 packages are still importable but generate a
+	// deprecation warning; after PackageV1CutoffDate the gate flips to a
+	// hard error at handleImportAgentPackage.
+	var v1Warning string
+	if pkg.SchemaVersion == PackageSchemaV1 {
+		v1Warning = "package uses deprecated schema \"" + PackageSchemaV1 + "\"; v1 packages will be refused after " + PackageV1CutoffDate + " — ask the publisher to re-publish as v2 (see docs/PACKAGE_VERSIONING_DESIGN.md)"
+	}
+	// v2-specific structural checks. These are separate from agentvalidate
+	// (which validates the embedded SOUL.yaml) because they cover metadata
+	// the SOUL.yaml doesn't carry.
+	if pkg.SchemaVersion == PackageSchemaV2 {
+		if err := validateCalendarVersion(pkg.Manifest.Version); err != nil {
+			return nil, fmt.Errorf("v2 manifest: %w", err)
+		}
+		if err := validatePackageNamespace(pkg.Manifest.PackageID); err != nil {
+			return nil, fmt.Errorf("v2 manifest: %w", err)
+		}
 	}
 	var def agent.Definition
 	if err := yaml.Unmarshal([]byte(pkg.SOULYAML), &def); err != nil {
@@ -241,6 +498,9 @@ func (s *Server) inspectAgentPackage(pkg *agentPackageResponse) (*agentPackageIn
 	report := agentvalidate.Bytes([]byte(pkg.SOULYAML), "package:SOUL.yaml", s.agentValidationOptions(context.TODO()))
 	requirements := s.agentPackageRequirements(pkg, &def)
 	warnings := append([]string(nil), pkg.Manifest.Warnings...)
+	if v1Warning != "" {
+		warnings = append(warnings, v1Warning)
+	}
 	integrity := pkg.Integrity
 	if integrity.SHA256 != "" {
 		actual, err := packageContentChecksum(pkg)
@@ -338,8 +598,74 @@ func (s *Server) agentPackageRequirements(pkg *agentPackageResponse, def *agent.
 		}
 		addReq("peer_agent", peer, status, "Import or create this peer agent if the package invokes it.")
 	}
+	// Legacy secret list — informational for v1 packages; unchanged.
 	for _, secret := range pkg.Manifest.Secrets {
 		addReq("secret", secret.Name, "verify", secret.Description)
+	}
+	// Story 7 Bucket 7A — v2 hard-requirements block. When the manifest
+	// declares `requires.secrets`, `requires.providers`, etc. we look up
+	// live state (vault, provider registry, channel registry, loader)
+	// and mark each requirement with a concrete status. `handleImport…`
+	// refuses import when anything is `missing` unless the request
+	// carries `acknowledge_missing:true`.
+	if req := pkg.Manifest.Requires; req != nil {
+		vaultKeys := s.credentialVaultKeys()
+		for _, sec := range req.Secrets {
+			status := "missing"
+			key := strings.TrimSpace(sec.Key)
+			if key != "" && vaultKeys[key] {
+				status = "available"
+			}
+			label := sec.Label
+			if strings.TrimSpace(label) == "" {
+				label = key
+			}
+			desc := sec.Reason
+			if strings.TrimSpace(desc) == "" {
+				desc = "Required secret declared by the package manifest."
+			}
+			addReq("required_secret", label, status, desc)
+		}
+		for _, p := range req.Providers {
+			status := "missing"
+			if s.cfg != nil {
+				if _, ok := s.cfg.LLM.Providers[p.ID]; ok {
+					status = "configured"
+				}
+			}
+			if s.llmRouter != nil && s.llmRouter.Provider(p.ID) != nil {
+				status = "available"
+			}
+			addReq("required_provider", p.ID, status, p.Reason)
+		}
+		for _, ch := range req.Channels {
+			status := "missing"
+			if ch.ID == "http" {
+				status = "built_in"
+			} else if s.channels != nil {
+				if statuses := s.channels.Statuses(); statuses[ch.ID].Connected || statuses[ch.ID].Detail != "" {
+					status = "available"
+				}
+			} else if s.cfg != nil {
+				if _, ok := s.cfg.Channels[ch.ID]; ok {
+					status = "configured"
+				}
+			}
+			addReq("required_channel", ch.ID, status, ch.Reason)
+		}
+		for _, m := range req.MCPServers {
+			// We don't have a live "is MCP server connected" oracle here
+			// without preflight input; mark declared for now. Bucket 7B
+			// wires the connected-set through so this becomes concrete.
+			addReq("required_mcp_server", m.ID, "declared", m.Reason)
+		}
+		for _, p := range req.PeerAgents {
+			status := "missing"
+			if s.loader != nil && s.loader.Get(p.ID) != nil {
+				status = "available"
+			}
+			addReq("required_peer_agent", p.ID, status, p.Reason)
+		}
 	}
 	for _, file := range sortedUnique(append(append([]string{}, pkg.Manifest.FilesRequired...), append(pkg.Manifest.EvalSuites, pkg.Manifest.SamplePrompts...)...)) {
 		status := "missing"
@@ -361,6 +687,30 @@ func (s *Server) agentPackageRequirements(pkg *agentPackageResponse, def *agent.
 		return reqs[i].Kind < reqs[j].Kind
 	})
 	return reqs
+}
+
+// credentialVaultKeys returns the set of secret names currently stored in the
+// vault, so v2 `requires.secrets` can be checked without repeatedly calling
+// Get. Empty map when the vault is unavailable — every requirement then
+// classifies as "missing", which is the correct default.
+func (s *Server) credentialVaultKeys() map[string]bool {
+	out := map[string]bool{}
+	if s == nil {
+		return out
+	}
+	mgr := secrets.New(s.CredentialVault())
+	if !mgr.Enabled() {
+		return out
+	}
+	// A short-lived context is enough — vault reads are local.
+	names, err := mgr.List(context.TODO())
+	if err != nil {
+		return out
+	}
+	for _, n := range names {
+		out[n] = true
+	}
+	return out
 }
 
 func hasSkill(loader runtime.SkillLoader, id string) bool {

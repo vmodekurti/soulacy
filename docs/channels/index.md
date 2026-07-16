@@ -119,12 +119,21 @@ The same pattern applies to Slack and Discord:
 
 Open **Channels** in the web UI:
 
+- **Guided setup cards** walk you through Telegram, Slack, Discord, WhatsApp
+  Cloud, WhatsApp Web, email (SMTP), Microsoft Teams, Google Chat, generic
+  webhooks, and HTTP with step-by-step instructions, per-field hints keyed
+  off the exact adapter config keys, and a Test-delivery button at the
+  bottom.
 - Channel cards show **Agent mappings**, including adapter ID, agent ID, and connection state.
 - Channel cards show **Delivery checks** with failures, warnings, and remedies for missing tokens, missing default destinations, offline adapters, and broken bot mappings.
 - Channel cards expose **Test** and **Diagnose** paths for outbound delivery.
   Failed tests return the same structured diagnosis used in Activity and support
   bundles, so `chat not found`, `missing scope`, bad webhook URLs, and rate
-  limits are visible before a cron job depends on them.
+  limits are visible before a cron job depends on them. Email adds
+  SMTP-specific categories — authentication failed, STARTTLS required,
+  relay denied / SPF, recipient rejected, quota, message rejected, TLS
+  handshake — so raw `535 5.7.8` / `550 5.1.1` codes don't bubble up as
+  "unknown".
 - Click **Edit** on Telegram, Slack, or Discord to manage **Bot mappings**.
 - Bot mapping rows record a friendly bot name and provide an agent ID dropdown populated from your installed agents.
 - After saving channel settings, click **Restart Gateway** from the banner to reconnect adapters.

@@ -15,12 +15,140 @@ STUDIO_LIVE="${SOULACY_UAT_STUDIO_LIVE:-0}"
 BROWSER_MCP="${SOULACY_UAT_BROWSER_MCP:-0}"
 URL="http://${HOST}:${PORT}"
 
+# ── Report mode & auto-generated timestamped report ──────────────────────────
+# SOULACY_UAT_MODE is `public` (default; skips every credential-gated block) or
+# `full` (allows the live-channel blocks that need real bot tokens). The mode
+# is advisory — the live blocks still skip cleanly on their own when the env
+# pair is missing, so `make uat-public` on a machine with tokens set still
+# skips gracefully.
+UAT_MODE="${SOULACY_UAT_MODE:-public}"
+if [[ "$UAT_MODE" != "public" && "$UAT_MODE" != "full" ]]; then
+  echo "SOULACY_UAT_MODE must be 'public' or 'full', got '$UAT_MODE'" >&2
+  exit 2
+fi
+
+# Report path: default to .cache/uat-reports/<timestamp>.md so a checkout
+# accumulates a review-friendly trail without polluting docs/. Override with
+# SOULACY_UAT_REPORT=/absolute/path.md (empty string disables report writing).
+UAT_TS="$(date -u +%Y%m%dT%H%M%SZ)"
+if [[ -n "${SOULACY_UAT_REPORT+x}" ]]; then
+  REPORT_PATH="${SOULACY_UAT_REPORT}"
+else
+  REPORT_PATH="${ROOT}/.cache/uat-reports/UAT_REPORT_${UAT_TS}.md"
+fi
+# H2 — heal any corrupted ancestor before mkdir. Some repo states leave a
+# stray FILE where a directory should be (touch fallout, a botched install,
+# etc.); the actual audit-observed case is $ROOT/.cache existing as a file,
+# which makes `mkdir -p .cache/uat-reports` fail with "Not a directory" and
+# red-lines the whole clean UAT lane.
+#
+# The healer walks the target path bottom-up, removing any ancestor that
+# exists as a non-directory. Bounded by $ROOT — never touches anything
+# outside the repo checkout, so a mistyped path can't nuke a system file.
+#
+# Portability note: this script runs under macOS's shipped /bin/bash 3.2
+# under `set -euo pipefail`. Bash 3.2 treats `${arr[@]}` on an empty array
+# as "unbound variable" under nounset, which broke an earlier array-based
+# implementation. The current version uses a simple linear walker with a
+# single scalar variable — no arrays — so it works identically on 3.2 and
+# 4+/5+.
+ensure_dir() {
+  local d="$1"
+  if [[ -z "$d" ]]; then return 0; fi
+  local p="$d"
+  while :; do
+    if [[ -e "$p" && ! -d "$p" ]]; then
+      if [[ "$p" == "$ROOT"* ]]; then
+        echo "warn: $p exists as a non-directory; removing." >&2
+        rm -f "$p"
+      else
+        echo "error: refusing to heal $p — outside \$ROOT ($ROOT)" >&2
+        return 1
+      fi
+    fi
+    local parent
+    parent=$(dirname "$p")
+    if [[ "$parent" == "$p" || "$parent" == "/" || "$parent" == "." ]]; then
+      break
+    fi
+    p="$parent"
+  done
+  mkdir -p "$d"
+}
+if [[ -n "$REPORT_PATH" ]]; then
+  ensure_dir "$(dirname "$REPORT_PATH")"
+fi
+
+# Tee everything into a live log so the report can quote the failure context
+# (last few lines of stdout) even after `set -e` unwinds the script.
+UAT_LOG="${WORKSPACE:-/tmp}/uat.log"
+ensure_dir "$(dirname "$UAT_LOG")"
+exec > >(tee -a "$UAT_LOG") 2>&1
+
+# ── Per-step timing (E1 hardening) ───────────────────────────────────────────
+# `step "<name>"` closes the previous section, starts a new one with a fresh
+# start timestamp, and appends to a jsonl the report will render as a table.
+# `skip_step "<name>" "<reason>"` records a skip without timing. `step_finish`
+# closes the last open step at the end. The ERR trap also closes the current
+# step as failed with its elapsed time so a fail row lands in the table even
+# when `set -e` unwinds mid-section.
+STEP_LOG="${WORKSPACE:-/tmp}/steps.jsonl"
+: > "$STEP_LOG"
+CURR_STEP=""
+CURR_STEP_START=""
+_step_json_str() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
+_step_write() {
+  local name="$1" status="$2" dur="$3" reason="${4:-}"
+  local name_esc reason_esc
+  name_esc="$(_step_json_str "$name")"
+  reason_esc="$(_step_json_str "$reason")"
+  printf '{"name":"%s","duration_s":%d,"status":"%s","reason":"%s"}\n' \
+    "$name_esc" "$dur" "$status" "$reason_esc" >> "$STEP_LOG"
+}
+step() {
+  if [[ -n "$CURR_STEP" ]]; then
+    local now dur; now="$(date +%s)"; dur=$((now - CURR_STEP_START))
+    _step_write "$CURR_STEP" "pass" "$dur" ""
+  fi
+  CURR_STEP="$1"
+  CURR_STEP_START="$(date +%s)"
+  echo "▶ $CURR_STEP"
+}
+skip_step() {
+  # Close any open step first — a skip mid-section still leaves the previous
+  # section's timing intact.
+  if [[ -n "$CURR_STEP" ]]; then
+    local now dur; now="$(date +%s)"; dur=$((now - CURR_STEP_START))
+    _step_write "$CURR_STEP" "pass" "$dur" ""
+    CURR_STEP=""; CURR_STEP_START=""
+  fi
+  _step_write "$1" "skip" "0" "${2:-}"
+  echo "SKIP $1: ${2:-}"
+}
+step_finish() {
+  if [[ -n "$CURR_STEP" ]]; then
+    local now dur; now="$(date +%s)"; dur=$((now - CURR_STEP_START))
+    _step_write "$CURR_STEP" "pass" "$dur" ""
+    CURR_STEP=""; CURR_STEP_START=""
+  fi
+}
+UAT_FAIL_LINE=""
+UAT_FAIL_CMD=""
+# Chain the ERR trap: mark the current step as fail (with its elapsed time)
+# before we unwind, so the report table shows the exact step that broke.
+trap 'UAT_FAIL_LINE=$LINENO; UAT_FAIL_CMD=$BASH_COMMAND;
+      if [[ -n "$CURR_STEP" ]]; then
+        _now=$(date +%s); _dur=$((_now - CURR_STEP_START));
+        _step_write "$CURR_STEP" "fail" "$_dur" "line $LINENO: $BASH_COMMAND";
+        CURR_STEP="";
+      fi' ERR
+
 if [[ ! -x "$BIN" ]]; then
   echo "soulacy binary not found at $BIN; run make build first or set SOULACY_UAT_BIN" >&2
   exit 2
 fi
 
-mkdir -p "$WORKSPACE"
+ensure_dir "$WORKSPACE"
 if [[ -z "$MODEL" ]]; then
   MODEL="$(curl -fsS http://localhost:11434/api/tags 2>/dev/null \
     | python3 -c 'import json,sys; d=json.load(sys.stdin); ms=d.get("models") or []; print((ms[0].get("name") if ms else "") or "llama3.2")' 2>/dev/null \
@@ -44,11 +172,167 @@ log:
   file: "${WORKSPACE}/logs/soulacy.log"
 YAML
 
+write_uat_report() {
+  local exit_code="$1"
+  if [[ -z "$REPORT_PATH" ]]; then
+    return 0
+  fi
+  # Close any still-open step so the last row lands in the table on failure.
+  if [[ -n "$CURR_STEP" ]]; then
+    local now dur; now="$(date +%s)"; dur=$((now - CURR_STEP_START))
+    if [[ "$exit_code" == "0" ]]; then
+      _step_write "$CURR_STEP" "pass" "$dur" ""
+    else
+      _step_write "$CURR_STEP" "fail" "$dur" "line ${UAT_FAIL_LINE:-?}: ${UAT_FAIL_CMD:-unknown}"
+    fi
+    CURR_STEP=""
+  fi
+  local status="pass"
+  if [[ "$exit_code" != "0" ]]; then
+    status="fail"
+  fi
+  local tail_lines=""
+  if [[ -f "$UAT_LOG" ]]; then
+    tail_lines="$(tail -n 60 "$UAT_LOG" 2>/dev/null || true)"
+  fi
+  # Per-step counts + rendered table sourced from STEP_LOG (jsonl).
+  local pass_count fail_count skip_count total_secs steps_table
+  local counts_raw
+  counts_raw="$(python3 - "$STEP_LOG" <<'PY'
+import json, sys
+p, f, s, total = 0, 0, 0, 0
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        st = r.get("status", "")
+        total += int(r.get("duration_s", 0))
+        if st == "pass": p += 1
+        elif st == "fail": f += 1
+        elif st == "skip": s += 1
+print(f"{p}\t{f}\t{s}\t{total}")
+PY
+  )"
+  pass_count="$(echo "$counts_raw" | awk '{print $1}')"
+  fail_count="$(echo "$counts_raw" | awk '{print $2}')"
+  skip_count="$(echo "$counts_raw" | awk '{print $3}')"
+  total_secs="$(echo "$counts_raw" | awk '{print $4}')"
+  steps_table="$(python3 - "$STEP_LOG" <<'PY'
+import json, sys
+rows = []
+with open(sys.argv[1]) as fh:
+    for line in fh:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except Exception:
+            continue
+if not rows:
+    print("_(no per-step data captured)_")
+else:
+    print("| # | Step | Status | Duration | Notes |")
+    print("|---|------|--------|----------|-------|")
+    icons = {"pass": "✓ pass", "fail": "✗ fail", "skip": "○ skip"}
+    for i, r in enumerate(rows, 1):
+        name = r.get("name", "").replace("|", "\\|")
+        st = icons.get(r.get("status", ""), r.get("status", ""))
+        dur = r.get("duration_s", 0)
+        dur_txt = f"{dur}s" if dur else "—"
+        reason = r.get("reason", "").replace("|", "\\|")
+        print(f"| {i} | {name} | {st} | {dur_txt} | {reason} |")
+PY
+  )"
+  # Screenshot gallery: link to whatever `make docs-screenshots` produced.
+  # The manifest.json lists every route/name/screenshot so the report can
+  # inline the images. Missing manifest → gallery section is omitted.
+  local screenshot_section=""
+  local screenshot_manifest="$ROOT/docs/assets/screenshots/manifest.json"
+  if [[ -f "$screenshot_manifest" ]]; then
+    screenshot_section="$(python3 - "$screenshot_manifest" "$ROOT" <<'PY'
+import json, os, sys
+mf, root = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(mf))
+except Exception as e:
+    print(f"_(screenshot manifest could not be parsed: {e})_")
+    sys.exit(0)
+routes = d.get("routes") or []
+if not routes:
+    print("_(screenshot manifest has no routes)_")
+    sys.exit(0)
+gen = d.get("generated_at", "unknown time")
+print(f"Screenshots captured by `make docs-screenshots` at `{gen}`.")
+print("")
+print("| Route | Bytes | Text length | Image |")
+print("|-------|------:|-----------:|-------|")
+for r in routes:
+    name = r.get("name", "")
+    path = r.get("path", "")
+    img  = r.get("screenshot", "")
+    rel  = os.path.relpath(os.path.join(root, "docs", "assets", "screenshots", img), start=os.path.dirname(mf))
+    # Absolute-from-repo path is easier to eyeball in the .md.
+    abs_repo_path = f"docs/assets/screenshots/{img}"
+    print(f"| `{name}` (`{path}`) | {r.get('bytes','')} | {r.get('text_length','')} | ![]({abs_repo_path}) |")
+PY
+    )"
+  fi
+  {
+    echo "# Soulacy Clean-Runtime UAT Report"
+    echo
+    echo "- Generated: \`$UAT_TS\`"
+    echo "- Mode: \`$UAT_MODE\` ($([ "$UAT_MODE" = "full" ] && echo "credential-backed subset enabled" || echo "no credentials required"))"
+    echo "- Result: \`$status\`"
+    echo "- Workspace: \`$WORKSPACE\`"
+    echo "- Gateway: \`$URL\`"
+    echo "- Model: \`$MODEL\`"
+    echo "- Full log: \`$UAT_LOG\`"
+    echo "- Step log: \`$STEP_LOG\`"
+    echo "- Pass / Fail / Skip: \`${pass_count:-0}\` / \`${fail_count:-0}\` / \`${skip_count:-0}\` (total ~\`${total_secs:-0}s\`)"
+    if [[ "$status" = "fail" ]]; then
+      echo
+      echo "## Failure"
+      echo
+      echo "- Line: \`${UAT_FAIL_LINE:-unknown}\`"
+      echo "- Command: \`${UAT_FAIL_CMD:-unknown}\`"
+      echo "- Remediation hints: consult the last log tail below. Channel-delivery"
+      echo "  failures include a delivery-doctor \`category\`+\`reason\`+\`fix\` in the"
+      echo "  server response; provider failures include a provider-doctor"
+      echo "  \`diagnosis\` block with \`category\`/\`reason\`/\`fix\`."
+    fi
+    echo
+    echo "## Per-step timing"
+    echo
+    echo "$steps_table"
+    if [[ -n "$screenshot_section" ]]; then
+      echo
+      echo "## Screenshots"
+      echo
+      echo "$screenshot_section"
+    fi
+    echo
+    echo "## Log tail"
+    echo
+    echo '```text'
+    echo "$tail_lines"
+    echo '```'
+  } > "$REPORT_PATH"
+  echo "UAT report written: $REPORT_PATH"
+}
+
 cleanup() {
+  local rc=$?
   if [[ -n "${PID:-}" ]]; then
     kill "$PID" >/dev/null 2>&1 || true
     wait "$PID" >/dev/null 2>&1 || true
   fi
+  write_uat_report "$rc"
 }
 trap cleanup EXIT
 
@@ -100,16 +384,16 @@ echo "gateway:   $URL"
 
 wait_for_gateway
 
-echo "health"
+step "health"
 api GET /health | json_assert "doc.get('status') == 'ok'"
 
-echo "onboarding status"
+step "onboarding status"
 api GET /onboarding/status | json_assert "'steps' in doc and len(doc['steps']) >= 3"
 
-echo "launch readiness"
+step "launch readiness"
 api GET /readiness | json_assert "'summary' in doc and 'journey' in doc and 'release' in doc and 'deployment' in doc and len(doc['journey']) >= 6 and all(k in doc['summary'] for k in ['status', 'score', 'providers_ready', 'agents', 'enabled_agents', 'updates_ready', 'deployment_profile']) and all(k in [item.get('key') for item in doc['journey']] for k in ['providers', 'studio', 'agents', 'channels', 'monitor', 'learning', 'deployment'])"
 
-echo "gui shell"
+step "gui shell"
 INDEX_HTML="$(curl -fsS "$URL/")"
 ASSET_PATH="$(printf '%s' "$INDEX_HTML" | python3 -c '
 import re, sys
@@ -214,7 +498,7 @@ for label in "Skill sources" "Find skills" "Try direct install" "skills.sh"; do
   fi
 done
 
-echo "pwa manifest"
+step "pwa manifest"
 MANIFEST_JSON="$(curl -fsS "$URL/manifest.webmanifest")"
 printf '%s' "$MANIFEST_JSON" | json_assert "doc.get('start_url') == '/#mobile' and doc.get('display') == 'standalone' and doc.get('id') == '/#mobile' and all(url in [s.get('url') for s in doc.get('shortcuts', [])] for url in ['/#chat', '/#activity', '/#studio', '/#channels'])"
 SW_JS="$(curl -fsS "$URL/sw.js")"
@@ -225,7 +509,7 @@ for needle in "notificationclick" "/#mobile" "/icon.svg"; do
   fi
 done
 
-echo "template catalog"
+step "template catalog"
 TEMPLATE_JSON="$(api GET /templates)"
 printf '%s' "$TEMPLATE_JSON" | json_assert "doc.get('count', 0) > 0"
 printf '%s' "$TEMPLATE_JSON" | json_assert "all(name in [t.get('name') for t in doc.get('templates', [])] for name in ['stock-screener', 'research-brief', 'rag-over-docs', 'scheduled-briefing'])"
@@ -233,23 +517,25 @@ printf '%s' "$TEMPLATE_JSON" | json_assert "all(t.get('display_name') or t.get('
 printf '%s' "$TEMPLATE_JSON" | json_assert "any(t.get('name') == 'stock-screener' and any(item.get('key') == 'search' for item in t.get('setup', [])) for t in doc.get('templates', []))"
 TEMPLATE="$(printf '%s' "$TEMPLATE_JSON" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["templates"][0]["name"])')"
 
-echo "instantiate template: $TEMPLATE"
+step "instantiate template: $TEMPLATE"
 api POST "/templates/${TEMPLATE}/instantiate" '{"id":"uat-template-agent"}' >/dev/null
 api GET /agents | json_assert "any(a.get('id') == 'uat-template-agent' for a in doc.get('agents', []))"
 
-echo "studio run history"
+step "studio run history"
 api GET '/studio/run-history?agentId=uat-template-agent' | json_assert "doc.get('agentId') == 'uat-template-agent' and isinstance(doc.get('runs'), list)"
 
-echo "browser trace"
+step "browser trace"
 api GET '/browser/trace?agent_id=uat-template-agent' | json_assert "doc.get('enabled') is True and doc.get('trace', {}).get('agent_id') == 'uat-template-agent' and isinstance(doc.get('trace', {}).get('steps'), list)"
 
 if [[ "$BROWSER_MCP" == "1" ]]; then
-  echo "optional browser MCP sidecar"
+  step "optional browser MCP sidecar"
   SOULACY_BROWSER_MCP_SMOKE=1 python3 "$ROOT/scripts/browser-mcp-smoke.py"
+else
+  skip_step "optional browser MCP sidecar" "SOULACY_UAT_BROWSER_MCP=0"
 fi
 
 if [[ "$STUDIO_BUILD" == "1" || "$STUDIO_LIVE" == "1" ]]; then
-  echo "optional studio build loop"
+  step "optional studio build loop"
   VERIFY=false
   if [[ "$STUDIO_LIVE" == "1" ]]; then
     VERIFY=true
@@ -296,7 +582,7 @@ PY
   api GET "/studio/build-trace?id=${TRACE_ID}" | json_assert "doc.get('id') == '${TRACE_ID}' and isinstance(doc.get('events'), list) and len(doc.get('events')) > 0"
 fi
 
-echo "golden template instantiation"
+step "golden template instantiation"
 api POST "/templates/stock-screener/instantiate" '{"id":"uat-stock-screener","cron":"0 7 * * 1-5","output":{"channel":"http","to":"uat-outbox","template":"{reply}"}}' >/dev/null
 api POST "/templates/research-brief/instantiate" '{"id":"uat-research-brief"}' >/dev/null
 api POST "/templates/rag-over-docs/instantiate" '{"id":"uat-rag-over-docs"}' >/dev/null
@@ -304,16 +590,16 @@ api GET /agents | json_assert "all(agent_id in [a.get('id') for a in doc.get('ag
 api POST /agents/validate "$(api GET /agents | python3 -c 'import json,sys; agents=json.load(sys.stdin)["agents"]; print(json.dumps(next(a for a in agents if a.get("id")=="uat-stock-screener")))')" \
   | json_assert "doc.get('valid') is True and doc.get('errors') == 0"
 
-echo "queues"
+step "queues"
 api POST /queues '{"queue":"uat_resources"}' >/dev/null
 api POST /queues/items '{"queue":"uat_resources","item":{"kind":"url","url":"https://example.com/uat"}}' >/dev/null
 api GET '/queues/items?queue=uat_resources' | json_assert "doc.get('count') == 1"
 api POST '/queues/take?queue=uat_resources' | json_assert "doc.get('ok') is True and doc.get('item') is not None"
 
-echo "schedule"
+step "schedule"
 api GET /schedule | json_assert "'schedule' in doc"
 
-echo "doctor"
+step "doctor"
 if [[ -x "$CLI" ]]; then
   SOULACY_WORKSPACE="$WORKSPACE" "$CLI" --gateway "$URL" --api-key "$API_KEY" --json doctor check >/dev/null
   SOULACY_WORKSPACE="$WORKSPACE" "$CLI" --gateway "$URL" --api-key "$API_KEY" launch check >/dev/null
@@ -359,18 +645,17 @@ KB_CODE="$(curl -sS -o "$WORKSPACE/kb.json" -w '%{http_code}' \
   -X POST "$URL/api/v1/knowledge" -H "Authorization: Bearer $API_KEY" \
   -H "Content-Type: application/json" --data '{"name":"uat_kb","description":"clean runtime UAT"}' || true)"
 if [[ "$KB_CODE" != "200" && "$KB_CODE" != "201" ]]; then
-  echo "SKIP knowledge: no reachable embedder — KB creation returned HTTP $KB_CODE"
-  echo "     (set up Ollama with an embedding model, e.g. \`ollama pull nomic-embed-text\`, to cover this)"
+  skip_step "knowledge: kb create" "no reachable embedder — KB creation returned HTTP $KB_CODE (pull an embedding model like nomic-embed-text)"
   KB_AVAILABLE=0
 else
   KB_AVAILABLE=1
 fi
 
 if [[ "$KB_AVAILABLE" == "1" ]]; then
-echo "knowledge: kb created"
+step "knowledge: kb created"
 api GET /knowledge | json_assert "any(k.get('name') == 'uat_kb' for k in doc.get('knowledge_bases', doc.get('kbs', [])))"
 
-echo "knowledge: ingest returns 202 + job (async, non-blocking)"
+step "knowledge: ingest returns 202 + job (async, non-blocking)"
 INGEST_CODE="$(curl -sS -o "$WORKSPACE/ingest.json" -w '%{http_code}' \
   -X POST "$URL/api/v1/knowledge/uat_kb/documents" \
   -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" \
@@ -383,12 +668,12 @@ fi
 json_assert "doc.get('id') and doc.get('status') in ('queued','running') and doc.get('kb_name') == 'uat_kb'" < "$WORKSPACE/ingest.json"
 JOB_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$WORKSPACE/ingest.json")"
 
-echo "knowledge: job is durable + listable ($JOB_ID)"
+step "knowledge: job durable + listable ($JOB_ID)"
 api GET "/ingest-jobs/${JOB_ID}" | json_assert "doc.get('id') == '${JOB_ID}'"
 api GET '/knowledge/uat_kb/jobs' | json_assert "any(j.get('id') == '${JOB_ID}' for j in doc.get('jobs', []))"
 
 # Full ingestion needs a live embedder. Poll to a terminal state, then decide.
-echo "knowledge: awaiting worker"
+step "knowledge: awaiting worker"
 KB_STATUS="queued"
 for _ in $(seq 1 60); do
   KB_STATUS="$(api GET "/ingest-jobs/${JOB_ID}" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("status",""))')"
@@ -397,7 +682,7 @@ for _ in $(seq 1 60); do
 done
 
 if [[ "$KB_STATUS" == "done" ]]; then
-  echo "knowledge: ingested — asserting document + search"
+  step "knowledge: ingested — asserting document + search"
   api GET "/ingest-jobs/${JOB_ID}" | json_assert "doc.get('progress') == 100 and doc.get('doc_id')"
   api GET /knowledge/uat_kb/documents | json_assert "any(d.get('title') == 'UAT Doc' for d in doc.get('documents', []))"
   api POST /knowledge/uat_kb/search '{"query":"refund window","top_k":3}' \
@@ -407,7 +692,7 @@ else
   # not a product regression. The async contract above already passed, and the
   # failure must be RECORDED with a reason (that itself is the guarantee).
   api GET "/ingest-jobs/${JOB_ID}" | json_assert "doc.get('status') == 'failed' and doc.get('error')"
-  echo "SKIP knowledge round-trip: no reachable embedder (job recorded a failure reason, as designed)"
+  skip_step "knowledge: round-trip" "no reachable embedder (job recorded a failure reason, as designed)"
 fi
 
 fi   # end KB_AVAILABLE
@@ -415,14 +700,19 @@ fi   # end KB_AVAILABLE
 # ── Channel delivery doctor (no secrets required) ────────────────────────────
 # Diagnose must return a STRUCTURED, plain-language verdict rather than a raw
 # error, even for a channel that was never configured.
-echo "channels: diagnose an unconfigured channel"
+step "channels: diagnose an unconfigured channel"
 DIAG="$(curl -sS -X POST "$URL/api/v1/channels/telegram/diagnose" \
   -H "Authorization: Bearer $API_KEY" -H "Content-Type: application/json" --data '{"dry":true}' || true)"
 printf '%s' "$DIAG" | json_assert "'diagnosis' in doc and doc['diagnosis'].get('category') and doc['diagnosis'].get('reason')"
 
 # ── Live channel delivery (secret-gated; skips cleanly) ─────────────────────
-if [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_TEST_CHAT_ID:-}" ]]; then
-  echo "channels: live telegram delivery"
+# In `public` mode we skip this whole block unconditionally so CI never needs
+# any channel tokens. In `full` mode we run each block when its env pair is
+# present (each still skips cleanly if you only have some tokens).
+if [[ "$UAT_MODE" != "full" ]]; then
+  skip_step "channels: live telegram delivery" "SOULACY_UAT_MODE=$UAT_MODE (set to full and provide TELEGRAM_BOT_TOKEN+TELEGRAM_TEST_CHAT_ID)"
+elif [[ -n "${TELEGRAM_BOT_TOKEN:-}" && -n "${TELEGRAM_TEST_CHAT_ID:-}" ]]; then
+  step "channels: live telegram delivery"
   api PATCH /channels/telegram "$(python3 -c '
 import json, os
 print(json.dumps({"settings": {
@@ -436,30 +726,30 @@ print(json.dumps({"settings": {
   api POST /channels/telegram/diagnose '{}' \
     | json_assert "doc['diagnosis'].get('ok') is True"
 else
-  echo "SKIP live telegram delivery: set TELEGRAM_BOT_TOKEN + TELEGRAM_TEST_CHAT_ID to run it"
+  skip_step "channels: live telegram delivery" "TELEGRAM_BOT_TOKEN or TELEGRAM_TEST_CHAT_ID unset"
 fi
 
-if [[ -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_TEST_CHANNEL_ID:-}" ]]; then
-  echo "channels: live slack delivery"
+if [[ "$UAT_MODE" = "full" && -n "${SLACK_BOT_TOKEN:-}" && -n "${SLACK_TEST_CHANNEL_ID:-}" ]]; then
+  step "channels: live slack delivery"
   api POST /channels/slack/test "$(python3 -c '
 import json, os
 print(json.dumps({"to": os.environ["SLACK_TEST_CHANNEL_ID"], "text": "clean runtime UAT"}))')" \
     | json_assert "doc.get('ok') is True"
 else
-  echo "SKIP live slack delivery: set SLACK_BOT_TOKEN + SLACK_TEST_CHANNEL_ID to run it"
+  skip_step "channels: live slack delivery" "SOULACY_UAT_MODE=$UAT_MODE and/or SLACK_BOT_TOKEN + SLACK_TEST_CHANNEL_ID unset"
 fi
 
-if [[ -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_TEST_CHANNEL_ID:-}" ]]; then
-  echo "channels: live discord delivery"
+if [[ "$UAT_MODE" = "full" && -n "${DISCORD_BOT_TOKEN:-}" && -n "${DISCORD_TEST_CHANNEL_ID:-}" ]]; then
+  step "channels: live discord delivery"
   api POST /channels/discord/test "$(python3 -c '
 import json, os
 print(json.dumps({"to": os.environ["DISCORD_TEST_CHANNEL_ID"], "text": "clean runtime UAT"}))')" \
     | json_assert "doc.get('ok') is True"
 else
-  echo "SKIP live discord delivery: set DISCORD_BOT_TOKEN + DISCORD_TEST_CHANNEL_ID to run it"
+  skip_step "channels: live discord delivery" "SOULACY_UAT_MODE=$UAT_MODE and/or DISCORD_BOT_TOKEN + DISCORD_TEST_CHANNEL_ID unset"
 fi
 
-echo "support bundle"
+step "support bundle"
 BUNDLE="$WORKSPACE/support-bundle.zip"
 curl -fsS "$URL/api/v1/support/bundle" -H "Authorization: Bearer $API_KEY" -o "$BUNDLE"
 python3 - "$BUNDLE" <<'PY'
@@ -477,7 +767,7 @@ with zipfile.ZipFile(path) as zf:
 PY
 
 if [[ "$CHAT" == "1" ]]; then
-  echo "optional chat"
+  step "optional chat"
   SOULACY_WORKSPACE="$WORKSPACE" "$CLI" --gateway "$URL" --api-key "$API_KEY" chat --agent uat-template-agent "Reply with exactly: clean runtime ok" \
     | tee "$WORKSPACE/chat.out"
   grep -qi "clean runtime ok" "$WORKSPACE/chat.out"
@@ -490,7 +780,7 @@ fi
 # and assert EnsureBootstrap does its job: writes a default config.yaml, mints an
 # API key, and comes up authenticated on that key. This is the very first thing a
 # new user hits, so it must never regress.
-echo "first-run bootstrap (virgin workspace)"
+step "first-run bootstrap (virgin workspace)"
 FR_WS="$(mktemp -d "${TMPDIR:-/tmp}/soulacy-uat-firstrun-XXXXXXXX")"
 FR_PORT=$((PORT + 1))
 FR_URL="http://${HOST}:${FR_PORT}"
@@ -556,4 +846,5 @@ fr_cleanup
 rm -rf "$FR_WS"
 echo "  first-run OK: config + generated key + authenticated gateway"
 
+step_finish
 echo "PASS clean runtime UAT"

@@ -65,6 +65,14 @@ type Scheduler struct {
 	defaultMu      sync.RWMutex
 	defaultOutputs map[string]agent.ScheduleOutput
 
+	// backfillMu guards backfills. lastBackfills records the most recent
+	// startup-catch-up fire per agent since the process started; the GUI's
+	// Schedule page renders it as an "Auto-replayed on Jul 15 03:04" chip so
+	// operators aren't blindsided by an out-of-schedule run after a restart.
+	// (E4b — Cohort E Schedule failure handling.)
+	backfillMu    sync.RWMutex
+	lastBackfills map[string]MissedBackfill
+
 	// sink, when set, receives schedule telemetry events for delivery, failures,
 	// and auto-disable decisions so scheduled work is visible in Activity and
 	// never silently vanishes. Wired to the gateway EventHub.
@@ -104,6 +112,10 @@ type scheduleState struct {
 // optional-seconds 6-field expressions ("*/30 * * * * *") plus @descriptors
 // (@daily, @hourly). Without SecondOptional, WithSeconds would reject the
 // 5-field expressions the GUI and example agents use, so nothing would schedule.
+//
+// NOTE: internal/agentvalidate/validate.go maintains a parser with the same
+// flag set so Save-time pre-validation gives the same verdict as scheduler
+// registration. If you change this line, change that one too.
 var cronParser = cron.NewParser(
 	cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
 )
@@ -129,6 +141,7 @@ func New(engine *runtime.Engine, loader *runtime.Loader, log *zap.Logger, appCtx
 		state:                scheduleState{LastCompleted: make(map[string]time.Time)},
 		failCounts:           make(map[string]int),
 		defaultOutputs:       make(map[string]agent.ScheduleOutput),
+		lastBackfills:        make(map[string]MissedBackfill),
 		consecutiveFailLimit: 10, // default; override with SetConsecutiveFailLimit
 	}
 }
@@ -566,8 +579,103 @@ func (s *Scheduler) runMissedOnStartup() {
 		s.log.Warn("running missed cron from startup catch-up",
 			zap.String("agent", def.ID),
 			zap.Time("missed_at", missedAt))
+		// E4b (Cohort E — Schedule failure handling): missed-run backfill used
+		// to run silently — only a Warn log entry. Now we emit a discoverable
+		// `schedule.missed_run_backfilled` event so the GUI Schedule / Activity
+		// pages can show "the gateway was down at 03:00 UTC — the run was
+		// replayed at startup" instead of the operator having to spelunk the
+		// server logs.
+		s.emitMissedRunBackfilled(def, missedAt, now)
 		go s.fireAt(def.ID, "cron_missed_startup", missedAt)
 	}
+}
+
+// MissedBackfill is the snapshot record retained per agent so /schedule/status
+// can surface "was replayed at boot on <ts>" without walking the actionlog.
+type MissedBackfill struct {
+	MissedAt   time.Time `json:"missed_at"`
+	ReplayedAt time.Time `json:"replayed_at"`
+	Cron       string    `json:"cron"`
+	Window     string    `json:"window"`
+	LateBy     string    `json:"late_by"`
+}
+
+// LastBackfill returns the most recent startup catch-up record for agentID, if
+// any occurred since this process started. Callers use this to render the
+// "auto-replayed" chip on the GUI Schedule page.
+func (s *Scheduler) LastBackfill(agentID string) (MissedBackfill, bool) {
+	s.backfillMu.RLock()
+	defer s.backfillMu.RUnlock()
+	b, ok := s.lastBackfills[agentID]
+	return b, ok
+}
+
+// LastBackfillsSnapshot returns a copy of the in-process backfill map so
+// handleScheduleStatus can render every agent's catch-up state in one round trip.
+func (s *Scheduler) LastBackfillsSnapshot() map[string]MissedBackfill {
+	s.backfillMu.RLock()
+	defer s.backfillMu.RUnlock()
+	out := make(map[string]MissedBackfill, len(s.lastBackfills))
+	for k, v := range s.lastBackfills {
+		out[k] = v
+	}
+	return out
+}
+
+// emitMissedRunBackfilled records a discoverable event when a cron agent's
+// startup catch-up fires. The window field is the effective (parsed) window
+// the missed-run check honored, so operators can tell whether an older missed
+// fire was intentionally dropped.
+func (s *Scheduler) emitMissedRunBackfilled(def *agent.Definition, missedAt, now time.Time) {
+	if def == nil {
+		return
+	}
+	windowStr := "24h"
+	if def.Schedule != nil {
+		if raw := strings.TrimSpace(def.Schedule.MissedStartupWindow); raw != "" {
+			if _, err := time.ParseDuration(raw); err == nil {
+				windowStr = raw
+			}
+		}
+	}
+	late := now.Sub(missedAt).Round(time.Second).String()
+	cronExpr := ""
+	if def.Schedule != nil {
+		cronExpr = strings.TrimSpace(def.Schedule.Cron)
+	}
+	// Record the snapshot BEFORE emitting so a fast poller can observe the
+	// backfill regardless of event-sink presence.
+	s.backfillMu.Lock()
+	s.lastBackfills[def.ID] = MissedBackfill{
+		MissedAt:   missedAt.UTC(),
+		ReplayedAt: now.UTC(),
+		Cron:       cronExpr,
+		Window:     windowStr,
+		LateBy:     late,
+	}
+	s.backfillMu.Unlock()
+
+	s.mu.Lock()
+	sink := s.sink
+	s.mu.Unlock()
+	if sink == nil {
+		return
+	}
+	sink.Emit(message.Event{
+		Type:      "schedule.missed_run_backfilled",
+		AgentID:   def.ID,
+		Timestamp: now,
+		Payload: map[string]any{
+			"missed_at":     missedAt.UTC(),
+			"replayed_at":   now.UTC(),
+			"late_by":       late,
+			"window":        windowStr,
+			"trigger":       "cron_missed_startup",
+			"schedule_expr": cronExpr,
+			"reason":        "The gateway was not running when this scheduled fire came due; the most recent fire within the missed-startup window was replayed once at boot.",
+			"runbook":       "This is normal after an outage. If you see the same agent backfilled every restart, increase `schedule.missed_startup_window` or check whether the gateway is crashing between runs.",
+		},
+	})
 }
 
 func (s *Scheduler) missedCronFire(def *agent.Definition, now time.Time) (time.Time, bool) {

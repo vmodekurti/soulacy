@@ -68,11 +68,22 @@ type ToolCall struct {
 }
 
 // ToolResult carries the result back from a tool execution.
+//
+// Trust and Source are Cohort F S1 additions. They record how the
+// runtime classified the payload — "untrusted" content is wrapped in
+// an <external_content> envelope inside Content and is subject to the
+// S3 tool-call intent gate; "trusted" content is framework-minted
+// status/metadata. Source names the origin category ("network", "file",
+// "kb", "queue", "channel", "mcp", …) so trace UIs can group results
+// without re-parsing the envelope. Both fields are omit-empty for
+// backward compatibility with older event consumers.
 type ToolResult struct {
 	CallID  string `json:"call_id"`
 	Name    string `json:"name"`
 	Content string `json:"content"`
 	IsError bool   `json:"is_error"`
+	Trust   string `json:"trust,omitempty"`
+	Source  string `json:"source,omitempty"`
 }
 
 // Event is a structured log event streamed over WebSocket to the GUI.
