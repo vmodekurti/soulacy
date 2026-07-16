@@ -33,6 +33,7 @@ import (
 	wawebchan "github.com/soulacy/soulacy/internal/channels/whatsappweb"
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/introspect"
+	"github.com/soulacy/soulacy/internal/llm"
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/pkgregistry"
 	"github.com/soulacy/soulacy/internal/plugininstall"
@@ -354,6 +355,12 @@ func (s *Server) handleUpdateAgentYAML(c *fiber.Ctx) error {
 	if len(s.cfg.AgentDirs) > 0 {
 		dir = s.cfg.AgentDirs[0]
 	}
+	// See handleUpdateAgent for the ack-gate rationale — raw YAML saves take
+	// the same audit path so a text edit can't sneak past the modal.
+	peek := s.computeAgentCapabilityAudit(existing, &def)
+	if peek.RequiresAck && !hasCapabilityAck(c) {
+		return s.respondCapabilityAckRequired(c, peek)
+	}
 	if err := s.loader.Upsert(dir, &def); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -484,9 +491,18 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 	if len(s.cfg.AgentDirs) > 0 {
 		dir = s.cfg.AgentDirs[0]
 	}
+	// New agents rarely have pre-existing interactive bindings, so this peek
+	// is usually a no-op. When it isn't (an operator re-creates an agent ID
+	// that channel mappings already point at), we still refuse to write
+	// without X-Acknowledge-Audit — mirroring the update path.
+	peek := s.computeAgentCapabilityAudit(nil, &def)
+	if peek.RequiresAck && !hasCapabilityAck(c) {
+		return s.respondCapabilityAckRequired(c, peek)
+	}
 	if err := s.loader.Upsert(dir, &def); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
+	audit := s.auditAgentCapabilityChange(nil, &def)
 
 	// Register with scheduler if applicable
 	if err := s.scheduler.RegisterAgent(&def); err != nil {
@@ -497,7 +513,7 @@ func (s *Server) handleCreateAgent(c *fiber.Ctx) error {
 		c.Set("X-Soulacy-Warning", "WARNING: This agent has been granted 'system' capabilities. It has raw access to shell execution and file writing. Ensure you fully trust the agent's prompt to avoid local machine compromise.")
 	}
 
-	return c.Status(fiber.StatusCreated).JSON(def)
+	return c.Status(fiber.StatusCreated).JSON(agentDefinitionResponse(&def, audit))
 }
 
 func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
@@ -530,6 +546,14 @@ func (s *Server) handleUpdateAgent(c *fiber.Ctx) error {
 	if len(s.cfg.AgentDirs) > 0 {
 		dir = s.cfg.AgentDirs[0]
 	}
+	// Peek at the capability audit BEFORE writing. If the change requires
+	// explicit ack (privileged tier + exposed via interactive channels) and
+	// the client hasn't set X-Acknowledge-Audit, refuse the write and let the
+	// GUI show a blocking modal. No side effect is recorded here.
+	peek := s.computeAgentCapabilityAudit(existing, &updates)
+	if peek.RequiresAck && !hasCapabilityAck(c) {
+		return s.respondCapabilityAckRequired(c, peek)
+	}
 	if err := s.loader.Upsert(dir, &updates); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -559,7 +583,38 @@ type agentCapabilityAudit struct {
 	RequiresAck bool     `json:"requires_ack,omitempty"`
 }
 
-func (s *Server) auditAgentCapabilityChange(oldDef, newDef *agent.Definition) agentCapabilityAudit {
+// capabilityAckHeader is the request header operators (or the GUI on their
+// behalf) set to acknowledge a save that escalates an agent's capability tier
+// while the agent is already exposed through interactive channel mappings.
+// Without it, the save handler returns 409 with the peeked audit so the GUI
+// can render a blocking modal.
+const capabilityAckHeader = "X-Acknowledge-Audit"
+
+// hasCapabilityAck reports whether the client explicitly acknowledged the
+// capability change for this save. Accepts "1", "true", "yes" (case-insensitive).
+func hasCapabilityAck(c *fiber.Ctx) bool {
+	v := strings.ToLower(strings.TrimSpace(c.Get(capabilityAckHeader)))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+// respondCapabilityAckRequired returns the standard 409 body used by every
+// save path that computes an ack-requiring audit before writing. Callers pass
+// the peeked audit — no side effect is recorded until the retried save
+// (with capabilityAckHeader set) actually writes.
+func (s *Server) respondCapabilityAckRequired(c *fiber.Ctx, audit agentCapabilityAudit) error {
+	return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+		"error":            "capability escalation requires acknowledgement",
+		"needs_ack":        true,
+		"capability_audit": audit,
+	})
+}
+
+// computeAgentCapabilityAudit is the pure form of auditAgentCapabilityChange:
+// it computes the tier diff and warnings without any side effects (no
+// actionlog append). Callers use this to PEEK at what a save would do — the
+// save-blocking modal path relies on this: check RequiresAck first, and only
+// call recordAgentCapabilityAudit after the confirmed write actually happens.
+func (s *Server) computeAgentCapabilityAudit(oldDef, newDef *agent.Definition) agentCapabilityAudit {
 	oldExp := tier.Explain(oldDef, s.loader.Get)
 	newExp := tier.Explain(newDef, s.loader.Get)
 	audit := agentCapabilityAudit{
@@ -579,6 +634,15 @@ func (s *Server) auditAgentCapabilityChange(oldDef, newDef *agent.Definition) ag
 		audit.RequiresAck = true
 		audit.Warnings = append(audit.Warnings, "This privileged agent is exposed through interactive channel mappings: "+strings.Join(audit.Bindings, ", ")+". Review each mapping's privileged exposure approval.")
 	}
+	return audit
+}
+
+// auditAgentCapabilityChange keeps the old signature for callers that want the
+// full "compute + record" side-effect (e.g. imports/rollbacks that don't run
+// through the ack modal). Save handlers now compute the peek first, gate on
+// RequiresAck, and record only after the write succeeds.
+func (s *Server) auditAgentCapabilityChange(oldDef, newDef *agent.Definition) agentCapabilityAudit {
+	audit := s.computeAgentCapabilityAudit(oldDef, newDef)
 	if audit.Changed {
 		s.recordAgentCapabilityAudit(newDef, audit)
 	}
@@ -2510,8 +2574,15 @@ func resolveRunTimeout(def *agent.Definition) time.Duration {
 }
 
 // handleScheduleStatus returns live run state for polling by the GUI:
-//   - running: agentID → ISO start time for agents currently executing
-//   - next:    agentID → ISO next scheduled fire time (enabled cron agents)
+//   - running:   agentID → ISO start time for agents currently executing
+//   - next:      agentID → ISO next scheduled fire time (enabled cron agents)
+//   - backfills: agentID → {missed_at, replayed_at, cron, window, late_by} for
+//     the most recent startup catch-up since the process started
+//
+// The `backfills` map exists so the Schedule page can render "Auto-replayed
+// on ..." beside an agent whose gateway missed one of its scheduled fires —
+// otherwise a boot-time backfill is invisible to the operator, which is
+// exactly the E4 (Cohort E — Schedule failure handling) gap.
 func (s *Server) handleScheduleStatus(c *fiber.Ctx) error {
 	running := s.scheduler.RunningSnapshot()
 	runningOut := make(fiber.Map, len(running))
@@ -2525,7 +2596,18 @@ func (s *Server) handleScheduleStatus(c *fiber.Ctx) error {
 			next[e.AgentID] = e.Next.UTC()
 		}
 	}
-	return c.JSON(fiber.Map{"running": runningOut, "next": next})
+
+	backfillsOut := fiber.Map{}
+	for id, b := range s.scheduler.LastBackfillsSnapshot() {
+		backfillsOut[id] = fiber.Map{
+			"missed_at":   b.MissedAt,
+			"replayed_at": b.ReplayedAt,
+			"cron":        b.Cron,
+			"window":      b.Window,
+			"late_by":     b.LateBy,
+		}
+	}
+	return c.JSON(fiber.Map{"running": runningOut, "next": next, "backfills": backfillsOut})
 }
 
 // handleToolCatalog returns every tool an agent could be wired to:
@@ -3606,6 +3688,13 @@ func (s *Server) handleListProviders(c *fiber.Ctx) error {
 
 // handleListModels asks the live provider for its available models.
 // For Ollama this performs the equivalent of `ollama list` (GET /api/tags).
+//
+// E4 — Failure handling: when the provider call fails, the raw error is passed
+// through llm.ClassifyProviderError so the GUI Providers page can show a
+// friendly reason + concrete fix instead of a bare `openai: /models returned
+// 401: {...}` string. The classifier output is attached as `diagnosis` on the
+// response body; the top-level `error` is set to the diagnosis reason so older
+// callers that only read `error` still see the friendly text.
 func (s *Server) handleListModels(c *fiber.Ctx) error {
 	id := c.Params("id")
 	if s.llmRouter == nil {
@@ -3623,7 +3712,7 @@ func (s *Server) handleListModels(c *fiber.Ctx) error {
 
 	models, err := p.Models(ctx)
 	if err != nil {
-		return s.errJSON(c, fiber.StatusBadGateway, err)
+		return s.providerErrJSON(c, fiber.StatusBadGateway, id, err)
 	}
 
 	selected := ""
@@ -3631,6 +3720,30 @@ func (s *Server) handleListModels(c *fiber.Ctx) error {
 		selected = pc.Model
 	}
 	return c.JSON(fiber.Map{"models": models, "selected": selected})
+}
+
+// providerErrJSON wraps a provider call failure with llm.ClassifyProviderError
+// so the response is the same friendly shape everywhere in the gateway. Use
+// this instead of s.errJSON whenever a provider driver returned the error.
+//
+// Response body:
+//
+//	{
+//	  "error":     "<friendly reason so old GUI still shows something useful>",
+//	  "detail":    "<raw provider error>",
+//	  "diagnosis": {"ok":false, "category":"bad_key", "reason":"…", "fix":"…", "detail":"…"}
+//	}
+func (s *Server) providerErrJSON(c *fiber.Ctx, status int, providerID string, err error) error {
+	d := llm.ClassifyProviderError(providerID, err)
+	msg := d.Reason
+	if msg == "" {
+		msg = err.Error()
+	}
+	return c.Status(status).JSON(fiber.Map{
+		"error":     msg,
+		"detail":    d.Detail,
+		"diagnosis": d,
+	})
 }
 
 func (s *Server) agentValidationOptions(ctx context.Context) agentvalidate.Options {

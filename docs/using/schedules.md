@@ -37,10 +37,18 @@ One row per schedule registered with the scheduler:
 
 | Column | Meaning |
 |---|---|
-| **Agent** | The agent's display name |
+| **Agent** | The agent's display name. A small orange `⟳ auto-replayed` chip appears when the gateway missed a fire and replayed it at startup — hover for the missed / replayed timestamps and how much late the run was |
 | **Next run** | When the scheduler will fire it next |
 | **Last run** | The previous fire time ("—" if it has never run) |
 | **Missed runs** | The catch-up policy: ⟳ `catch up · 24h window` or `skip` (hover for the full explanation) |
+
+!!! note
+    Save fails at the edit modal if `schedule.cron` is not a valid cron
+    expression — the same parser the scheduler uses at registration time runs
+    at Save time, so `* * *`, `hello world`, or `60 * * * *` are refused with
+    the parser's own explanation ("expected exactly 5 fields, found 3").
+    Previously an invalid string saved cleanly and the "Next run" column
+    silently stayed blank forever.
 
 ### Cron agents table
 
@@ -77,6 +85,13 @@ The schedule API reports the policy per entry as `catch_up` and `catch_up_window
 
 !!! tip
     A daily-briefing agent is the classic candidate: with `run_missed_on_startup: true` and a `24h` window, booting your machine at 9:30 still gets you the 7:00 briefing — exactly once.
+
+When a startup catch-up actually fires, the scheduler emits a
+`schedule.missed_run_backfilled` event carrying `{missed_at, replayed_at,
+late_by, window}` — visible on the Activity page's event stream, on the
+Automations row as the orange `⟳ auto-replayed` chip described above, and via
+the `backfills` map returned by `GET /api/v1/schedule/status`. This closes
+what used to be a silent "why did this fire at 03:04?" surprise.
 
 ## Scheduled output
 

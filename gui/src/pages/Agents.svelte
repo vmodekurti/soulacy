@@ -19,6 +19,15 @@
   let validationReport = null
   let tiers = {} // agent id -> { tier, reasons }
 
+  // Capability-ack modal state. When the backend returns 409 with
+  // {needs_ack: true, capability_audit}, we open a blocking modal that shows
+  // the tier change + affected channel bindings. Confirming retries the save
+  // with acknowledgeAudit:true so api.js sets X-Acknowledge-Audit. Story 5
+  // AC — Privileged external bindings require explicit approval BEFORE write,
+  // not after. See internal/gateway/api.go respondCapabilityAckRequired.
+  let ackModal = null      // { audit, retry: () => Promise<void>, from: 'save'|'saveYaml' }
+  let ackConfirming = false
+
   // ── Raw SOUL.yaml view/edit modal ─────────────────────────────────────────
   let showYaml    = false   // modal open
   let yamlText    = ''      // editable buffer
@@ -74,6 +83,104 @@
     yamlMsg = `Execution backend set to "${execBackendChoice}" — review and Save.`
   }
 
+  // ── Security Doctor modal (Cohort F S7 / F-GUI-2) ────────────────────────
+  // Full report + dry-run simulator for the S1+S2+S3 pipeline.
+  // Backend: GET  /api/v1/agents/:id/security_doctor
+  //          POST /api/v1/agents/:id/security_doctor/dry_run
+  let showDoctor      = false
+  let doctorReport    = null
+  let doctorLoading   = false
+  let doctorError     = ''
+  let doctorAgentId   = ''
+  let doctorInput     = defaultDryRunInput()
+  let doctorResult    = null
+  let doctorRunning   = false
+  let doctorRunError  = ''
+
+  function defaultDryRunInput() {
+    return {
+      user_goal:        '',
+      injected_content: '',
+      injection_source: 'fetch_url',
+      followup_tool:    'shell_exec',
+      followup_args:    '{}',
+    }
+  }
+
+  async function openDoctor(agent) {
+    const target = agent || selected
+    if (!target?.id) return
+    showDoctor    = true
+    doctorAgentId = target.id
+    doctorLoading = true
+    doctorError   = ''
+    doctorReport  = null
+    doctorResult  = null
+    doctorRunError = ''
+    doctorInput   = defaultDryRunInput()
+    try {
+      doctorReport = await api.agents.securityDoctor(target.id)
+    } catch (e) {
+      doctorError = e.message || 'Could not load security doctor report.'
+    } finally {
+      doctorLoading = false
+    }
+  }
+
+  function closeDoctor() {
+    if (doctorRunning) return
+    showDoctor = false
+  }
+
+  async function runDoctorDryRun() {
+    if (!doctorAgentId || doctorRunning) return
+    doctorRunning  = true
+    doctorRunError = ''
+    doctorResult   = null
+    let parsedArgs = {}
+    const raw = (doctorInput.followup_args || '').trim()
+    if (raw) {
+      try {
+        parsedArgs = JSON.parse(raw)
+      } catch (e) {
+        doctorRunError = 'follow-up args must be valid JSON.'
+        doctorRunning  = false
+        return
+      }
+    }
+    try {
+      doctorResult = await api.agents.securityDoctorDryRun(doctorAgentId, {
+        user_goal:        doctorInput.user_goal || '',
+        injected_content: doctorInput.injected_content || '',
+        injection_source: doctorInput.injection_source || 'fetch_url',
+        followup_tool:    doctorInput.followup_tool || '',
+        followup_args:    parsedArgs,
+      })
+    } catch (e) {
+      doctorRunError = e.message || 'Dry-run failed.'
+    } finally {
+      doctorRunning = false
+    }
+  }
+
+  function findingClass(sev) {
+    const s = (sev || '').toLowerCase()
+    if (s === 'critical' || s === 'high') return 'danger'
+    if (s === 'warn' || s === 'medium' || s === 'low') return 'warn'
+    return 'info'
+  }
+
+  function verdictClass(dec) {
+    const s = (dec || '').toLowerCase()
+    if (s === 'deny') return 'danger'
+    if (s === 'prompt') return 'warn'
+    return 'info'
+  }
+
+  function fmtBool(b) {
+    return b ? 'yes' : 'no'
+  }
+
   // ── Agent version history / rollback modal ───────────────────────────────
   let showHistory = false
   let historyLoading = false
@@ -107,27 +214,37 @@
     showYaml = false
   }
 
-  async function saveYaml() {
+  async function saveYaml(opts = {}) {
     if (!selected || yamlSaving) return
     yamlSaving = true
     yamlError = ''
     yamlMsg = ''
     try {
-      await api.agents.updateYaml(selected.id, yamlText)
+      await api.agents.updateYaml(selected.id, yamlText, opts)
       yamlOrig = yamlText
       yamlMsg = '✓ Saved'
       await load()
       const found = agents.find(a => a.id === selected.id)
       if (found) select(found) // refresh the form editor with the new definition
     } catch (e) {
-      // The server returns structured validation findings on a 400; surface the
-      // first concrete message so the user can fix syntax/fields in place.
-      const v = e.body && e.body.validation
-      if (v && Array.isArray(v.findings) && v.findings.length) {
-        const f = v.findings.find(x => x.severity === 'error') || v.findings[0]
-        yamlError = (f.field ? f.field + ': ' : '') + f.message
+      // Capability escalation gate — same pattern as save(). Open the modal;
+      // on confirm we retry with the acknowledgement header.
+      if (e.status === 409 && e.body?.needs_ack && e.body?.capability_audit) {
+        ackModal = {
+          audit: e.body.capability_audit,
+          from: 'saveYaml',
+          retry: () => saveYaml({ acknowledgeAudit: true }),
+        }
       } else {
-        yamlError = e.message || 'Save failed'
+        // The server returns structured validation findings on a 400; surface the
+        // first concrete message so the user can fix syntax/fields in place.
+        const v = e.body && e.body.validation
+        if (v && Array.isArray(v.findings) && v.findings.length) {
+          const f = v.findings.find(x => x.severity === 'error') || v.findings[0]
+          yamlError = (f.field ? f.field + ': ' : '') + f.message
+        } else {
+          yamlError = e.message || 'Save failed'
+        }
       }
     }
     yamlSaving = false
@@ -831,7 +948,7 @@
     }
     validating = false
   }
-  async function save() {
+  async function save(opts = {}) {
     if (!editing) return
     saving  = true
     saveMsg = ''
@@ -839,9 +956,9 @@
     try {
       let res
       if (selected) {
-        res = await api.agents.update(selected.id, editing)
+        res = await api.agents.update(selected.id, editing, opts)
       } else {
-        res = await api.agents.create(editing)
+        res = await api.agents.create(editing, opts)
       }
       saveAudit = res?.capability_audit || null
       await load()
@@ -850,9 +967,38 @@
       saveAudit = res?.capability_audit || null
       saveMsg  = '✓ Saved'
     } catch (e) {
-      saveMsg = '✗ ' + e.message
+      // Server refuses the write when a save would escalate an agent's
+      // capability tier while interactive channel bindings exist. Open the
+      // blocking ack modal — confirming will retry the same save with the
+      // acknowledgement header set.
+      if (e.status === 409 && e.body?.needs_ack && e.body?.capability_audit) {
+        ackModal = {
+          audit: e.body.capability_audit,
+          from: 'save',
+          retry: () => save({ acknowledgeAudit: true }),
+        }
+        saveMsg = ''
+      } else {
+        saveMsg = '✗ ' + e.message
+      }
     }
     saving = false
+  }
+
+  // Runs from the ack modal's Confirm button. Any error surfaces on the
+  // underlying save flow (saveMsg / yamlError); the modal itself just closes.
+  async function confirmCapabilityAck() {
+    if (!ackModal || ackConfirming) return
+    ackConfirming = true
+    const retry = ackModal.retry
+    ackModal = null
+    try { await retry() }
+    finally { ackConfirming = false }
+  }
+
+  function cancelCapabilityAck() {
+    if (ackConfirming) return
+    ackModal = null
   }
 
   async function toggleEnabled(agent, e) {
@@ -1016,6 +1162,14 @@
   let packageInspection = null
   let packageImportDisabled = true
   let packageImportOverwrite = false
+  // Story 7 Bucket 7A — install-time secret gate. When the inspected
+  // package's requirements list has any `required_*` entry that isn't
+  // available/configured/built_in, the Import button is disabled unless
+  // the operator explicitly acknowledges via this checkbox.
+  let packageImportAcknowledgeMissing = false
+  $: packageMissingRequirements = (packageInspection?.requirements || [])
+    .filter(r => (r.kind || '').startsWith('required_') && !['available','configured','built_in','packaged'].includes(r.status))
+  $: packageImportBlocked = packageMissingRequirements.length > 0 && !packageImportAcknowledgeMissing
 
   $: gatewayOrigin = (typeof window !== 'undefined') ? window.location.origin : 'http://127.0.0.1:18789'
   $: apiKeyValue   = $apiKey || '<your-api-key>'
@@ -1113,6 +1267,10 @@ console.log(reply);` : ''
 
   async function importInspectedPackage() {
     if (!packageImportRaw || packageImporting) return
+    if (packageImportBlocked) {
+      packageImportError = 'This package has missing requirements. Check the acknowledgement box below to import anyway.'
+      return
+    }
     packageImporting = true
     packageImportError = ''
     packageImportMsg = ''
@@ -1120,6 +1278,7 @@ console.log(reply);` : ''
       const res = await api.agents.importPackage(packageImportRaw, {
         disabled: packageImportDisabled,
         overwrite: packageImportOverwrite,
+        acknowledge_missing: packageImportAcknowledgeMissing,
       })
       await load()
       const id = res?.agent?.id || packageInspection?.agent?.id
@@ -1127,9 +1286,21 @@ console.log(reply);` : ''
       if (found) select(found)
       packageImportMsg = 'Imported package.'
       showPackageImport = false
+      packageImportAcknowledgeMissing = false
     } catch (e) {
       packageImportError = e.message || 'Import failed'
-      if (e.body?.validation) packageInspection = e.body
+      // Backend returns 409 with {missing, requirements, needs_acknowledgement}
+      // when the package has required_* entries that aren't satisfied and no
+      // acknowledge_missing flag was sent. Surface the list so the operator
+      // can see what's blocking them.
+      if (e.body?.needs_acknowledgement) {
+        packageInspection = {
+          ...packageInspection,
+          requirements: e.body.requirements || packageInspection?.requirements || [],
+        }
+      } else if (e.body?.validation) {
+        packageInspection = e.body
+      }
     }
     packageImporting = false
   }
@@ -1174,7 +1345,34 @@ console.log(reply);` : ''
     instantiating = ''
   }
 
-  onMount(() => { load(); loadCatalog(); loadProviders(); loadLookups() })
+  // F-GUI-2 — deep-link support: #agents?agent_id=X&doctor=1 auto-opens the
+  // Security Doctor drawer after the agent list resolves. Used by Dashboard's
+  // Security readiness row and the channel-editor "learn more" callout.
+  function checkDoctorHash() {
+    try {
+      const hash = window.location.hash || ''
+      const idx = hash.indexOf('?')
+      if (idx < 0) return
+      const params = new URLSearchParams(hash.slice(idx + 1))
+      if (params.get('doctor') !== '1') return
+      const wantId = params.get('agent_id') || ''
+      if (!wantId) return
+      const target = agents.find(a => a.id === wantId)
+      if (target) {
+        select(target)
+        // Defer to next tick so `selected` is populated when openDoctor reads it.
+        Promise.resolve().then(() => openDoctor(target))
+      }
+    } catch (_) { /* best-effort */ }
+  }
+
+  onMount(async () => {
+    await load()
+    checkDoctorHash()
+    loadCatalog()
+    loadProviders()
+    loadLookups()
+  })
 </script>
 
 <div class="page">
@@ -1264,6 +1462,13 @@ console.log(reply);` : ''
                 </button>
                 <button class="btn-secondary" on:click={openHistory} title="View saved versions and restore a prior SOUL.yaml">
                   History
+                </button>
+                <!-- F-GUI-2 — full doctor report + adversarial dry-run for the
+                     S1+S2+S3 pipeline. Deep-linkable via
+                     #agents?agent_id=X&doctor=1 from Dashboard's Security row
+                     and other cohort surfaces. -->
+                <button class="btn-secondary" on:click={() => openDoctor(selected)} title="Full security posture + simulate a prompt-injection dry-run">
+                  🛡 Security Doctor
                 </button>
               {/if}
               <button class="btn-secondary" on:click={validateEditing} disabled={validating}>
@@ -2378,6 +2583,72 @@ console.log(reply);` : ''
   </div>
 </div>
 
+{#if ackModal}
+  <!--
+    Story 5 (Capability Exposure Safety): the server returned 409 needs_ack
+    because saving would escalate this agent's tier while it is already bound
+    to interactive channel mappings. Show the peeked audit and require an
+    explicit Acknowledge & Save before proceeding. Cancelling leaves the
+    unsaved edits in place so the operator can lower the tier instead.
+  -->
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close capability acknowledgement modal"
+    on:click|self={cancelCapabilityAck}
+    on:keydown={(e) => e.key === 'Escape' && cancelCapabilityAck()}
+  >
+    <div class="modal">
+      <h2>Acknowledge capability change</h2>
+      <div class="modal-sub">
+        This save would change the agent's capability tier from
+        <strong>{ackModal.audit?.old_tier || 'unknown'}</strong> to
+        <strong>{ackModal.audit?.new_tier || 'unknown'}</strong>.
+        The agent is already reachable through interactive channel bindings, so
+        the escalation needs an explicit acknowledgement before the write.
+      </div>
+
+      {#if ackModal.audit?.bindings?.length}
+        <div class="save-audit danger" style="margin-top:.75rem;">
+          <strong>Affected channel bindings</strong>
+          <ul style="margin:.25rem 0 0 1rem;padding:0;">
+            {#each ackModal.audit.bindings as binding}
+              <li><code>{binding}</code></li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
+      {#if ackModal.audit?.warnings?.length}
+        <div class="save-audit danger" style="margin-top:.5rem;">
+          {#each ackModal.audit.warnings as warning}
+            <p style="margin:.25rem 0;">{warning}</p>
+          {/each}
+        </div>
+      {/if}
+
+      {#if ackModal.audit?.reasons?.length}
+        <details style="margin-top:.5rem;">
+          <summary>Why this tier</summary>
+          <ul style="margin:.25rem 0 0 1rem;padding:0;">
+            {#each ackModal.audit.reasons.slice(0, 6) as reason}
+              <li>{reason}</li>
+            {/each}
+          </ul>
+        </details>
+      {/if}
+
+      <div class="modal-row" style="display:flex;justify-content:flex-end;gap:.5rem;margin-top:1rem;">
+        <button class="btn-secondary" on:click={cancelCapabilityAck} disabled={ackConfirming}>Cancel</button>
+        <button class="btn-primary" on:click={confirmCapabilityAck} disabled={ackConfirming}>
+          {ackConfirming ? 'Saving…' : 'Acknowledge & Save'}
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
 {#if showExport && selected}
   <div
     class="modal-bg"
@@ -2511,6 +2782,31 @@ console.log(reply);` : ''
             Overwrite existing agent with the same ID
           </label>
         </div>
+
+        <!--
+          Story 7 Bucket 7A — install-time secret gate. When the v2 manifest
+          declares `requires.secrets` / providers / channels / peer_agents
+          and any of them isn't satisfied on this workspace, the Import
+          button is disabled until the operator explicitly acknowledges.
+          Cheaper than blocking silently; safer than proceeding silently.
+        -->
+        {#if packageMissingRequirements.length}
+          <div class="banner err" style="margin-top:.5rem;">
+            <strong>Missing requirements ({packageMissingRequirements.length})</strong> — this package
+            declares hard requirements that aren't satisfied on this workspace:
+            <ul style="margin:.25rem 0 .5rem 1rem;padding:0;">
+              {#each packageMissingRequirements as r}
+                <li><code>{r.kind}</code>: <strong>{r.name}</strong>
+                  {#if r.description}<span style="opacity:.75;"> — {r.description}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+            <label style="display:inline-flex;gap:.4rem;align-items:center;">
+              <input type="checkbox" bind:checked={packageImportAcknowledgeMissing} />
+              I understand — import anyway
+            </label>
+          </div>
+        {/if}
       {/if}
 
       {#if packageImportMsg}
@@ -2521,8 +2817,8 @@ console.log(reply);` : ''
         <button class="btn-secondary" on:click={() => showPackageImport = false}>Cancel</button>
         <button class="btn-primary"
                 on:click={importInspectedPackage}
-                disabled={!packageInspection?.importable || packageImporting}>
-          {packageImporting ? 'Importing…' : 'Import'}
+                disabled={!packageInspection?.importable || packageImporting || packageImportBlocked}>
+          {packageImporting ? 'Importing…' : (packageImportBlocked ? 'Missing requirements' : 'Import')}
         </button>
       </div>
     </div>
@@ -2706,6 +3002,218 @@ console.log(reply);` : ''
         <button class="btn-primary" on:click={rollbackVersion} disabled={historySaving || !historySelected}>
           {historySaving ? 'Restoring…' : 'Restore Selected'}
         </button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showDoctor}
+  <!-- F-GUI-2 — Security Doctor drawer. Follows the same modal-bg + .modal.wide
+       pattern as YAML/History for consistency. Renders the S7 report grouped
+       into risky-combos banner + report sections + dry-run panel. -->
+  <div
+    class="modal-bg"
+    role="button"
+    tabindex="0"
+    aria-label="Close Security Doctor"
+    on:click|self={closeDoctor}
+    on:keydown={(e) => e.key === 'Escape' && closeDoctor()}
+  >
+    <div class="modal wide">
+      <h2>Security Doctor — {doctorAgentId}</h2>
+      <div class="modal-sub">
+        Live report on this agent's trust boundary, sandboxing, and privileged surface.
+        The dry-run panel below simulates the S1+S2+S3 pipeline against operator-supplied
+        adversarial content — <em>no tools are actually executed</em>.
+      </div>
+
+      {#if doctorError}
+        <div class="banner err">⚠ {doctorError}</div>
+      {/if}
+
+      {#if doctorLoading}
+        <div class="tpl-empty">Loading…</div>
+      {:else if doctorReport}
+        {@const critical = (doctorReport.findings || []).filter(f => f.severity === 'critical')}
+        {@const warns    = (doctorReport.findings || []).filter(f => f.severity === 'warn')}
+        {@const infos    = (doctorReport.findings || []).filter(f => f.severity === 'info')}
+
+        {#if critical.length}
+          <div class="doctor-banner danger">
+            <strong>Risky combination — {critical.length} critical finding{critical.length === 1 ? '' : 's'}</strong>
+            {#each critical as f}
+              <p><span class="doctor-cat">{f.category}</span> {f.message}{#if f.fix} · <em>fix:</em> {f.fix}{/if}</p>
+            {/each}
+          </div>
+        {/if}
+        {#if warns.length}
+          <div class="doctor-banner warn">
+            <strong>{warns.length} warning{warns.length === 1 ? '' : 's'}</strong>
+            {#each warns as f}
+              <p><span class="doctor-cat">{f.category}</span> {f.message}{#if f.fix} · <em>fix:</em> {f.fix}{/if}</p>
+            {/each}
+          </div>
+        {/if}
+        {#if infos.length}
+          <div class="doctor-banner info">
+            <strong>{infos.length} recommendation{infos.length === 1 ? '' : 's'}</strong>
+            {#each infos as f}
+              <p><span class="doctor-cat">{f.category}</span> {f.message}{#if f.fix} · <em>fix:</em> {f.fix}{/if}</p>
+            {/each}
+          </div>
+        {/if}
+
+        <div class="doctor-grid">
+          <div class="doctor-card">
+            <h3>Tier & capabilities</h3>
+            <div class="doctor-kv"><span>Tier</span><strong>{doctorReport.tier || 'unknown'}</strong></div>
+            {#if doctorReport.tier_reasons?.length}
+              <ul>
+                {#each doctorReport.tier_reasons.slice(0, 6) as r}
+                  <li>{r}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if doctorReport.capabilities?.length}
+              <div class="doctor-kv"><span>Capabilities</span><code>{doctorReport.capabilities.join(', ')}</code></div>
+            {/if}
+            <div class="doctor-kv"><span>Sandbox</span><code>{doctorReport.sandbox_backend || 'unknown'}</code></div>
+            <div class="doctor-kv"><span>Unattended</span><code>{fmtBool(doctorReport.unattended)}</code></div>
+            <div class="doctor-kv"><span>Intent gate</span><code>{doctorReport.intent_gate_mode || 'prompt (default)'}</code></div>
+          </div>
+
+          <div class="doctor-card">
+            <h3>Tools ({(doctorReport.tools || []).length})</h3>
+            {#if (doctorReport.tools || []).length}
+              <ul class="doctor-tool-list">
+                {#each doctorReport.tools as t}
+                  <li>
+                    <code>{t.name}</code>
+                    <span class="doctor-pill {t.trust === 'untrusted' ? 'warn' : ''}">{t.trust}</span>
+                    <span class="doctor-pill info">{t.category}</span>
+                    {#if t.high_risk}<span class="doctor-pill danger">high-risk</span>{/if}
+                    {#if t.confirm}<span class="doctor-pill info">confirm</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="doctor-empty">No tools declared.</p>
+            {/if}
+          </div>
+
+          <div class="doctor-card">
+            <h3>Channels</h3>
+            {#if (doctorReport.channels || []).length}
+              <ul class="doctor-tool-list">
+                {#each doctorReport.channels as ch}
+                  <li>
+                    <code>{ch.name}</code>
+                    {#if ch.shared}<span class="doctor-pill warn">shared</span>{/if}
+                    {#if ch.accepted}<span class="doctor-pill info">exposure acked</span>{:else if ch.shared}<span class="doctor-pill danger">no ack</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+            {:else}
+              <p class="doctor-empty">No channel bindings.</p>
+            {/if}
+          </div>
+
+          <div class="doctor-card">
+            <h3>Policy & confirms</h3>
+            <div class="doctor-kv"><span>Policy enabled</span><code>{fmtBool(doctorReport.policy_enabled)}</code></div>
+            {#if doctorReport.policy_rules?.length}
+              <ul>
+                {#each doctorReport.policy_rules as r}<li><code>{r}</code></li>{/each}
+              </ul>
+            {/if}
+            {#if doctorReport.confirm_tools?.length}
+              <div class="doctor-kv"><span>Confirm</span><code>{doctorReport.confirm_tools.join(', ')}</code></div>
+            {/if}
+            {#if doctorReport.env_vars?.length}
+              <div class="doctor-kv"><span>Env vars</span><code>{doctorReport.env_vars.slice(0, 8).join(', ')}{doctorReport.env_vars.length > 8 ? ` (+${doctorReport.env_vars.length - 8})` : ''}</code></div>
+            {/if}
+            {#if doctorReport.mcp_servers?.length}
+              <div class="doctor-kv"><span>MCP servers</span><code>{doctorReport.mcp_servers.join(', ')}</code></div>
+            {/if}
+          </div>
+        </div>
+
+        <div class="doctor-card doctor-dryrun">
+          <h3>Dry-run adversarial content</h3>
+          <p class="doctor-hint">
+            Feed simulated attack content through the S1 trust + S2 injection scanner + S3 intent gate,
+            without touching the actual tool. Useful for exercising your intent-gate policy against a
+            realistic prompt-injection sample.
+          </p>
+          <div class="doctor-dr-fields">
+            <label>
+              <span>User goal (optional)</span>
+              <input type="text" bind:value={doctorInput.user_goal}
+                     placeholder='e.g. "Summarize this URL"' />
+            </label>
+            <label>
+              <span>Injection source</span>
+              <input type="text" bind:value={doctorInput.injection_source}
+                     placeholder='fetch_url | kb_search | mcp__server__tool' />
+            </label>
+            <label>
+              <span>Follow-up tool</span>
+              <input type="text" bind:value={doctorInput.followup_tool}
+                     placeholder='shell_exec | write_file | http_request' />
+            </label>
+            <label class="doctor-dr-wide">
+              <span>Follow-up args (JSON)</span>
+              <input type="text" bind:value={doctorInput.followup_args}
+                     placeholder={'{"path": "/etc/passwd"}'} />
+            </label>
+            <label class="doctor-dr-wide">
+              <span>Injected content</span>
+              <textarea rows="4" bind:value={doctorInput.injected_content}
+                        placeholder='Paste the untrusted sample the tool would return.'></textarea>
+            </label>
+          </div>
+          {#if doctorRunError}
+            <div class="banner err">⚠ {doctorRunError}</div>
+          {/if}
+          <div class="doctor-dr-actions">
+            <button class="btn-primary" on:click={runDoctorDryRun} disabled={doctorRunning}>
+              {doctorRunning ? 'Simulating…' : 'Run simulation'}
+            </button>
+          </div>
+          {#if doctorResult}
+            <div class="doctor-result">
+              <div class="doctor-result-row">
+                <span class="doctor-pill {findingClass(doctorResult.injection_severity)}">injection · {doctorResult.injection_severity || 'none'}</span>
+                <span class="doctor-pill {verdictClass(doctorResult.intent_decision)}">intent · {doctorResult.intent_decision || '?'}</span>
+                <span class="doctor-pill info">goal matched · {fmtBool(doctorResult.goal_matched)}</span>
+                <span class="doctor-pill {doctorResult.injection_influenced ? 'warn' : 'info'}">injection influenced · {fmtBool(doctorResult.injection_influenced)}</span>
+              </div>
+              <p class="doctor-verdict">{doctorResult.verdict || ''}</p>
+              {#if doctorResult.intent_reason}
+                <p class="doctor-reason"><em>Intent reason:</em> {doctorResult.intent_reason}</p>
+              {/if}
+              {#if (doctorResult.injection_findings || []).length}
+                <details>
+                  <summary>{doctorResult.injection_findings.length} injection finding(s)</summary>
+                  <ul class="doctor-tool-list">
+                    {#each doctorResult.injection_findings as f}
+                      <li>
+                        <span class="doctor-pill {findingClass(f.severity)}">{f.severity}</span>
+                        <code>{f.family || '?'}</code>
+                        {#if f.pattern}<span class="doctor-pattern">{f.pattern}</span>{/if}
+                        {#if f.snippet}<div class="doctor-snippet">{f.snippet}</div>{/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </details>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/if}
+
+      <div class="modal-row" style="display:flex;justify-content:flex-end;gap:.5rem;">
+        <button class="btn-secondary" on:click={closeDoctor} disabled={doctorRunning}>Close</button>
       </div>
     </div>
   </div>
@@ -3478,5 +3986,93 @@ console.log(reply);` : ''
     display: flex;
     align-items: center;
     gap: .42rem;
+  }
+
+  /* F-GUI-2 — Security Doctor modal styling. Colors mirror the deployment
+     severity palette (info/warn/danger) already used across the dashboard. */
+  .doctor-banner {
+    padding: .7rem .9rem; border-radius: 8px;
+    display: flex; flex-direction: column; gap: .25rem;
+    font-size: .8rem; margin-top: .5rem;
+  }
+  .doctor-banner strong { display: block; margin-bottom: .1rem; }
+  .doctor-banner p { margin: 0; color: #c8cadf; font-size: .74rem; }
+  .doctor-banner em { color: #7b82a8; font-style: normal; }
+  .doctor-banner.info   { background: rgba(139,220,255,.08); border: 1px solid rgba(139,220,255,.3); color: #8bdcff; }
+  .doctor-banner.warn   { background: rgba(245,167,66,.10);  border: 1px solid rgba(245,167,66,.35); color: #f5bd67; }
+  .doctor-banner.danger { background: rgba(240,96,96,.10);   border: 1px solid rgba(240,96,96,.35); color: #f06060; }
+  .doctor-cat {
+    display: inline-block; padding: .06rem .35rem; border-radius: 3px;
+    font-size: .66rem; text-transform: uppercase; letter-spacing: .05em;
+    background: rgba(255,255,255,.06); color: inherit; margin-right: .3rem;
+  }
+
+  .doctor-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: .75rem; margin-top: .8rem;
+  }
+  .doctor-card {
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 8px;
+    padding: .75rem .9rem;
+  }
+  .doctor-card h3 {
+    margin: 0 0 .5rem 0; font-size: .82rem; color: #ada8ff;
+    text-transform: uppercase; letter-spacing: .05em;
+  }
+  .doctor-kv {
+    display: flex; justify-content: space-between; gap: .5rem;
+    padding: .3rem 0; border-bottom: 1px dashed #1a1e36;
+    font-size: .76rem;
+  }
+  .doctor-kv:last-of-type { border-bottom: none; }
+  .doctor-kv span { color: #7b82a8; }
+  .doctor-kv code, .doctor-kv strong { color: #dfe2ff; font-size: .76rem; }
+  .doctor-card ul { margin: .35rem 0 0 1rem; padding: 0; color: #c8cadf; font-size: .75rem; }
+  .doctor-card ul li { margin: .15rem 0; }
+  .doctor-tool-list { list-style: none; margin: 0 !important; padding: 0 !important; }
+  .doctor-tool-list li {
+    display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+    padding: .3rem 0; border-bottom: 1px dashed #1a1e36;
+  }
+  .doctor-tool-list li code { color: #e7e8f5; font-size: .74rem; }
+  .doctor-pill {
+    padding: .04rem .38rem; border-radius: 3px;
+    font-size: .66rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+    background: rgba(139,220,255,.15); color: #8bdcff;
+  }
+  .doctor-pill.info   { background: rgba(139,220,255,.15); color: #8bdcff; }
+  .doctor-pill.warn   { background: rgba(245,167,66,.18);  color: #f5bd67; }
+  .doctor-pill.danger { background: rgba(240,96,96,.18);   color: #f06060; }
+  .doctor-empty { color: #7b82a8; font-size: .74rem; margin: 0; }
+
+  .doctor-dryrun { margin-top: .8rem; }
+  .doctor-hint { color: #7b82a8; font-size: .74rem; margin: .2rem 0 .6rem 0; }
+  .doctor-dr-fields {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: .5rem;
+    margin-bottom: .5rem;
+  }
+  .doctor-dr-fields label { display: flex; flex-direction: column; gap: .2rem; font-size: .72rem; color: #7b82a8; }
+  .doctor-dr-fields input, .doctor-dr-fields textarea {
+    background: #0a0c17; color: #d7dcf5; border: 1px solid #1a1e36;
+    border-radius: 6px; padding: .35rem .5rem; font-size: .78rem;
+  }
+  .doctor-dr-fields textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .doctor-dr-wide { grid-column: 1 / -1; }
+  .doctor-dr-actions { display: flex; justify-content: flex-end; margin: .3rem 0; }
+  .doctor-result {
+    margin-top: .6rem; padding: .65rem .8rem;
+    background: rgba(139,220,255,.05); border: 1px solid rgba(139,220,255,.25);
+    border-radius: 8px;
+  }
+  .doctor-result-row { display: flex; flex-wrap: wrap; gap: .35rem; }
+  .doctor-verdict { color: #e7e8f5; font-size: .82rem; margin: .55rem 0 .3rem 0; }
+  .doctor-reason  { color: #c8cadf; font-size: .74rem; margin: 0 0 .35rem 0; }
+  .doctor-pattern { color: #ada8ff; font-size: .72rem; }
+  .doctor-snippet {
+    width: 100%; margin-top: .2rem;
+    padding: .3rem .5rem; background: #0a0c17; border: 1px solid #1a1e36;
+    border-radius: 5px; color: #7b82a8;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .68rem; white-space: pre-wrap; word-break: break-word;
   }
 </style>

@@ -160,7 +160,10 @@ function decorateTooltip(tt, t) {
 }
 
 // Restyle a parsed ECharts option to the modern theme (in place) and return it.
-function themeEChartsOption(option) {
+// Exported so gui/src/lib/markdown.chartlayout.test.js can pin the title/legend
+// lane invariant (Cohort G framework fix). The function is otherwise called
+// only from mountEChart in this file.
+export function themeEChartsOption(option) {
   if (!option || typeof option !== 'object') return option
   const t = readTheme()
   option.backgroundColor = 'transparent'
@@ -170,18 +173,38 @@ function themeEChartsOption(option) {
   option.textStyle = Object.assign({ color: t.tick, fontFamily: t.font }, option.textStyle)
   option.animationDuration = option.animationDuration ?? 800
   option.animationEasing = option.animationEasing || 'cubicOut'
-  if (option.title) {
+  // Framework layout convention: title owns the top row, legend owns the
+  // bottom row, plot owns the middle. Every previous overlap was traceable to
+  // the title AND the legend both anchoring near `top:0` — the agent-generated
+  // ECharts option would ship a long title AND a multi-entry legend and they
+  // would collide because nothing reserved a lane. Anchoring the two on
+  // opposite edges makes the collision structurally impossible regardless of
+  // title length or number of series, and matches how mature dashboards
+  // (Grafana / Metabase / Superset) lay charts out. Chart authors keep full
+  // override power — every default here uses Object.assign(target=defaults,
+  // agent's) so anything the caller sets wins.
+  const hasTitle = !!option.title
+  if (hasTitle) {
     option.title = Object.assign(
-      { left: 'left', textStyle: { color: t.text, fontSize: 15, fontWeight: 600 } },
+      { left: 'left', top: 8, textStyle: { color: t.text, fontSize: 15, fontWeight: 600 } },
       option.title,
     )
   }
 
   const series = Array.isArray(option.series) ? option.series : option.series ? [option.series] : []
   const hasAxis = series.some((s) => s && ['bar', 'line', 'scatter'].includes(s.type))
+  const multi = series.length > 1
+  const arcOrRadar = series.some((s) => s && (s.type === 'pie' || s.type === 'radar'))
+  const hasLegend = multi || arcOrRadar
+
+  // Reserved lanes: title top ~34px, legend bottom ~34px. Grid extends only
+  // through the middle band. When either title or legend is absent, its lane
+  // collapses back to a tight 8px so single-series charts aren't wasted.
+  const gridTop = hasTitle ? 44 : 12
+  const gridBottom = hasLegend ? 40 : 8
 
   if (hasAxis) {
-    option.grid = Object.assign({ left: 8, right: 18, top: 40, bottom: 8, containLabel: true }, option.grid)
+    option.grid = Object.assign({ left: 8, right: 18, top: gridTop, bottom: gridBottom, containLabel: true }, option.grid)
     styleAxis(option, 'xAxis', t)
     styleAxis(option, 'yAxis', t)
     option.tooltip = Object.assign(
@@ -193,11 +216,22 @@ function themeEChartsOption(option) {
   }
   decorateTooltip(option.tooltip, t)
 
-  const multi = series.length > 1
-  const arcOrRadar = series.some((s) => s && (s.type === 'pie' || s.type === 'radar'))
-  if (multi || arcOrRadar) {
+  if (hasLegend) {
+    // Bottom-center legend on a horizontal row. `type: 'scroll'` lets long
+    // legends paginate instead of wrapping into two rows that would eat into
+    // grid.bottom — ECharts already reserved 40px for one row, so scrolling
+    // is the honest way to handle overflow without touching the plot area.
     option.legend = Object.assign(
-      { top: 8, right: 10, itemWidth: 9, itemHeight: 9, textStyle: { color: t.text } },
+      {
+        bottom: 8,
+        left: 'center',
+        orient: 'horizontal',
+        type: 'scroll',
+        itemWidth: 9,
+        itemHeight: 9,
+        itemGap: 14,
+        textStyle: { color: t.text },
+      },
       option.legend,
     )
     option.legend.icon = 'circle' // force circular markers regardless of agent input

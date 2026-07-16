@@ -249,6 +249,83 @@ func TestDefinitionValidatesScheduleOutputPairs(t *testing.T) {
 	}
 }
 
+// ─── E4b (Cohort E — Schedule failure handling) — cron pre-validation ────────
+//
+// A cron-triggered agent used to save cleanly with `schedule.cron: * * *` or
+// `* * * * * * *` (wrong field count). The scheduler's `AddFunc` would fail
+// at registration time, `handleUpdateAgent` would `s.log.Warn` and return
+// 200 OK, and the GUI would just show a blank "Next run" column forever. The
+// pre-validation below fails the save with a message that includes the
+// parser's own explanation of what's wrong.
+
+func TestDefinitionRejectsInvalidCronExpression(t *testing.T) {
+	cases := []struct {
+		name string
+		cron string
+	}{
+		{name: "too_few_fields", cron: "* * *"},
+		{name: "too_many_fields", cron: "* * * * * * *"},
+		{name: "gibberish", cron: "hello world"},
+		{name: "bad_range", cron: "60 * * * *"}, // minute > 59
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report := Definition(&agent.Definition{
+				ID:      "scheduled",
+				Trigger: agent.TriggerCron,
+				Schedule: &agent.Schedule{
+					Cron:   tc.cron,
+					Output: &agent.ScheduleOutput{Channel: "telegram", To: "123"},
+				},
+				LLM: agent.LLMConfig{Provider: "openai", Model: "gpt-4o-mini"},
+			}, "", Options{}, Report{})
+
+			if report.Valid {
+				t.Fatalf("expected invalid cron %q to fail validation, got valid report: %+v", tc.cron, report.Findings)
+			}
+			if !hasFindingField(report, "schedule.cron") {
+				t.Fatalf("expected finding on schedule.cron field, got %+v", report.Findings)
+			}
+		})
+	}
+}
+
+func TestDefinitionAcceptsValidCronExpression(t *testing.T) {
+	cases := []struct {
+		name string
+		cron string
+	}{
+		{name: "standard_five_field", cron: "0 9 * * 1-5"},
+		{name: "wildcards", cron: "*/15 * * * *"},
+		{name: "descriptor_daily", cron: "@daily"},
+		{name: "descriptor_hourly", cron: "@hourly"},
+		{name: "six_field_with_seconds", cron: "0 */30 * * * *"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			report := Definition(&agent.Definition{
+				ID:      "scheduled",
+				Trigger: agent.TriggerCron,
+				Schedule: &agent.Schedule{
+					Cron:   tc.cron,
+					Output: &agent.ScheduleOutput{Channel: "telegram", To: "123"},
+				},
+				LLM: agent.LLMConfig{Provider: "openai", Model: "gpt-4o-mini"},
+			}, "", Options{}, Report{})
+
+			if !report.Valid {
+				t.Fatalf("expected valid cron %q to pass, got errors: %+v", tc.cron, report.Findings)
+			}
+			// The schedule.cron field-specific finding must be absent for valid input.
+			for _, f := range report.Findings {
+				if f.Field == "schedule.cron" && f.Severity == Error {
+					t.Fatalf("expected no schedule.cron error for %q, got %+v", tc.cron, f)
+				}
+			}
+		})
+	}
+}
+
 func hasAlternative(report Report, value string) bool {
 	for _, finding := range report.Findings {
 		for _, alt := range finding.Alternatives {

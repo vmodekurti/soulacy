@@ -471,6 +471,45 @@ func gatewayJSON(t *testing.T, s *Server, method, path, apiKey, body string) (in
 	return resp.StatusCode, out
 }
 
+// gatewayJSONWithHeader mirrors gatewayJSON but lets callers set one
+// additional request header (e.g. the Cohort A / Story 5
+// X-Acknowledge-Audit consent header, or the S3/S4 confirmation
+// headers). Kept as a variadic-free variant so call sites read
+// naturally at the test line.
+func gatewayJSONWithHeader(t *testing.T, s *Server, method, path, apiKey, body, headerKey, headerVal string) (int, map[string]any) {
+	t.Helper()
+	req, err := http.NewRequest(method, path, bytes.NewBufferString(body))
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	if headerKey != "" {
+		req.Header.Set(headerKey, headerVal)
+	}
+	resp, err := s.app.Test(req, -1)
+	if err != nil {
+		t.Fatalf("app.Test: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if len(raw) == 0 {
+		return resp.StatusCode, nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode JSON status=%d body=%s: %v", resp.StatusCode, string(raw), err)
+	}
+	return resp.StatusCode, out
+}
+
 func gatewayRaw(t *testing.T, s *Server, method, path, apiKey, body string) (int, string) {
 	t.Helper()
 	req, err := http.NewRequest(method, path, bytes.NewBufferString(body))

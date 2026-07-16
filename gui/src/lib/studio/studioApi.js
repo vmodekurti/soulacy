@@ -16,7 +16,7 @@
  * Studio save handler keeps working without changes.
  */
 
-import { api } from '../api.js'
+import { api, apiFetch } from '../api.js'
 
 const CATALOG_TIMEOUT_MS = 5000
 
@@ -142,6 +142,12 @@ export const bridge = {
   // Studio generation contract: graph + runtime preflight + authoring hygiene.
   contract: (workflow) => api.studio.contract({ workflow }),
 
+  // Cohort F S6 — security preflight. Trust boundaries, prompt-injection
+  // exposure, network/file/channel/privileged/confirmation checks, plus
+  // structured recommendations (write_file → kb_write, shell_exec → python_file,
+  // http_request → MCP). Backend: internal/studio/security_preflight.go.
+  securityReview: (workflow) => api.studio.securityReview({ workflow }),
+
   // Deterministic + iterative-LLM repair (auto-wire + reconcile + fix blockers).
   autowire: (workflow) => api.studio.autowire({ workflow }),
 
@@ -253,4 +259,16 @@ export const bridge = {
   providerModels: (id) => api.providers.models(id),
   setStudioModel: (provider, model) =>
     api.config.patch({ llm: { studio: { provider, model } } }),
+  // Story 9 (Cohort B): intent-named preset catalog — "fast local" / "reliable
+  // local" / "cloud quality". Persisted via the same config patch pipeline.
+  presets: () => apiFetch('/studio/presets'),
+  setStudioPreset: (preset) =>
+    api.config.patch({ llm: { studio: { preset } } }),
+  // Story 9 M (Cohort C): default generate UX ('streamed' | 'wizard').
+  setBuildUX: (mode) =>
+    api.config.patch({ llm: { studio: { build_ux: mode } } }),
+  // Streamed generate pipeline — emits one PipelineEvent per phase-boundary
+  // and a terminating `done` frame with the full PipelineResult.
+  generateStream: (intent, opts, onEvent) =>
+    api.studio.generateStream({ intent, ...opts }, onEvent),
 }

@@ -4,7 +4,7 @@ VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || ec
 LDFLAGS        := -ldflags "-X github.com/soulacy/soulacy/internal/config.Version=$(VERSION)"
 PLAYWRIGHT_RUNNER ?= $(shell if [ -e .cache ] && [ ! -d .cache ]; then echo tmp/playwright-runner; else echo .cache/playwright-runner; fi)
 
-.PHONY: all build build-gateway build-cli gui up install which test regression uat docs-build docs-screenshots release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
+.PHONY: all build build-gateway build-cli gui up install which test regression uat uat-public uat-full uat-credential docs-build docs-screenshots release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
         release-darwin release-darwin-arm64 release-darwin-amd64 release-package \
@@ -182,8 +182,30 @@ regression:
 	bash scripts/regression-smoke.sh
 
 ## Clean-workspace UAT: boots a separate runtime, exercises core APIs, then exits.
-uat: build
-	bash scripts/uat-clean-runtime.sh
+## `uat` stays as the historic no-secret alias (== uat-public). Use `uat-full`
+## when TELEGRAM_*/SLACK_*/DISCORD_* tokens are exported and you want to
+## actually deliver messages. Both variants generate a timestamped Markdown
+## report under .cache/uat-reports/ by default (override with SOULACY_UAT_REPORT).
+uat: uat-public
+
+## Non-secret subset — safe for CI. Every credential-gated block is skipped
+## via SOULACY_UAT_MODE=public regardless of what tokens happen to be set.
+uat-public: build
+	SOULACY_UAT_MODE=public bash scripts/uat-clean-runtime.sh
+
+## Full subset — includes live channel delivery blocks when the matching env
+## pairs are present. Each block still skips cleanly if only some pairs are set.
+uat-full: build
+	SOULACY_UAT_MODE=full bash scripts/uat-clean-runtime.sh
+
+## Cohort E2 — credential-backed UAT harness. Loads `.env.uat` (or
+## `scripts/.env.uat`; override with ENV_UAT=/path/.env.uat) and runs a real
+## cloud-provider probe, a local-model probe, live channel delivery per
+## configured platform (Telegram / Slack / Discord / email), a scheduled
+## one-shot, and a Studio repair loop. Credentials NEVER leave the operator's
+## machine — this target is intentionally not wired into CI.
+uat-credential: build
+	bash scripts/uat-credential-smoke.sh
 
 ## Build the public documentation site locally.
 docs-build:

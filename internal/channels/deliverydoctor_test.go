@@ -104,6 +104,38 @@ func TestDiagnoseDeliveryAdapterSpecificFixes(t *testing.T) {
 			raw:     "teams: send: API returned status 404: Not Found",
 			want:    "fresh incoming webhook",
 		},
+		// Story 4 sweep — email/SMTP-specific classifications so operators
+		// stop seeing raw SMTP status codes bubble through as "unknown".
+		{
+			name:    "email-smtp-auth-failed",
+			adapter: "email",
+			raw:     "email: send: 535 5.7.8 Authentication credentials invalid",
+			want:    "app password",
+		},
+		{
+			name:    "email-recipient-rejected",
+			adapter: "email",
+			raw:     "email: send: 550 5.1.1 User unknown",
+			want:    "deliverable address",
+		},
+		{
+			name:    "email-relay-denied",
+			adapter: "email",
+			raw:     "email: send: 550 5.7.1 Relay access denied",
+			want:    "SPF",
+		},
+		{
+			name:    "email-quota",
+			adapter: "email",
+			raw:     "email: send: 452 4.5.3 Too many recipients",
+			want:    "transactional provider",
+		},
+		{
+			name:    "email-starttls-required",
+			adapter: "email",
+			raw:     "email: send: 530 5.7.0 Must issue a STARTTLS command first",
+			want:    "starttls",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

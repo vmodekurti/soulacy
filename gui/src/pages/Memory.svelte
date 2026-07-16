@@ -75,8 +75,36 @@
   let learningBusy   = false
   let reflectingRuns = false
   let proposalStatus = 'pending'
+  // Story 8 AC4 — time-window filter on Learning. Values are passed straight
+  // to the server's `since=` query which accepts extended-duration strings
+  // ("24h", "7d", "30d"). Empty string = no window (all time).
+  const learningWindowOptions = [
+    { value: '',    label: 'All time' },
+    { value: '24h', label: 'Last 24h' },
+    { value: '7d',  label: 'Last 7 days' },
+    { value: '30d', label: 'Last 30 days' },
+  ]
+  let learningWindow = ''
   let editingProposalID = ''
   let proposalEdit = { title: '', content: '', skill_name: '' }
+
+  // Story 8 AC3 — per-proposal override for "promote to Studio lessons"
+  // (unified lesson surface: Studio-repair-accepted + Brain-Memory-accepted).
+  // Keyed by proposal id → boolean. Unset entries fall through to the
+  // server's kind-based default (skill = true, everything else = false).
+  let promoteOverrides = {}
+  function promoteChoice(p) {
+    if (!p) return false
+    if (Object.prototype.hasOwnProperty.call(promoteOverrides, p.id)) {
+      return promoteOverrides[p.id]
+    }
+    // Server serializes the resolved value as promote_to_studio_lessons_effective.
+    if (typeof p.promote_to_studio_lessons_effective === 'boolean') return p.promote_to_studio_lessons_effective
+    return p.kind === 'skill'
+  }
+  function togglePromoteChoice(p) {
+    promoteOverrides = { ...promoteOverrides, [p.id]: !promoteChoice(p) }
+  }
 
   // Write episodic modal
   let showWrite    = false
@@ -197,11 +225,14 @@
   async function loadLearning() {
     learningBusy = true
     try {
+      // The per-agent view narrows by both agent and window; the fleet-wide
+      // evidence panel narrows only by window so cross-agent trends remain
+      // visible in the selected time range.
       const [res, summaryRes, evidenceRes, fleetEvidenceRes] = await Promise.all([
-        api.brainMemory.learningProposals(selectedID, proposalStatus),
-        api.brainMemory.learningSummary(selectedID),
-        api.brainMemory.learningEvidence(selectedID),
-        api.brainMemory.learningEvidence(''),
+        api.brainMemory.learningProposals(selectedID, proposalStatus, 100, learningWindow),
+        api.brainMemory.learningSummary(selectedID, learningWindow),
+        api.brainMemory.learningEvidence(selectedID, learningWindow),
+        api.brainMemory.learningEvidence('', learningWindow),
       ])
       proposals = res.proposals || []
       learningSummary = summaryRes.summary || null
@@ -232,12 +263,20 @@
   async function acceptProposal(p) {
     learningBusy = true; error = null
     try {
-      await api.brainMemory.acceptLearning(p.id)
-      notice = p.kind === 'skill'
+      const promote = promoteChoice(p)
+      await api.brainMemory.acceptLearning(p.id, { promoteToStudioLessons: promote })
+      const promoteNote = promote ? ' Studio will use it in future generations.' : ''
+      notice = (p.kind === 'skill'
         ? 'Skill installed and added to the live catalog.'
         : p.kind === 'procedure'
           ? 'Procedure added to the rulebook.'
-          : 'Learning saved to semantic memory.'
+          : 'Learning saved to semantic memory.') + promoteNote
+      // Clear the local override so the fresh server response is authoritative.
+      if (Object.prototype.hasOwnProperty.call(promoteOverrides, p.id)) {
+        const copy = { ...promoteOverrides }
+        delete copy[p.id]
+        promoteOverrides = copy
+      }
       await loadLearning()
       await loadOverview()
       if (activeTab === 'learning') setTimeout(() => notice = null, 2500)
@@ -611,6 +650,11 @@
         <option value="rejected">Rejected</option>
         <option value="">All</option>
       </select>
+      <select bind:value={learningWindow} on:change={loadLearning} title="Time window">
+        {#each learningWindowOptions as opt}
+          <option value={opt.value}>{opt.label}</option>
+        {/each}
+      </select>
       <button class="btn-secondary" on:click={reflectRecentRuns} disabled={learningBusy || reflectingRuns || !selectedID}>
         {reflectingRuns ? 'Reflecting…' : 'Reflect recent runs'}
       </button>
@@ -808,6 +852,10 @@
                   <button class="btn-secondary" on:click={cancelEditProposal} disabled={learningBusy}>Cancel</button>
                   <button class="btn-primary" on:click={() => saveProposalEdit(p)} disabled={learningBusy || !proposalEdit.content.trim()}>Save</button>
                 {:else}
+                  <label class="meta-item" title="When on, this proposal is also added to Studio's lesson store so future workflow generations see it. Default: on for skills, off for procedures.">
+                    <input type="checkbox" checked={promoteChoice(p)} on:change={() => togglePromoteChoice(p)} />
+                    Promote to Studio lessons
+                  </label>
                   <button class="btn-secondary" on:click={() => startEditProposal(p)} disabled={learningBusy}>Edit</button>
                   <button class="btn-secondary" on:click={() => rejectProposal(p)} disabled={learningBusy}>Reject</button>
                   <button class="btn-primary" on:click={() => acceptProposal(p)} disabled={learningBusy}>

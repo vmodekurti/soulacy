@@ -2033,6 +2033,22 @@ Use null for fields that are not present.`
   // Blockers must be fixed before saving; warnings can be acknowledged and saved over.
   let preflight = null
 
+  // F-GUI-3 — Cohort F S6 security review. Re-runs on debounced draft change
+  // so the panel stays live while the operator edits the workflow, and its
+  // blockers merge into the same pre-save preflight gate that Contract already
+  // uses (so blockers block Save the same way).
+  //
+  //   securityReview  — last successful /studio/security_review response
+  //   securityLoading — in-flight indicator for the panel
+  //   securityError   — surface API failures in the panel without blocking Save
+  //   securityRunToken — increments each debounce so stale replies don't win
+  let securityReview   = null
+  let securityLoading  = false
+  let securityError    = ''
+  let securityDebounce = null
+  let securityRunToken = 0
+  let securityPanelOpen = true
+
   // Save click: VALIDATE first (consolidated preflight), then PLAN, then either
   // save directly or raise the consent dialog. Every bridge op degrades
   // gracefully — a bridge/host error just surfaces as saveError. The optional
@@ -2127,9 +2143,23 @@ Use null for fields that are not present.`
   }
 
   async function runStudioContract(draft) {
-    try {
-      const contract = await bridge.contract(draft)
-      if (!contract) return null
+    // F-GUI-3 — pair the contract report with the security review so their
+    // blockers/warnings land in the same preflight modal. Both requests fire
+    // in parallel; a security failure never blocks the contract path.
+    let contract = null
+    let secReview = null
+    await Promise.all([
+      (async () => { try { contract = await bridge.contract(draft) } catch (_) { contract = null } })(),
+      (async () => {
+        try { secReview = await bridge.securityReview(draft) } catch (_) { secReview = null }
+      })(),
+    ])
+    // Also refresh the always-visible panel state so operators aren't
+    // surprised when Save opens the modal.
+    if (secReview) securityReview = secReview
+
+    const contractIssues = (() => {
+      if (!contract) return { blockers: [], warnings: [] }
       const checks = Array.isArray(contract.checks) ? contract.checks : []
       const toIssue = (c) => ({
         severity: c.status === 'block' ? 'blocker' : 'warning',
@@ -2139,15 +2169,108 @@ Use null for fields that are not present.`
         fix: c.fix || '',
       })
       return {
-        ok: !!contract.ok,
         blockers: checks.filter((c) => c && c.status === 'block').map(toIssue),
         warnings: checks.filter((c) => c && c.status === 'warn').map(toIssue),
-        contract,
       }
-    } catch (_) {
+    })()
+
+    const secIssues = (() => {
+      if (!secReview) return { blockers: [], warnings: [] }
+      const toIssue = (severity) => (f) => ({
+        severity,
+        kind: 'studio.security.' + (f.category || 'finding'),
+        nodeId: '',
+        message: `Security ${f.category || 'finding'}: ${f.message || ''}`.trim(),
+        fix: f.fix || '',
+      })
+      return {
+        blockers: (secReview.blockers || []).map(toIssue('blocker')),
+        warnings: (secReview.warnings || []).map(toIssue('warning')),
+      }
+    })()
+
+    if (!contract && !secReview) {
+      // Fall back to legacy preflight for downstream compatibility.
       try { return await bridge.preflight(draft) } catch (_) { return null }
     }
+    return {
+      ok: (!contract || !!contract.ok) && (!secReview || !!secReview.ok),
+      blockers: [...contractIssues.blockers, ...secIssues.blockers],
+      warnings: [...contractIssues.warnings, ...secIssues.warnings],
+      contract,
+      security: secReview,
+    }
   }
+
+  // F-GUI-3 — debounced always-on security review so the panel stays fresh
+  // while the operator edits the graph. Keeps the pre-save gate honest without
+  // exploding the request count. Only fires when we have a draft.
+  function scheduleSecurityReview() {
+    if (typeof window === 'undefined') return
+    if (securityDebounce) clearTimeout(securityDebounce)
+    securityDebounce = setTimeout(refreshSecurityReview, 700)
+  }
+  async function refreshSecurityReview() {
+    if (!workflow) return
+    const token = ++securityRunToken
+    securityLoading = true
+    securityError = ''
+    try {
+      const res = await bridge.securityReview(workflow)
+      if (token !== securityRunToken) return  // stale
+      securityReview = res || null
+    } catch (e) {
+      if (token !== securityRunToken) return
+      securityError = e.message || 'security review failed'
+    } finally {
+      if (token === securityRunToken) securityLoading = false
+    }
+  }
+
+  // F-GUI-3 — unambiguous rewrites for the top three risky tools. Any tool
+  // node in the workflow whose `tool` (or nested tool ref) matches `from`
+  // gets rewritten to `suggest`. When there's no exact match (custom tools,
+  // MCP calls, etc.), we quietly skip.
+  function applySecurityRecommendation(rec) {
+    if (!rec || !rec.from || !rec.suggest || !workflow) return
+    const from = String(rec.from)
+    // The suggested replacement text for shell_exec / http_request in
+    // security_preflight.go is a sentence, not a tool name; only auto-apply
+    // when it looks like a bare tool identifier.
+    const suggestId = /^[a-zA-Z0-9_.-]+$/.test(rec.suggest) ? rec.suggest : ''
+    if (!suggestId) {
+      toast(`Recommendation applied to notes — replace ${from} with ${rec.suggest} manually.`)
+      return
+    }
+    const flow = workflow.flow || {}
+    const nodes = Array.isArray(flow.nodes) ? flow.nodes : []
+    let hits = 0
+    const nextNodes = nodes.map((n) => {
+      if (!n) return n
+      const cfg = n.config || {}
+      if (n.tool === from || cfg.tool === from) {
+        hits++
+        return {
+          ...n,
+          tool: n.tool === from ? suggestId : n.tool,
+          config: cfg.tool === from ? { ...cfg, tool: suggestId } : cfg,
+        }
+      }
+      return n
+    })
+    if (!hits) {
+      toast(`No ${from} usage found to rewrite.`)
+      return
+    }
+    setWorkflow({ ...workflow, flow: { ...flow, nodes: nextNodes } }, { name: workflow.name })
+    toast(`Rewrote ${hits} ${from} → ${suggestId}.`)
+    scheduleSecurityReview()
+  }
+
+  // React to workflow updates via a reactive statement. `workflow` is
+  // reassigned by many code paths (edits, autowire, build) so this covers all
+  // of them without threading calls into each mutator.
+  $: if (workflow) scheduleSecurityReview()
 
   // ── Architect: autonomous build-verify-repair ("Build until it works") ────
   // One click drives the whole loop server-side: fill capability holes with
@@ -2198,6 +2321,49 @@ Use null for fields that are not present.`
   let loadingFailed = false
   let healing = '' // id currently being healed
   let healResult = null
+  // Story 3 AC3 — heal produces a concrete patch with before/after diff, not a
+  // silent canvas replace. `healDiff` holds the candidate + rendered diff and
+  // waits for operator confirmation via applyHealDiff() before touching the
+  // live workflow. Reuses .repair-diff CSS so the pane looks identical to the
+  // per-node repair-diff renderer (both surfaces are "before/after this fix").
+  let healDiff = null // { candidate, lines, stats, source, name }
+  let healDiffBusy = false
+  async function prepareHealDiff(res, source) {
+    if (!res || !res.workflow) return
+    healDiffBusy = true
+    try {
+      const before = workflow || { name: (res.workflow && res.workflow.name) || 'workflow', flow: { nodes: [], edges: [] } }
+      const d = await api.studio.diff(before, res.workflow)
+      healDiff = {
+        candidate: res.workflow,
+        lines: (d && d.lines) || [],
+        stats: (d && d.stats) || { added: 0, removed: 0 },
+        source,
+        name: (res.workflow && res.workflow.name) || (workflow && workflow.name) || 'workflow',
+      }
+    } catch (_) {
+      // Diff service failed — fall back to no-diff panel but still let operator
+      // apply the healed workflow. Preserves the pre-AC3 behaviour minus the
+      // silent replace.
+      healDiff = {
+        candidate: res.workflow,
+        lines: [],
+        stats: { added: 0, removed: 0 },
+        source,
+        name: (res.workflow && res.workflow.name) || (workflow && workflow.name) || 'workflow',
+      }
+    } finally {
+      healDiffBusy = false
+    }
+  }
+  function applyHealDiff() {
+    if (!healDiff) return
+    setWorkflow(healDiff.candidate, { name: healDiff.name })
+    const kind = healDiff.source === 'session' ? 'Debugged real run applied' : 'Heal applied'
+    toast(kind + ' — review and Save to persist.')
+    healDiff = null
+  }
+  function cancelHealDiff() { healDiff = null }
   async function loadFailedRuns() {
     loadingFailed = true
     try {
@@ -2217,13 +2383,14 @@ Use null for fields that are not present.`
     if (healing) return
     healing = id
     healResult = null
+    healDiff = null
     saveError = ''
     try {
       const res = await bridge.diagnoseRun(id)
       healResult = res
       if (res && res.workflow) {
-        setWorkflow(res.workflow, { name: (res.workflow && res.workflow.name) || (workflow && workflow.name) })
-        toast(res.changed ? 'Healed — review the change and Save to apply it.' : 'No fix was suggested for this error.')
+        await prepareHealDiff(res, 'run')
+        toast(res.changed ? 'Healed — preview the change below and click Apply this fix to load it.' : 'No fix was suggested for this error.')
       }
     } catch (e) {
       saveError = e.message || 'diagnose failed'
@@ -2236,14 +2403,22 @@ Use null for fields that are not present.`
     if (healing || !agentId || !sessionId) return
     healing = `session:${agentId}:${sessionId}`
     healResult = null
+    healDiff = null
     saveError = ''
     try {
       const res = await bridge.diagnoseSession(agentId, sessionId)
       healResult = res
       loadedAgentId = agentId
+      // Story 3 AC2b — prefill the Test bench sample input with the original
+      // failing user input so operators re-test the exact case that broke,
+      // not the literal 'hello' default. Empty string skips (keeps whatever
+      // the operator already had typed).
+      if (res && typeof res.failing_input === 'string' && res.failing_input.trim() !== '') {
+        sampleInput = res.failing_input
+      }
       if (res && res.workflow) {
-        setWorkflow(res.workflow, { name: (res.workflow && res.workflow.name) || (workflow && workflow.name) })
-        toast(res.changed ? 'Debugged real run — review the fix and Save to apply it.' : 'No fix was suggested for this run.')
+        await prepareHealDiff(res, 'session')
+        toast(res.changed ? 'Debugged real run — preview the change below and click Apply this fix to load it.' : 'No fix was suggested for this run.')
       }
     } catch (e) {
       saveError = e.message || 'debug failed'
@@ -2873,6 +3048,26 @@ Use null for fields that are not present.`
   let modelPicker = { open: false, provider: '', model: '', models: [], saving: false, error: '' }
   let studioModelLabel = 'default'
 
+  // Story 9 (Cohort B) — intent-named runtime presets. `studioPresets` holds
+  // the catalog fetched from GET /studio/presets; `studioPresetCurrent` is the
+  // operator's current choice (empty = model-derived defaults, no override).
+  let studioPresets = []
+  let studioPresetCurrent = ''
+  let studioPresetSaving = false
+  let studioPresetError = ''
+
+  // Story 9 M (Cohort C) — build UX preference. `streamed` (default) surfaces
+  // a live-transcript panel while the pipeline runs; `wizard` opens the
+  // classic stepped modal (refine → confirm → compile) with the strategy
+  // review step made explicit. Persisted in llm.studio.build_ux; a
+  // per-generation override lives on `buildUXOverride` (nullable).
+  let buildUX = 'streamed'
+  let buildUXOverride = null
+  let buildUXSaving = false
+  // Live-transcript state for a streamed generate.
+  let pipelineLog = [] // [{phase, status, message, payload}]
+  let pipelineRunning = false
+
   $: providerOptions = (catalog && catalog.providers && catalog.providers.providers)
     ? Object.keys(catalog.providers.providers) : []
 
@@ -2885,9 +3080,96 @@ Use null for fields that are not present.`
     bridge.getConfig().then((cfg) => {
       const st = (cfg && cfg.llm && cfg.llm.studio) || {}
       studioModelLabel = fmtModelLabel(st.provider, st.model)
+      studioPresetCurrent = st.preset || ''
+      if (st.build_ux === 'wizard' || st.build_ux === 'streamed') buildUX = st.build_ux
     }).catch(() => {})
+    bridge.presets().then((res) => {
+      studioPresets = (res && res.presets) || []
+      if (res && typeof res.current === 'string') studioPresetCurrent = res.current
+    }).catch(() => { studioPresets = [] })
     refreshModelAdvice()
   })
+
+  async function saveStudioPreset(name) {
+    if (studioPresetSaving) return
+    studioPresetSaving = true
+    studioPresetError = ''
+    try {
+      await bridge.setStudioPreset(name || '')
+      studioPresetCurrent = name || ''
+    } catch (e) {
+      studioPresetError = (e && e.message) || 'could not save preset'
+    } finally {
+      studioPresetSaving = false
+    }
+  }
+
+  async function saveBuildUX(mode) {
+    if (buildUXSaving) return
+    buildUXSaving = true
+    try {
+      await bridge.setBuildUX(mode)
+      buildUX = mode
+    } catch (_) { /* soft-fail — UX preference is non-critical */ }
+    finally { buildUXSaving = false }
+  }
+
+  // effectiveBuildUX resolves the per-generation override on top of the
+  // persisted preference. Toggling the button next to Generate flips this
+  // for the next run without touching the saved setting.
+  $: effectiveBuildUX = buildUXOverride || buildUX
+
+  // Story 9 M (Cohort C) — streamed generate. Runs the whole pipeline in one
+  // SSE call, updating `pipelineLog` per phase. When the stream finishes
+  // successfully the compiled draft is applied to the canvas via the same
+  // applyCompile path the classic flow uses.
+  async function generateStreamed() {
+    const text = intent.trim()
+    if (!text || compiling || refining || pipelineRunning || cloudGate) return
+    if (modelAdvice && modelAdvice.cloud_escalation && !cloudAck) {
+      cloudGate = { provider: modelAdvice.provider, model: modelAdvice.model }
+      return
+    }
+    if (workflow && workflow.flow && (workflow.flow.nodes || []).length) {
+      let ok = true
+      try { ok = window.confirm('Regenerate from this prompt? It replaces the current workflow on the canvas.') } catch (_) { ok = true }
+      if (!ok) return
+    }
+    pipelineRunning = true
+    pipelineLog = []
+    compileError = ''
+    try {
+      const light = !!(workflow && workflow.refined)
+      if (!light && !rawPrompt.trim()) rawPrompt = text
+      const done = await bridge.generateStream(
+        text,
+        { light, auto_repair: true },
+        (ev) => {
+          if (!ev || !ev.phase) return
+          pipelineLog = [...pipelineLog, ev]
+        },
+      )
+      const result = done && done.result
+      if (done && done.error) {
+        compileError = done.error
+      } else if (result && result.compile) {
+        applyCompile(result.compile)
+        if (result.refinement) rawPrompt = result.refinement.original || rawPrompt
+      }
+    } catch (e) {
+      compileError = (e && e.message) || 'streamed generate failed'
+    } finally {
+      pipelineRunning = false
+      buildUXOverride = null // consume the override
+    }
+  }
+
+  // Router — invoked from the Generate button. Delegates to the streamed or
+  // wizard path based on the effective UX preference.
+  function generateOrStream() {
+    if (effectiveBuildUX === 'streamed') return generateStreamed()
+    return generate()
+  }
 
   // Fetch builder-model strength advice so we can warn before generation.
   async function refreshModelAdvice() {
@@ -3037,6 +3319,13 @@ Use null for fields that are not present.`
       pending: true,
     }
     toast(`Debugging ${pending.agentId} from Runs…`)
+    // Story 3 AC2c — surface the structured runTrace panel (per-block input/
+    // output/duration/error, plus run history picker) alongside the debug
+    // flow. Without this the operator only saw the compacted evidence blob
+    // inside healResult; loadRunTrace hydrates the same runTrace panel Studio
+    // shows for any saved agent so debugging a failed run reuses the exact
+    // "where did this run actually go wrong" UI operators already know.
+    loadRunTrace(pending.sessionId).catch(() => {})
     healActivityRun(pending.agentId, pending.sessionId)
   })
 
@@ -3079,9 +3368,26 @@ Use null for fields that are not present.`
       />
       <button class="intent-expand" type="button" title="Open the full prompt editor" on:click={() => (promptViewer = true)} aria-label="Open prompt editor">⤢ Editor</button>
     </div>
-    <button class="btn primary" on:click={generate} disabled={compiling || refining || !!refinement || !intent.trim()}>
-      {refining ? 'Refining…' : compiling ? 'Generating…' : 'Generate'}
-    </button>
+    <div class="generate-group" style="display:inline-flex;gap:.35rem;align-items:center;">
+      <button class="btn primary" on:click={generateOrStream} disabled={compiling || refining || pipelineRunning || !!refinement || !intent.trim()}>
+        {refining ? 'Refining…' : compiling ? 'Generating…' : pipelineRunning ? 'Running pipeline…' : 'Generate'}
+      </button>
+      <!--
+        Story 9 M — per-generation UX toggle. Clicking "Wizard" for this
+        generation flips the effective mode without saving it; the split
+        button label reflects the current mode so operators know what will
+        happen when they click Generate.
+      -->
+      <button
+        class="btn"
+        type="button"
+        title={effectiveBuildUX === 'streamed' ? 'Streamed: live-transcript panel while the pipeline runs. Click to switch to Wizard for this generation only.' : 'Wizard: stepped modal that pauses between phases. Click to switch to Streamed for this generation only.'}
+        on:click={() => (buildUXOverride = effectiveBuildUX === 'streamed' ? 'wizard' : 'streamed')}
+      >
+        {effectiveBuildUX === 'streamed' ? '⚡ Streamed' : '🪄 Wizard'}
+        {#if buildUXOverride}<span style="opacity:.6;">(once)</span>{/if}
+      </button>
+    </div>
 
     <!-- M6: draft management toolbar -->
     <div class="toolbar" role="group" aria-label="Draft management">
@@ -3707,13 +4013,116 @@ Use null for fields that are not present.`
           {/if}
           <button class="btn primary"
                   on:click={() => (viewMode === 'code' ? saveFromCode() : save())}
-                  disabled={saving || (viewMode === 'canvas' && (!!consent || !!preflight))}>
+                  disabled={saving || (viewMode === 'canvas' && (!!consent || !!preflight || (securityReview && (securityReview.blockers || []).length > 0)))}
+                  title={securityReview && (securityReview.blockers || []).length > 0 ? 'Fix security blockers to save' : ''}>
             {saving ? 'Saving…' : (viewMode === 'code' ? 'Save YAML' : 'Save')}
           </button>
         </div>
 
         {#if saveMsg}<div class="strip strip-ok">✓ {saveMsg}</div>{/if}
         {#if saveError}<div class="strip strip-error">⚠ {saveError}</div>{/if}
+        <!-- F-GUI-3 — visible reminder that mirrors the pre-save contract gate,
+             so operators aren't surprised when Save is disabled. -->
+        {#if viewMode === 'canvas' && securityReview && (securityReview.blockers || []).length > 0}
+          <div class="strip strip-error">⚠ Fix security blockers to save — {(securityReview.blockers || []).length} pending.</div>
+        {/if}
+
+        <!-- F-GUI-3 — Security review panel. Always visible while editing a
+             workflow so the trust / network / file / channel / privileged /
+             confirmation summary is one glance away, and the recommendations
+             carry the "Apply" quick-actions for the unambiguous replacements
+             (write_file → kb_write is auto-appliable; shell_exec / http_request
+             recommendations point at a general fix and surface as a toast).
+             Structured to match the Contract panel's visual weight. -->
+        {#if viewMode === 'canvas' && workflow}
+          <!-- a11y note: refresh is a sibling <button>, NOT nested inside the
+               header toggle, because nested interactive elements are invalid
+               HTML and cause the Svelte a11y linter to flag click-only
+               <span>s. Two flex-row buttons keep both keyboard + screen
+               reader semantics correct. -->
+          <div class="security-panel" class:has-blockers={(securityReview?.blockers || []).length > 0} class:has-warnings={(securityReview?.warnings || []).length > 0}>
+            <div class="security-head-row">
+              <button class="security-head" type="button" aria-expanded={securityPanelOpen}
+                      on:click={() => securityPanelOpen = !securityPanelOpen}>
+                <span class="security-caret">{securityPanelOpen ? '▾' : '▸'}</span>
+                <strong>Security review</strong>
+                {#if securityLoading}
+                  <span class="security-count muted">refreshing…</span>
+                {:else if !securityReview}
+                  <span class="security-count muted">no report yet</span>
+                {:else}
+                  <span class="security-count {securityReview.ok ? 'ok' : ''}">
+                    {(securityReview.blockers || []).length} blocker{(securityReview.blockers || []).length === 1 ? '' : 's'}
+                    · {(securityReview.warnings || []).length} warning{(securityReview.warnings || []).length === 1 ? '' : 's'}
+                    · {(securityReview.recommendations || []).length} rec{(securityReview.recommendations || []).length === 1 ? '' : 's'}
+                  </span>
+                {/if}
+              </button>
+              <button class="security-refresh" type="button"
+                      title="Re-run security review"
+                      aria-label="Re-run security review"
+                      on:click={refreshSecurityReview}>↺</button>
+            </div>
+            {#if securityPanelOpen}
+              {#if securityError}
+                <div class="strip strip-error" style="margin-top:.35rem;">⚠ {securityError}</div>
+              {/if}
+              {#if securityReview}
+                {@const s = securityReview.summary || {}}
+                <div class="security-summary">
+                  <div><span>Untrusted sources</span><code>{(s.untrusted_content_sources || []).join(', ') || '—'}</code></div>
+                  <div><span>Network</span><code>{(s.network_tools || []).join(', ') || '—'}</code></div>
+                  <div><span>File</span><code>{(s.file_tools || []).join(', ') || '—'}</code></div>
+                  <div><span>Channel</span><code>{(s.channel_tools || []).join(', ') || '—'}</code></div>
+                  <div><span>Privileged</span><code>{(s.privileged_tools || []).join(', ') || '—'}</code></div>
+                  <div><span>Confirm gates</span><code>{(s.confirm_tools || []).join(', ') || '—'}</code></div>
+                  <div><span>Intent gate</span><code>{s.intent_gate_mode || 'prompt (default)'}</code></div>
+                  <div>
+                    <span>Privileged channel exposure</span>
+                    <code>{s.privileged_channel_exposure ? 'yes — needs ack' : 'no'}</code>
+                  </div>
+                </div>
+                {#if (securityReview.blockers || []).length}
+                  <div class="security-block-list">
+                    <div class="security-block-hdr">Blockers ({securityReview.blockers.length})</div>
+                    {#each securityReview.blockers as b}
+                      <div class="security-item block">
+                        <div class="security-cat">{b.category}</div>
+                        <div class="security-msg">{b.message}</div>
+                        {#if b.fix}<div class="security-fix">→ {b.fix}</div>{/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+                {#if (securityReview.warnings || []).length}
+                  <div class="security-block-list">
+                    <div class="security-block-hdr">Warnings ({securityReview.warnings.length})</div>
+                    {#each securityReview.warnings as w}
+                      <div class="security-item warn">
+                        <div class="security-cat">{w.category}</div>
+                        <div class="security-msg">{w.message}</div>
+                        {#if w.fix}<div class="security-fix">→ {w.fix}</div>{/if}
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+                {#if (securityReview.recommendations || []).length}
+                  <div class="security-block-list">
+                    <div class="security-block-hdr">Recommendations ({securityReview.recommendations.length})</div>
+                    {#each securityReview.recommendations as rec}
+                      <div class="security-item rec">
+                        <div class="security-cat">rewrite</div>
+                        <div class="security-msg">Replace <code>{rec.from}</code> with <code>{rec.suggest}</code></div>
+                        {#if rec.reason}<div class="security-fix">{rec.reason}</div>{/if}
+                        <button class="btn btn-sm security-apply" type="button" on:click={() => applySecurityRecommendation(rec)}>Apply</button>
+                      </div>
+                    {/each}
+                  </div>
+                {/if}
+              {/if}
+            {/if}
+          </div>
+        {/if}
 
         {#if viewMode === 'canvas' && currentMode === 'workflow'}
           <!-- Drag this splitter to give the bottom workbench more/less height. -->
@@ -3920,6 +4329,32 @@ Use null for fields that are not present.`
           </div>
         {/if}
 
+        <!-- ── Story 9 M (Cohort C): streamed generate pipeline transcript ── -->
+        {#if pipelineRunning || pipelineLog.length}
+          <div class="panel build-progress">
+            <div class="build-head">
+              {#if pipelineRunning}<span class="spinner" aria-hidden="true"></span>{/if}
+              <span class="build-summary">
+                {pipelineRunning ? 'Generate pipeline running…' : 'Generate pipeline finished — see the canvas.'}
+              </span>
+              {#if !pipelineRunning}
+                <button class="icon-btn" title="Clear transcript" on:click={() => (pipelineLog = [])} style="margin-left:auto;">✕</button>
+              {/if}
+            </div>
+            {#if pipelineLog.length}
+              <ul class="build-live">
+                {#each pipelineLog as ev}
+                  <li class="live-line live-{ev.status}">
+                    <span class="live-n">{ev.phase}</span>
+                    <span class="live-status">{ev.status}</span>
+                    {#if ev.message}<span>{ev.message}</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
+
         <!-- ── Architect build report: what was wrong, and how it was fixed ── -->
         {#if buildReport}
           <Collapsible id="build-report" title="Build report" sub={buildReport.summary}>
@@ -3963,6 +4398,18 @@ Use null for fields that are not present.`
                     {/each}
                   </ul>
                 {/if}
+              </div>
+            {/if}
+            {#if buildReport.needs_external && buildReport.needs_external.length}
+              <div class="build-external">
+                <strong>Needs your input:</strong>
+                <ul>{#each buildReport.needs_external as n}<li>🔑 {n}</li>{/each}</ul>
+              </div>
+            {/if}
+            {#if buildReport.changes && buildReport.changes.length}
+              <div class="build-changes">
+                <strong>What Studio changed:</strong>
+                <ul>{#each buildReport.changes as ch}<li>✎ {ch}</li>{/each}</ul>
               </div>
             {/if}
             {#if buildReport.attempts && buildReport.attempts.length}
@@ -4040,13 +4487,34 @@ Use null for fields that are not present.`
                 <div class="strip {healResult.changed ? 'strip-ok' : 'strip-warn'}">
                   {#if healResult.changed}
                     <span>
-                      ✓ Healed “{healResult.agentName || healResult.agentId}”. The repaired draft is loaded above — review it and Save to apply.
+                      ✓ Healed “{healResult.agentName || healResult.agentId}”. Preview the change below and click <em>Apply this fix</em> to load it above; Save to persist.
                       {#if healResult.report && healResult.report.verified} The fix was verified by re-running it.{/if}
                     </span>
                   {:else}
                     <span>No automatic fix found for: {healResult.error}</span>
                   {/if}
                 </div>
+                {#if healDiffBusy}
+                  <div class="repair-diff">
+                    <div class="repair-diff-head">Computing before/after diff…</div>
+                  </div>
+                {:else if healDiff}
+                  <div class="repair-diff">
+                    <div class="repair-diff-head">
+                      SOUL.yaml changes <span class="rd-stat add">+{healDiff.stats.added}</span> <span class="rd-stat del">−{healDiff.stats.removed}</span>
+                    </div>
+                    {#if healDiff.lines.length}
+                      <pre class="repair-diff-body">{#each healDiff.lines as l}<span class="rd-{l.op === '+' ? 'add' : l.op === '-' ? 'del' : 'ctx'}">{l.op} {l.text}
+</span>{/each}</pre>
+                    {:else}
+                      <div class="adjust-advisory">Diff service was unavailable, but the healed workflow is ready to apply.</div>
+                    {/if}
+                    <div class="adjust-actions">
+                      <button class="btn btn-sm btn-primary" type="button" on:click={applyHealDiff}>Apply this fix</button>
+                      <button class="btn btn-sm" type="button" on:click={cancelHealDiff}>Cancel</button>
+                    </div>
+                  </div>
+                {/if}
                 {#if healResult.sessionId || healResult.evidence}
                   <div class="debug-evidence">
                     <div class="debug-evidence-head">
@@ -4690,6 +5158,77 @@ Use null for fields that are not present.`
             </button>
           {/if}
         {/if}
+        {#if studioPresets.length}
+          <div class="mp-section" style="margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border, #eee);">
+            <div class="mp-label" style="font-weight:600;margin-bottom:.25rem;">Runtime intent (optional)</div>
+            <p class="mp-hint" style="margin:.25rem 0;font-size:.85em;opacity:.75;">
+              Overrides the model-derived default timeouts. Leave on "Model default" if you don't need to bias for speed or quality.
+            </p>
+            <div class="mp-preset-list" style="display:flex;flex-direction:column;gap:.25rem;">
+              <label class="mp-preset-row" style="display:flex;gap:.5rem;align-items:flex-start;">
+                <input
+                  type="radio"
+                  name="studio-preset"
+                  value=""
+                  checked={studioPresetCurrent === ''}
+                  on:change={() => saveStudioPreset('')}
+                  disabled={studioPresetSaving}
+                />
+                <div>
+                  <div><strong>Model default</strong></div>
+                  <div style="font-size:.85em;opacity:.7;">Studio picks patient timeouts based on the model tier (compact vs capable).</div>
+                </div>
+              </label>
+              {#each studioPresets as p}
+                <label class="mp-preset-row" style="display:flex;gap:.5rem;align-items:flex-start;">
+                  <input
+                    type="radio"
+                    name="studio-preset"
+                    value={p.name}
+                    checked={studioPresetCurrent === p.name}
+                    on:change={() => saveStudioPreset(p.name)}
+                    disabled={studioPresetSaving}
+                  />
+                  <div>
+                    <div>
+                      <strong>{p.label}</strong>
+                      {#if p.default}<span style="font-size:.75em;opacity:.6;margin-left:.35rem;">(recommended)</span>{/if}
+                    </div>
+                    <div style="font-size:.85em;opacity:.7;">{p.detail}</div>
+                  </div>
+                </label>
+              {/each}
+            </div>
+            {#if studioPresetError}
+              <div class="mp-error" style="color:var(--err, #c33);font-size:.85em;margin-top:.25rem;">{studioPresetError}</div>
+            {/if}
+          </div>
+        {/if}
+        <div class="mp-section" style="margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border, #eee);">
+          <div class="mp-label" style="font-weight:600;margin-bottom:.25rem;">Generate presentation</div>
+          <p class="mp-hint" style="margin:.25rem 0;font-size:.85em;opacity:.75;">
+            How Studio surfaces the generate pipeline. Streamed shows a live
+            transcript beside the canvas; Wizard opens a stepped modal that
+            pauses between clarify → strategy → build. Per-generation override
+            is available on the toggle next to the Generate button.
+          </p>
+          <div class="mp-preset-list" style="display:flex;flex-direction:column;gap:.25rem;">
+            <label class="mp-preset-row" style="display:flex;gap:.5rem;align-items:flex-start;">
+              <input type="radio" name="build-ux" value="streamed" checked={buildUX === 'streamed'} on:change={() => saveBuildUX('streamed')} disabled={buildUXSaving} />
+              <div>
+                <div><strong>Streamed</strong> <span style="font-size:.75em;opacity:.6;margin-left:.35rem;">(default)</span></div>
+                <div style="font-size:.85em;opacity:.7;">One-click generate with a live-transcript panel that shows each pipeline phase as it runs.</div>
+              </div>
+            </label>
+            <label class="mp-preset-row" style="display:flex;gap:.5rem;align-items:flex-start;">
+              <input type="radio" name="build-ux" value="wizard" checked={buildUX === 'wizard'} on:change={() => saveBuildUX('wizard')} disabled={buildUXSaving} />
+              <div>
+                <div><strong>Wizard</strong></div>
+                <div style="font-size:.85em;opacity:.7;">Stepped modal that pauses between phases so you can review the clarified intent and chosen strategy before the graph is built.</div>
+              </div>
+            </label>
+          </div>
+        </div>
         <div class="modal-actions">
           <button class="btn" type="button" on:click={() => modelPicker = { ...modelPicker, open: false }} disabled={modelPicker.saving}>Cancel</button>
           <button class="btn primary" type="button" on:click={saveStudioModel} disabled={modelPicker.saving}>
@@ -4847,6 +5386,28 @@ Use null for fields that are not present.`
           </div>
         {/if}
 
+        <!-- F-GUI-3 — surface security recommendations inline in the preflight
+             modal so operators can accept the rewrite without leaving the save
+             flow. Only unambiguous tool-name suggestions get an Apply button
+             (see applySecurityRecommendation). -->
+        {#if preflight.security && (preflight.security.recommendations || []).length}
+          <div class="refine-section">
+            <div class="refine-heading">Security recommendations ({(preflight.security.recommendations || []).length})</div>
+            <ul class="pf-list">
+              {#each preflight.security.recommendations as rec}
+                <li>
+                  <div class="pf-item pf-warn">
+                    <div class="pf-msg">Replace <code>{rec.from}</code> with <code>{rec.suggest}</code></div>
+                    {#if rec.reason}<div class="pf-fix">{rec.reason}</div>{/if}
+                    <button class="btn btn-sm" type="button" style="margin-top:.35rem;"
+                            on:click={() => applySecurityRecommendation(rec)}>Apply</button>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
         <div class="modal-actions">
           <button class="btn" on:click={cancelPreflight} disabled={saving || fixing}>Back to editing</button>
           <button class="btn" on:click={fixAutomatically} disabled={saving || fixing} title="Auto-wire empty inputs and reconcile mismatched variable names">
@@ -4867,7 +5428,30 @@ Use null for fields that are not present.`
   {#if refinement}
     <div class="modal-backdrop" on:click|self={cancelRefinement} role="presentation">
       <div class="modal refine-modal" role="dialog" aria-modal="true" aria-labelledby="refine-title">
-        <h2 id="refine-title" class="modal-title">Confirm what to build</h2>
+        <h2 id="refine-title" class="modal-title">
+          {effectiveBuildUX === 'wizard' ? 'Wizard — review each phase' : 'Confirm what to build'}
+        </h2>
+        {#if effectiveBuildUX === 'wizard'}
+          <!--
+            Story 9 M (Cohort C): wizard mode makes the pipeline phases visible
+            in the existing refinement modal. The modal already covers phases
+            1 (clarify) and 2 (strategy); phase 3 (build) fires on the Generate
+            button. Validate + Repair are shown in the Build Report after
+            generation runs. The transcript panel is available for a
+            live-view companion in either mode.
+          -->
+          <div class="wizard-steps" style="display:flex;gap:.5rem;font-size:.85em;opacity:.85;margin-bottom:.5rem;">
+            <span><strong>1.</strong> Clarify intent</span>
+            <span aria-hidden="true">→</span>
+            <span><strong>2.</strong> Choose strategy</span>
+            <span aria-hidden="true">→</span>
+            <span><strong>3.</strong> Build graph</span>
+            <span aria-hidden="true">→</span>
+            <span style="opacity:.55;"><strong>4.</strong> Validate</span>
+            <span aria-hidden="true">→</span>
+            <span style="opacity:.55;"><strong>5.</strong> Repair</span>
+          </div>
+        {/if}
         <p class="modal-body">
           Here's how your request was understood. Review it, fix anything that's
           off, then generate. A clearer spec means a better workflow with fewer errors.
@@ -6650,4 +7234,78 @@ Use null for fields that are not present.`
     border-radius: 12px;
     box-shadow: 0 0 0 2px var(--warn, #f5a742);
   }
+
+  /* F-GUI-3 — Studio security review panel. Sits inline in the toolbar strip
+     so the operator sees blockers/warnings/recommendations at a glance while
+     editing. Colours match the existing Contract panel weight. */
+  .security-panel {
+    margin-top: .35rem;
+    background: rgba(20, 22, 40, .8);
+    border: 1px solid #1a1e36;
+    border-radius: 8px;
+    padding: .35rem .6rem;
+    font-size: .78rem;
+  }
+  .security-panel.has-warnings { border-color: rgba(245,167,66,.4); }
+  .security-panel.has-blockers { border-color: rgba(240,96,96,.45); }
+  /* G7 — refresh is now a sibling button in the header row, not a nested
+     click-only span. Row uses flex so the toggle takes remaining space and
+     refresh pins to the right. */
+  .security-head-row {
+    display: flex; align-items: center; gap: .25rem;
+  }
+  .security-head {
+    flex: 1; background: transparent; border: 0;
+    display: flex; align-items: center; gap: .5rem;
+    color: #dfe2ff; padding: .2rem 0;
+    cursor: pointer; text-align: left;
+  }
+  .security-caret { color: #7b82a8; font-size: .72rem; }
+  .security-panel strong { font-weight: 600; }
+  .security-count { color: #ada8ff; font-size: .74rem; }
+  .security-count.ok { color: #4caf82; }
+  .security-count.muted { color: #7b82a8; }
+  .security-refresh {
+    background: transparent; border: 0;
+    color: #7b82a8; cursor: pointer;
+    padding: .1rem .45rem; border-radius: 4px;
+    font: inherit; line-height: 1;
+  }
+  .security-refresh:hover { color: #dfe2ff; background: rgba(255,255,255,.05); }
+  .security-refresh:focus-visible { outline: 2px solid rgba(108,99,255,.6); outline-offset: 1px; }
+  .security-summary {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: .3rem .8rem; margin: .45rem 0;
+  }
+  .security-summary > div {
+    display: flex; gap: .35rem; align-items: baseline; min-width: 0;
+  }
+  .security-summary span {
+    color: #7b82a8; font-size: .7rem; text-transform: uppercase;
+    letter-spacing: .04em; flex-shrink: 0;
+  }
+  .security-summary code {
+    color: #dfe2ff; font-size: .74rem;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+  }
+  .security-block-list { margin-top: .4rem; }
+  .security-block-hdr {
+    color: #ada8ff; font-size: .72rem; text-transform: uppercase; letter-spacing: .05em;
+    margin: .3rem 0;
+  }
+  .security-item {
+    background: #0e1020; border: 1px solid #1a1e36; border-radius: 6px;
+    padding: .4rem .55rem; margin-bottom: .3rem;
+    display: flex; flex-direction: column; gap: .15rem;
+  }
+  .security-item.block { border-color: rgba(240,96,96,.4); }
+  .security-item.warn  { border-color: rgba(245,167,66,.35); }
+  .security-item.rec   { border-color: rgba(139,220,255,.35); }
+  .security-cat {
+    color: #7b82a8; font-size: .68rem; text-transform: uppercase; letter-spacing: .04em;
+  }
+  .security-msg { color: #dfe2ff; }
+  .security-msg code { color: #ada8ff; }
+  .security-fix { color: #7b82a8; font-size: .72rem; }
+  .security-apply { align-self: flex-start; margin-top: .3rem; }
 </style>

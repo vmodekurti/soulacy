@@ -280,8 +280,30 @@
       await api.providers.models(providerId)
       testResults = { ...testResults, [providerId]: { ok: true, msg: 'Reachable ✓' } }
     } catch (e) {
-      testResults = { ...testResults, [providerId]: { ok: false, msg: e.message } }
+      // E4 — Failure handling: the backend now attaches a diagnosis
+      // ({category, reason, fix, detail}) to the error body so we can show a
+      // plain-English reason and a concrete fix instead of the raw
+      // "openai: /models returned 401: {...}" wire error. Older responses that
+      // pre-date the diagnosis field still fall back to e.message.
+      const d = e?.body?.diagnosis || null
+      testResults = {
+        ...testResults,
+        [providerId]: {
+          ok: false,
+          msg: d?.reason || e.message,
+          fix: d?.fix || '',
+          category: d?.category || '',
+          detail: d?.detail || e.body?.detail || '',
+          showDetail: false,
+        },
+      }
     }
+  }
+
+  function toggleTestDetail(providerId) {
+    const r = testResults[providerId]
+    if (!r) return
+    testResults = { ...testResults, [providerId]: { ...r, showDetail: !r.showDetail } }
   }
 
   async function restartGateway() {
@@ -473,7 +495,26 @@
 
             {#if testResults[id]}
               <div class="pv-row test-result" class:ok={testResults[id].ok} class:fail={!testResults[id].ok && !testResults[id].loading}>
-                {testResults[id].loading ? '⏳ Testing…' : testResults[id].ok ? '✓ ' + testResults[id].msg : '✗ ' + testResults[id].msg}
+                {#if testResults[id].loading}
+                  ⏳ Testing…
+                {:else if testResults[id].ok}
+                  ✓ {testResults[id].msg}
+                {:else}
+                  <div class="tr-fail-body">
+                    <div class="tr-reason">✗ {testResults[id].msg}</div>
+                    {#if testResults[id].fix}
+                      <div class="tr-fix">→ {testResults[id].fix}</div>
+                    {/if}
+                    {#if testResults[id].detail}
+                      <button type="button" class="tr-toggle" on:click={() => toggleTestDetail(id)}>
+                        {testResults[id].showDetail ? '▾ Hide raw error' : '▸ Show raw error'}
+                      </button>
+                      {#if testResults[id].showDetail}
+                        <pre class="tr-detail">{testResults[id].detail}</pre>
+                      {/if}
+                    {/if}
+                  </div>
+                {/if}
               </div>
             {/if}
 
@@ -914,6 +955,20 @@
   .test-result { font-size: .78rem; padding: .35rem .5rem; border-radius: 6px; margin-top: .25rem; background: #1a1e36; }
   .test-result.ok   { color: #4caf82; }
   .test-result.fail { color: #f06060; }
+  /* E4 — friendly provider-error card layout */
+  .tr-fail-body { display: flex; flex-direction: column; gap: .3rem; }
+  .tr-reason    { font-weight: 600; }
+  .tr-fix       { color: #c8c7ff; font-weight: 400; }
+  .tr-toggle    {
+    align-self: flex-start; background: transparent; border: none;
+    color: #8b85ff; font-size: .74rem; padding: 0; cursor: pointer;
+  }
+  .tr-toggle:hover { text-decoration: underline; }
+  .tr-detail    {
+    background: #10132a; color: #d6d4e6; padding: .4rem .55rem;
+    border-radius: 4px; font-size: .72rem; margin: .15rem 0 0;
+    white-space: pre-wrap; word-break: break-word; max-height: 180px; overflow: auto;
+  }
 
   .model-empty { font-size: .76rem; color: #6b7294; margin-top: .35rem; }
   .model-empty code { background: #1a1e36; padding: .05rem .3rem; border-radius: 4px; color: #8b85ff; }

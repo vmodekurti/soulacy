@@ -156,19 +156,34 @@ func TestAnthropicModelsNoAPIKeyReturnsBakedIn(t *testing.T) {
 	}
 }
 
-// TestAnthropicModelsHTTPErrorReturnsBakedIn verifies that a network error
-// during /v1/models falls back to the baked-in list without returning an error.
-func TestAnthropicModelsHTTPErrorReturnsBakedIn(t *testing.T) {
+// TestAnthropicModelsHTTPErrorSurfacesError verifies that once an API key is
+// configured, a non-2xx or transport error from /v1/models is returned to the
+// caller rather than being silently masked with the baked-in list.
+//
+// This was the E4 (Cohort E — Providers page failure handling) change: the
+// old behaviour swallowed 401/403/500/network errors and reported "Reachable ✓"
+// with a stale model list, so the operator could not tell a rotated key or
+// down provider from a working one.
+func TestAnthropicModelsHTTPErrorSurfacesError(t *testing.T) {
 	p := NewAnthropicProvider("http://anthropic.test", "key", "m")
 	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
-		return jsonResponse(500, `{}`), nil
+		return jsonResponse(500, `{"error":"internal"}`), nil
 	})
-	models, err := p.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models on 500 should not error, got: %v", err)
+	if _, err := p.Models(context.Background()); err == nil {
+		t.Fatal("Models on 500 must surface an error, got nil (silent fallback regressed)")
 	}
-	if len(models) == 0 {
-		t.Error("Models should return baked-in list on HTTP error")
+}
+
+// TestAnthropicModelsAuthErrorSurfacesError verifies that a 401 (rotated /
+// revoked key) is returned to the caller so llm.ClassifyProviderError can
+// classify it as "bad key" for the Providers page.
+func TestAnthropicModelsAuthErrorSurfacesError(t *testing.T) {
+	p := NewAnthropicProvider("http://anthropic.test", "key", "m")
+	p.client = clientWithRoundTripper(func(r *http.Request) (*http.Response, error) {
+		return jsonResponse(401, `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`), nil
+	})
+	if _, err := p.Models(context.Background()); err == nil {
+		t.Fatal("Models on 401 must surface an error so bad-key is diagnosable")
 	}
 }
 

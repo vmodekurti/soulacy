@@ -105,6 +105,66 @@ export const channelGuides = {
     fields: {},
     test: 'curl -X POST http://localhost:18789/api/v1/agents/YOUR-AGENT/chat -H "Authorization: Bearer YOUR-KEY" -H "Content-Type: application/json" -d \'{"message":"hello"}\'',
   },
+
+  email: {
+    intro: 'Outbound SMTP delivery — your agents can send email through any mailbox that accepts SMTP (Gmail app-passwords, Office 365, Fastmail, self-hosted Postfix, transactional providers like Postmark/SES/SendGrid). Inbound email is out of scope; use a webhook if you need reply parsing.',
+    steps: [
+      'Pick a mailbox that can send on the agent\'s behalf. For Gmail create an **App password** (Account → Security → 2-Step Verification → App passwords) — regular passwords no longer work.',
+      'Set **SMTP host** (e.g. `smtp.gmail.com`) and **Port** (`587` for STARTTLS, `465` for implicit TLS). Leave **TLS** blank to auto-pick from the port.',
+      'Set **Username** to the login mailbox and paste the app password into **Password**. Store secrets in the vault rather than inline when possible.',
+      'Set **From** to the address emails should appear from (e.g. `"Soulacy <bot@example.com>"`). If blank, the username is used.',
+      'Set **Default recipient** to a safe fallback address — used whenever a scheduled/agent-triggered send has no explicit `to`. Set **Default subject** for the same reason.',
+      'Save, restart the gateway, then use the **Test delivery** button below — Soulacy sends a plain-text probe from the configured mailbox to the default recipient.',
+    ],
+    fields: {
+      host: 'SMTP hostname of your outbound provider — usually `smtp.<provider>.com`.',
+      port: 'TCP port. Use 587 for STARTTLS (recommended) or 465 for implicit TLS.',
+      username: 'Login for SMTP AUTH — typically the full mailbox address.',
+      password: 'SMTP password or provider app-password. Prefer storing in the credential vault so it doesn\'t sit in plain YAML.',
+      from: 'From header (any RFC-5322 form, including `"Display Name <addr@host>"`). Defaults to username when blank.',
+      default_output_to: 'Fallback recipient for scheduled or notify-on-failure sends that don\'t specify `to` — set this so silent drops don\'t happen.',
+      subject: 'Default Subject line when a message doesn\'t provide `metadata.subject`.',
+      tls: 'Transport mode: `starttls` (upgrade on 587), `implicit` (SMTPS on 465), or `none` (unencrypted — refused if credentials are set).',
+      timeout_seconds: 'Connect + I/O deadline per send. Defaults to 20s; raise it for slow providers.',
+    },
+    test: 'Save the channel, then click **Test delivery** — a probe email lands in your default recipient inbox within a few seconds if credentials are right.',
+    warning: 'Free Gmail imposes low daily send limits and may throttle test bursts. For production volume use a transactional provider (Postmark, Amazon SES, SendGrid, Mailgun) and a domain you\'ve verified.',
+  },
+
+  teams: {
+    intro: 'Outbound-only — posts to a Microsoft Teams channel using an **Incoming Webhook** or **Workflow POST URL**. No public URL, no Azure app, no consent flow: Teams gives you a URL, you paste it here, agents post to it. Interactive Teams bots (mentions, replies) are a separate project.',
+    steps: [
+      'Open the Teams channel you want the agent to post in → **… → Connectors → Incoming Webhook → Configure**. Give it a name, optionally upload an icon, click **Create**, then copy the generated URL.',
+      'Newer Teams tenants surface this as **Workflows → "Post to a channel when a webhook request is received"**. Either flavour of URL works — Soulacy just POSTs `{"text": ...}` to it.',
+      'Paste the URL into **Webhook URL** below.',
+      'Optionally set **Title** to a short bold prefix (e.g. the agent name) that appears above every message.',
+      'Save, restart the gateway, then click **Test delivery** — a probe message appears in the target Teams channel within seconds.',
+    ],
+    fields: {
+      webhook_url: 'The Incoming Webhook or Workflow URL from the Teams channel. Aliases `url` and `default_output_to` accept the same value for legacy configs.',
+      title: 'Optional bold header prepended to every message — useful when several agents share one channel.',
+      timeout_seconds: 'HTTP timeout per POST. Defaults to 10s; raise if your egress path is slow.',
+    },
+    test: 'Click **Test delivery** — a probe post lands in the Teams channel. To override the destination on a specific send, put an https URL in `msg.ThreadID` or `msg.Metadata["to"]` and it wins over the configured webhook.',
+    warning: 'Anyone with the webhook URL can post to that channel. Treat it as a secret and rotate via Teams if it leaks.',
+  },
+
+  google_chat: {
+    intro: 'Outbound-only — posts to a Google Chat space using an **Incoming Webhook**. No OAuth, no Google Workspace app, no public gateway URL: the space gives you a URL, you paste it here.',
+    steps: [
+      'Open the Google Chat space → **space name → Apps & integrations → Add webhooks → Add webhook**. Name it (this shows as the message sender), optionally set an avatar, click **Save**, then copy the URL.',
+      'Paste the URL into **Webhook URL** below.',
+      'Optionally set **Prefix** — a short string prepended to every message body.',
+      'Save, restart the gateway, then use **Test delivery** to confirm the webhook is reachable.',
+    ],
+    fields: {
+      webhook_url: 'The Incoming Webhook URL from the Google Chat space. Aliases `url` and `default_output_to` accept the same value for legacy configs.',
+      prefix: 'Optional string prepended to every message body — useful when several agents share one space.',
+      timeout_seconds: 'HTTP timeout per POST. Defaults to 10s.',
+    },
+    test: 'Click **Test delivery** — a probe message appears in the target Google Chat space. Per-message override: an https URL in `msg.ThreadID` or `msg.Metadata["to"]` replaces the configured webhook for that one send.',
+    warning: 'Anyone with the webhook URL can post as this sender in the space. Rotate via Google Chat if it leaks — Soulacy has no way to invalidate it.',
+  },
 };
 
 /** guideFor returns the setup guide for a channel id (null when none). */

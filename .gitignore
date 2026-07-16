@@ -107,6 +107,11 @@ config.*.yaml
 .fuse_hidden*
 .cache/
 tmp/
+
+# Cohort E2 — operator's local credential file for `make uat-credential`.
+# Keep out of git; scripts/.env.uat.example is the template that ships.
+.env.uat
+scripts/.env.uat
 __pycache__/
 *.py[cod]
 _mnt_writetest

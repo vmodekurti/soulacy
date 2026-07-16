@@ -943,6 +943,12 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 		cfg.Runtime.AllowSystemAgents, d.vectorStore, d.pluginProvider,
 	)
 	engine.SetSearchConfig(d.searchProvider, d.searchAPIKey)
+	// F-Bridge — install the workspace-scoped default intent-gate mode. The
+	// runtime resolver in Engine.evaluateIntent prefers per-agent
+	// security.intent_gate, falling back to this workspace default when the
+	// per-agent value is empty. Empty here + empty per-agent = intent.Evaluate
+	// treats it as ModePrompt (see internal/intent/intent.go).
+	engine.SetIntentGateDefault(cfg.Security.IntentGate)
 	engine.SetActionLogBackend(d.actionBackend)
 	engine.SetExecutor(d.pyExecutor)
 	for name, be := range d.namedExecutors {

@@ -50,6 +50,11 @@ type EventHub struct {
 	log       *zap.Logger
 	actions   storage.ActionLogBackend // nil = persistence disabled
 	publisher eventPublisher           // nil = queue publishing disabled
+
+	// activity is the E4c hung-session tracker. Every event that passes through
+	// Emit() is noted so /activity/running can render "session hung" callouts
+	// for runs that stopped emitting for longer than the tracker's threshold.
+	activity *sessionActivityTracker
 }
 
 // SetEventPublisher wires an external event publisher (story E1). Must be
@@ -62,10 +67,20 @@ func (h *EventHub) SetEventPublisher(p eventPublisher) {
 // NewEventHub creates an EventHub. actions may be nil to disable persistence.
 func NewEventHub(log *zap.Logger, actions storage.ActionLogBackend) *EventHub {
 	return &EventHub{
-		clients: make(map[*wsClient]struct{}),
-		log:     log,
-		actions: actions,
+		clients:  make(map[*wsClient]struct{}),
+		log:      log,
+		actions:  actions,
+		activity: newSessionActivityTracker(),
 	}
+}
+
+// RunningSessions returns the current hung-session-aware snapshot. Handlers
+// call this to serve /activity/running; tests use it to observe the tracker.
+func (h *EventHub) RunningSessions() []RunningSession {
+	if h.activity == nil {
+		return nil
+	}
+	return h.activity.Snapshot()
 }
 
 // Emit implements the runtime.EventSink interface. It persists the event to the
@@ -77,6 +92,12 @@ func (h *EventHub) Emit(event message.Event) {
 	}
 	if h.publisher != nil {
 		h.publisher.PublishEvent(event) // non-blocking by contract
+	}
+	// E4c — session heartbeat: note before broadcast so /activity/running sees
+	// the update at the same instant WebSocket clients do. Cheap map bump under
+	// a per-tracker mutex; can't block Emit.
+	if h.activity != nil {
+		h.activity.Note(event)
 	}
 	data, err := json.Marshal(event)
 	if err != nil {

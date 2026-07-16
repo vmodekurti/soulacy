@@ -2,6 +2,11 @@
 
 A working agent, the web GUI, and your first chat — in under five minutes.
 
+Soulacy is a **local-first agent operating system**: Studio for authoring
+and self-healing agents, Channels for delivery, Schedule for cron, Learning
+for making the same mistake less often, Packaging for versioned installs —
+all in one binary, all local by default.
+
 ## 1. Install
 
 === "macOS / Linux"
@@ -85,16 +90,34 @@ Changes hot-reload — no restart. The full schema (tools, memory, reasoning, sc
 
 ## 6. Five things to try next
 
-1. **Give it skills** — add the public skill directory and install one:
+1. **Generate an agent from plain English** — open **Studio**, describe the
+   automation, hit **Generate** (Streamed by default streams the pipeline
+   phases live below the canvas; the Wizard variant lets you step through
+   `clarify_intent → choose_strategy → build_graph → validate → repair`).
+   Pick a **Runtime intent** preset (Fast local / Reliable local / Cloud
+   quality) in the Studio model modal to bake sensible timeouts into the
+   agent. → [Studio](../using/studio.md)
+2. **Give it skills** — add the public skill directory and install one:
    ```bash
    sy registry add https://www.skills.sh/
    sy skill install anthropics/skills/skill-creator
    ```
    Every install passes a [security review](../extend/safety.md) before you consent. → [Skill sources](../extend/skill-sources.md)
-2. **Put it on Telegram** — a bot token and two YAML lines. → [Channels](../channels/telegram.md)
-3. **Schedule it** — run every morning, with automatic catch-up after downtime. → [Schedules](../using/schedules.md)
-4. **Start from a template** — Meeting Minutes, Inbox Triage, Market Monitor, Compliance Auditor, with guided readiness checks and mock tests. → [Templates](../using/templates.md)
-5. **Talk to it** — configure `voice:` and hold a realtime conversation in Chat. → [Voice](../using/voice.md)
+3. **Put it on Telegram** — a bot token and two YAML lines. The Channels page
+   has inline guided setup cards for Telegram / Slack / Discord / WhatsApp /
+   email / Teams / Google Chat, with per-field hints and a Test-delivery
+   button that returns a friendly Diagnose reason on failure. → [Channels](../channels/telegram.md)
+4. **Schedule it** — run every morning, with automatic catch-up after
+   downtime. If the gateway missed a fire, the Automations row shows a
+   `⟳ auto-replayed` chip and Activity emits a
+   `schedule.missed_run_backfilled` event so you can tell "why did this fire
+   at 03:04?" apart from a normal cron. → [Schedules](../using/schedules.md)
+5. **Install a versioned package** — `sy pull <owner>/<repo>` or import via
+   Agents → Import. The package v2 schema uses namespaced ids
+   (`owner/name`), calendar versioning (`2026.7.15`), and an install-time
+   secret gate that refuses to import if a required provider / channel /
+   secret / MCP server is missing (with an "I understand — import anyway"
+   opt-out for local experiments). → [Packaging](../packaging.md)
 
 ## Where everything lives
 

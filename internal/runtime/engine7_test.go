@@ -207,8 +207,14 @@ func TestBuildSystemPrefix_NilSkillLoaderNoSkillBlock(t *testing.T) {
 		Builtins: &[]string{},
 	}
 	prefix := e.buildSystemPrefix(def)
-	if prefix != "Plain prompt." {
-		t.Errorf("prefix = %q, want unchanged 'Plain prompt.'", prefix)
+	// After S1 (Cohort F) every prefix ends with the untrusted-content
+	// handling rule; the base system prompt is still the head, and no
+	// skill catalog block is added when the loader is nil.
+	if !strings.HasPrefix(prefix, "Plain prompt.") {
+		t.Errorf("prefix should start with base prompt; got %q", prefix)
+	}
+	if strings.Contains(prefix, "Available Skills") {
+		t.Errorf("nil skill loader should not add a skill block; got %q", prefix)
 	}
 }
 

@@ -11,11 +11,36 @@ import (
 	"strings"
 	"time"
 
+	"github.com/robfig/cron/v3"
+
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/policy"
 	"github.com/soulacy/soulacy/pkg/agent"
 	"gopkg.in/yaml.v3"
 )
+
+// cronParser matches internal/scheduler.cronParser so a Save-time validation
+// verdict is identical to the scheduler's registration-time verdict. If the
+// two ever drift, an operator saves an agent successfully and then finds it
+// silently never fires — exactly the E4 failure mode the pre-validation is
+// designed to close. Keep the flag set in sync with scheduler.cronParser.
+var cronParser = cron.NewParser(
+	cron.SecondOptional | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow | cron.Descriptor,
+)
+
+// validateCronExpression returns an error when expr won't parse under the
+// scheduler's rules. Callers should treat an empty expression as an earlier
+// validation concern; this helper only speaks to syntactically-invalid text.
+func validateCronExpression(expr string) error {
+	trimmed := strings.TrimSpace(expr)
+	if trimmed == "" {
+		return fmt.Errorf("cron expression is empty")
+	}
+	if _, err := cronParser.Parse(trimmed); err != nil {
+		return fmt.Errorf("%q is not a valid cron expression: %v (expected 5 fields like `0 9 * * 1-5` or an @descriptor)", trimmed, err)
+	}
+	return nil
+}
 
 type Severity string
 
@@ -124,6 +149,20 @@ func validateDefinitionShape(report *Report, def *agent.Definition, path string)
 	if def.Schedule != nil {
 		if def.Trigger == agent.TriggerCron && strings.TrimSpace(def.Schedule.Cron) == "" {
 			report.add(Error, "schedule.cron", "required for cron trigger", "", nil)
+		}
+		// E4b (Cohort E — Schedule failure handling): validate the cron string
+		// at save time using the same parser the scheduler uses at registration
+		// time. Previously an invalid expression only surfaced as a
+		// `s.log.Warn("scheduler re-registration failed", ...)` line in the
+		// gateway logs — the save succeeded, the GUI showed the agent as
+		// enabled, and the "Next run" column silently stayed blank forever.
+		// Now the save fails cleanly with the parser's own explanation of
+		// what's wrong ("expected exactly 5 fields, found 3").
+		if def.Trigger == agent.TriggerCron && strings.TrimSpace(def.Schedule.Cron) != "" {
+			if err := validateCronExpression(def.Schedule.Cron); err != nil {
+				report.add(Error, "schedule.cron", err.Error(),
+					"See docs/getting-started/first-agent.md for cron examples.", nil)
+			}
 		}
 		if def.Trigger == agent.TriggerOneShot && def.Schedule.At.IsZero() {
 			report.add(Error, "schedule.at", "required for oneshot trigger", "", nil)

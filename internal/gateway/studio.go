@@ -403,8 +403,37 @@ func (s *Server) handleStudioContract(c *fiber.Ctx) error {
 	cat := s.studioCatalogSnapshot()
 	s.groundCatalog(&cat)
 
-	res := studio.AssessContract(req.Workflow, cat, s.preflightInput(c, cat))
+	// Story 2b (Cohort C): when the draft carries an existing agent id, look
+	// up the saved Definition and pass it to AssessContract so the
+	// security / persona / builtin-scope checks (which need fields Draft
+	// doesn't round-trip) can run. Unsaved / new drafts skip them cleanly.
+	opts := []studio.ContractOption{}
+	if id := strings.TrimSpace(req.Workflow.ID); id != "" && s.loader != nil {
+		if def := s.loader.Get(id); def != nil {
+			opts = append(opts, studio.WithAgentDefinition(def))
+		}
+	}
+	res := studio.AssessContract(req.Workflow, cat, s.preflightInput(c, cat), opts...)
 	return c.JSON(res)
+}
+
+// handleStudioSecurityReview implements POST /api/v1/studio/security_review.
+// S6 (Cohort F) — deterministic, no I/O — surfaces the security shape of a
+// draft so Studio can render the pre-save modal: content trust boundaries,
+// network / file / channel access, privileged tools, confirmation gates,
+// and safer-scoped-tool recommendations.
+func (s *Server) handleStudioSecurityReview(c *fiber.Ctx) error {
+	var req studioPreflightRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	var def *agent.Definition
+	if id := strings.TrimSpace(req.Workflow.ID); id != "" && s.loader != nil {
+		def = s.loader.Get(id)
+	}
+	// F-Bridge — thread the workspace-scoped intent-gate default through so
+	// the review summary matches the effective runtime mode.
+	return c.JSON(studio.SecurityPreflight(req.Workflow, def, s.workspaceIntentGateDefault()))
 }
 
 // preflightInput assembles the live-state PreflightInput from a grounded
@@ -828,6 +857,113 @@ func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
 func jsonMsg(kind, msg string) string {
 	b, _ := json.Marshal(studio.BuildEvent{Kind: kind, Message: msg})
 	return string(b)
+}
+
+// studioGenerateStreamRequest bundles the inputs for the streamed generate
+// pipeline (Story 9 M). Intent is the raw user prompt; Answers are optional
+// clarifying-question answers; Light chooses the light-touch refine variant;
+// AutoRepair enables the deterministic wiring-repair phase.
+type studioGenerateStreamRequest struct {
+	Intent     string            `json:"intent"`
+	Answers    map[string]string `json:"answers,omitempty"`
+	Light      bool              `json:"light,omitempty"`
+	AutoRepair bool              `json:"auto_repair,omitempty"`
+}
+
+// handleStudioGenerateStream implements POST /api/v1/studio/generate/stream.
+// Streams the 5 pipeline phases (clarify_intent → choose_strategy →
+// build_graph → validate → repair) as SSE `event: event` frames plus a
+// terminating `event: done` frame carrying the full PipelineResult, so the
+// GUI can render a live transcript (streamed default) or buffer events and
+// reveal one at a time (wizard mode). Reuses the same code path as the
+// synchronous pipeline runner in internal/studio/generatepipeline.go.
+func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
+	var req studioGenerateStreamRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	if strings.TrimSpace(req.Intent) == "" {
+		return s.errMsg(c, fiber.StatusBadRequest, "intent is required")
+	}
+	model := s.studioLLM()
+	if model == nil {
+		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
+	}
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+	ctx := context.WithoutCancel(c.Context())
+
+	type sse struct{ event, data string }
+	events := make(chan sse, 32)
+
+	// Heartbeat mirrors the build stream so intermediaries don't kill the
+	// idle connection during a long clarify_intent LLM call.
+	hbStop := make(chan struct{})
+	var hbWG sync.WaitGroup
+	hbWG.Add(1)
+	go func() {
+		defer hbWG.Done()
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbStop:
+				return
+			case <-t.C:
+				select {
+				case events <- sse{event: "event", data: `{"phase":"heartbeat","status":"tick"}`}:
+				case <-hbStop:
+					return
+				default:
+				}
+			}
+		}
+	}()
+
+	go func() {
+		defer close(events)
+		defer func() { close(hbStop); hbWG.Wait() }()
+		emit := func(kind, data string) {
+			select {
+			case events <- sse{event: kind, data: data}:
+			default:
+			}
+		}
+		opts := studio.PipelineOptions{
+			Answers:    req.Answers,
+			Light:      req.Light,
+			In:         in,
+			AutoRepair: req.AutoRepair,
+			Emit: func(ev studio.PipelineEvent) {
+				b, _ := json.Marshal(ev)
+				emit("event", string(b))
+			},
+		}
+		res, err := studio.RunGeneratePipeline(ctx, model, req.Intent, cat, opts)
+		if err != nil {
+			done, _ := json.Marshal(fiber.Map{"error": err.Error(), "result": res})
+			emit("done", string(done))
+			return
+		}
+		done, _ := json.Marshal(fiber.Map{"result": res})
+		emit("done", string(done))
+	}()
+
+	c.Set("Content-Type", "text/event-stream")
+	c.Set("Cache-Control", "no-cache")
+	c.Set("Connection", "keep-alive")
+	c.Set("X-Accel-Buffering", "no")
+	c.Context().SetBodyStreamWriter(fasthttp.StreamWriter(func(w *bufio.Writer) {
+		for ev := range events {
+			if ev.event != "" {
+				fmt.Fprintf(w, "event: %s\n", ev.event) //nolint:errcheck
+			}
+			fmt.Fprintf(w, "data: %s\n\n", ev.data) //nolint:errcheck
+			w.Flush()                               //nolint:errcheck
+		}
+	}))
+	return nil
 }
 
 // studioRealRunner wires the studio RealRunVerifier to the engine's execution
@@ -1645,17 +1781,54 @@ func (s *Server) handleStudioDiagnoseSession(c *fiber.Ctx) error {
 		ExtraProblems: s.pythonBuildProblems,
 	})
 
+	failingInput := studioSessionFailingInput(events, req.AgentID, req.SessionID)
+
 	return c.JSON(fiber.Map{
-		"agentId":   req.AgentID,
-		"agentName": def.Name,
-		"sessionId": req.SessionID,
-		"error":     errText,
-		"evidence":  evidence,
-		"changed":   changed,
-		"workflow":  rep.Workflow,
-		"report":    rep,
-		"preflight": studio.Preflight(rep.Workflow, in),
+		"agentId":       req.AgentID,
+		"agentName":     def.Name,
+		"sessionId":     req.SessionID,
+		"error":         errText,
+		"evidence":      evidence,
+		"changed":       changed,
+		"workflow":      rep.Workflow,
+		"report":        rep,
+		"preflight":     studio.Preflight(rep.Workflow, in),
+		"failing_input": failingInput,
 	})
+}
+
+// studioSessionFailingInput returns the text of the original user message that
+// triggered this failing session, so Studio can prefill sampleInput on debug
+// entry (Story 3 AC2b). Walks events newest-first for a matching message.in
+// and returns the first ContentText part's text. Returns "" when the session's
+// inbound message can't be reconstructed — Studio's UI keeps its default in
+// that case.
+func studioSessionFailingInput(events []message.Event, agentID, sessionID string) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if ev.Type != "message.in" || ev.AgentID != agentID || ev.SessionID != sessionID {
+			continue
+		}
+		var msg message.Message
+		data, err := json.Marshal(ev.Payload)
+		if err != nil {
+			return ""
+		}
+		if err := json.Unmarshal(data, &msg); err != nil {
+			return ""
+		}
+		for _, p := range msg.Parts {
+			if p.Type == message.ContentText && strings.TrimSpace(p.Text) != "" {
+				return p.Text
+			}
+		}
+		// Fall back to a stringified payload if the message shape is unusual.
+		if s, ok := ev.Payload.(string); ok {
+			return s
+		}
+		return ""
+	}
+	return ""
 }
 
 func studioSessionEvidence(events []message.Event, agentID, sessionID string) (evidence, errText string, found bool) {
@@ -1877,6 +2050,12 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 // applyLocalPreset fills patient timeout/turn defaults on an agent that will run
 // on a LOCAL model, but only where the draft didn't already set them (Stories
 // #23/#24). No-op for cloud-bound agents — the engine's defaults are fine there.
+//
+// Story 9 (Cohort B) — when the operator has picked an intent-named preset
+// via the GUI (`llm.studio.preset` in config), we prefer that over the
+// model-derived defaults. Explicit intent > model heuristic > engine default.
+// "cloud_quality" applies even for cloud providers so the operator can lean
+// into longer plans without editing YAML.
 func (s *Server) applyLocalPreset(def *agent.Definition) {
 	provider := def.LLM.Provider
 	if provider == "" {
@@ -1886,10 +2065,25 @@ func (s *Server) applyLocalPreset(def *agent.Definition) {
 	if pc, ok := s.cfg.LLM.Providers[provider]; ok {
 		baseURL = pc.BaseURL
 	}
-	if !studio.IsLocalProvider(provider, baseURL) {
-		return
+	intent := strings.TrimSpace(s.cfg.LLM.Studio.Preset)
+	// Cloud-quality is a deliberate choice for cloud runs; other intents keep
+	// the local-only gate to avoid mistakenly applying local-tuned generous
+	// timeouts to a cloud model where it's usually money-per-token.
+	local := studio.IsLocalProvider(provider, baseURL)
+	var p studio.ModelPreset
+	var have bool
+	if intent != "" {
+		if pp, ok := studio.LookupIntentPreset(intent); ok && (local || intent == studio.IntentPresetCloudQuality) {
+			p = pp
+			have = true
+		}
 	}
-	p := studio.LocalPresetFor(def.LLM.Model)
+	if !have {
+		if !local {
+			return
+		}
+		p = studio.LocalPresetFor(def.LLM.Model)
+	}
 	if def.RunTimeout == "" && p.RunTimeout != "" {
 		def.RunTimeout = p.RunTimeout
 	}
@@ -1899,6 +2093,21 @@ func (s *Server) applyLocalPreset(def *agent.Definition) {
 	if def.Reasoning.TotalTimeout == "" && p.TotalTimeout != "" {
 		def.Reasoning.TotalTimeout = p.TotalTimeout
 	}
+	if def.MaxTurns == 0 && p.MaxTurns > 0 {
+		def.MaxTurns = p.MaxTurns
+	}
+}
+
+// handleStudioPresets returns the intent-named preset catalog (Story 9). The
+// GUI renders these three names alongside the model picker so operators can
+// pick a runtime intent — "fast local", "reliable local", "cloud quality" —
+// without editing YAML or knowing the model tier heuristics.
+func (s *Server) handleStudioPresets(c *fiber.Ctx) error {
+	current := strings.TrimSpace(s.cfg.LLM.Studio.Preset)
+	return c.JSON(fiber.Map{
+		"presets": studio.ListIntentPresets(),
+		"current": current,
+	})
 }
 
 // preflightLine renders a preflight issue as a single human-readable line for

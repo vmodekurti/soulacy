@@ -110,12 +110,78 @@ func ClassifyDeliveryErrorForAdapter(adapterID, raw string) Diagnosis {
 		}
 		return false
 	}
+	isEmail := func() bool { return strings.Contains(adapter, "email") || strings.Contains(adapter, "smtp") }
 	isWebhookLike := func() bool {
+		// Story 4 sweep: email is intentionally NOT in the webhook family. It
+		// speaks SMTP, so a "regenerate the webhook URL" fix would be wrong.
+		// Email keeps its own classification path below.
 		return strings.Contains(adapter, "webhook") ||
 			strings.Contains(adapter, "teams") ||
 			strings.Contains(adapter, "google_chat") ||
-			strings.Contains(adapter, "google-chat") ||
-			strings.Contains(adapter, "email")
+			strings.Contains(adapter, "google-chat")
+	}
+
+	// Email/SMTP-specific classification — SMTP status codes don't overlap
+	// cleanly with the HTTP-status buckets below, so handle them first. See
+	// RFC 5321 §4.2 for status ranges: 5xx = permanent, 4xx = transient.
+	//
+	// Ordering rule: the substring matcher is first-match-wins, so more
+	// specific patterns must come BEFORE more generic ones. STARTTLS (530)
+	// and the enhanced-status codes overlap with the generic auth-failure
+	// heuristic (5.7.0 is a general "security policy" marker that servers
+	// emit for BOTH auth AND STARTTLS-required responses), so the specific
+	// 530-prefixed check has to run first. Do not reorder alphabetically.
+	if isEmail() {
+		switch {
+		case contains("530 5.7.0", "must issue a starttls", "must be tls", "starttls required"):
+			return Diagnosis{
+				Category: DeliveryBadToken,
+				Reason:   "The SMTP server requires TLS but the connection is unencrypted.",
+				Fix:      "Set TLS to `starttls` (port 587) or `implicit` (port 465) in the email channel settings.",
+			}
+		// Auth failure — 535 is the RFC-canonical auth code; 5.7.8 is the
+		// enhanced-status marker specific to authentication (RFC 3463 §3.7).
+		// The bare 5.7.0 marker was intentionally REMOVED from this branch —
+		// it also matches the STARTTLS-required 530 5.7.0 case above, which
+		// is why the reorder alone isn't sufficient. Text tokens
+		// ("authentication", "credentials") still catch every real auth path.
+		case contains("535 ", "535-", "5.7.8", "authentication failed", "auth failed", "authentication credentials", "invalid credentials"):
+			return Diagnosis{
+				Category: DeliveryBadToken,
+				Reason:   "The SMTP server rejected the mailbox credentials.",
+				Fix:      "Update the SMTP username and password (for Gmail use an app password, not the account password), save, and restart the gateway.",
+			}
+		case contains("550 5.7.1", "spf fail", "dmarc", "dkim=fail", "not authenticated", "not permitted to send", "relay access denied", "relay not permitted", "relaying denied"):
+			return Diagnosis{
+				Category: DeliveryForbidden,
+				Reason:   "The SMTP server refused to relay this message — the From address, sender IP, or SPF/DKIM/DMARC alignment failed policy.",
+				Fix:      "Send From an address the SMTP server is authorized to relay for, and verify SPF/DKIM/DMARC records for your sending domain.",
+			}
+		case contains("550 5.1.1", "550 5.1.2", "550 5.1.3", "user unknown", "recipient rejected", "no such user", "553 5.1.3", "mailbox unavailable", "does not exist"):
+			return Diagnosis{
+				Category: DeliveryInvalidDest,
+				Reason:   "The SMTP server rejected the recipient address — the mailbox does not exist or is not accepting mail.",
+				Fix:      "Verify the recipient (msg.ThreadID / msg.Metadata[\"to\"] / default_output_to) is a real, deliverable address.",
+			}
+		case contains("421 ", "421-", "452 4.5.3", "552 5.3.4", "quota exceeded", "over quota", "too many recipients", "too much mail"):
+			return Diagnosis{
+				Category: DeliveryRateLimited,
+				Reason:   "The SMTP server throttled or refused this send (rate limit, mailbox quota, or too many recipients).",
+				Fix:      "Slow the send cadence, split large batches, or route through a transactional provider (Postmark/SES/SendGrid) with a higher quota.",
+			}
+		case contains("554 5.7.1", "message rejected", "550 5.7.26", "554 "):
+			return Diagnosis{
+				Category: DeliveryForbidden,
+				Reason:   "The SMTP server rejected the message content, likely for policy or reputation reasons.",
+				Fix:      "Check whether the sending domain is on a deny list, the body contains blocked terms, or the From address is unauthenticated; try a different sending domain if the issue persists.",
+			}
+		case contains("tls handshake", "certificate", "x509", "tls: bad record", "tls handshake failed"):
+			return Diagnosis{
+				Category: DeliveryNetwork,
+				Reason:   "The TLS handshake with the SMTP server failed.",
+				Fix:      "Verify the host/port/tls combination (587=starttls, 465=implicit), and that outbound TLS to the provider is not blocked.",
+			}
+		}
 	}
 
 	switch {

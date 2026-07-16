@@ -644,6 +644,11 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/onboarding/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleOnboardingStatus)
 	api.Get("/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleReadiness)
 	api.Get("/deployment/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleDeploymentStatus)
+	api.Get("/security/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleSecurityReadiness)
+	// S7 (Cohort F) — Security Doctor: per-agent synthesis view +
+	// dry-run injection simulation without executing anything.
+	api.Get("/agents/:id/security_doctor", s.rbacAgentMW(rbac.ActionRead), s.handleSecurityDoctor)
+	api.Post("/agents/:id/security_doctor/dry_run", s.rbacAgentMW(rbac.ActionRead), s.handleSecurityDoctorDryRun)
 	api.Get("/executors", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleExecutors)
 
 	// Agents
@@ -826,8 +831,15 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/preflight", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioPreflight)
 	// Studio generation contract: graph + runtime preflight + authoring rules.
 	api.Post("/studio/contract", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioContract)
+	// Studio security review (S6, Cohort F): pre-save summary of trust
+	// boundaries + network / file / channel / privileged tool usage +
+	// confirmation requirements + safer-scoped-tool recommendations.
+	api.Post("/studio/security_review", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioSecurityReview)
 	// Studio plugin backend: builder-model strength advice (warn on weak models).
 	api.Get("/studio/model-advice", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioModelAdvice)
+	// Story 9 (Cohort B): intent-named preset catalog ("fast local" / "reliable
+	// local" / "cloud quality") for the GUI's Studio picker.
+	api.Get("/studio/presets", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioPresets)
 	// Studio plugin backend: deterministic + iterative-LLM repair for the "Fix
 	// automatically" action.
 	api.Post("/studio/autowire", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioAutowire)
@@ -837,6 +849,11 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/build", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioBuild)
 	// Streaming variant: live progress as a text/event-stream.
 	api.Post("/studio/build/stream", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioBuildStream)
+	// Story 9 M (Cohort C): streamed generate pipeline — surfaces the 5
+	// phases (clarify_intent → choose_strategy → build_graph → validate →
+	// repair) as SSE events. Consumed by both the live-transcript panel
+	// (default) and the wizard-mode stepped modal (buffered client-side).
+	api.Post("/studio/generate/stream", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioGenerateStream)
 	// Studio Architect: list/diagnose failed runs and self-heal the saved agent.
 	api.Get("/studio/failed-runs", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioFailedRuns)
 	api.Get("/studio/run-trace", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRunTrace)
@@ -970,6 +987,9 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/runs/ledger", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunLedger)
 	api.Get("/runs/events", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunEvents)
 	api.Get("/runs/:session_id/metrics", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleRunMetrics)
+	// E4c — hung-session tracker snapshot for the Activity page's "Running now"
+	// strip. Read-only, cheap, safe to poll every couple of seconds.
+	api.Get("/activity/running", s.rbacMW(rbac.ResourceMetrics, rbac.ActionRead), s.handleActivityRunning)
 
 	// --- Workboard (Story 5) ---
 	// s.workboardStore is checked at request time so SetWorkboardStore() can

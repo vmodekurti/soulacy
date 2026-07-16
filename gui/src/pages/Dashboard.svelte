@@ -19,6 +19,11 @@
   let alertTestStatus = ''
   let downloadingSupport = false
   let supportMessage = ''
+  // F-GUI-4 — Cohort F S4 detail: the /readiness journey already lists the
+  // security row, but the operator needs the concrete blocker/warning text and
+  // a one-click deep-link into the affected agent's Security Doctor. That
+  // requires the richer /security/readiness payload.
+  let securityReadiness = null
 
   const EVENT_FILTERS = [
     { id: 'all', label: 'All' },
@@ -55,6 +60,11 @@
       readiness = await api.readiness()
     } catch {
       readiness = null
+    }
+    try {
+      securityReadiness = await api.security.readiness()
+    } catch {
+      securityReadiness = null
     }
     try {
       ops = await api.opsSummary('24h')
@@ -163,6 +173,51 @@
     if (status === 'ok') return 'Ready'
     if (status === 'warn') return 'Needs attention'
     return 'Blocked'
+  }
+
+  // F-GUI-4 — surface the highest-priority security next-action inline on the
+  // journey row and deep-link the "Security defaults" card into the Security
+  // Doctor drawer for the affected agent. Priority order:
+  //   1. First privileged exposure that hasn't been accepted → hardest fix,
+  //      routes to Agents#doctor.
+  //   2. First wildcard-MCP agent → routes to Agents#doctor.
+  //   3. First next-action → falls back to whatever the backend suggests.
+  function securityHighlight() {
+    const r = securityReadiness
+    if (!r) return null
+    const exposures = r.privileged_exposures || []
+    const unaccepted = exposures.filter(e => !e.accepted)
+    if (unaccepted.length > 0) {
+      const first = unaccepted[0]
+      return {
+        text: `${first.agent_name || first.agent_id} exposes ${first.channels?.join(', ') || 'shared channels'} without ack`,
+        agentId: first.agent_id,
+      }
+    }
+    if (exposures.length > 0) {
+      const first = exposures[0]
+      return {
+        text: `${first.agent_name || first.agent_id} privileged channels: ${first.channels?.join(', ') || 'shared channels'}`,
+        agentId: first.agent_id,
+      }
+    }
+    const wildcards = r.wildcard_mcp_agents || []
+    if (wildcards.length > 0) {
+      return { text: `wildcard MCP allow-list on ${wildcards[0]}`, agentId: wildcards[0] }
+    }
+    if (r.next_actions && r.next_actions.length > 0) {
+      return { text: r.next_actions[0], agentId: '' }
+    }
+    return null
+  }
+
+  function openSecurityDoctor(agentId) {
+    if (!agentId) {
+      window.location.hash = 'agents'
+      return
+    }
+    const params = new URLSearchParams({ agent_id: agentId, doctor: '1' })
+    window.location.hash = `agents?${params.toString()}`
   }
 
   function pct(n) {
@@ -456,49 +511,41 @@
         </div>
       {/if}
 
-      {#if readiness.parity}
-        <div class="parity-cockpit">
-          <div class="parity-head">
-            <div>
-              <div class="eyebrow">Framework Parity</div>
-              <h3>{readiness.parity.score || 0}% · OpenClaw / Hermes comparison</h3>
-              <p>Live score across onboarding, channels, Studio, chat, learning, automation, remote execution, companion, ecosystem, and enterprise readiness.</p>
-            </div>
-            <button class="btn-secondary" on:click={() => openHref('#studio')}>Improve in Studio</button>
-          </div>
-          <div class="parity-grid">
-            {#each readiness.parity.areas || [] as area}
-              <button class="parity-card {area.status}" type="button" on:click={() => openHref(area.href)}>
-                <div class="parity-card-top">
-                  <span>{area.label}</span>
-                  <strong>{area.score}%</strong>
-                </div>
-                <small>{area.detail}</small>
-                <em>{area.benchmark}</em>
-              </button>
-            {/each}
-          </div>
-          {#if readiness.parity.top_gaps?.length}
-            <div class="parity-gaps">
-              <div class="ops-label">Biggest parity gaps</div>
-              {#each readiness.parity.top_gaps as gap}
-                <button class="ops-row" type="button" on:click={() => openHref(gap.href)}>
-                  <strong>{gap.label}</strong>
-                  <span>{gap.next}</span>
-                </button>
-              {/each}
-            </div>
-          {/if}
-        </div>
-      {/if}
+      <!-- The competitive-parity cockpit (readiness.parity) used to render here.
+           It was removed because it's a product/roadmap artifact — comparing
+           this workspace against reference frameworks doesn't help an operator
+           decide what to fix today, and its "biggest parity gaps" overlapped
+           with Next Best Actions below. The backend still computes
+           readiness.parity for API consumers who want the scorecard. -->
 
       <div class="journey-grid">
         {#each readiness.journey || [] as item}
-          <button class="journey-card {item.status}" type="button" on:click={() => openHref(item.href)}>
-            <span class="journey-status">{statusLabel(item.status)}</span>
-            <strong>{item.label}</strong>
-            <small>{item.detail}</small>
-          </button>
+          {#if item.key === 'security'}
+            <!-- F-GUI-4 — the S4 backend already emits a Security row in
+                 readiness.journey. We enrich it here with the highest-priority
+                 blocker/warning text and route clicks to the Security Doctor
+                 for the affected agent when we can identify one. -->
+            {@const hl = securityHighlight()}
+            <button
+              class="journey-card {item.status} security-card"
+              type="button"
+              on:click={() => hl?.agentId ? openSecurityDoctor(hl.agentId) : openHref(item.href)}
+              title={hl?.text || item.detail}
+            >
+              <span class="journey-status">{statusLabel(item.status)}</span>
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+              {#if hl}
+                <span class="journey-inline">→ {hl.text}</span>
+              {/if}
+            </button>
+          {:else}
+            <button class="journey-card {item.status}" type="button" on:click={() => openHref(item.href)}>
+              <span class="journey-status">{statusLabel(item.status)}</span>
+              <strong>{item.label}</strong>
+              <small>{item.detail}</small>
+            </button>
+          {/if}
         {/each}
       </div>
 
@@ -695,42 +742,8 @@
   .release-cmds {
     display: flex; flex-direction: column; gap: .25rem; min-width: 230px; align-items: flex-end;
   }
-  .parity-cockpit {
-    background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px;
-    padding: .85rem; display: flex; flex-direction: column; gap: .8rem;
-  }
-  .parity-head {
-    display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem;
-  }
-  .parity-head h3 { margin: 0; font-size: 1rem; }
-  .parity-head p { margin: .3rem 0 0; max-width: 850px; }
-  .parity-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: .55rem;
-  }
-  .parity-card {
-    background: #14182c; border: 1px solid #252a4a; border-radius: 8px;
-    color: #dfe2ff; padding: .7rem; text-align: left; cursor: pointer;
-    min-height: 132px; display: flex; flex-direction: column; gap: .45rem;
-  }
-  .parity-card:hover { border-color: #6c63ff; }
-  .parity-card.ok { border-color: rgba(76,175,130,.35); }
-  .parity-card.warn { border-color: rgba(240,160,96,.42); }
-  .parity-card.fail { border-color: rgba(240,96,96,.45); }
-  .parity-card-top {
-    display: flex; justify-content: space-between; gap: .6rem; align-items: baseline;
-  }
-  .parity-card-top span { font-weight: 750; font-size: .78rem; }
-  .parity-card-top strong { color: #f0f2ff; font-size: .82rem; }
-  .parity-card small {
-    color: #8a91b8; font-size: .7rem; line-height: 1.35; flex: 1;
-  }
-  .parity-card em {
-    color: #6f76a3; font-style: normal; font-size: .66rem; text-transform: uppercase;
-    letter-spacing: .06em; font-weight: 700;
-  }
-  .parity-gaps {
-    border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
-  }
+  /* Parity cockpit styles removed with the block itself — the backend still
+     serves readiness.parity, but the Dashboard no longer renders it. */
   .launch-checklist {
     background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
   }
@@ -782,6 +795,16 @@
   .journey-card.ok .journey-status { background: rgba(76,175,130,.15); color: #68d19b; }
   .journey-card.warn .journey-status { background: rgba(240,160,96,.16); color: #f0b070; }
   .journey-card.fail .journey-status { background: rgba(240,96,96,.14); color: #ff8585; }
+  /* F-GUI-4 — Cohort F: highlight the top security next-action inline on the
+     Security row and reserve room for the additional line without breaking the
+     rest of the grid. */
+  .journey-card .journey-inline {
+    display: block; color: #ada8ff; font-size: .7rem;
+    margin-top: .35rem; line-height: 1.35;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .journey-card.security-card.fail .journey-inline { color: #ff8585; }
+  .journey-card.security-card.warn .journey-inline { color: #f0b070; }
   .next-actions {
     background: #0f1222; border: 1px solid #1a1e36; border-radius: 8px; overflow: hidden;
   }
@@ -844,7 +867,6 @@
     .section-hdr { flex-wrap: wrap; }
     .readiness-top { align-items: flex-start; flex-direction: column; }
     .readiness-actions { justify-content: flex-start; }
-    .parity-head { flex-direction: column; }
     .release-strip { flex-direction: column; }
     .slo-strip { flex-direction: column; align-items: flex-start; }
     .release-cmds { align-items: flex-start; min-width: 0; width: 100%; }

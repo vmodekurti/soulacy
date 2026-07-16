@@ -155,6 +155,16 @@ func run() error {
 		printFirstRunBanner(bootstrap, cfg.Server.Host, cfg.Server.Port)
 	}
 
+	// Cohort G — advisory schema-version check. Warns on drift, never blocks
+	// startup so an operator upgrading from a prior version is never
+	// stranded. Silent on the happy path so we don't add noise to every boot.
+	if st := config.CheckSchemaVersion(cfg); st.OutOfDate {
+		fmt.Fprintf(os.Stderr,
+			"⚠ config schema drift: file has schema_version=%q, this build expects %q. "+
+				"Review CHANGELOG for breaking changes, then update schema_version in %s.\n",
+			st.Have, st.Want, cfgPath)
+	}
+
 	a, err := app.New(cfg, app.WithConfigPath(cfgPath))
 	if err != nil {
 		return err

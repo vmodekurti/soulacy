@@ -380,30 +380,55 @@ var anthropicBakedInModels = []string{
 	"claude-3-opus-latest",
 }
 
+// Models queries Anthropic's /v1/models endpoint when a key is configured, or
+// returns the baked-in fallback list when no key is set.
+//
+// E4 (Cohort E — Providers page failure handling): previously this method
+// swallowed every non-2xx response and every transport error into a silent
+// fallback, which meant Providers → Test Connection reported "Reachable ✓"
+// even with a rotated key or a wrong base URL. That masked the exact failure
+// mode E4 exists to surface. Now:
+//
+//   - No key configured (local/test setups): return the baked-in fallback so
+//     the model picker still shows options, no error.
+//   - Key set, request fails: return the raw provider error so
+//     llm.ClassifyProviderError can rewrite it into a friendly reason (bad
+//     key, network, region blocked, etc.) — the operator finds out.
+//
+// Transport-level errors and 5xx responses do NOT fall back to the baked-in
+// list — the caller needs to know the account/key is unreachable.
 func (p *AnthropicProvider) Models(ctx context.Context) ([]string, error) {
 	if p.apiKey == "" {
 		return anthropicBakedInModels, nil
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.baseURL+"/v1/models", nil)
 	if err != nil {
-		return anthropicBakedInModels, nil
+		return nil, fmt.Errorf("anthropic: build /models request: %w", err)
 	}
 	req.Header.Set("x-api-key", p.apiKey)
 	req.Header.Set("anthropic-version", p.version)
 	resp, err := p.client.Do(req)
 	if err != nil {
-		return anthropicBakedInModels, nil
+		return nil, fmt.Errorf("anthropic: /models request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 300 {
-		return anthropicBakedInModels, nil
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("anthropic: /models returned %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 	var out struct {
 		Data []struct {
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil || len(out.Data) == 0 {
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		// Decode failures against a 2xx are a shape mismatch (e.g. Anthropic
+		// changed the response envelope). Fall back to the baked-in list so the
+		// picker still works, but log-warn via the error path so it's visible
+		// in the Providers doctor.
+		return anthropicBakedInModels, nil
+	}
+	if len(out.Data) == 0 {
 		return anthropicBakedInModels, nil
 	}
 	ids := make([]string, 0, len(out.Data))

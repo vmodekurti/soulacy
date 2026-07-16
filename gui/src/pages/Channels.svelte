@@ -16,6 +16,12 @@
   let diagnosis = {}   // adapterId → { ok, category, reason, fix, detail, to }
   let channelMetrics = { inbound: [], outbound: [], inbox_drops: [] }
   let deliveryReadiness = null
+  // F-GUI-5 — the "saving without ack fails readiness" callout depends on the
+  // active deployment profile (S4 readiness verdict is only `fail` in
+  // production; `warn` otherwise). Deployment status is best-effort and the
+  // callout still renders without it — we just don't escalate to a red
+  // production warning if the profile isn't known.
+  let deploymentProfile = ''
 
   // Edit modal state
   let editing   = null   // the channel being edited
@@ -64,6 +70,9 @@
       }
       deliveryReadiness = deliveryRes
       loadTiers(agents)
+      // Non-blocking — used purely to escalate the privileged callout in
+      // production. See resolvePrivilegedContext below.
+      api.deploymentStatus().then(res => { deploymentProfile = res?.profile || '' }).catch(() => {})
     } catch (e) {
       error = e.message
     } finally {
@@ -423,6 +432,34 @@
     const id = row.agent_id
     if (!id || id === '—' || id === 'Send only' || id === 'Default sender') return null
     return tiers[id] || { tier: 'unknown', reasons: [] }
+  }
+
+  // F-GUI-5 — privileged-exposure context. Returns null when the currently
+  // bound agent isn't privileged, so the callout renders only when it's
+  // actually informative. Consumed by both the single-form and bot-mapping
+  // renderers.
+  function privilegedContext(agentId, values = {}) {
+    if (!agentId) return null
+    const info = tiers[agentId]
+    if (!info || info.tier !== 'privileged') return null
+    const accepted = isTruthy(values.accept_privileged_exposure)
+    return {
+      agentId,
+      tier: info.tier,
+      reasons: info.reasons || [],
+      accepted,
+      needsAck: !accepted,
+      // In production S4 (internal/gateway/securityreadiness.go) escalates an
+      // unaccepted privileged exposure from `warn` to `fail`, blocking the
+      // production readiness check. Elsewhere it's a warning.
+      productionBlock: !accepted && deploymentProfile === 'production',
+    }
+  }
+
+  function openSecurityDoctorForAgent(agentId) {
+    if (!agentId) return
+    const params = new URLSearchParams({ agent_id: agentId, doctor: '1' })
+    window.location.hash = `agents?${params.toString()}`
   }
 
   function channelMetricIDs(ch) {
@@ -823,6 +860,36 @@
           {/if}
         </div>
       {:else}
+        <!-- F-GUI-5 — privileged-exposure explainer for single-agent bindings.
+             When the bound agent is privileged the operator gets a plain-
+             language brief of what "privileged" implies plus a red
+             production-fail nudge when the ack toggle is off. The learn-more
+             link deep-links to the Security Doctor drawer for the same agent. -->
+        {@const pc = privilegedContext(form.agent_id, form)}
+        {#if pc}
+          <div class="privileged-callout" class:danger={pc.productionBlock} class:warn={pc.needsAck && !pc.productionBlock}>
+            <strong>
+              {pc.needsAck ? 'This channel binds to a privileged agent' : 'Privileged exposure acknowledged'}
+            </strong>
+            <p>
+              {agentLabel(agents.find(a => a.id === pc.agentId) || { id: pc.agentId })}
+              is <em>privileged</em> — it can reach OS-level tools, file writes, package installs, or wildcard MCP.
+            </p>
+            <p>
+              Enabling <code>accept_privileged_exposure</code> below records that you understand
+              incoming messages on this shared channel can trigger those tools.
+              {#if pc.productionBlock}
+                <span class="privileged-prod">Production readiness will fail if you save without acknowledging.</span>
+              {:else if pc.needsAck}
+                <span>Saving without ack will surface as a warning in production readiness.</span>
+              {/if}
+            </p>
+            <button class="btn-secondary tiny" type="button"
+                    on:click={() => openSecurityDoctorForAgent(pc.agentId)}>
+              Learn more — open Security Doctor
+            </button>
+          </div>
+        {/if}
         <div class="fields">
           {#each schemaFields(editing) as f}
             {#if shouldShowChannelField(f, form)}
@@ -875,6 +942,7 @@
           {:else}
             <div class="bot-list">
               {#each botsForm as bot, i}
+                {@const bpc = privilegedContext(bot.agent_id, bot)}
                 <div class="bot-card">
                   <div class="bot-card-head">
                     <div>
@@ -883,6 +951,26 @@
                     </div>
                     <button class="btn-danger tiny" type="button" on:click={() => removeBotMapping(i)}>Remove</button>
                   </div>
+                  <!-- F-GUI-5 — per-bot privileged callout for multi-bot channels
+                       (Slack, Discord, Google Chat, Teams). -->
+                  {#if bpc}
+                    <div class="privileged-callout compact" class:danger={bpc.productionBlock} class:warn={bpc.needsAck && !bpc.productionBlock}>
+                      <strong>
+                        {bpc.needsAck ? 'Privileged agent — needs ack' : 'Privileged exposure acknowledged'}
+                      </strong>
+                      <p>
+                        {agentLabel(agents.find(a => a.id === bpc.agentId) || { id: bpc.agentId })}
+                        can reach OS-level, file-write, or wildcard-MCP tools from messages on this shared bot.
+                        {#if bpc.productionBlock}
+                          <span class="privileged-prod">Production readiness will fail without ack.</span>
+                        {/if}
+                      </p>
+                      <button class="btn-secondary tiny" type="button"
+                              on:click={() => openSecurityDoctorForAgent(bpc.agentId)}>
+                        Open Security Doctor
+                      </button>
+                    </div>
+                  {/if}
                   <div class="bot-fields">
                     {#each editing.bot_schema as f}
                       {#if shouldShowChannelField(f, bot)}
@@ -1206,4 +1294,31 @@
     border-left: 2px solid #f0a060; padding-left: .55rem;
   }
   .guide-hint { color: #7b82a8; }
+
+  /* F-GUI-5 — privileged-exposure callout styling. Warn = amber, production
+     unaccepted = red (matches S4 verdict escalation). */
+  .privileged-callout {
+    background: rgba(245,167,66,.08);
+    border: 1px solid rgba(245,167,66,.3);
+    border-radius: 8px;
+    padding: .7rem .85rem;
+    margin: .5rem 0 1rem;
+    color: #e7e8f5;
+    display: flex; flex-direction: column; gap: .35rem;
+    font-size: .84rem; line-height: 1.5;
+  }
+  .privileged-callout.compact { margin: .35rem 0 .55rem; padding: .55rem .7rem; font-size: .78rem; }
+  .privileged-callout strong { color: #f5bd67; font-weight: 600; }
+  .privileged-callout.warn { border-color: rgba(245,167,66,.4); }
+  .privileged-callout.danger {
+    background: rgba(240,96,96,.08);
+    border-color: rgba(240,96,96,.4);
+  }
+  .privileged-callout.danger strong { color: #f06060; }
+  .privileged-callout p { margin: 0; color: #c8cadf; }
+  .privileged-callout code { color: #ada8ff; }
+  .privileged-callout em { color: #f5bd67; font-style: normal; }
+  .privileged-callout.danger em { color: #f06060; }
+  .privileged-prod { color: #f06060; font-weight: 600; margin-left: .3rem; }
+  .privileged-callout .btn-secondary { align-self: flex-start; }
 </style>

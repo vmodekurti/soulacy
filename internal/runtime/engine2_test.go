@@ -395,8 +395,36 @@ func TestBuildSystemPrefix_EmptyCatalogs(t *testing.T) {
 		Builtins: &[]string{},
 	}
 	prefix := e.buildSystemPrefix(def)
-	if prefix != "You are a simple bot." {
-		t.Errorf("prefix = %q, want unchanged system prompt", prefix)
+	// After S1 (Cohort F), every prefix ends with the untrusted-content
+	// handling rule regardless of catalog contents. The base prompt is
+	// still preserved as the head.
+	if !strings.HasPrefix(prefix, "You are a simple bot.") {
+		t.Errorf("prefix should start with base system prompt; got %q", prefix)
+	}
+	if !strings.Contains(prefix, "Handling external content") {
+		t.Errorf("prefix should contain S1 external-content guide; got %q", prefix)
+	}
+}
+
+// TestBuildSystemPrefix_IncludesExternalContentGuide pins the S1
+// guarantee: every agent, regardless of opt-outs elsewhere, inherits
+// the untrusted-content handling rule so the runtime prompt is
+// consistent across ReAct, plan-execute, workflow, and direct LLM loops.
+func TestBuildSystemPrefix_IncludesExternalContentGuide(t *testing.T) {
+	e := newMinimalEngine(t)
+	cases := []*agent.Definition{
+		{ID: "plain", SystemPrompt: "hi"},
+		{ID: "no-builtins", SystemPrompt: "hi", Builtins: &[]string{}},
+		{ID: "with-caps", SystemPrompt: "hi", Capabilities: []string{"system"}},
+	}
+	for _, def := range cases {
+		got := e.buildSystemPrefix(def)
+		if !strings.Contains(got, "<external_content") {
+			t.Errorf("agent %q prefix missing external_content wrapper reference", def.ID)
+		}
+		if !strings.Contains(got, "MUST NOT") {
+			t.Errorf("agent %q prefix missing the enforcement rule text", def.ID)
+		}
 	}
 }
 

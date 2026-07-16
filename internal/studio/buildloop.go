@@ -114,6 +114,17 @@ type BuildReport struct {
 	Summary  string         `json:"summary"`
 	Contract ContractResult `json:"contract"`
 	Residual []string       `json:"residual,omitempty"` // problems still unresolved at the end
+	// Changes is a plain-language rollup of what the loop actually altered
+	// across all attempts. Story 2b (Cohort C): the story says "'Build until
+	// it works' explains what it changed" — the attempts array carries the
+	// raw record; Changes is the "at-a-glance" summary the GUI shows above
+	// the attempt log so the operator doesn't have to scan every row.
+	Changes []string `json:"changes,omitempty"`
+	// NeedsExternal, when set, tells the operator the loop stopped because
+	// it needs input a machine can't provide: a credential, a decision, an
+	// external API's rate reset. Extracted from the residual list so the GUI
+	// can render it as a call-to-action rather than a generic error.
+	NeedsExternal []string `json:"needs_external,omitempty"`
 	// Diagnosis, when set, is a plain-language explanation of WHY the build could
 	// not be fixed automatically — and what to do about it. It is set when the
 	// loop detects it is repairing the same failure over and over (cosmetic edits
@@ -214,6 +225,21 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			repaired, changed := RepairWithProblems(ctx, llm, rep.Workflow, problems, cat)
 			if changed {
 				RepairWiring(&repaired, cat)
+				// S6 (Cohort F): the LLM repair MUST NOT sneak in a
+				// privileged tool or a shared-channel exposure the
+				// operator didn't already have in their draft. If the
+				// repair added one, revert to the pre-repair draft and
+				// record the block so the surface tells the operator
+				// what happened.
+				if blocked, reason := detectPrivilegedRegression(rep.Workflow, repaired); blocked {
+					att.Action = "LLM repair blocked: " + reason
+					att.Changed = false
+					rep.Attempts = append(rep.Attempts, att)
+					rep.Residual = problems
+					emit(BuildEvent{Kind: "result", Attempt: n, Phase: "repair", Message: att.Action})
+					tr.Logd("repair", "security", n, att.Action, map[string]any{"reason": reason})
+					break
+				}
 				rep.Workflow = repaired
 				att.Action = "LLM repair of " + plural(len(problems), "problem")
 				att.Changed = true
@@ -317,6 +343,8 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 	rep.Verified = verified
 	rep.OK = preflightClean && (opts.Verifier == nil || verified)
 	rep.Contract = AssessContract(rep.Workflow, cat, opts.In)
+	rep.Changes = summarizeBuildChanges(rep.Attempts)
+	rep.NeedsExternal = extractExternalBlockers(rep.Residual)
 	rep.Summary = buildSummary(rep)
 	tr.Snapshot("final", 0, rep.Workflow)
 	tr.Logd("result", "done", 0, rep.Summary, map[string]any{
@@ -501,6 +529,10 @@ func buildSummary(rep BuildReport) string {
 		return fmt.Sprintf("Validated clean against your setup — %s. Run it to verify end-to-end.", attemptsPhrase(rep))
 	case rep.Diagnosis != "":
 		return rep.Diagnosis
+	case len(rep.NeedsExternal) > 0:
+		// Stopping condition the story explicitly calls out: hand the operator
+		// exactly what they need to unblock, not a raw residual dump.
+		return "Stopped — needs your input: " + rep.NeedsExternal[0]
 	case len(rep.Residual) > 0:
 		return "Could not fully fix it automatically. Remaining: " + strings.Join(rep.Residual, "; ")
 	default:
@@ -519,6 +551,59 @@ func attemptsPhrase(rep BuildReport) string {
 		return "no repairs were needed"
 	}
 	return "after " + plural(repairs, "automatic fix")
+}
+
+// summarizeBuildChanges rolls the attempt log up into a plain-language
+// "what actually changed" list, so the GUI can render one bullet per
+// meaningful edit rather than making the operator scan every attempt.
+// Story 2b (Cohort C): closes Story 2's leftover S ("'Build until it works'
+// explains what it changed and stops when external credentials/input are
+// required").
+func summarizeBuildChanges(attempts []BuildAttempt) []string {
+	if len(attempts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(attempts))
+	for i, a := range attempts {
+		if !a.Changed {
+			continue
+		}
+		action := strings.TrimSpace(a.Action)
+		if action == "" {
+			continue
+		}
+		// The action string already reads as a plain-language sentence
+		// (e.g. "Repaired shape drift on node fetch_url"). Prefix with the
+		// attempt number so the operator can cross-reference the log.
+		out = append(out, fmt.Sprintf("Attempt %d — %s", i+1, action))
+	}
+	return dedupeStrings(out)
+}
+
+// extractExternalBlockers filters the residual list for problems that CANNOT
+// be fixed by another repair pass — they need an operator to act (paste a
+// credential, wait for a rate reset, invite a bot to a channel). The classifier
+// is intentionally conservative — anything that doesn't match falls through
+// to the generic Residual bucket the GUI already renders.
+func extractExternalBlockers(residual []string) []string {
+	if len(residual) == 0 {
+		return nil
+	}
+	var out []string
+	for _, r := range residual {
+		lc := strings.ToLower(r)
+		switch {
+		case strings.Contains(lc, "credential"), strings.Contains(lc, "api key"), strings.Contains(lc, "token"), strings.Contains(lc, "unauthorized"), strings.Contains(lc, "401"), strings.Contains(lc, "403"):
+			out = append(out, "Needs a credential or token — the loop can't fix this without you pasting one: "+r)
+		case strings.Contains(lc, "not_in_channel"), strings.Contains(lc, "not in channel"), strings.Contains(lc, "bot has not been added"):
+			out = append(out, "Needs the bot invited to the channel: "+r)
+		case strings.Contains(lc, "rate"), strings.Contains(lc, "429"), strings.Contains(lc, "quota"):
+			out = append(out, "Needs the provider's rate window to reset before retry: "+r)
+		case strings.Contains(lc, "chat not found"), strings.Contains(lc, "channel_not_found"), strings.Contains(lc, "invalid destination"):
+			out = append(out, "Needs a valid destination — verify the channel/chat id: "+r)
+		}
+	}
+	return dedupeStrings(out)
 }
 
 // dedupeStrings removes duplicate lines, preserving order.
