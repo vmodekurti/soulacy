@@ -1,23 +1,28 @@
 # Soulacy
 
-**One binary. YAML agents. Runs anywhere — no cloud required.**
+**The agent framework you can put in production without a security memo.**
 
-Soulacy is a **local-first agent operating system**. Write an agent in a single YAML file (or generate one from plain English in Studio), point it at any LLM (Ollama, OpenAI, Anthropic, Groq, or anything OpenAI-compatible), and run it from a terminal or a $5 VPS with no infrastructure setup, no Docker orchestration, and no cloud dependency.
+_One binary. YAML agents. A shipped defense-in-depth security stack. Runs anywhere Go runs._
 
-You get more than a runtime: Studio for authoring and healing agents, Channels for delivering to Telegram / Slack / Discord / WhatsApp / email / Teams / Google Chat / HTTP, Schedule for cron and one-shot triggers, Learning for making the same mistake less often, and packaging for versioned installs — all in the same binary, all local by default.
+Soulacy is a **local-first agent operating system**. Every agent is one inspectable YAML file. Every tool call passes through a shipped defense-in-depth security stack — untrusted-content envelopes, prompt-injection scanning across 14 patterns and 8 attack families, an intent gate that refuses adversary-steered high-risk actions before dispatch, capability tiers, production-readiness verdicts, a red-team regression pack that runs on every push, and a per-agent Security Doctor with an adversarial dry-run simulator. Every failed run can be replayed inside a healing Studio that proposes a diff you preview before saving. Run it on a laptop, a $5 VPS, or a Raspberry Pi. Bring your own LLM keys or point it at Ollama.
+
+You get channels (Telegram, Slack, Discord, WhatsApp, email, Teams, Google Chat, HTTP), schedules with hung-run detection, MCP client + server, browser automation via Playwright, a learning loop with visible reuse counters, and a launch-readiness score — all in one Go binary. No Docker orchestration. No cloud required.
 
 Think of it as Ollama — but for agents.
 
-**Build it. Run it. Fix and learn.**
+**Build it. Run it. Defend it.**
 
 - **Build it** — describe the automation in plain English in Studio, or start from
-  a vetted template. Soulacy drafts the plan, generates the workflow, and checks
-  it end-to-end before you save.
-- **Run it** — deploy the agent to Telegram, Slack, Discord, WhatsApp, HTTP, or a
-  schedule. One binary, no cloud required.
-- **Fix and learn** — when a run fails, Debug in Studio explains it in plain
-  English and proposes a fix you can preview. Successful repairs become
-  regression tests, and Soulacy shows you what it's learned over time.
+  a vetted template. Soulacy drafts the plan, generates the workflow, and runs
+  it through a shipped security preflight before you save.
+- **Run it** — deploy to Telegram, Slack, Discord, WhatsApp, HTTP, or a
+  schedule. Single Go binary. No cloud required.
+- **Defend it** — every external tool result rides an untrusted-content envelope
+  through the injection scanner and intent gate; a stopped injection surfaces
+  as a Deny verdict in Activity, not as an executed shell command. When a run
+  fails, Debug in Studio explains it and proposes a fix you preview before
+  applying. The Security Doctor's dry-run simulator lets you probe adversarial
+  scenarios without executing anything.
 
 [![CI](https://github.com/vmodekurti/soulacy/actions/workflows/ci.yml/badge.svg)](https://github.com/vmodekurti/soulacy/actions/workflows/ci.yml)
 [![Release](https://github.com/vmodekurti/soulacy/actions/workflows/release.yml/badge.svg)](https://github.com/vmodekurti/soulacy/releases/latest)
@@ -26,15 +31,17 @@ Think of it as Ollama — but for agents.
 
 ## Why Soulacy
 
-| | Soulacy | n8n / Flowise / Dify | LangGraph / AutoGen |
-|---|---|---|---|
-| **Deploy** | Single binary, zero deps | Docker + Postgres + Redis | Python package |
-| **Config** | One YAML file per agent | Visual editor (brittle exports) | Code |
-| **Runs on** | Laptop, VPS, Raspberry Pi | Needs a server stack | Dev machine |
-| **LLM** | Any — local or cloud | Mostly cloud | Any |
-| **No-code** | GUI included in binary | Yes | No |
+| | Soulacy | n8n / Flowise / Dify | LangGraph / AutoGen | Claude / OpenAI Agents SDK |
+|---|---|---|---|---|
+| **Deploy** | Single binary, zero deps | Docker + Postgres + Redis | Python package | Vendor SDK |
+| **Config** | One YAML file per agent | Visual editor (brittle exports) | Code | Code |
+| **Runs on** | Laptop, VPS, Raspberry Pi | Needs a server stack | Dev machine | Anywhere the SDK runs |
+| **LLM** | Any — local or cloud | Mostly cloud | Any | Vendor-first |
+| **No-code** | GUI included in binary | Yes | No | No |
+| **Security stack** | Envelope, injection scanner, intent gate, Security Doctor — **shipped** | Third-party plugin | Operator's problem | Operator's problem |
+| **Debug UX** | Replay failed run in Studio → preview diff → apply | Node console | Stack trace | Stack trace |
 
-The field is crowded with frameworks that assume you want to write Python and deploy to the cloud. Soulacy is for people who want agents that just run — the same way you `ollama run llama3`.
+The field is crowded with frameworks that ship the loop and leave the security to you. Soulacy ships both — agents that just run, defended by default, the same way you `ollama run llama3`.
 
 ---
 
