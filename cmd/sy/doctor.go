@@ -972,20 +972,26 @@ func checkProviderAuth() doctorCheck {
 		return doctorCheck{Name: "provider_auth", Status: doctorWarn, Detail: "no providers configured"}
 	}
 
-	var checked, ok, failed, skipped []string
+	var checked, ok, failedRemote, failedLocal, skipped []string
 	for id, p := range resp.Providers {
 		if !p.Registered {
 			skipped = append(skipped, id+" (not registered)")
 			continue
 		}
-		if p.APIKey == "" && !isLocalProvider(id, p.BaseURL) {
+		local := isLocalProvider(id, p.BaseURL)
+		if p.APIKey == "" && !local {
 			skipped = append(skipped, id+" (no key)")
 			continue
 		}
 		checked = append(checked, id)
 		status, body, err := gatewayRawGET("/providers/"+url.PathEscape(id)+"/models", 12*time.Second)
 		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s (%v)", id, err))
+			entry := fmt.Sprintf("%s (%v)", id, err)
+			if local {
+				failedLocal = append(failedLocal, entry)
+			} else {
+				failedRemote = append(failedRemote, entry)
+			}
 			continue
 		}
 		if status >= 200 && status < 300 {
@@ -1001,7 +1007,12 @@ func checkProviderAuth() doctorCheck {
 		} else {
 			msg = fmt.Sprintf("HTTP %d: %s", status, msg)
 		}
-		failed = append(failed, id+" ("+msg+")")
+		entry := id + " (" + msg + ")"
+		if local {
+			failedLocal = append(failedLocal, entry)
+		} else {
+			failedRemote = append(failedRemote, entry)
+		}
 	}
 
 	if len(checked) == 0 {
@@ -1012,12 +1023,27 @@ func checkProviderAuth() doctorCheck {
 			Remedy: "configure at least one cloud provider or use local Ollama",
 		}
 	}
-	if len(failed) > 0 {
+	// A local provider that can't answer a model probe is a runtime state
+	// issue (Ollama not running, base_url wrong) — checkOllama already
+	// surfaces that separately. Bad credentials on a real cloud provider
+	// is what this check is for, so only escalate to fail when at least
+	// one REMOTE probe failed.
+	if len(failedRemote) > 0 {
+		combined := append([]string{}, failedRemote...)
+		combined = append(combined, failedLocal...)
 		return doctorCheck{
 			Name:   "provider_auth",
 			Status: doctorFail,
-			Detail: fmt.Sprintf("%d/%d provider model probes failed: %s", len(failed), len(checked), strings.Join(firstN(failed, 3), "; ")),
+			Detail: fmt.Sprintf("%d/%d provider model probes failed: %s", len(combined), len(checked), strings.Join(firstN(combined, 3), "; ")),
 			Remedy: "re-save the provider key in the Providers page or run `sy secrets set llm.providers.<id>.api_key`",
+		}
+	}
+	if len(failedLocal) > 0 {
+		return doctorCheck{
+			Name:   "provider_auth",
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("%d local provider probe(s) failed (likely not running): %s", len(failedLocal), strings.Join(firstN(failedLocal, 3), "; ")),
+			Remedy: "start the local runtime (e.g. `ollama serve`) or point the provider at a reachable base_url",
 		}
 	}
 	detail := fmt.Sprintf("%d provider key/model probe(s) passed: %s", len(ok), strings.Join(ok, ", "))
