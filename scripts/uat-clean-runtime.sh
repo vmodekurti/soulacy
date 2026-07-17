@@ -608,23 +608,32 @@ if [[ -x "$CLI" ]]; then
   # fallback chain finds their real install — this only affects the CI case.
   # Capture the doctor report; on failure, print the failing check names + reasons
   # so CI logs are actionable instead of just showing "doctor found N failing check(s)".
+  # Keep stdout (JSON) and stderr (cobra's "Error:" line + Usage) in separate files
+  # so the JSON stays parseable, and use raw_decode as a belt-and-braces fallback
+  # in case anything else stray lands on stdout.
   _doctor_out="$WORKSPACE/doctor.json"
-  if ! SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" --json doctor check >"$_doctor_out" 2>&1; then
+  _doctor_err="$WORKSPACE/doctor.err"
+  if ! SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" --json doctor check >"$_doctor_out" 2>"$_doctor_err"; then
     echo "  doctor failed — surfacing check-level detail:"
-    python3 - "$_doctor_out" <<'PY' || cat "$_doctor_out"
+    python3 - "$_doctor_out" <<'PY' || { echo "  (raw JSON dump follows)"; cat "$_doctor_out"; }
 import json, sys
 try:
     with open(sys.argv[1]) as f:
-        rep = json.load(f)
+        text = f.read()
+    rep, _ = json.JSONDecoder().raw_decode(text.lstrip())
 except Exception as e:
     print(f"  (could not parse doctor JSON: {e})")
-    sys.exit(0)
+    sys.exit(1)
 for c in rep.get("checks", []):
     if c.get("status") in ("fail", "warn"):
         print(f"  [{c.get('status','?')}] {c.get('name','?')}: {c.get('detail','')}")
         if c.get("remedy"):
             print(f"      remedy: {c['remedy']}")
 PY
+    if [[ -s "$_doctor_err" ]]; then
+      echo "  --- doctor stderr ---"
+      sed 's/^/  /' "$_doctor_err"
+    fi
     exit 1
   fi
   SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" launch check >/dev/null
