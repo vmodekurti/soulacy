@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/soulacy/soulacy/internal/agentprompt"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
@@ -117,7 +118,7 @@ func SynthesizeAgent(agentID string, node sdkr.FlowNode, workflowName string) Ne
 			ID:           id,
 			Name:         name,
 			Description:  desc,
-			SystemPrompt: prompt,
+			SystemPrompt: agentprompt.EnsureShared(prompt),
 		}
 	}
 
@@ -164,7 +165,7 @@ func SynthesizeAgent(agentID string, node sdkr.FlowNode, workflowName string) Ne
 		ID:           id,
 		Name:         name,
 		Description:  desc,
-		SystemPrompt: sb.String(),
+		SystemPrompt: agentprompt.EnsureShared(sb.String()),
 	}
 }
 

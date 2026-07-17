@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/soulacy/soulacy/internal/agentprompt"
 	"github.com/soulacy/soulacy/pkg/agent"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
@@ -317,13 +318,16 @@ const reactLoopGuidance = "Work the task by reasoning step by step: decide the n
 func reactSystemPrompt(draft Draft) string {
 	var b strings.Builder
 	if p := strings.TrimSpace(draft.SystemPrompt); p != "" {
-		b.WriteString(p)
+		b.WriteString(agentprompt.EnsureShared(p))
 	} else {
 		name := strings.TrimSpace(draft.Name)
 		if name == "" {
 			name = "this agent"
 		}
 		fmt.Fprintf(&b, "You are %q, an autonomous agent built in Soulacy Studio.", name)
+		p := b.String()
+		b.Reset()
+		b.WriteString(agentprompt.EnsureShared(p))
 	}
 	// Append the loop guidance only if the prompt doesn't already carry it. The
 	// prompt round-trips through draft.SystemPrompt (which already includes this
@@ -566,7 +570,7 @@ func appendCapability(caps []string, cap string) []string {
 func buildSystemPrompt(draft Draft) string {
 	var b strings.Builder
 	if prompt := strings.TrimSpace(draft.SystemPrompt); prompt != "" {
-		b.WriteString(prompt)
+		b.WriteString(agentprompt.EnsureShared(prompt))
 		b.WriteString("\n\n")
 	} else {
 		name := strings.TrimSpace(draft.Name)
@@ -574,6 +578,10 @@ func buildSystemPrompt(draft Draft) string {
 			name = "this workflow"
 		}
 		fmt.Fprintf(&b, "You are %q, an automation agent created in Soulacy Studio. ", name)
+		p := b.String()
+		b.Reset()
+		b.WriteString(agentprompt.EnsureShared(p))
+		b.WriteString("\n\n")
 	}
 	b.WriteString("You execute a fixed workflow graph: each step runs in order and its output feeds the next according to the edges. Follow the graph faithfully and do not invent steps or take actions outside it.\n\n")
 

@@ -37,8 +37,11 @@ func TestToAgentDefinition_WellDefinedPrompt(t *testing.T) {
 		t.Fatalf("ToAgentDefinition: %v", err)
 	}
 	p := def.SystemPrompt
-	if !strings.HasPrefix(p, "You are the mighty Daily Digest bot.\n\n") {
-		t.Fatalf("prompt did not inject draft.SystemPrompt:\n%s", p)
+	if !strings.HasPrefix(p, "## Soulacy Agent Operating Contract\n\n") {
+		t.Fatalf("prompt did not start with shared contract:\n%s", p)
+	}
+	if !strings.Contains(p, "## Agent Role\n\nYou are the mighty Daily Digest bot.\n\n") {
+		t.Fatalf("prompt did not preserve draft.SystemPrompt under Agent Role:\n%s", p)
 	}
 	for _, want := range []string{"cron", "0 7 * * *", "curator", "Python", "channel.send", "slack", "Steps:"} {
 		if !strings.Contains(p, want) {
@@ -56,7 +59,7 @@ func TestToAgentDefinition_WellDefinedPrompt(t *testing.T) {
 	if !strings.Contains(def.Description, "step") {
 		t.Fatalf("Description should summarize steps, got %q", def.Description)
 	}
-	
+
 	// Tool classification
 	if def.Builtins == nil || len(*def.Builtins) != 1 || (*def.Builtins)[0] != "channel.send" {
 		t.Errorf("expected Builtins to contain [channel.send], got %v", def.Builtins)

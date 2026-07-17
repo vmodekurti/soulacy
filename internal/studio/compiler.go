@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/soulacy/soulacy/internal/agentprompt"
 	reasoning "github.com/soulacy/soulacy/internal/reasoning"
 	"github.com/soulacy/soulacy/internal/studio/codeclass"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -379,6 +380,9 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- PRODUCTION MINDSET: Treat every intent as a production workload. Handle empty states, edge cases, and failure modes explicitly (e.g. using a branch node to emit a fallback message if no items are found).\n")
 	sb.WriteString("- STANDARD DATA FORMAT — every handoff between steps is JSON, always. A step's output is a JSON value; the next step receives JSON. To pass a structured value (list/object) into a tool or python input, EITHER leave a python node's input EMPTY (it then auto-receives all upstream outputs as a JSON `inputs` dict) OR use {{ toJson .var }} UNQUOTED, e.g. \"urls\": {{ toJson .urls }}. NEVER write \"urls\": \"{{ .urls }}\" — Go renders a list/object that way as `[map[...] ...]` text (not JSON) and the next step breaks. A bare {{ .scalar }} is only for a single scalar value inside a string.\n")
 	sb.WriteString("- system_prompt: Write a rich, conversational system prompt for the overarching agent (2-4 sentences). Give it a clear persona, define its goal based on the intent, and explicitly outline the multi-step strategy it must follow. Instruct it to gracefully emit a fallback message on errors rather than failing.\n")
+	sb.WriteString("- SHARED SYSTEM PROMPT CONTRACT: ")
+	sb.WriteString(agentprompt.InstructionForBuilders())
+	sb.WriteString("\n")
 	sb.WriteString("- AGENTS MUST BE FULLY DEFINED — never blank. If the workflow needs to delegate to a specialized peer, define the peer in the `new_agents` array.\n")
 	sb.WriteString("- WRITE REUSABLE AGENT PERSONAS: a helper agent like a summarizer or notifier may be reused across many tasks, so its `system_prompt` must be a complete, standalone persona — NOT a one-liner. Include: (1) its role and expertise, (2) exactly how it should behave and reason, (3) the precise OUTPUT format it must produce, and (4) how to handle empty/erroneous input gracefully. Aim for 3-6 sentences. The overarching agent's `system_prompt` contains the workflow plan; the helper agent's `system_prompt` is its durable, scenario-independent character.\n")
 	sb.WriteString("- HIGH-QUALITY SPECIALIST PROMPTS: when creating a domain expert agent, write a prompt that would be useful in production on day one. Include: role identity, decision objective, tool-selection rules, required output sections, confidence/uncertainty handling, safety/fallback behavior, and exact formatting/artifact instructions. For example, a weather expert should not merely report conditions; it should help the user decide what to do, choose current/forecast/alerts tools correctly, include best/risk windows, confidence, alerts, practical planning guidance, and chart blocks when time-series data exists.\n")
@@ -750,6 +754,7 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// or "Summarizer" the model invented (or forgot to define) is never saved
 	// blank. Runs after normalizeFlow so node Kind/Agent are settled.
 	ensureNewAgents(&draft, catalog)
+	draft.SystemPrompt = agentprompt.EnsureShared(draft.SystemPrompt)
 
 	// Focused-LLM repair (local-first pivot, Stories #16/#17): if deterministic
 	// auto-wiring left a data-flow gap (a step references a var no earlier step

@@ -46,6 +46,7 @@ import (
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 
+	"github.com/soulacy/soulacy/internal/agentprompt"
 	"github.com/soulacy/soulacy/internal/config"
 	// Imported for its init(): registers the built-in LLM provider factories
 	// (ollama/openai/anthropic/gemini/google) into the global registry so
@@ -549,14 +550,15 @@ func writeStarterAgent(ws config.Paths) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil // don't overwrite
 	}
-	const content = `# Starter agent written by ` + "`sy onboard`" + `.
+	prompt := agentprompt.EnsureShared("You are Basic chat, a friendly starter assistant for getting comfortable with Soulacy. Answer questions accurately and concisely. Use available tools only when they materially help, and say when you do not know.")
+	prompt = "  " + strings.ReplaceAll(prompt, "\n", "\n  ")
+	content := `# Starter agent written by ` + "`sy onboard`" + `.
 # Edit freely — the gateway watches this file and reloads on change.
 id: basic-chat
 name: Basic chat
 description: A friendly assistant for getting started.
 system_prompt: |
-  You are a helpful assistant. Answer questions accurately and concisely.
-  When you don't know, say so.
+` + prompt + `
 llm:
   # default_provider from config.yaml wins unless you override here:
   # provider: openai
