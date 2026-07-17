@@ -21,4 +21,9 @@ regexes = [
   '''SOULACY_API_KEY=\s*$''',
   '''(?i)POSTGRES_PASSWORD=soulacy''',
   '''your[-_].*[-_](key|token|secret)''',
+  # Repeating-hex test fixtures used in *_test.go signing-key configs — no real
+  # ed25519 key would ever be a 16-char alphabet repeated 4 times. Registry
+  # tests need a valid-length hex string because config parsing enforces
+  # length, so we can't just use "test-fixture"; this pattern is the compromise.
+  '''(?:0123456789abcdef){4}''',
 ]
