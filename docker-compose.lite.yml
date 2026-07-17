@@ -36,6 +36,17 @@ services:
       # Auth
       SOULACY_SERVER_API_KEY: ${SOULACY_API_KEY:-}
 
+      # ── Security defaults (development-shaped) ────────────────────────────────
+      # Lite compose is dev-first: readiness verdict stays advisory (development
+      # profile — findings surface without blocking), intent gate stays at the
+      # prompt default so you can iterate without approving every high-risk
+      # tool call, and the Python-tool sandbox stays ON because it's cheap.
+      # Flip SOULACY_DEPLOYMENT_PROFILE=production + SOULACY_SECURITY_INTENT_GATE=deny
+      # via .env when you're ready to test the production posture locally.
+      SOULACY_DEPLOYMENT_PROFILE: ${SOULACY_DEPLOYMENT_PROFILE:-development}
+      SOULACY_SECURITY_INTENT_GATE: ${SOULACY_SECURITY_INTENT_GATE:-prompt}
+      SOULACY_RUNTIME_SANDBOX_ENABLED: ${SOULACY_RUNTIME_SANDBOX_ENABLED:-true}
+
     extra_hosts:
       - "host.docker.internal:host-gateway"
 
