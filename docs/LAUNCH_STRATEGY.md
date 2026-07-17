@@ -284,21 +284,23 @@ HN reads short titles better than clever ones. First candidate probably wins bec
 
 ---
 
-## §9 — Concrete asks from the user
+## §9 — Locked decisions (2026-07-17)
 
-**Ask 1: Positioning call — commit to the security-first tagline.** The productization work is done; the branding call is not. The current README hero is generic. Recommend adopting "The agent framework you can put in production without a security memo" (or a variant) as the primary tagline and rewriting the README hero + `docs/index.md` hero + Studio About + OG description in one pass. If you'd prefer a different framing (assistant-first, learning-first, YAML-first), say so — the memo will re-plan the launch surfaces around it.
+The six positioning/scope calls are answered. Each entry names the decision and the surfaces it unlocks.
 
-**Ask 2: Distribution call — pick the launch window and outreach depth.** Tuesday-morning HN + Twitter thread is the minimum. Do we also want (a) a coordinated newsletter push (Simon Willison, DevOps'ish, LangChain community), (b) a podcast pre-record, (c) an invite-only closed beta with 10-20 design partners the week before public launch? Each adds signal and delay; recommend at minimum (a) and hold (b)/(c) as fast-follows if the launch lands.
+**Decision 1 — Primary tagline: "The agent framework you can put in production without a security memo."** "Local-first agent operating system" remains the canonical noun phrase (E5 pass, `docs/PRODUCTIZATION_REVIEW.md:553-556`). Unlocks: README hero rewrite, `docs/index.md` hero, Studio About string, OG description, HN post title.
 
-**Ask 3: Voice decision — in or out for v1?** OPENCLAW_PARITY currently says "MVP foundation present" for voice (`docs/OPENCLAW_PARITY.md:38, 58`). Either commit to shipping voice as a real launch feature (which unlocks credential-backed mic UAT + wake-word polish + a demo shot list) or drop it explicitly and update the parity doc so reviewers don't misread partial voice as a bug. Recommend dropping for v1 — the security wedge is the story and voice dilutes it.
+**Decision 2 — Distribution v1: HN post + Twitter thread + newsletter push (Simon Willison, DevOps'ish, LangChain community).** Podcast pre-record and closed beta are fast-follows only if the v1 landing generates enough signal to justify them. Unlocks: HN title candidates in §7, outreach email drafts, Twitter thread outline.
 
-**Ask 4: Vertical splash agent — pick one.** Two candidates on the shortlist: (a) personal-finance monitor via Rocketmoney MCP + Telegram delivery + injection-scanner demo, or (b) GitHub-triage agent via MCP + intent-gate demo on `mcp__github__create_issue`. (a) is friendlier for non-developers; (b) is friendlier for the HN audience. Recommend (b) for the launch demo and (a) as the fast-follow.
+**Decision 3 — Voice: out of v1 scope.** `OPENCLAW_PARITY.md` voice row updated to state "not v1 scope" so reviewers don't misread partial voice as a bug. The security wedge is the launch narrative; voice dilutes it. Unlocks: OPENCLAW_PARITY.md edit; frees the "MVP foundation present" language for future re-scoping.
 
-**Ask 5: TypeScript SDK — ship a stub for v1 or defer entirely?** Recommend deferring for v1 (a stub that half-works reads worse than "TS SDK coming Q4"), but if you want to hedge against the Mastra/Vercel-AI-SDK crowd, a read-only wrapper over the REST API is one week of work.
+**Decision 4 — Vertical splash agent for launch: GitHub triage via MCP + intent-gate demo on `mcp__github__create_issue`.** Personal-finance monitor via Rocketmoney MCP is the fast-follow after landing. Unlocks: `examples/agents/github-triage/` spec, demo video shot list, "here's a real agent" HN answer.
 
-**Ask 6: "Soulacy Cloud" — categorically ruled out, or a future maybe?** Recommend "categorically ruled out for the launch year" and adding it to the `docs/index.md` "what Soulacy is NOT" section. Self-hosted-first is a positioning weapon only if you commit to it.
+**Decision 5 — TypeScript SDK: defer to Q4.** A half-working stub reads worse than a shipped "coming Q4" note. Unlocks: honest omission in README + comparison chart; no scope creep on the pre-tag sprint.
 
-Once these six calls land, the "ship-for-launch" cohort in §6 has clear scope. Everything else — the fast-follows, the nice-to-haves, the risks — can be executed against the shape those six decisions define.
+**Decision 6 — "Soulacy Cloud": categorically ruled out for the launch year.** Added to the `docs/index.md` "what Soulacy is NOT" strip. Self-hosted-first is a positioning weapon only if committed to. Unlocks: "we are not a SaaS" line in the elevator pitch; forecloses the "when will you host this" reviewer question.
+
+**With these six locked, the pre-tag sprint scope is:** `docs/RELEASE_CHECKLIST.md`, `CHANGELOG.md` v1.0.0 entry, `docs/RELEASE_NOTES_v1.0.0.md`, `scripts/uat-parity-full.sh` (full opt-in credential-backed parity harness), README + `docs/index.md` hero rewrite, `docs/OPENCLAW_PARITY.md` voice update, GitHub-triage example agent, seven-framework security comparison chart, 60-90s demo video.
 
 ---
 

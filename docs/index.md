@@ -117,6 +117,25 @@ sy chat --agent assistant "What can you do?"
 | **LLM** | Any — local or cloud | Mostly cloud | Any |
 | **No-code** | GUI included in binary | Yes | No |
 | **Extensible** | Skills, plugins, sidecars in any language | JS nodes | Python |
+| **Security stack** | Untrusted-content envelope, injection scanner, intent gate, Security Doctor — [shipped](using/security.md) | Third-party plugin | Operator's problem |
+
+## What Soulacy is NOT
+
+Positioning honesty — say what we are, and what we aren't, so you can
+self-disqualify quickly if the fit's wrong.
+
+- **Not a hosted SaaS.** No `soulacy.cloud`. Ever. Self-hosted-first is the
+  point of the product.
+- **Not a LangGraph replacement.** If you need explicit state-machine graphs
+  with checkpoints and resumable execution, use LangGraph.
+- **Not a personal assistant.** Soulacy runs headless and delivers to
+  channels; it doesn't ship a wake-word, a Canvas, or a native mobile app.
+  If you want an iMessage / WeChat / Signal / Matrix personal assistant, use
+  [OpenClaw](https://openclaw.ai/).
+- **Not vendor-locked.** Not tied to Anthropic, OpenAI, Google, or any
+  provider. Provider-agnostic via config.
+- **Not a low-code node editor for non-developers.** Studio helps, but the
+  audience is developers/ops who prefer YAML + Python tools.
 
 ## Where to next
 
