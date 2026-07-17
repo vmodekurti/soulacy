@@ -96,6 +96,7 @@
   let doctorResult    = null
   let doctorRunning   = false
   let doctorRunError  = ''
+  let doctorResultEl  = null   // ref to the result panel — scroll-into-view after Run simulation
 
   function defaultDryRunInput() {
     return {
@@ -156,6 +157,11 @@
         followup_tool:    doctorInput.followup_tool || '',
         followup_args:    parsedArgs,
       })
+      // Result panel appears below a large form + report; scroll the modal to
+      // reveal it so users don't have to hunt for it. tick() waits for the
+      // {#if doctorResult} block to render + bind:this to run.
+      await tick()
+      doctorResultEl?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     } catch (e) {
       doctorRunError = e.message || 'Dry-run failed.'
     } finally {
@@ -3019,7 +3025,7 @@ console.log(reply);` : ''
     on:click|self={closeDoctor}
     on:keydown={(e) => e.key === 'Escape' && closeDoctor()}
   >
-    <div class="modal wide">
+    <div class="modal wide scrollable">
       <h2>Security Doctor — {doctorAgentId}</h2>
       <div class="modal-sub">
         Live report on this agent's trust boundary, sandboxing, and privileged surface.
@@ -3181,7 +3187,7 @@ console.log(reply);` : ''
             </button>
           </div>
           {#if doctorResult}
-            <div class="doctor-result">
+            <div class="doctor-result" bind:this={doctorResultEl}>
               <div class="doctor-result-row">
                 <span class="doctor-pill {findingClass(doctorResult.injection_severity)}">injection · {doctorResult.injection_severity || 'none'}</span>
                 <span class="doctor-pill {verdictClass(doctorResult.intent_decision)}">intent · {doctorResult.intent_decision || '?'}</span>
@@ -3654,6 +3660,11 @@ console.log(reply);` : ''
     padding: 1.5rem; width: 680px; max-width: 92vw; max-height: 86vh;
     display: flex; flex-direction: column; gap: .9rem; overflow: hidden;
   }
+  /* Modals with variable-height content (Security Doctor, others that opt in)
+     need the modal itself to scroll when content overflows max-height. Kept
+     as an opt-in modifier so existing modals whose inner regions manage their
+     own scroll (Templates .tpl-list, editor split panes, etc.) don't change. */
+  .modal.scrollable { overflow-y: auto; }
   .modal h2 { font-size: 1.05rem; font-weight: 600; margin-bottom: .15rem; }
   .modal-sub { font-size: .78rem; color: #8a90b8; margin-top: -.2rem; }
   .tpl-list { display: flex; flex-direction: column; gap: .55rem; overflow-y: auto; padding-right: .25rem; }
