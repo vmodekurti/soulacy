@@ -23,6 +23,7 @@ import (
 
 	"go.uber.org/zap"
 
+	"github.com/soulacy/soulacy/internal/agentprompt"
 	"github.com/soulacy/soulacy/internal/llm"
 )
 
@@ -410,6 +411,7 @@ func generateSOULYAML(u *BuilderUnderstanding, provider, model string) string {
 	if sysPrompt == "" {
 		sysPrompt = "You are a helpful AI assistant."
 	}
+	sysPrompt = agentprompt.EnsureShared(sysPrompt)
 	sysPromptIndented := strings.ReplaceAll(sysPrompt, "\n", "\n  ")
 
 	toolsBlock := ""
@@ -640,6 +642,7 @@ Return ONLY this JSON object. No prose before or after. No code fences. No markd
 
 ## CRITICAL — preserving the user's procedure
 The "system_prompt" field is the actual instructions the deployed agent will see on every run. It is NOT a summary — it is the operating procedure.
+- Begin every system_prompt with the shared Soulacy Agent Operating Contract, then append a role-specific "## Agent Role" section.
 - Copy the user's numbered steps VERBATIM into system_prompt.
 - Preserve every specific value the user gave: cron times, dates, chat IDs, URLs, API endpoints, tool names, regex patterns, search queries.
 - If the user said "every morning at 7 AM", the cron MUST be "0 7 * * *" (not 8 or 9). NEVER change a time the user gave you.

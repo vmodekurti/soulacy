@@ -606,7 +606,27 @@ if [[ -x "$CLI" ]]; then
   # ~/.local/bin / /usr/local/bin / /opt/homebrew/bin. Locally installed
   # setups (Mac Studio, dev laptops) have SOULACY_BIN unset and the resolver's
   # fallback chain finds their real install — this only affects the CI case.
-  SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" --json doctor check >/dev/null
+  # Capture the doctor report; on failure, print the failing check names + reasons
+  # so CI logs are actionable instead of just showing "doctor found N failing check(s)".
+  _doctor_out="$WORKSPACE/doctor.json"
+  if ! SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" --json doctor check >"$_doctor_out" 2>&1; then
+    echo "  doctor failed — surfacing check-level detail:"
+    python3 - "$_doctor_out" <<'PY' || cat "$_doctor_out"
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        rep = json.load(f)
+except Exception as e:
+    print(f"  (could not parse doctor JSON: {e})")
+    sys.exit(0)
+for c in rep.get("checks", []):
+    if c.get("status") in ("fail", "warn"):
+        print(f"  [{c.get('status','?')}] {c.get('name','?')}: {c.get('detail','')}")
+        if c.get("remedy"):
+            print(f"      remedy: {c['remedy']}")
+PY
+    exit 1
+  fi
   SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" launch check >/dev/null
   cat > "$WORKSPACE/release-manifest.json" <<JSON
 {"product":"soulacy","version":"99.0.0","artifacts":[{"name":"soulacy-test.tar.gz","os":"uat","arch":"uat","sha256":"abc123","bytes":123}]}

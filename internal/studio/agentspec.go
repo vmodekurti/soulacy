@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/soulacy/soulacy/internal/agentprompt"
 )
 
 // agentSpecPayload is the JSON the model returns for a ReAct/Plan-Execute agent
@@ -62,6 +64,9 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	sb.WriteString("- If delivery routing is uncertain or channel.send fails, call channel.status once and follow its diagnosis/fix instead of retrying channel.send with guessed fields.\n")
 	sb.WriteString("- For ordinary interactive replies, do not call channel.send just to answer the user. Return the answer normally; use channel.send only for explicit out-of-band delivery.\n")
 	sb.WriteString("- The system_prompt is where the procedure lives: spell out the steps as INSTRUCTIONS (e.g. \"create the notebook, then add EACH source one at a time, then start audio generation, then POLL the status until it reports ready, then deliver the link\").\n")
+	sb.WriteString("- ")
+	sb.WriteString(agentprompt.InstructionForBuilders())
+	sb.WriteString("\n")
 	sb.WriteString("- Include authentication/setup steps the user asked for as the FIRST instruction if a matching tool exists (e.g. refresh/login tools).\n")
 	sb.WriteString("- Invent a peer agent ONLY if needed, and give it a full reusable system_prompt in new_agents.\n")
 	sb.WriteString("- Pull concrete values from the user's words (queries, counts, schedule cadence, target channel).\n\n")
@@ -129,7 +134,7 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 
 	draft := Draft{
 		Name:         strings.TrimSpace(payload.Name),
-		SystemPrompt: strings.TrimSpace(payload.SystemPrompt),
+		SystemPrompt: agentprompt.EnsureShared(payload.SystemPrompt),
 		Intent:       intent,
 		Trigger:      payload.Trigger,
 		Channels:     trimStrings(payload.Channels),
