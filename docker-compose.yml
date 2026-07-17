@@ -58,6 +58,27 @@ services:
       SOULACY_EXECUTOR_BACKEND: pool
       SOULACY_EXECUTOR_WORKERS: 4
 
+      # ── Security & deployment profile (v1.0.0 defaults for a real prod stack) ──
+      # This compose file is a production-shaped deployment (Postgres + Qdrant +
+      # persistent volumes + no host-side dev workflow). The three vars below turn
+      # on the security posture that ships with v1.0.0:
+      #   deployment.profile = production activates Cohort F S4's readiness
+      #     verdict — it BLOCKS the launch dashboard when any privileged agent is
+      #     exposed on a shared channel (Telegram/Slack/etc.) without an
+      #     explicit accept_privileged_exposure:true on the binding.
+      #   security.intent_gate = deny is the strictest Cohort F S3 mode: any
+      #     high-risk tool call (shell_exec, write_file, http_request, MCP write
+      #     verbs) that the operator's original message didn't request AND that
+      #     lands on untrusted evidence with a Medium+ injection finding is
+      #     REFUSED at dispatch — before policy/guardrail/confirm layers run.
+      #   runtime.sandbox.enabled = true wraps every Python tool call with
+      #     RLIMIT_CPU/AS/NOFILE/FSIZE so a malicious tool can't fork-bomb, eat
+      #     all RAM, or exhaust file descriptors on the container's uid.
+      # Override any of these via .env if you have a specific reason.
+      SOULACY_DEPLOYMENT_PROFILE: ${SOULACY_DEPLOYMENT_PROFILE:-production}
+      SOULACY_SECURITY_INTENT_GATE: ${SOULACY_SECURITY_INTENT_GATE:-deny}
+      SOULACY_RUNTIME_SANDBOX_ENABLED: ${SOULACY_RUNTIME_SANDBOX_ENABLED:-true}
+
     depends_on:
       postgres:
         condition: service_healthy
