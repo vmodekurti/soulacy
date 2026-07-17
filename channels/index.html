@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../assets/logo.svg">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -285,7 +285,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../templates/" class="md-tabs__link">
+        <a href="../template-guides/" class="md-tabs__link">
           
   
   
@@ -1179,7 +1179,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../templates/" class="md-nav__link">
+      <a href="../template-guides/" class="md-nav__link">
         
   
   
@@ -1207,7 +1207,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../templates/weather/" class="md-nav__link">
+      <a href="../template-guides/weather/" class="md-nav__link">
         
   
   
@@ -1235,7 +1235,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../templates/stock-screener/" class="md-nav__link">
+      <a href="../template-guides/stock-screener/" class="md-nav__link">
         
   
   
@@ -1263,7 +1263,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../templates/deal-finder/" class="md-nav__link">
+      <a href="../template-guides/deal-finder/" class="md-nav__link">
         
   
   
@@ -1291,7 +1291,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../templates/research-librarian/" class="md-nav__link">
+      <a href="../template-guides/research-librarian/" class="md-nav__link">
         
   
   
@@ -1319,7 +1319,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../templates/document-ingestion/" class="md-nav__link">
+      <a href="../template-guides/document-ingestion/" class="md-nav__link">
         
   
   
@@ -1347,7 +1347,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../templates/inbox-meeting/" class="md-nav__link">
+      <a href="../template-guides/inbox-meeting/" class="md-nav__link">
         
   
   
@@ -2219,6 +2219,118 @@
     
   
     Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="email/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Email / SMTP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="teams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Microsoft Teams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="google-chat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Chat
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="webhook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Webhook
   
 
     
@@ -3830,6 +3942,26 @@
 <td>✅ Stable</td>
 <td><code>channels.whatsapp</code></td>
 </tr>
+<tr>
+<td><a href="email/">Email</a></td>
+<td>✅ Stable</td>
+<td><code>channels.email</code></td>
+</tr>
+<tr>
+<td><a href="teams/">Microsoft Teams</a></td>
+<td>✅ Stable outbound</td>
+<td><code>channels.teams</code></td>
+</tr>
+<tr>
+<td><a href="google-chat/">Google Chat</a></td>
+<td>✅ Stable outbound</td>
+<td><code>channels.google_chat</code></td>
+</tr>
+<tr>
+<td><a href="webhook/#outbound-webhook-delivery">Outgoing Webhook</a></td>
+<td>✅ Stable</td>
+<td><code>channels.webhook</code></td>
+</tr>
 </tbody>
 </table>
 <h2 id="how-channels-route-to-agents">How channels route to agents<a class="headerlink" href="#how-channels-route-to-agents" title="Permanent link">&para;</a></h2>
@@ -3951,8 +4083,21 @@ WhatsApp Web. HTTP is always active because callers explicitly invoke its API.</
 <h2 id="managing-mappings-in-the-gui">Managing mappings in the GUI<a class="headerlink" href="#managing-mappings-in-the-gui" title="Permanent link">&para;</a></h2>
 <p>Open <strong>Channels</strong> in the web UI:</p>
 <ul>
+<li><strong>Guided setup cards</strong> walk you through Telegram, Slack, Discord, WhatsApp
+  Cloud, WhatsApp Web, email (SMTP), Microsoft Teams, Google Chat, generic
+  webhooks, and HTTP with step-by-step instructions, per-field hints keyed
+  off the exact adapter config keys, and a Test-delivery button at the
+  bottom.</li>
 <li>Channel cards show <strong>Agent mappings</strong>, including adapter ID, agent ID, and connection state.</li>
 <li>Channel cards show <strong>Delivery checks</strong> with failures, warnings, and remedies for missing tokens, missing default destinations, offline adapters, and broken bot mappings.</li>
+<li>Channel cards expose <strong>Test</strong> and <strong>Diagnose</strong> paths for outbound delivery.
+  Failed tests return the same structured diagnosis used in Activity and support
+  bundles, so <code>chat not found</code>, <code>missing scope</code>, bad webhook URLs, and rate
+  limits are visible before a cron job depends on them. Email adds
+  SMTP-specific categories — authentication failed, STARTTLS required,
+  relay denied / SPF, recipient rejected, quota, message rejected, TLS
+  handshake — so raw <code>535 5.7.8</code> / <code>550 5.1.1</code> codes don't bubble up as
+  "unknown".</li>
 <li>Click <strong>Edit</strong> on Telegram, Slack, or Discord to manage <strong>Bot mappings</strong>.</li>
 <li>Bot mapping rows record a friendly bot name and provide an agent ID dropdown populated from your installed agents.</li>
 <li>After saving channel settings, click <strong>Restart Gateway</strong> from the banner to reconnect adapters.</li>
@@ -3968,7 +4113,7 @@ WhatsApp Web. HTTP is always active because callers explicitly invoke its API.</
 </span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="nt">to</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;123456789&quot;</span>
 </span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="nt">bot_name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Finance</span><span class="nv"> </span><span class="s">Bot&quot;</span>
 </span></code></pre></div>
-<p><code>channel</code> is the adapter ID shown in <strong>Channels -&gt; Agent mappings</strong>. <code>to</code> is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, or WhatsApp recipient number.</p>
+<p><code>channel</code> is the adapter ID shown in <strong>Channels -&gt; Agent mappings</strong>. <code>to</code> is the platform destination ID: Telegram chat ID, Slack channel/user ID, Discord channel ID, WhatsApp recipient number, email address, or an override webhook URL for outbound webhook-style channels such as Teams, Google Chat, and generic outgoing webhooks.</p>
 <p>If a scheduled run succeeds but no message appears in the destination, check the
 channel card's <strong>Delivery checks</strong> first. The most common causes are:</p>
 <ul>
@@ -3977,6 +4122,7 @@ channel card's <strong>Delivery checks</strong> first. The most common causes ar
 <li>The bot token is missing or invalid.</li>
 <li><code>schedule.output.to</code> or the channel-level default output destination is missing.</li>
 <li>The bot is not allowed to post to the target group/channel.</li>
+<li>A webhook-style channel URL was rotated or deleted in the destination app.</li>
 </ul>
 <h2 id="generic-outbound-send">Generic outbound send<a class="headerlink" href="#generic-outbound-send" title="Permanent link">&para;</a></h2>
 <p>Agents and Studio workflows can deliver to any registered adapter with the
@@ -3997,7 +4143,8 @@ built-in <code>channel.send</code> tool:</p>
 </span></code></pre></div>
 <p><code>channel</code> is the adapter ID shown in <strong>Channels</strong>. <code>to</code> is the platform-native
 destination: Telegram chat ID, Slack channel/user ID, Discord channel ID,
-WhatsApp recipient, or a custom sidecar thread ID.</p>
+WhatsApp recipient, email recipient, custom sidecar thread ID, or an override
+HTTP URL for the outgoing webhook, Teams, or Google Chat adapters.</p>
 <p>If <code>to</code> is omitted, Soulacy can only infer it when the run came from an inbound
 chat/thread or the selected channel mapping has <code>default_output_to</code> configured.
 For interactive channel agents, prefer returning the final answer normally. Use
@@ -4144,7 +4291,7 @@ report to a team channel.</p>
       <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

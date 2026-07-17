@@ -1,0 +1,4588 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Open-source multi-agent orchestration platform — deploy AI agents to Telegram, Slack, Discord, WhatsApp, and HTTP in minutes.">
+      
+      
+      
+        <link rel="canonical" href="https://vmodekurti.github.io/soulacy/PACKAGE_VERSIONING_DESIGN/">
+      
+      
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/logo.svg">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
+    
+    
+      
+        <title>Agent Package Versioning — Design Memo (Story 7) - Soulacy</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.ec1eaa64.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#agent-package-versioning-design-memo-story-7" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="Soulacy" class="md-header__button md-logo" aria-label="Soulacy" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Soulacy
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Agent Package Versioning — Design Memo (Story 7)
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-purple" data-md-color-accent="purple"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-purple" data-md-color-accent="purple"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/vmodekurti/soulacy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    vmodekurti/soulacy
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href=".." class="md-tabs__link">
+        
+  
+  
+    
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../getting-started/installation/" class="md-tabs__link">
+          
+  
+  
+  Getting Started
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../using/chat/" class="md-tabs__link">
+          
+  
+  
+  Using Soulacy
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../template-guides/" class="md-tabs__link">
+          
+  
+  
+  Template Setup Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../agents/soul-yaml/" class="md-tabs__link">
+          
+  
+  
+  Agents
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../extend/installing-skills/" class="md-tabs__link">
+          
+  
+  
+  Skills & Plugins
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../channels/" class="md-tabs__link">
+          
+  
+  
+  Channels
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../configuration/" class="md-tabs__link">
+          
+  
+  
+  Configuration
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../security/sandbox/" class="md-tabs__link">
+          
+  
+  
+  Security
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../api/" class="md-tabs__link">
+          
+  
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cli/reference/" class="md-tabs__link">
+          
+  
+  
+  CLI
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../deployment/docker/" class="md-tabs__link">
+          
+  
+  
+  Deployment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../troubleshooting/common-failures/" class="md-tabs__link">
+          
+  
+  
+  Troubleshooting
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../architecture/overview/" class="md-tabs__link">
+          
+  
+  
+  Architecture
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="Soulacy" class="md-nav__button md-logo" aria-label="Soulacy" data-md-component="logo">
+      
+  <img src="../assets/logo.svg" alt="logo">
+
+    </a>
+    Soulacy
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/vmodekurti/soulacy" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    vmodekurti/soulacy
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Home
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Getting Started
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Getting Started
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/installation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/quickstart/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/first-agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Your First Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/gui-tour/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    GUI Tour
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using Soulacy
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Using Soulacy
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/chat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Chat
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/studio/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Studio (Workflow Builder)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/voice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Voice Conversations
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/dashboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Dashboard & Activity
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/workboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/schedules/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Schedules
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/knowledge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Knowledge Bases
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Memory & Rulebooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/templates/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow Templates
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/evaluations/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluations (sy eval)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../using/flow-view/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flow View
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Template Setup Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Template Setup Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../template-guides/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../template-guides/weather/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Weather
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../template-guides/stock-screener/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Stock Screener
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../template-guides/deal-finder/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deal Finder
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../template-guides/research-librarian/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Research Librarian
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../template-guides/document-ingestion/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Document Ingestion
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../template-guides/inbox-meeting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Inbox / Meeting Assistant
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/soul-yaml/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    SOUL.yaml Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/tools/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Tools
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/reasoning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reasoning Strategies
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/workflow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow Steps
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/flows/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Flow Graphs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agents/peers-builtins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Peer Agents & Built-ins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skills & Plugins
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Skills & Plugins
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/installing-skills/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Installing Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/skill-sources/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Skill Sources
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/mcp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    MCP Servers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/plugins/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugins
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/plugin-security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin Security Model
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/safety/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Safety Introspection
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/registries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Package Registries
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../extend/custom-distributions/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Distributions
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Channels
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Channels
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/telegram/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telegram
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/slack/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slack
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/discord/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/email/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Email / SMTP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/teams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Microsoft Teams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/google-chat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Chat
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/webhook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Webhook
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/whatsapp/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    WhatsApp
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/http/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HTTP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../channels/sidecars/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Sidecar Channels
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Configuration
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Configuration
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/workspace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workspace Layout
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/gui/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Web GUI
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/server/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Server
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/llm/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    LLM Providers
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/storage/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Storage & Backends
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/events/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Events & Webhooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/voice/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Voice
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Auth
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/security/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security Posture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/rate-limiting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Rate Limiting
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../configuration/telemetry/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Telemetry
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Security
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Security
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/sandbox/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool Sandbox
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../security/audit/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Audit & Incident Records
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    API Reference
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    API Reference
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/auth/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Auth
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/agents/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/workboard/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workboard
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/registries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Registries & Skills
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/credentials/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Credentials
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/costs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Costs
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/admin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Admin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    CLI
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    CLI
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cli/reference/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Reference
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_12" id="__nav_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_12">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deployment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/docker/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Docker
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/macos/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/linux/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Linux / VPS
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../deployment/upgrades/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Upgrades & Reinstall
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_13" >
+        
+          
+          <label class="md-nav__link" for="__nav_13" id="__nav_13_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Troubleshooting
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_13_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_13">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Troubleshooting
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../troubleshooting/common-failures/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Common Failures → Fixes
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+          
+        
+        <input class="md-nav__toggle md-toggle md-toggle--indeterminate" type="checkbox" id="__nav_14" >
+        
+          
+          <label class="md-nav__link" for="__nav_14" id="__nav_14_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_14_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_14">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Architecture
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture/specs/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Specs & Deep Dives
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#0-decisions-applied-from-user-2026-07-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        0. Decisions applied (from user, 2026-07-14)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#1-executive-summary" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Executive summary
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-what-already-exists-inventory-with-fileline" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. What already exists — inventory with file:line
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. What already exists — inventory with file:line">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-agent-side-rollback-shipped" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Agent-side rollback (SHIPPED)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-soulacy-agentjson-export-import-shipped-partial" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 .soulacy-agent.json export / import (SHIPPED, partial)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23-sy-pull-cli-partial-the-thinnest-surface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 sy pull CLI (PARTIAL — the thinnest surface)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24-27" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4-2.7
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-whats-missing-at-the-package-level" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. What's missing at the package level
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-proposed-data-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Proposed data model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Proposed data model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-calendar-versioning-decision-1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Calendar versioning (decision #1)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-the-versioned-package-on-disk-source-of-truth-format" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 The versioned package on disk (source-of-truth format)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-the-versioned-package-on-the-installed-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 The versioned package on the installed side
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-version-resolution-rules" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Version resolution rules
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#45-third-party-publishing-namespacing-signing-trust-levels-decision-6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.5 Third-party publishing — namespacing + signing + trust levels (decision #6)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#46-config-driven-trust-store-decision-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.6 Config-driven trust store (decision #2)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#47-package-level-permission-fingerprint" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.7 Package-level permission fingerprint
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#48-snapshot-pruning-decision-5-shipped-in-7c" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.8 Snapshot pruning (decision #5, shipped in 7C)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-backwards-compatibility-migration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Backwards compatibility &amp; migration
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Backwards compatibility &amp; migration">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-v1-packages-concrete-deprecation-timeline-decision-4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 v1 packages — concrete deprecation timeline (decision #4)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-existing-sy-pull-calls-continue-to-work" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Existing sy pull calls continue to work
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-existing-agent-history-snapshots" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Existing agent-history snapshots
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6-new-cli-surface-proposed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. New CLI surface (proposed)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#7-new-gui-surface-proposed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        7. New GUI surface (proposed)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#8-implementation-plan-bucketed-by-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        8. Implementation plan bucketed by scope
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="8. Implementation plan bucketed by scope">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#bucket-7a-data-model-install-time-secret-gate-s-2-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bucket 7A — Data model + install-time secret gate (S, ~2 sessions)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bucket-7b-version-resolution-registry-index-publisher-signing-m-4-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bucket 7B — Version resolution + registry index + publisher signing (M, ~4 sessions)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#bucket-7c-rollback-fingerprint-trust-chain-pruning-m-4-sessions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Bucket 7C — Rollback + fingerprint + trust chain + pruning (M, ~4 sessions)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#9-open-questions-none-remaining" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        9. Open questions — none remaining
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#10-files-this-design-will-touch-implementation-checklist" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        10. Files this design will touch (implementation checklist)
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#11-explicitly-not-proposed" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        11. Explicitly NOT proposed
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#12-summary-of-the-ask-rev-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        12. Summary of the ask (rev 2)
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+                
+
+
+
+  
+
+
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/vmodekurti/soulacy/edit/main/docs/PACKAGE_VERSIONING_DESIGN.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="agent-package-versioning-design-memo-story-7">Agent Package Versioning — Design Memo (Story 7)<a class="headerlink" href="#agent-package-versioning-design-memo-story-7" title="Permanent link">&para;</a></h1>
+<p><strong>Status:</strong> design memo. Six open questions were resolved by the user on 2026-07-14; this revision bakes those decisions in and is the reference for Buckets 7A/B/C implementation.
+<strong>Date:</strong> 2026-07-14 (rev 2, decisions applied)
+<strong>Cohort:</strong> C (design finalized), 7A implementation starts alongside this revision.</p>
+<h2 id="0-decisions-applied-from-user-2026-07-14">0. Decisions applied (from user, 2026-07-14)<a class="headerlink" href="#0-decisions-applied-from-user-2026-07-14" title="Permanent link">&para;</a></h2>
+<p>The six §9 questions from rev 1 have been answered:</p>
+<ol>
+<li><strong>Calendar versioning</strong> — <code>YYYY.MM.DD[.PATCH]</code>, not semver.</li>
+<li><strong>Config-driven trust store</strong> — under <code>packages.trusted_keys</code> in <code>soulacy.yaml</code>, not a local <code>~/.soulacy/trusted-keys.json</code>.</li>
+<li><strong>Single registry</strong> — only <code>soulacy/registry</code>; no multi-registry priority ordering.</li>
+<li><strong>v1 packages break at a cutoff</strong> — warn now, error after <code>2027-06-01</code> (see §5.1 for full deprecation timeline).</li>
+<li><strong>Snapshot pruning ships with 7C</strong>, not deferred beyond it.</li>
+<li><strong>Third-party publishing enabled</strong> — with namespacing, publisher signing at push time, and an official-vs-community trust distinction (see §4.5).</li>
+</ol>
+<p>Everything in this memo assumes those decisions. The rev 1 alternative options have been removed; §9 (open questions) is now empty because everything is decided.</p>
+<hr />
+<h2 id="1-executive-summary">1. Executive summary<a class="headerlink" href="#1-executive-summary" title="Permanent link">&para;</a></h2>
+<p>Soulacy has three "package"-ish surfaces today, at different maturity levels:</p>
+<ol>
+<li><strong>Agent-side rollback</strong> (SHIPPED). <code>.agent-history/&lt;id&gt;/&lt;UTC-timestamp&gt;.yaml</code> snapshot on every <code>Upsert</code>/<code>Delete</code>/rollback; gateway list/read/restore endpoints; GUI history modal.</li>
+<li><strong><code>.soulacy-agent.json</code> export / import</strong> (SHIPPED, partial). Self-contained JSON package; schema-validate → integrity check → agent-validate → capability-requirement report → write. <strong>Does not refuse</strong> on missing providers, channels, or secrets.</li>
+<li><strong><code>sy pull &lt;url-or-id&gt;</code></strong> (PARTIAL, thinnest surface). Raw <code>SOUL.yaml</code> fetch; no version pinning, no diff, no rollback, no changelog, no required-secret prompt, no local cache, no fingerprint, no signature.</li>
+</ol>
+<p>Story 7's ambition — "operators can pin a version, see a changelog, roll back an installed package, and re-import a version they've already vetted without re-approving every side-effect" — is entirely about surface #3 with a parallel package-side rollback that mirrors surface #1. Surface #2 is the natural transport for versioned distribution once #3 grows up.</p>
+<p><strong>Third-party publishing (decision #6) means one more surface</strong> — a publisher-side signing tool + a package-namespacing convention (<code>vasu/my-agent</code> vs <code>soulacy/hackernews-digest</code>) — treated in §4.5.</p>
+<hr />
+<h2 id="2-what-already-exists-inventory-with-fileline">2. What already exists — inventory with file:line<a class="headerlink" href="#2-what-already-exists-inventory-with-fileline" title="Permanent link">&para;</a></h2>
+<p><em>(unchanged from rev 1; retained verbatim so the memo remains self-sufficient)</em></p>
+<h3 id="21-agent-side-rollback-shipped">2.1 Agent-side rollback (SHIPPED)<a class="headerlink" href="#21-agent-side-rollback-shipped" title="Permanent link">&para;</a></h3>
+<p><strong>HTTP surface</strong> (<code>internal/gateway/api.go</code>):</p>
+<ul>
+<li><code>GET /api/v1/agents/:id/versions</code> → <code>handleListAgentVersions</code> (<code>api.go:381-391</code>) — RBAC <code>agents:read</code>.</li>
+<li><code>GET /api/v1/agents/:id/versions/:version</code> → <code>handleGetAgentVersion</code> (<code>api.go:393-403</code>) — RBAC <code>agents:read</code>. Returns <code>{agent_id, version, yaml}</code> (raw YAML text).</li>
+<li><code>POST /api/v1/agents/:id/rollback</code> → <code>handleRollbackAgent</code> (<code>api.go:405-435</code>) — RBAC <code>agents:write</code>. Body <code>{version}</code>. Blocks protected system agent.</li>
+</ul>
+<p><strong>Loader</strong> (<code>internal/runtime/loader.go</code>):</p>
+<ul>
+<li><code>type AgentVersion</code> (<code>loader.go:40-46</code>): <code>{ID, AgentID, Path, CreatedAt, Bytes}</code>.</li>
+<li><code>AgentVersions(id)</code> (<code>loader.go:485-518</code>) walks <code>&lt;agent_dir&gt;/.agent-history/&lt;id&gt;/*.yaml</code>, sorts newest-first.</li>
+<li><code>ReadAgentVersion(id, version)</code> (<code>loader.go:521-546</code>) reads raw bytes; refuses path traversal.</li>
+<li><code>RestoreAgentVersion(dir, id, version)</code> (<code>loader.go:549-570</code>) reads, forces <code>def.ID = id</code>, calls <code>Upsert</code> (which snapshots the current version first).</li>
+<li><code>snapshotPath</code> (<code>loader.go:572-593</code>) — filename <code>time.Now().UTC().Format("20060102T150405.000000000Z") + ".yaml"</code>. <strong>No pruning, no retention policy, no size cap</strong> — every save/delete/rollback adds a file forever. (Fixed in Bucket 7C per decision #5.)</li>
+</ul>
+<p><strong>Frontend</strong> (<code>gui/src/pages/Agents.svelte</code>): history modal at 2774-2822; <code>openHistory</code>, <code>selectVersion</code>, <code>rollbackVersion</code>; read-only YAML display; no diff.</p>
+<p><strong>On-disk shape</strong>:
+<div class="language-text highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a>&lt;agent_dir&gt;/
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a>  &lt;id&gt;/SOUL.yaml
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a>  .agent-history/&lt;id&gt;/
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a>    20260714T093012.123456789Z.yaml
+</span></code></pre></div></p>
+<h3 id="22-soulacy-agentjson-export-import-shipped-partial">2.2 <code>.soulacy-agent.json</code> export / import (SHIPPED, partial)<a class="headerlink" href="#22-soulacy-agentjson-export-import-shipped-partial" title="Permanent link">&para;</a></h3>
+<p>Handlers registered in <code>internal/gateway/server.go:652-656</code>:
+- <code>POST /api/v1/agents/package/inspect</code> → <code>handleInspectAgentPackage</code>
+- <code>POST /api/v1/agents/package/import</code> → <code>handleImportAgentPackage</code>
+- <code>GET /api/v1/agents/:id/package</code> → <code>handleGetAgentPackage</code></p>
+<p>Types (<code>internal/gateway/agent_package.go</code>):
+- <code>agentPackageResponse</code> (line 72-79): <code>{SchemaVersion="soulacy.agent.package/v1", ExportedAt, Manifest, SOULYAML, Files, Integrity}</code>.
+- <code>agentPackageManifest</code> (line 39-62): 22 fields including <code>Version string</code> (line 42, straight pass-through of <code>agent.Definition.Version</code>).
+- <code>agentPackageIntegrity</code> (line 64-70): <code>{Algorithm="sha256", SHA256, Signature, PublicKey, Verified}</code> — hash computed with <code>Integrity</code> zeroed. ed25519 signature optional.</p>
+<p><strong>Critical gap for versioning:</strong> <code>Requirements</code> statuses are surfaced but do <strong>not</strong> block import. Missing providers, missing secrets, missing peers, and conflicting agent ids all pass through unless the operator manually reads the report.</p>
+<h3 id="23-sy-pull-cli-partial-the-thinnest-surface">2.3 <code>sy pull</code> CLI (PARTIAL — the thinnest surface)<a class="headerlink" href="#23-sy-pull-cli-partial-the-thinnest-surface" title="Permanent link">&para;</a></h3>
+<p><strong>Command</strong> (<code>cmd/sy/pull.go</code>): <code>sy pull &lt;url-or-id&gt; [--dir &lt;path&gt;] [--force]</code>.</p>
+<p>Three source shapes (<code>pull.go:76-183</code>):
+1. Full URL — <code>fetchURL</code> 15 s timeout.
+2. <code>owner/repo</code> shorthand — hardcoded <code>https://raw.githubusercontent.com/&lt;ref&gt;/main/SOUL.yaml</code>.
+3. Plain ID — fetches <code>registryManifestURL</code> (<code>pull.go:50</code>), linear scan.</p>
+<p>Validation: UTF-8 + must contain <code>id:</code> (<code>pull.go:132-138</code>). Writes flat to <code>&lt;outputDir&gt;/&lt;agentID&gt;.yaml</code>. Only prompt: overwrite Y/N.</p>
+<p><strong>Missing subcommands</strong> (confirmed via <code>cmd/sy/</code> grep): <code>--version</code>, <code>rollback</code>, <code>changelog</code>, <code>list</code>, <code>refresh</code>, <code>trust</code>.</p>
+<p><strong>Registry storage</strong>: remote <code>https://raw.githubusercontent.com/soulacy/registry/main/index.json</code> — one-shot HTTP GET, no ETag / cache-control. <strong>No local cache.</strong></p>
+<h3 id="24-27">2.4-2.7<a class="headerlink" href="#24-27" title="Permanent link">&para;</a></h3>
+<p><em>(unchanged from rev 1)</em> — <code>internal/pkgregistry</code> engine (used by <code>sy skill install</code>, not <code>sy pull</code>); <code>internal/plugininstall</code> fingerprint pattern (plugins only, agent packages have no equivalent); <code>internal/templates.RequiredSecrets</code> (used by templates + evals, not by agent-package import); <code>pkg/agent/types.go:288</code> <code>Version string</code> on Definition (free-form).</p>
+<hr />
+<h2 id="3-whats-missing-at-the-package-level">3. What's missing at the package level<a class="headerlink" href="#3-whats-missing-at-the-package-level" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Story 7 AC</th>
+<th>Present today?</th>
+<th>Gap</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>Version-pinned import (<code>sy pull &lt;id&gt;@&lt;v&gt;</code>)</td>
+<td>No</td>
+<td>No CLI, no registry-side version list; git provider hardcodes <code>HEAD</code>.</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Changelog display before install</td>
+<td>No</td>
+<td>No changelog storage, no CLI/GUI surface.</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Required-secret prompt at install-time</td>
+<td>No</td>
+<td><code>agentPackageRequirement</code> says <code>"verify"</code> for every secret; nothing gates on it.</td>
+</tr>
+<tr>
+<td>4</td>
+<td>Required-provider / channel / MCP / tool validation before install</td>
+<td>Partial</td>
+<td><code>inspectAgentPackage</code> produces the report; <code>handleImportAgentPackage</code> does not enforce it.</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Package-side rollback (<code>sy pull rollback &lt;id&gt;</code>)</td>
+<td>No</td>
+<td>Agent-side rollback ships; package-import history isn't tracked distinctly.</td>
+</tr>
+<tr>
+<td>6</td>
+<td>Version history per package</td>
+<td>No</td>
+<td>Snapshots are per-agent (§2.1) but keyed by save-time, not by package version / origin.</td>
+</tr>
+<tr>
+<td>7</td>
+<td>Package origin metadata visible in the GUI</td>
+<td>Partial</td>
+<td><code>agentPackageManifest.Source</code> exists on export but isn't stored on the imported agent.</td>
+</tr>
+<tr>
+<td>8</td>
+<td>Signed-package trust chain (author identity, not just integrity)</td>
+<td>Partial</td>
+<td>Optional ed25519 signature verifies content integrity; author identity isn't attested against a trust store.</td>
+</tr>
+</tbody>
+</table>
+<p>Third-party publishing (decision #6) adds a ninth:</p>
+<p>| 9 | Publisher-side push tooling with namespacing + signing | No | No <code>sy package publish</code>; no namespacing convention on <code>slug</code>; no publisher key infrastructure. |</p>
+<hr />
+<h2 id="4-proposed-data-model">4. Proposed data model<a class="headerlink" href="#4-proposed-data-model" title="Permanent link">&para;</a></h2>
+<h3 id="41-calendar-versioning-decision-1">4.1 Calendar versioning (decision #1)<a class="headerlink" href="#41-calendar-versioning-decision-1" title="Permanent link">&para;</a></h3>
+<p><strong>Format:</strong> <code>YYYY.MM.DD[.PATCH]</code>. Examples: <code>2026.07.14</code>, <code>2026.07.14.1</code>, <code>2026.07.14.42</code>.</p>
+<p><strong>Regex</strong> (used for validation across CLI + gateway + registry): <code>^(\d{4})\.(\d{2})\.(\d{2})(?:\.(\d+))?$</code>.</p>
+<p><strong>Semantics:</strong>
+- <code>YYYY.MM.DD</code> is the release date in UTC. Dates in the future are rejected at publish time (registry-side check).
+- <code>.PATCH</code> is optional; when omitted, treated as <code>.0</code> for ordering. Same-day iterations increment <code>.PATCH</code> sequentially — publishing a second package on the same UTC day means bumping to <code>.1</code>.
+- Ordering is lexicographic on the parsed 4-tuple <code>(year, month, day, patch)</code> with all four as integers. <code>2026.07.14</code> &lt; <code>2026.07.14.1</code> &lt; <code>2026.07.14.10</code> &lt; <code>2026.07.15</code>.
+- No leading zeros are trimmed for display (<code>2026.07.14</code>, not <code>2026.7.14</code>) so lexicographic-on-string matches lexicographic-on-integer.
+- Pre-release / build metadata suffixes (<code>-rc.1</code>, <code>+build.42</code>) are <strong>not</strong> supported. Ship or don't. If an author needs an early build, publish with today's <code>.PATCH</code> (they'll fix forward tomorrow if needed).
+- Version equality is exact — <code>2026.07.14 == 2026.07.14</code>, not <code>2026.07.14 == 2026.07.14.0</code>. The <code>.PATCH == 0</code> normalization is only for ordering, not equality (so an operator can pin exactly the unpatched release).</p>
+<p><strong>Resolution rules</strong> (§4.4):
+- <code>sy pull &lt;id&gt;</code> (no version) → highest published version.
+- <code>sy pull &lt;id&gt;@YYYY.MM.DD</code> → exact match on the un-patched release.
+- <code>sy pull &lt;id&gt;@YYYY.MM.DD.PATCH</code> → exact match on the patched release.
+- <code>sy pull &lt;id&gt;@YYYY.MM</code> → highest release in that month.
+- <code>sy pull &lt;id&gt;@YYYY</code> → highest release in that year.
+- <code>sy pull &lt;id&gt;@latest</code> → same as no version.
+- <strong>No range syntax.</strong> Calendar versioning intentionally doesn't get <code>^</code> / <code>~</code> / <code>&gt;=</code>; the human reads a date, and if they want "latest in the last week" they use <code>sy pull &lt;id&gt;</code> and check <code>sy pull changelog &lt;id&gt;</code> first.</p>
+<h3 id="42-the-versioned-package-on-disk-source-of-truth-format">4.2 The versioned package on disk (source-of-truth format)<a class="headerlink" href="#42-the-versioned-package-on-disk-source-of-truth-format" title="Permanent link">&para;</a></h3>
+<p>Extend <code>.soulacy-agent.json</code> schema to v2:</p>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;schema_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;soulacy.agent.package/v2&quot;</span><span class="p">,</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;manifest&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">&quot;package_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;soulacy/hackernews-digest&quot;</span><span class="p">,</span><span class="w">   </span><span class="c1">// NEW: namespaced (see §4.5)</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">&quot;agent_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;hackernews-digest&quot;</span><span class="p">,</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">&quot;version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026.07.14&quot;</span><span class="p">,</span><span class="w">                     </span><span class="c1">// NEW: calendar version, required</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">    </span><span class="nt">&quot;prior_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026.07.10.1&quot;</span><span class="p">,</span><span class="w">             </span><span class="c1">// NEW: optional chain</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">    </span><span class="nt">&quot;released_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-07-14T09:00:00Z&quot;</span><span class="p">,</span><span class="w">       </span><span class="c1">// NEW: RFC3339</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">&quot;changelog&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Fixed a bug where...&quot;</span><span class="p">,</span><span class="w">          </span><span class="c1">// NEW</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">&quot;publisher&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">                                </span><span class="c1">// NEW: identity of the signer (§4.5)</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">      </span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;soulacy&quot;</span><span class="p">,</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">      </span><span class="nt">&quot;display_name&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Soulacy Core&quot;</span><span class="p">,</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">      </span><span class="nt">&quot;signature_key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ed25519:AB12...&quot;</span><span class="p">,</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">      </span><span class="nt">&quot;trust_level&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;official&quot;</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">    </span><span class="p">},</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">    </span><span class="nt">&quot;requires&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w">                                 </span><span class="c1">// NEW: hard requirements, gated at install</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">      </span><span class="nt">&quot;soulacy_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;&gt;=2026.06.01&quot;</span><span class="p">,</span><span class="w">         </span><span class="c1">// date-form soulacy build cutoff</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">      </span><span class="nt">&quot;providers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;ollama&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reason&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;used by the summarizer node&quot;</span><span class="p">}],</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">      </span><span class="nt">&quot;channels&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[{</span><span class="nt">&quot;id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;telegram&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;reason&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;daily digest destination&quot;</span><span class="p">}],</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">      </span><span class="nt">&quot;secrets&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="w">        </span><span class="p">{</span><span class="nt">&quot;key&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;telegram.bot_token&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;label&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Telegram bot token&quot;</span><span class="p">,</span>
+</span><span id="__span-1-22"><a id="__codelineno-1-22" name="__codelineno-1-22" href="#__codelineno-1-22"></a><span class="w">         </span><span class="nt">&quot;reason&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Required to deliver the daily digest.&quot;</span><span class="p">,</span>
+</span><span id="__span-1-23"><a id="__codelineno-1-23" name="__codelineno-1-23" href="#__codelineno-1-23"></a><span class="w">         </span><span class="nt">&quot;kind&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;channel_secret&quot;</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;provider&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;telegram&quot;</span><span class="p">}</span>
+</span><span id="__span-1-24"><a id="__codelineno-1-24" name="__codelineno-1-24" href="#__codelineno-1-24"></a><span class="w">      </span><span class="p">],</span>
+</span><span id="__span-1-25"><a id="__codelineno-1-25" name="__codelineno-1-25" href="#__codelineno-1-25"></a><span class="w">      </span><span class="nt">&quot;mcp_servers&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[],</span>
+</span><span id="__span-1-26"><a id="__codelineno-1-26" name="__codelineno-1-26" href="#__codelineno-1-26"></a><span class="w">      </span><span class="nt">&quot;peer_agents&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[]</span>
+</span><span id="__span-1-27"><a id="__codelineno-1-27" name="__codelineno-1-27" href="#__codelineno-1-27"></a><span class="w">    </span><span class="p">},</span>
+</span><span id="__span-1-28"><a id="__codelineno-1-28" name="__codelineno-1-28" href="#__codelineno-1-28"></a><span class="w">    </span><span class="cm">/* … existing fields … */</span>
+</span><span id="__span-1-29"><a id="__codelineno-1-29" name="__codelineno-1-29" href="#__codelineno-1-29"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-1-30"><a id="__codelineno-1-30" name="__codelineno-1-30" href="#__codelineno-1-30"></a><span class="w">  </span><span class="nt">&quot;soul_yaml&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;…&quot;</span><span class="p">,</span>
+</span><span id="__span-1-31"><a id="__codelineno-1-31" name="__codelineno-1-31" href="#__codelineno-1-31"></a><span class="w">  </span><span class="nt">&quot;files&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="w"> </span><span class="cm">/* … */</span><span class="w"> </span><span class="p">],</span>
+</span><span id="__span-1-32"><a id="__codelineno-1-32" name="__codelineno-1-32" href="#__codelineno-1-32"></a><span class="w">  </span><span class="nt">&quot;integrity&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* … existing sha256 + optional signature … */</span><span class="w"> </span><span class="p">}</span>
+</span><span id="__span-1-33"><a id="__codelineno-1-33" name="__codelineno-1-33" href="#__codelineno-1-33"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Design rules:
+- <code>version</code> is REQUIRED and MUST match the calendar-versioning regex in v2. v1 packages are still accepted (with a deprecation warning) until the cutoff in §5.1.
+- <code>package_id</code> is NAMESPACED as <code>&lt;publisher&gt;/&lt;package&gt;</code> (decision #6, see §4.5). Publishers cannot publish under a namespace they don't own.
+- <code>prior_version</code> forms a linked list so the changelog display can offer "since your last install" instead of the full history.
+- <code>publisher.signature_key</code> is the ed25519 pubkey the signature MUST verify against.
+- <code>publisher.trust_level</code> is <code>"official"</code> or <code>"community"</code> — see §4.5.
+- <code>requires.soulacy_version</code> uses a comparison prefix (<code>&gt;=</code> / <code>&lt;=</code> / <code>&gt;</code> / <code>&lt;</code> / <code>==</code>) plus a calendar version. Only one comparator per constraint; no ranges.
+- <code>requires.secrets</code> mirrors <code>internal/templates/templates.RequiredSecret</code> deliberately so the wizard code path is reusable.</p>
+<h3 id="43-the-versioned-package-on-the-installed-side">4.3 The versioned package on the installed side<a class="headerlink" href="#43-the-versioned-package-on-the-installed-side" title="Permanent link">&para;</a></h3>
+<p>New sidecar file next to the imported agent (mirrors <code>.soulacy-install.json</code> for plugins):</p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>&lt;agent_dir&gt;/&lt;id&gt;/
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>  SOUL.yaml
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>  .soulacy-package.json              # NEW — origin + version tracking
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>  &lt;supporting-files&gt;
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>.agent-history/&lt;id&gt;/                 # unchanged — per-save snapshots
+</span><span id="__span-2-6"><a id="__codelineno-2-6" name="__codelineno-2-6" href="#__codelineno-2-6"></a>.package-history/&lt;id&gt;/               # NEW — per-import snapshots
+</span><span id="__span-2-7"><a id="__codelineno-2-7" name="__codelineno-2-7" href="#__codelineno-2-7"></a>  2026.07.10.1_20260710T090000Z.package.json
+</span><span id="__span-2-8"><a id="__codelineno-2-8" name="__codelineno-2-8" href="#__codelineno-2-8"></a>  2026.07.10_20260710T081500Z.package.json
+</span></code></pre></div>
+<p><code>.soulacy-package.json</code> schema:
+<div class="language-json highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="p">{</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a><span class="w">  </span><span class="nt">&quot;package_id&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;soulacy/hackernews-digest&quot;</span><span class="p">,</span>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="w">  </span><span class="nt">&quot;installed_version&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026.07.14&quot;</span><span class="p">,</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">  </span><span class="nt">&quot;installed_from&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;https://raw.githubusercontent.com/soulacy/registry/main/packages/hackernews-digest/2026.07.14.package.json&quot;</span><span class="p">,</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a><span class="w">  </span><span class="nt">&quot;installed_at&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;2026-07-14T15:23:00Z&quot;</span><span class="p">,</span>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a><span class="w">  </span><span class="nt">&quot;approved_by&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;vasu@example.com&quot;</span><span class="p">,</span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="w">  </span><span class="nt">&quot;approved_fingerprint&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;sha256:...&quot;</span><span class="p">,</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="w">  </span><span class="nt">&quot;publisher&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="cm">/* copy of manifest.publisher */</span><span class="w"> </span><span class="p">},</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a><span class="w">  </span><span class="nt">&quot;signature_verified&quot;</span><span class="p">:</span><span class="w"> </span><span class="kc">true</span><span class="p">,</span>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a><span class="w">  </span><span class="nt">&quot;trust_level_at_install&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;official&quot;</span><span class="w">  </span><span class="c1">// recorded so a later publisher-level change surfaces on next pull</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a><span class="p">}</span>
+</span></code></pre></div></p>
+<p><code>.package-history/&lt;id&gt;/</code> snapshots the full <code>.package.json</code> at each import so <code>sy pull rollback &lt;id&gt;</code> can pin to any prior version without re-fetching from the registry.</p>
+<h3 id="44-version-resolution-rules">4.4 Version resolution rules<a class="headerlink" href="#44-version-resolution-rules" title="Permanent link">&para;</a></h3>
+<p>See §4.1 for the version syntax. Client-side resolution:</p>
+<ul>
+<li>The registry serves a per-package index at <code>https://raw.githubusercontent.com/soulacy/registry/main/packages/&lt;id&gt;/index.json</code>.</li>
+<li>Index shape: JSON array of <code>{version, released_at, package_url, changelog_url, deprecated?, publisher, trust_level}</code> records — ordered newest-first.</li>
+<li>Client caches locally at <code>~/.soulacy/registry/packages/&lt;id&gt;/index.json</code> with a 6-hour TTL by default (configurable via <code>packages.cache_ttl</code>).</li>
+<li><code>sy pull refresh &lt;id&gt;</code> (new) forces a re-fetch of one; <code>sy pull refresh --all</code> re-fetches every cached index.</li>
+<li>Cache invalidation is TTL-only in 7B; a signed manifest-of-manifests with ETag support is a post-7C follow-up.</li>
+</ul>
+<p>Git-URL sources (shape 1) resolve <code>HEAD</code> unless a <code>#tag</code>/<code>#branch</code>/<code>#sha</code> suffix is present (new in 7B): <code>sy pull https://github.com/x/y#2026.07.14</code>.</p>
+<h3 id="45-third-party-publishing-namespacing-signing-trust-levels-decision-6">4.5 Third-party publishing — namespacing + signing + trust levels (decision #6)<a class="headerlink" href="#45-third-party-publishing-namespacing-signing-trust-levels-decision-6" title="Permanent link">&para;</a></h3>
+<p><strong>Namespacing:</strong>
+- <code>package_id</code> is required to be <code>&lt;publisher&gt;/&lt;package&gt;</code> where <code>&lt;publisher&gt;</code> matches <code>^[a-z0-9-]{2,32}$</code> and <code>&lt;package&gt;</code> matches <code>^[a-z0-9][a-z0-9-]{0,62}$</code>.
+- The <code>soulacy/</code> namespace is reserved and can only be signed by keys the trust store marks as <code>"official"</code>.
+- Non-official publishers use their own namespace (e.g. <code>vasu/</code>, <code>acme-corp/</code>). Registry-side enforcement: publisher key MUST match the <code>packages/&lt;publisher&gt;/keys.json</code> list at push time. This keeps supply-chain safe without a central identity provider.</p>
+<p><strong>Publisher signing at push time:</strong>
+- New CLI: <code>sy package publish &lt;path-to-package.json&gt; --key &lt;ed25519-private-key-file&gt;</code>.
+- The publish tool:
+  1. Validates the manifest (schema + calendar version + namespace ownership).
+  2. Computes <code>integrity.sha256</code> over the package with <code>integrity</code> zeroed.
+  3. Signs the sha256 with the ed25519 private key; writes <code>integrity.signature</code>.
+  4. POSTs to the registry (URL TBD in 7B — the registry is currently git-backed, so "publish" is a PR against <code>soulacy/registry</code> in 7B; a first-class registry service is post-7C).
+- Signing is REQUIRED for third-party publishing. Signing is REQUIRED for <code>soulacy/</code> namespace. <code>--allow-unsigned</code> on <code>sy pull</code> accepts unsigned packages for local development; the GUI shows an "Unsigned — local dev only" chip when applied.</p>
+<p><strong>Trust levels — <code>official</code> vs <code>community</code>:</strong>
+- <code>publisher.trust_level</code> on the manifest is set by the registry at index time based on the key's entry in <code>packages/publishers.json</code> (a registry-controlled file listing publisher IDs → keys → trust level).
+- <code>"official"</code> = signed by a key listed under <code>soulacy/</code> in the registry's publishers file.
+- <code>"community"</code> = signed by any other registry-approved publisher key.
+- <code>"untrusted"</code> (implicit) = signature verifies but the key isn't in the registry's publishers file. <code>sy pull</code> requires <code>--allow-untrusted</code> and the GUI shows a red-badged "Untrusted publisher" warning.</p>
+<p><strong>Config-driven trust augmentation (decision #2, see §4.6):</strong>
+- The operator's local <code>soulacy.yaml</code> can trust additional publisher keys not in the registry (private / internal publishers). Registry-declared official/community keys always apply; local additions only expand the trust set for that workspace.</p>
+<h3 id="46-config-driven-trust-store-decision-2">4.6 Config-driven trust store (decision #2)<a class="headerlink" href="#46-config-driven-trust-store-decision-2" title="Permanent link">&para;</a></h3>
+<p>Under <code>soulacy.yaml</code>:</p>
+<div class="language-yaml highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a><span class="nt">packages</span><span class="p">:</span>
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a><span class="w">  </span><span class="nt">cache_ttl</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;6h&quot;</span><span class="w">                    </span><span class="c1"># optional; default 6h</span>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a><span class="w">  </span><span class="nt">allow_unsigned</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">false</span><span class="w">              </span><span class="c1"># optional; default false. When true, sy pull accepts unsigned packages without --allow-unsigned.</span>
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a><span class="w">  </span><span class="nt">trusted_keys</span><span class="p">:</span>
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a><span class="w">    </span><span class="c1"># Registry keys always apply; entries here only ADD trust (they cannot</span>
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a><span class="w">    </span><span class="c1"># override a key the registry has revoked).</span>
+</span><span id="__span-4-7"><a id="__codelineno-4-7" name="__codelineno-4-7" href="#__codelineno-4-7"></a><span class="w">    </span><span class="s">&quot;acme-corp&quot;</span><span class="p p-Indicator">:</span><span class="w">                     </span><span class="c1"># publisher id</span>
+</span><span id="__span-4-8"><a id="__codelineno-4-8" name="__codelineno-4-8" href="#__codelineno-4-8"></a><span class="w">      </span><span class="nt">display_name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;ACME</span><span class="nv"> </span><span class="s">Corp</span><span class="nv"> </span><span class="s">Automation</span><span class="nv"> </span><span class="s">Team&quot;</span>
+</span><span id="__span-4-9"><a id="__codelineno-4-9" name="__codelineno-4-9" href="#__codelineno-4-9"></a><span class="w">      </span><span class="nt">trust_level</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;community&quot;</span><span class="w">       </span><span class="c1"># or &quot;official&quot; for internal-only &quot;official&quot; imports (rare)</span>
+</span><span id="__span-4-10"><a id="__codelineno-4-10" name="__codelineno-4-10" href="#__codelineno-4-10"></a><span class="w">      </span><span class="nt">keys</span><span class="p">:</span>
+</span><span id="__span-4-11"><a id="__codelineno-4-11" name="__codelineno-4-11" href="#__codelineno-4-11"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;ed25519:CD34...&quot;</span><span class="w">          </span><span class="c1"># one or more keys; hex or base64 accepted</span>
+</span><span id="__span-4-12"><a id="__codelineno-4-12" name="__codelineno-4-12" href="#__codelineno-4-12"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;ed25519:EF56...&quot;</span>
+</span><span id="__span-4-13"><a id="__codelineno-4-13" name="__codelineno-4-13" href="#__codelineno-4-13"></a><span class="w">    </span><span class="s">&quot;vasu&quot;</span><span class="p p-Indicator">:</span>
+</span><span id="__span-4-14"><a id="__codelineno-4-14" name="__codelineno-4-14" href="#__codelineno-4-14"></a><span class="w">      </span><span class="nt">display_name</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;Vasu</span><span class="nv"> </span><span class="s">(personal)&quot;</span>
+</span><span id="__span-4-15"><a id="__codelineno-4-15" name="__codelineno-4-15" href="#__codelineno-4-15"></a><span class="w">      </span><span class="nt">trust_level</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;community&quot;</span>
+</span><span id="__span-4-16"><a id="__codelineno-4-16" name="__codelineno-4-16" href="#__codelineno-4-16"></a><span class="w">      </span><span class="nt">keys</span><span class="p">:</span>
+</span><span id="__span-4-17"><a id="__codelineno-4-17" name="__codelineno-4-17" href="#__codelineno-4-17"></a><span class="w">        </span><span class="p p-Indicator">-</span><span class="w"> </span><span class="s">&quot;ed25519:AB12...&quot;</span>
+</span></code></pre></div>
+<p>Shape matches existing security config idioms in <code>soulacy.yaml</code> (see <code>credentials:</code> and <code>providers:</code> blocks — nested map under a top-level key, string sub-keys, mapstructure-friendly). Backing struct in <code>internal/config/config.go</code>:</p>
+<div class="language-go highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="kd">type</span><span class="w"> </span><span class="nx">PackagesConfig</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="nx">CacheTTL</span><span class="w">       </span><span class="kt">string</span><span class="w">                            </span><span class="s">`mapstructure:&quot;cache_ttl&quot;`</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a><span class="w">    </span><span class="nx">AllowUnsigned</span><span class="w">  </span><span class="kt">bool</span><span class="w">                              </span><span class="s">`mapstructure:&quot;allow_unsigned&quot;`</span>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a><span class="w">    </span><span class="nx">TrustedKeys</span><span class="w">    </span><span class="kd">map</span><span class="p">[</span><span class="kt">string</span><span class="p">]</span><span class="nx">TrustedPublisherConfig</span><span class="w"> </span><span class="s">`mapstructure:&quot;trusted_keys&quot;`</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a><span class="p">}</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a><span class="kd">type</span><span class="w"> </span><span class="nx">TrustedPublisherConfig</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a><span class="w">    </span><span class="nx">DisplayName</span><span class="w"> </span><span class="kt">string</span><span class="w">   </span><span class="s">`mapstructure:&quot;display_name&quot;`</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a><span class="w">    </span><span class="nx">TrustLevel</span><span class="w">  </span><span class="kt">string</span><span class="w">   </span><span class="s">`mapstructure:&quot;trust_level&quot;`</span><span class="w"> </span><span class="c1">// &quot;official&quot; | &quot;community&quot;</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a><span class="w">    </span><span class="nx">Keys</span><span class="w">        </span><span class="p">[]</span><span class="kt">string</span><span class="w"> </span><span class="s">`mapstructure:&quot;keys&quot;`</span>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Runtime resolution order (highest wins):
+1. Registry-revoked key → refuse regardless of local config.
+2. Registry-declared key (official / community) → its trust level.
+3. Local <code>packages.trusted_keys</code> key → its declared trust level.
+4. Otherwise → <code>untrusted</code> (blocked unless <code>--allow-untrusted</code>).</p>
+<h3 id="47-package-level-permission-fingerprint">4.7 Package-level permission fingerprint<a class="headerlink" href="#47-package-level-permission-fingerprint" title="Permanent link">&para;</a></h3>
+<div class="language-go highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1">// PackageFingerprint hashes the material an operator explicitly approves when</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="c1">// they install a specific version. Reordering fields is a no-op; adding a</span>
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a><span class="c1">// required secret, adding a privileged capability, or widening tool_choice</span>
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a><span class="c1">// changes the hash.</span>
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a><span class="kd">type</span><span class="w"> </span><span class="nx">PackageFingerprint</span><span class="w"> </span><span class="kd">struct</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="w">    </span><span class="nx">Providers</span><span class="w">       </span><span class="p">[]</span><span class="kt">string</span><span class="w">  </span><span class="c1">// sorted</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a><span class="w">    </span><span class="nx">Channels</span><span class="w">        </span><span class="p">[]</span><span class="kt">string</span><span class="w">  </span><span class="c1">// sorted</span>
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a><span class="w">    </span><span class="nx">RequiredSecrets</span><span class="w"> </span><span class="p">[]</span><span class="kt">string</span><span class="w">  </span><span class="c1">// sorted; from manifest.requires.secrets[].key</span>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="w">    </span><span class="nx">Capabilities</span><span class="w">    </span><span class="p">[]</span><span class="kt">string</span><span class="w">  </span><span class="c1">// sorted; e.g. [&quot;system&quot;] when agent grants shell</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a><span class="w">    </span><span class="nx">MCPServers</span><span class="w">      </span><span class="p">[]</span><span class="kt">string</span><span class="w">  </span><span class="c1">// sorted</span>
+</span><span id="__span-6-11"><a id="__codelineno-6-11" name="__codelineno-6-11" href="#__codelineno-6-11"></a><span class="w">    </span><span class="nx">PublisherID</span><span class="w">     </span><span class="kt">string</span><span class="w">    </span><span class="c1">// sorted after everything else so a publisher rebrand triggers re-approval</span>
+</span><span id="__span-6-12"><a id="__codelineno-6-12" name="__codelineno-6-12" href="#__codelineno-6-12"></a><span class="w">    </span><span class="nx">TrustLevel</span><span class="w">      </span><span class="kt">string</span><span class="w">    </span><span class="c1">// &quot;official&quot; | &quot;community&quot; — moving from official → community requires re-approval</span>
+</span><span id="__span-6-13"><a id="__codelineno-6-13" name="__codelineno-6-13" href="#__codelineno-6-13"></a><span class="p">}</span>
+</span></code></pre></div>
+<p>Re-import of same version → same fingerprint → no re-approval. Re-import of a NEW version whose fingerprint matches → no re-approval. New version with expanded fingerprint OR trust-level downgrade → re-approval modal.</p>
+<h3 id="48-snapshot-pruning-decision-5-shipped-in-7c">4.8 Snapshot pruning (decision #5, shipped in 7C)<a class="headerlink" href="#48-snapshot-pruning-decision-5-shipped-in-7c" title="Permanent link">&para;</a></h3>
+<p>Retention policy for both <code>.agent-history/&lt;id&gt;/</code> and <code>.package-history/&lt;id&gt;/</code>:</p>
+<ul>
+<li><strong>Time-based:</strong> keep the last 30 days of snapshots unconditionally.</li>
+<li><strong>Count-based cap:</strong> keep at most 50 snapshots per agent/package, regardless of age. On the 51st snapshot, delete the oldest.</li>
+<li><strong>Pinned snapshots exempt:</strong> operators can pin any snapshot to protect from pruning. Pinning is stored as a sidecar <code>&lt;snapshot&gt;.pinned</code> marker file. GUI has a Pin/Unpin button in the history modal.</li>
+<li>Pruning is triggered on write (each <code>Upsert</code>/<code>Delete</code>/import runs a prune pass on the affected agent's history dir); no background daemon.</li>
+<li>Both thresholds are configurable under <code>packages.snapshot_retention</code> in <code>soulacy.yaml</code>:
+  <div class="language-yaml highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="nt">packages</span><span class="p">:</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="w">  </span><span class="nt">snapshot_retention</span><span class="p">:</span>
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a><span class="w">    </span><span class="nt">max_age</span><span class="p">:</span><span class="w"> </span><span class="s">&quot;30d&quot;</span>
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a><span class="w">    </span><span class="nt">max_count</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">50</span>
+</span></code></pre></div></li>
+<li>Rollback restores from <code>.package-history/</code>; if the requested version has been pruned, <code>sy pull rollback &lt;id&gt; --to &lt;v&gt;</code> fetches the version from the registry (using the cached index) and re-imports. The command surfaces this fallback in its output.</li>
+</ul>
+<hr />
+<h2 id="5-backwards-compatibility-migration">5. Backwards compatibility &amp; migration<a class="headerlink" href="#5-backwards-compatibility-migration" title="Permanent link">&para;</a></h2>
+<h3 id="51-v1-packages-concrete-deprecation-timeline-decision-4">5.1 v1 packages — concrete deprecation timeline (decision #4)<a class="headerlink" href="#51-v1-packages-concrete-deprecation-timeline-decision-4" title="Permanent link">&para;</a></h3>
+<p>Two-phase deprecation with a hard cutoff:</p>
+<p><strong>Phase 1 — Warn (7A ships, immediately):</strong>
+- <code>sy pull</code> accepts v1 packages but prints a WARN line: <code>warning: package uses deprecated schema "soulacy.agent.package/v1"; v1 packages will be refused after 2027-06-01 — ask the publisher to re-publish as v2.</code>
+- GUI import modal shows a yellow banner with the same text and a link to <code>docs/packaging.md#v1-deprecation</code>.
+- The gateway records a <code>package.v1_import_warning</code> event in the action log so ops teams can inventory who's still importing v1.
+- Existing installed v1 packages continue to work indefinitely — this deprecation is about NEW imports.</p>
+<p><strong>Phase 2 — Refuse (2027-06-01, exactly):</strong>
+- <code>sy pull</code> errors on v1: <code>error: package uses schema "soulacy.agent.package/v1" which is not supported after 2027-06-01. Ask the publisher to re-publish as v2 (see docs/packaging.md).</code>
+- Gateway <code>POST /api/v1/agents/package/import</code> returns 400 with the same message.
+- Escape hatch: <code>sy pull --allow-v1</code> bypasses the check for the local dev case. The GUI has no equivalent — the CLI is the only escape, and its help text warns "for local dev only, do not use in production".</p>
+<p><strong>Cutoff rationale:</strong> 2027-06-01 is ~10.5 months from the memo date (2026-07-14). Long enough for ecosystem publishers to migrate; short enough that we don't carry v1-import code past 12 months. Chosen as a DATE rather than a version because the ecosystem tracks calendar time better than Soulacy release numbers, per decision #1.</p>
+<p><strong>Where the warning surfaces:</strong>
+- CLI: <code>sy pull</code>, <code>sy pull inspect</code> (new in 7B) — stderr, WARN prefix.
+- GUI: import modal — yellow banner above the "Import" button; the button label changes to "Import (deprecated schema)".
+- Docs: <code>docs/packaging.md</code> gets a dedicated <code>#v1-deprecation</code> anchor with migration steps.
+- Action log: <code>package.v1_import_warning</code> event with <code>{package_id, source, imported_by, imported_at}</code>.</p>
+<h3 id="52-existing-sy-pull-calls-continue-to-work">5.2 Existing <code>sy pull</code> calls continue to work<a class="headerlink" href="#52-existing-sy-pull-calls-continue-to-work" title="Permanent link">&para;</a></h3>
+<ul>
+<li>Shape 1 (full URL) and shape 2 (owner/repo) — write to <code>&lt;outputDir&gt;/&lt;id&gt;.yaml</code>, unchanged.</li>
+<li>When the fetched file is a <code>.package.json</code> (v2 wrapper), the new codepath activates.</li>
+<li>Bare <code>SOUL.yaml</code> files fall through to the classic write-flat behavior with a WARN: <code>warning: fetched a bare SOUL.yaml (not a v2 package); no version, no changelog, no rollback will be tracked.</code></li>
+</ul>
+<h3 id="53-existing-agent-history-snapshots">5.3 Existing agent-history snapshots<a class="headerlink" href="#53-existing-agent-history-snapshots" title="Permanent link">&para;</a></h3>
+<p>Untouched. <code>.agent-history/</code> remains the per-save log; <code>.package-history/</code> is additive. GUI history modal gets a segmented control (Save history vs. Package history) in 7C.</p>
+<hr />
+<h2 id="6-new-cli-surface-proposed">6. New CLI surface (proposed)<a class="headerlink" href="#6-new-cli-surface-proposed" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>Command</th>
+<th>Description</th>
+<th>Bucket</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sy pull &lt;id&gt;</code></td>
+<td>Install the highest available version (unchanged default).</td>
+<td>existed</td>
+</tr>
+<tr>
+<td><code>sy pull &lt;id&gt;@&lt;v&gt;</code></td>
+<td>Version-pin using calendar versioning (§4.1 resolution).</td>
+<td>7B</td>
+</tr>
+<tr>
+<td><code>sy pull inspect &lt;id&gt;[@&lt;v&gt;]</code></td>
+<td>Show manifest + requires + publisher + trust level without installing.</td>
+<td>7B</td>
+</tr>
+<tr>
+<td><code>sy pull rollback &lt;id&gt;</code></td>
+<td>Roll to the previously-installed version from <code>.package-history/</code>.</td>
+<td>7C</td>
+</tr>
+<tr>
+<td><code>sy pull rollback &lt;id&gt; --to &lt;v&gt;</code></td>
+<td>Roll to a specific prior version; fetches from registry if pruned.</td>
+<td>7C</td>
+</tr>
+<tr>
+<td><code>sy pull list</code></td>
+<td>List installed packages with version, publisher, trust level, origin.</td>
+<td>7B</td>
+</tr>
+<tr>
+<td><code>sy pull changelog &lt;id&gt;</code></td>
+<td>Print the changelog between installed version and highest available.</td>
+<td>7B</td>
+</tr>
+<tr>
+<td><code>sy pull refresh &lt;id&gt;</code></td>
+<td>Force re-fetch of the registry index for one package.</td>
+<td>7B</td>
+</tr>
+<tr>
+<td><code>sy pull refresh --all</code></td>
+<td>Force re-fetch all cached indexes.</td>
+<td>7B</td>
+</tr>
+<tr>
+<td><code>sy pull trust --list</code></td>
+<td>List trusted publishers (registry + local config combined).</td>
+<td>7B</td>
+</tr>
+<tr>
+<td><code>sy pull --allow-unsigned &lt;src&gt;</code></td>
+<td>Accept an unsigned package (dev only).</td>
+<td>7A</td>
+</tr>
+<tr>
+<td><code>sy pull --allow-untrusted &lt;src&gt;</code></td>
+<td>Accept a signed package whose publisher is neither registry-declared nor locally trusted.</td>
+<td>7C</td>
+</tr>
+<tr>
+<td><code>sy pull --allow-v1 &lt;src&gt;</code></td>
+<td>Accept a v1 package after the 2027-06-01 cutoff.</td>
+<td>7A (warn) → hard-gates in 7A</td>
+</tr>
+<tr>
+<td><code>sy package publish &lt;path&gt;.package.json --key &lt;keyfile&gt;</code></td>
+<td>Sign and prepare a package for registry submission (PR to <code>soulacy/registry</code> in 7B; direct push post-7C).</td>
+<td>7B (basic) → post-7C (registry push)</td>
+</tr>
+<tr>
+<td><code>sy package validate &lt;path&gt;.package.json</code></td>
+<td>Local dry-run of publish validation (schema + calendar version + namespace + signature).</td>
+<td>7A</td>
+</tr>
+</tbody>
+</table>
+<p>Every subcommand supports <code>--dir &lt;path&gt;</code> and <code>--json</code> for scripting. <code>--yes</code> for non-interactive CI (never required; default is prompt).</p>
+<hr />
+<h2 id="7-new-gui-surface-proposed">7. New GUI surface (proposed)<a class="headerlink" href="#7-new-gui-surface-proposed" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Agents page</strong> — each row gains a small badge showing publisher + trust level (green for official, blue for community, red for untrusted, gray for unsigned).</li>
+<li><strong>Agent details</strong> — new <strong>Package</strong> tab alongside History, showing:</li>
+<li>Installed version + prior version (chain).</li>
+<li>Origin URL, publisher, trust level, signature-verified flag.</li>
+<li>Approved fingerprint (last 12 chars).</li>
+<li><strong>Update available</strong> callout when the registry has a newer version.</li>
+<li><strong>Rollback</strong> button (7C) — opens a picker over <code>.package-history/&lt;id&gt;/</code>.</li>
+<li><strong>Import package modal</strong> (extends existing <code>showPackageImport</code> at <code>Agents.svelte:2414</code>):</li>
+<li><strong>Publisher &amp; trust</strong> row at the top with publisher display name + trust badge.</li>
+<li><strong>Version</strong> row showing the pinned version + a <code>sy pull</code> command an operator can paste to reproduce.</li>
+<li><strong>Required secrets</strong> section (7A): each secret shows label + reason + vault status; missing secrets block Import.</li>
+<li><strong>Requirements</strong> section (7A): providers/channels/peers/skills status; missing status blocks Import unless <code>Acknowledge missing</code> is checked.</li>
+<li><strong>Permission diff</strong> section (7C): when re-importing an upgrade with a changed fingerprint, shows before/after providers/channels/capabilities + trust level; requires the operator to check "I understand the new permissions".</li>
+<li><strong>Changelog</strong> section (7B) pulled from the registry.</li>
+<li><strong>Config page</strong> — new <strong>Packages</strong> section shows the parsed <code>packages.trusted_keys</code> for review, with copy-config buttons that render the exact YAML the operator would paste. Editing is deliberately CLI-only (avoid encoding public keys in a form field).</li>
+</ul>
+<hr />
+<h2 id="8-implementation-plan-bucketed-by-scope">8. Implementation plan bucketed by scope<a class="headerlink" href="#8-implementation-plan-bucketed-by-scope" title="Permanent link">&para;</a></h2>
+<p>Three shippable buckets, self-contained. Each can ship on its own.</p>
+<h3 id="bucket-7a-data-model-install-time-secret-gate-s-2-sessions">Bucket 7A — Data model + install-time secret gate (S, ~2 sessions)<a class="headerlink" href="#bucket-7a-data-model-install-time-secret-gate-s-2-sessions" title="Permanent link">&para;</a></h3>
+<p>Additive-only, no CLI changes beyond <code>sy pull --allow-unsigned</code> and <code>sy package validate</code>. Ship:
+- v2 manifest with required <code>Version</code> + <code>Requires</code> + <code>Publisher</code> blocks (calendar-versioning validation).
+- <code>agentPackageManifest.PackageID</code> becomes required in v2 and MUST be namespaced (<code>&lt;publisher&gt;/&lt;package&gt;</code> per §4.5).
+- <code>handleImportAgentPackage</code> writes <code>.soulacy-package.json</code> alongside <code>SOUL.yaml</code> on import.
+- <code>handleInspectAgentPackage</code> populates <code>Requirements.status = "missing"</code> for absent secrets via <code>secrets.New(s.CredentialVault()).Catalog(...)</code>.
+- <code>handleImportAgentPackage</code> REFUSES import when any <code>Requires</code> entry is missing unless request body carries <code>"acknowledge_missing": true</code>.
+- GUI import modal displays the requirements list and disables Import until all <code>"missing"</code> entries are resolved OR the operator explicitly acks.
+- v1 deprecation warning path per §5.1 phase 1.
+- New <code>sy package validate &lt;path&gt;</code> command runs the schema + calendar version + namespace regex + signature (if present) check locally.
+- <code>PackagesConfig</code> struct in <code>internal/config/config.go</code> with <code>CacheTTL</code>, <code>AllowUnsigned</code>, and empty <code>TrustedKeys</code> map — the last two are read but only USED by 7B/7C; scaffolded in 7A so config migrations don't churn.</p>
+<p>Docs: new <code>docs/packaging.md</code> with the v1 deprecation section already populated.</p>
+<p><strong>Explicit non-goals for 7A:</strong> no version resolution, no rollback, no fingerprint, no trust store enforcement, no snapshot pruning.</p>
+<h3 id="bucket-7b-version-resolution-registry-index-publisher-signing-m-4-sessions">Bucket 7B — Version resolution + registry index + publisher signing (M, ~4 sessions)<a class="headerlink" href="#bucket-7b-version-resolution-registry-index-publisher-signing-m-4-sessions" title="Permanent link">&para;</a></h3>
+<p>Builds on 7A. Ship:
+- <code>sy pull &lt;id&gt;@&lt;v&gt;</code> with calendar-versioning resolution.
+- <code>sy pull inspect</code>, <code>sy pull list</code>, <code>sy pull changelog</code>, <code>sy pull refresh</code>, <code>sy pull refresh --all</code>, <code>sy pull trust --list</code>.
+- Registry per-package index format at <code>packages/&lt;id&gt;/index.json</code>.
+- Local cache under <code>~/.soulacy/registry/packages/&lt;id&gt;/index.json</code> with 6-hour TTL (configurable via <code>packages.cache_ttl</code>).
+- <code>sy package publish &lt;path&gt; --key &lt;keyfile&gt;</code> — signs the package and outputs a ready-to-PR file for <code>soulacy/registry</code>. Post-7C: direct push to the registry service.
+- Publisher key registry file <code>packages/publishers.json</code> in <code>soulacy/registry</code> — used by the client to resolve <code>trust_level</code> at pull time.
+- GUI "Update available" callout on the new Package tab.</p>
+<p><strong>Explicit non-goals for 7B:</strong> no rollback, no permission fingerprint, no snapshot pruning.</p>
+<h3 id="bucket-7c-rollback-fingerprint-trust-chain-pruning-m-4-sessions">Bucket 7C — Rollback + fingerprint + trust chain + pruning (M, ~4 sessions)<a class="headerlink" href="#bucket-7c-rollback-fingerprint-trust-chain-pruning-m-4-sessions" title="Permanent link">&para;</a></h3>
+<p>Builds on 7B. Ship:
+- <code>.package-history/&lt;id&gt;/&lt;version&gt;_&lt;timestamp&gt;.package.json</code> snapshot on every import.
+- <code>sy pull rollback &lt;id&gt;</code> and <code>sy pull rollback &lt;id&gt; --to &lt;v&gt;</code>.
+- <code>PackageFingerprint</code> computation on install; re-import compares against the operator's last-approved fingerprint; mismatch triggers a re-approval modal that shows the permission diff.
+- Config-driven <code>packages.trusted_keys</code> enforcement (§4.6) — local additions expand trust; <code>sy pull --allow-untrusted</code> for the pass-through case.
+- <strong>Snapshot pruning</strong> per §4.8: 30-day + 50-count retention on both <code>.agent-history/</code> and <code>.package-history/</code>; sidecar <code>.pinned</code> markers exempt; configurable via <code>packages.snapshot_retention</code> in config.
+- GUI: Package tab gains a Rollback button; import modal renders the permission diff when applicable; History modal gains a Pin/Unpin button.
+- Docs: <code>docs/troubleshooting/common-failures.md</code> gains a "Package trust and pinning" section.</p>
+<hr />
+<h2 id="9-open-questions-none-remaining">9. Open questions — none remaining<a class="headerlink" href="#9-open-questions-none-remaining" title="Permanent link">&para;</a></h2>
+<p>All six §9 questions from rev 1 have been decided by the user on 2026-07-14. Implementation of Bucket 7A starts immediately, with 7B/7C on the same cohort's runway if the session has budget.</p>
+<hr />
+<h2 id="10-files-this-design-will-touch-implementation-checklist">10. Files this design will touch (implementation checklist)<a class="headerlink" href="#10-files-this-design-will-touch-implementation-checklist" title="Permanent link">&para;</a></h2>
+<p>Cross-referenced to buckets 7A/B/C.</p>
+<ul>
+<li><code>sdk/pkgregistry/pkgregistry.go</code> — add calendar-version parsing helper. (7A)</li>
+<li><code>internal/gateway/agent_package.go</code> — v2 schema, <code>Requires</code> enforcement, <code>.soulacy-package.json</code> sidecar, <code>Publisher</code> block. (7A)</li>
+<li><code>internal/plugininstall/meta.go</code> — reference for the fingerprint pattern (separate <code>PackageFingerprint</code> type). (7C)</li>
+<li><code>internal/pkgregistry/</code> — v2 client speaking the new per-package index format. (7B)</li>
+<li><code>internal/pkgregistry/publisher.go</code> (new) — publisher key registry client. (7B)</li>
+<li><code>internal/config/config.go</code> — <code>PackagesConfig</code> struct with <code>TrustedKeys</code>, <code>CacheTTL</code>, <code>AllowUnsigned</code>, <code>SnapshotRetention</code>. (7A scaffold, 7C enforce)</li>
+<li><code>cmd/sy/pull.go</code> — add <code>@&lt;v&gt;</code>, <code>inspect</code>, <code>rollback</code>, <code>list</code>, <code>changelog</code>, <code>refresh</code>, <code>trust</code>, <code>--allow-*</code> flags. (7B, 7C)</li>
+<li><code>cmd/sy/package.go</code> — new file for <code>sy package publish|validate</code>. (7A validate, 7B publish)</li>
+<li><code>internal/runtime/loader.go</code> — <code>.package-history/</code> snapshotting alongside <code>.agent-history/</code>; helpers <code>PackageVersions(id)</code>, <code>ReadPackageVersion(id, v)</code>, <code>RestorePackageVersion(id, v)</code>; snapshot pruning. (7C)</li>
+<li><code>gui/src/pages/Agents.svelte</code> — new Package tab; import modal Requires + Diff sections; History Pin/Unpin. (7A, 7C)</li>
+<li><code>gui/src/lib/api.js</code> — new <code>api.agents.package.*</code> bindings. (7A → 7C)</li>
+<li><code>docs/packaging.md</code> — new; canonical reference. (7A)</li>
+<li><code>docs/troubleshooting/common-failures.md</code> — "Package trust and pinning" section. (7C)</li>
+</ul>
+<hr />
+<h2 id="11-explicitly-not-proposed">11. Explicitly NOT proposed<a class="headerlink" href="#11-explicitly-not-proposed" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Semver dependency solving across packages.</strong> Packages that depend on other packages will be flagged by the existing requirements report; there's no solver, no lockfile, no transitive resolution.</li>
+<li><strong>Automatic version updates.</strong> No background poller, no "Update all". <code>sy pull refresh</code> is opt-in.</li>
+<li><strong>First-class registry service.</strong> The design continues to piggyback on <code>raw.githubusercontent.com/soulacy/registry</code>. <code>sy package publish</code> produces a ready-to-PR file in 7B; direct-push registry service is post-7C.</li>
+<li><strong>Cross-workspace package sharing.</strong> Each Soulacy workspace maintains its own installed-package state and trust store. No shared team registry mode.</li>
+<li><strong>Signature revocation via CRL.</strong> Revocation is done by removing the key from <code>packages/publishers.json</code> in the registry — a client that has already installed the package keeps it (installed state doesn't re-verify signatures at runtime; only at pull time). A full CRL / OCSP-style revocation is post-7C.</li>
+</ul>
+<hr />
+<h2 id="12-summary-of-the-ask-rev-2">12. Summary of the ask (rev 2)<a class="headerlink" href="#12-summary-of-the-ask-rev-2" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Six §9 questions are answered. Implementation starts immediately.</li>
+<li><strong>Bucket 7A</strong> ships the smallest first cohort: v2 schema, install-time secret gate, <code>.soulacy-package.json</code> sidecar, <code>sy package validate</code>, v1 deprecation warning.</li>
+<li><strong>Bucket 7B</strong> adds calendar-version resolution, per-package registry index, local cache, publisher signing, <code>sy pull</code> browse subcommands.</li>
+<li><strong>Bucket 7C</strong> adds rollback, permission fingerprint, config-driven trust enforcement, snapshot pruning, and the GUI Rollback/Permission-diff/Pin surfaces.</li>
+<li><strong>After 7C</strong> — Story 7's ACs are all met and Cohort E production go-live becomes the natural next scope.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+        
+<div class="md-social">
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://github.com/vmodekurti/soulacy" target="_blank" rel="noopener" title="github.com" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M173.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M252.8 8C114.1 8 8 113.3 8 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C436.2 457.8 504 362.9 504 252 504 113.3 391.5 8 252.8 8M105.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.action.edit"], "search": "../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.d7400e89.min.js"></script>
+      
+    
+  </body>
+</html>

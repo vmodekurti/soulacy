@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/logo.svg">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../templates/" class="md-tabs__link">
+        <a href="../../template-guides/" class="md-tabs__link">
           
   
   
@@ -1427,7 +1427,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/" class="md-nav__link">
+      <a href="../../template-guides/" class="md-nav__link">
         
   
   
@@ -1455,7 +1455,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/weather/" class="md-nav__link">
+      <a href="../../template-guides/weather/" class="md-nav__link">
         
   
   
@@ -1483,7 +1483,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/stock-screener/" class="md-nav__link">
+      <a href="../../template-guides/stock-screener/" class="md-nav__link">
         
   
   
@@ -1511,7 +1511,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/deal-finder/" class="md-nav__link">
+      <a href="../../template-guides/deal-finder/" class="md-nav__link">
         
   
   
@@ -1539,7 +1539,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/research-librarian/" class="md-nav__link">
+      <a href="../../template-guides/research-librarian/" class="md-nav__link">
         
   
   
@@ -1567,7 +1567,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/document-ingestion/" class="md-nav__link">
+      <a href="../../template-guides/document-ingestion/" class="md-nav__link">
         
   
   
@@ -1595,7 +1595,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/inbox-meeting/" class="md-nav__link">
+      <a href="../../template-guides/inbox-meeting/" class="md-nav__link">
         
   
   
@@ -2318,6 +2318,118 @@
     
   
     Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/email/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Email / SMTP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/teams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Microsoft Teams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/google-chat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Chat
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/webhook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Webhook
   
 
     
@@ -3995,20 +4107,53 @@
 <p>The sidebar is split into three groups: <strong>main</strong> (day-to-day work), <strong>ops</strong> (integrations), and <strong>system</strong> (observability).</p>
 <h2 id="dashboard">Dashboard<a class="headerlink" href="#dashboard" title="Permanent link">&para;</a></h2>
 <p>Your at-a-glance health view: gateway status and version, agent counts, and a <strong>Live Event Log</strong> streaming every runtime event over WebSocket, with filter presets (All / Errors / Tools / LLM / Messages).</p>
+<p>The <strong>Launch Readiness</strong> panel scores every load-bearing capability
+(providers, secrets, channels, Studio contracts, schedules, deployment, ops
+alerts, SLOs, release, docs) and shows blocker / warning counts with
+click-through to the offending page. The <code>schedules_ready</code> first-class check
+reports total / enabled / delivering / overdue with actionable next-steps —
+so an agent that saved cleanly but never fires (because e.g. no default
+outbound bot is configured) shows up here instead of in silence.</p>
 <p><strong>Try first:</strong> send a chat message in another tab and watch the events appear live.</p>
 <h2 id="first-run">First Run<a class="headerlink" href="#first-run" title="Permanent link">&para;</a></h2>
 <p>The guided setup path for a fresh workspace. It helps you choose a first focus, configure the essentials, and points you toward a starter template or Studio flow that matches what you are trying to build.</p>
 <p><strong>Try first:</strong> pick the focus closest to your use case, then follow the suggested next action.</p>
 <h2 id="studio">Studio<a class="headerlink" href="#studio" title="Permanent link">&para;</a></h2>
 <p>The one-stop agent development surface. Describe an agent in plain language, let Studio draft the workflow, inspect the generated plan, edit nodes and connections on the canvas, run dry/live tests, validate integrity, and use self-heal when a real run fails. Studio can author Workflow, ReAct, and Plan-Execute agents, then save them as normal SOUL.yaml agents.</p>
+<ul>
+<li><strong>Generate</strong> has a <strong>Streamed / Wizard</strong> split-button. Streamed (default)
+  runs all five pipeline phases (<code>clarify_intent → choose_strategy →
+  build_graph → validate → repair</code>) in one shot and streams a live
+  transcript below the canvas. Wizard opens the refinement modal with a
+  Wizard-steps breadcrumb so you can inspect and edit intermediate output.
+  Persist the default under the Studio model modal → <strong>Generate
+  presentation</strong>.</li>
+<li><strong>Runtime intent</strong> presets in the model modal: <strong>Fast local</strong> (small local
+  model, tight timeouts, high loop cap), <strong>Reliable local</strong> (patient
+  timeouts, the default), <strong>Cloud quality</strong> (long total budget, applied
+  even for cloud providers).</li>
+<li><strong>Contract panel</strong> for reasoning agents runs blocker/warning checks on the
+  system prompt, tool allowlist, peer graph, prompt hygiene, step budget,
+  channel delivery, LLM fit, capability scope, persona consistency, and
+  builtin scope — issues surface before Save.</li>
+<li><strong>Debug in Studio</strong> on a failed run in Activity pre-fills the failing
+  input into the test bench, loads the structured run trace, and routes any
+  heal result through an <strong>Apply this fix / Cancel</strong> diff panel; the canvas
+  only changes on confirm.</li>
+<li><strong>Build until it works</strong> now surfaces two sections above the attempt log:
+  <strong>Needs your input</strong> (external blockers Studio can't fix — bad credential,
+  bot not invited, rate limit, invalid destination) and <strong>What Studio
+  changed</strong> (plain-language rollup of each attempt's edits).</li>
+</ul>
 <p><strong>Try first:</strong> type "an agent that summarizes RSS articles every morning", generate a draft, run <strong>Dry run</strong>, then click any node to inspect its inputs and outputs.</p>
 <h2 id="agents">Agents<a class="headerlink" href="#agents" title="Permanent link">&para;</a></h2>
 <p>The full agent editor: identity, trigger, system prompt, LLM provider/model (with live model lists), memory scopes, reasoning strategy, brain memory layers, channels, tools, skills, knowledge bases, and peer agents.</p>
 <ul>
 <li>Tool <strong>Python file</strong> fields have a <strong>📂 Browse</strong> picker that lists every script in the tool catalog — pick instead of typing paths.</li>
 <li>Chip-picker fields (channels, skills, knowledge bases, peer agents, built-ins) have a <strong>▾ browse</strong> dropdown populated from what actually exists, so typos are impossible.</li>
-<li><strong>Validate</strong> runs the same checks as <code>sy agent validate</code> and shows findings inline.</li>
+<li><strong>Validate</strong> runs the same checks as <code>sy agent validate</code> and shows findings inline. Invalid <code>schedule.cron</code> strings are refused at Save with the parser's own explanation (5-field, 6-field-with-seconds, and <code>@descriptor</code> shapes are accepted).</li>
 <li><strong>💬 Test</strong> opens an inline playground; <strong>&lt;/&gt; API</strong> shows copy-paste cURL/Python/JS snippets for the agent.</li>
+<li><strong>Capability audit modal</strong> — a save that would escalate an agent's tier (ReadOnly → Active → Privileged) while it has interactive channel bindings pops a blocking modal listing the tier diff, warnings, and affected bindings. Confirming re-submits with an acknowledgement header; cancelling leaves the previous shape in place.</li>
 </ul>
 <p><strong>Try first:</strong> select an agent, click <strong>Validate</strong>, then <strong>💬 Test</strong> and send it a message.</p>
 <h2 id="templates">Templates<a class="headerlink" href="#templates" title="Permanent link">&para;</a></h2>
@@ -4027,10 +4172,34 @@
 <p>A kanban board (Todo → Running → Needs Review → Done → Failed) where each task can be assigned to an agent and run with <strong>▶</strong>. Tasks carry owner, priority, tags, and due dates; the editor shows run history, downloadable artifacts, and comments/review notes. See <a href="../../using/workboard/">Workboard</a>.</p>
 <p><strong>Try first:</strong> create a task, assign an agent, click <strong>▶ Run</strong>.</p>
 <h2 id="channels-ops">Channels (ops)<a class="headerlink" href="#channels-ops" title="Permanent link">&para;</a></h2>
-<p>Status and configuration for every channel adapter — Telegram, Discord, Slack, WhatsApp, WhatsApp Web (with QR pairing), and the always-on HTTP channel. Edit credentials, map bots to agents (multi-bot supported), and enable/disable adapters; a restart banner appears when changes need a gateway restart.</p>
+<p>Status and configuration for every channel adapter — Telegram, Discord, Slack, WhatsApp, WhatsApp Web (with QR pairing), email (SMTP), Microsoft Teams, Google Chat, generic webhooks, and the always-on HTTP channel. Edit credentials, map bots to agents (multi-bot supported), and enable/disable adapters; a restart banner appears when changes need a gateway restart.</p>
+<ul>
+<li><strong>Guided setup cards</strong> for Telegram / Slack / Discord / WhatsApp /
+  WhatsApp Web / email / Teams / Google Chat / HTTP — step-by-step with
+  per-field hints keyed off the actual adapter config keys, and a Test
+  delivery button at the bottom.</li>
+<li><strong>Diagnose</strong> on any mapping returns a plain-language category and fix:
+  <code>bad_token</code>, <code>bot_not_invited</code>, <code>missing_scope</code>, <code>invalid_destination</code>,
+  <code>forbidden</code>, <code>rate_limited</code>. SMTP-specific classifications
+  (authentication failed, STARTTLS required, relay denied / SPF, recipient
+  rejected, quota, message rejected, TLS handshake) so raw <code>535 5.7.8</code> /
+  <code>550 5.1.1</code> codes don't bubble up as "unknown".</li>
+<li><strong>Test</strong> on the card runs a real send when configured, or a
+  dry-precondition check otherwise; the result renders on the card with the
+  same friendly category/reason/fix.</li>
+</ul>
 <p><strong>Try first:</strong> open a channel's <strong>Edit</strong> dialog to see which agent each bot routes to.</p>
 <h2 id="automations-ops">Automations (ops)<a class="headerlink" href="#automations-ops" title="Permanent link">&para;</a></h2>
 <p>All cron agents in one table: next run, last run, missed-run policy, live "Running…" status, and countdowns. <strong>▶ Run</strong> triggers immediately, <strong>📋 History</strong> opens a slide-out of past manual, channel, and scheduled runs with outputs and delivery status, <strong>👁 Watch</strong> jumps to the live action log. See <a href="../../using/schedules/">Schedules</a>.</p>
+<ul>
+<li><strong><code>⟳ auto-replayed</code> chip</strong> appears on the Agent cell whenever the gateway
+  missed a scheduled fire and replayed it at startup (within the
+  <code>missed_startup_window</code>); hover for the missed/replayed timestamps and
+  how much late the run was.</li>
+<li><strong>Save-time cron validation</strong> — the Edit modal refuses invalid expressions
+  with the parser's own message ("expected exactly 5 fields, found 3")
+  instead of silently succeeding and leaving the "Next run" column blank.</li>
+</ul>
 <p><strong>Try first:</strong> click <strong>📋 History</strong> on any cron agent.</p>
 <h2 id="skills-ops">Skills (ops)<a class="headerlink" href="#skills-ops" title="Permanent link">&para;</a></h2>
 <p>Browse installed Agent Skills (SKILL.md instruction packs), read their full instructions and resources, and install new ones — <strong>⚡ From AgenticSkills</strong> installs directly from an agenticskills.io URL, and <strong>➕ Skill sources</strong> lets you paste any URL (a skills.sh-style directory, a Soulacy package registry, or a Git host), have it reviewed and identified, then add it as a registry source.</p>
@@ -4040,12 +4209,35 @@
 <p><strong>Try first:</strong> expand an existing server row to see its tools and status.</p>
 <h2 id="plugins-ops">Plugins (ops)<a class="headerlink" href="#plugins-ops" title="Permanent link">&para;</a></h2>
 <p>Install plugins from a git URL, a sha256-checksummed archive, or a local directory. Every install is staged first — you review the requested permissions, credentials, and security findings before approving.</p>
+<p>The <strong>Agents → Import</strong> modal (for agent packages) surfaces the new v2
+schema: namespaced ids (<code>owner/name</code>), calendar versioning (<code>YYYY.MM.DD</code>),
+and an install-time requirements gate that refuses import when a required
+provider / channel / secret / MCP server is missing, with a red <strong>Missing
+requirements</strong> banner and an <strong>I understand — import anyway</strong> checkbox for
+local experiments. Legacy v1 packages import with a deprecation warning
+until the <code>2027-06-01</code> cutoff. See <a href="../../packaging/">Packaging</a>.</p>
 <p><strong>Try first:</strong> paste a plugin source and click <strong>Clone &amp; review</strong> (nothing activates until you approve).</p>
 <h2 id="providers-ops">Providers (ops)<a class="headerlink" href="#providers-ops" title="Permanent link">&para;</a></h2>
-<p>LLM provider credentials and defaults: add keys for OpenAI, Anthropic, Google, Groq, Mistral, OpenRouter, or point at local Ollama; pick default models from live model lists; run connection tests; tune provider-specific options (Ollama context window, Anthropic extended thinking, and more).</p>
+<p>LLM provider credentials and defaults: add keys for OpenAI, Anthropic, Google, Groq, Mistral, OpenRouter, Together, DeepSeek, Grok, or point at local Ollama; pick default models from live model lists; run connection tests; tune provider-specific options (Ollama context window, Anthropic extended thinking, and more).</p>
+<p><strong>Test connection</strong> on any card now surfaces a structured <strong>Provider Doctor</strong>
+diagnosis when the call fails: friendly reason (bold), concrete fix
+(secondary line), and a <strong>Show raw error</strong> toggle for the underlying
+provider response. Categories cover the shapes the drivers actually return:
+<code>bad_key</code>, <code>region_blocked</code>, <code>rate_limited</code>, <code>overloaded</code>,
+<code>model_not_found</code>, <code>context_too_large</code>, <code>quota_exceeded</code>, <code>provider_down</code>,
+<code>bad_endpoint</code>, <code>network</code>, <code>local_unreachable</code>. See
+<a href="../../troubleshooting/common-failures/#llm-providers-provider-doctor">Troubleshooting → LLM providers</a>
+for the full category → fix table.</p>
 <p><strong>Try first:</strong> click a provider's test button to verify it answers.</p>
 <h2 id="activity-system">Activity (system)<a class="headerlink" href="#activity-system" title="Permanent link">&para;</a></h2>
 <p>The per-agent action log from the SQLite action store: every run, LLM call, tool call/result, reasoning step, reply, and error with timestamps and summaries. Filter by type, enable <strong>▶ Watch (2s)</strong> for live polling, and see per-run token/cost totals. See <a href="../../using/dashboard/">Dashboard &amp; Activity</a>.</p>
+<p>The <strong>Running now</strong> strip at the top polls <code>/activity/running</code> every 3s and
+renders one card per in-flight session — agent name, <code>Xm Ys in flight</code>,
+<code>silent Ys</code>, <code>last: &lt;event_type&gt;</code>. A session that hasn't emitted anything
+for more than 5 minutes turns red and shows a per-last-event-type reason +
+fix ("waiting on the LLM provider for 6m 12s — check Providers for
+rate-limit/overload"). Click a card to deep-link into that agent/session's
+event stream.</p>
 <p><strong>Try first:</strong> select your busiest agent and click <strong>▶ Watch (2s)</strong>.</p>
 <h2 id="config-system">Config (system)<a class="headerlink" href="#config-system" title="Permanent link">&para;</a></h2>
 <p>Edit the live runtime configuration: log level/format, Python interpreter, tool timeout, max turns, max concurrent sessions, default LLM provider, agent/skill directories, and per-plugin settings. After saving, a banner offers a one-click <strong>Restart Gateway</strong>.</p>
@@ -4173,7 +4365,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.action.edit"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/logo.svg">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../templates/" class="md-tabs__link">
+        <a href="../../template-guides/" class="md-tabs__link">
           
   
   
@@ -1306,7 +1306,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/" class="md-nav__link">
+      <a href="../../template-guides/" class="md-nav__link">
         
   
   
@@ -1334,7 +1334,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/weather/" class="md-nav__link">
+      <a href="../../template-guides/weather/" class="md-nav__link">
         
   
   
@@ -1362,7 +1362,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/stock-screener/" class="md-nav__link">
+      <a href="../../template-guides/stock-screener/" class="md-nav__link">
         
   
   
@@ -1390,7 +1390,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/deal-finder/" class="md-nav__link">
+      <a href="../../template-guides/deal-finder/" class="md-nav__link">
         
   
   
@@ -1418,7 +1418,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/research-librarian/" class="md-nav__link">
+      <a href="../../template-guides/research-librarian/" class="md-nav__link">
         
   
   
@@ -1446,7 +1446,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/document-ingestion/" class="md-nav__link">
+      <a href="../../template-guides/document-ingestion/" class="md-nav__link">
         
   
   
@@ -1474,7 +1474,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/inbox-meeting/" class="md-nav__link">
+      <a href="../../template-guides/inbox-meeting/" class="md-nav__link">
         
   
   
@@ -2197,6 +2197,118 @@
     
   
     Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/email/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Email / SMTP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/teams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Microsoft Teams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/google-chat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Chat
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/webhook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Webhook
   
 
     
@@ -3746,6 +3858,10 @@
 
 <h1 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h1>
 <p>A working agent, the web GUI, and your first chat — in under five minutes.</p>
+<p>Soulacy is a <strong>local-first agent operating system</strong>: Studio for authoring
+and self-healing agents, Channels for delivery, Schedule for cron, Learning
+for making the same mistake less often, Packaging for versioned installs —
+all in one binary, all local by default.</p>
 <h2 id="1-install">1. Install<a class="headerlink" href="#1-install" title="Permanent link">&para;</a></h2>
 <div class="tabbed-set tabbed-alternate" data-tabs="1:2"><input checked="checked" id="__tabbed_1_1" name="__tabbed_1" type="radio" /><input id="__tabbed_1_2" name="__tabbed_1" type="radio" /><div class="tabbed-labels"><label for="__tabbed_1_1">macOS / Linux</label><label for="__tabbed_1_2">From source</label></div>
 <div class="tabbed-content">
@@ -3813,15 +3929,33 @@ Watch the <em>Thinking</em> section show reasoning steps and tool calls live.</p
 <p>Changes hot-reload — no restart. The full schema (tools, memory, reasoning, schedules, workflows) is in the <a href="../../agents/soul-yaml/">SOUL.yaml reference</a>.</p>
 <h2 id="6-five-things-to-try-next">6. Five things to try next<a class="headerlink" href="#6-five-things-to-try-next" title="Permanent link">&para;</a></h2>
 <ol>
+<li><strong>Generate an agent from plain English</strong> — open <strong>Studio</strong>, describe the
+   automation, hit <strong>Generate</strong> (Streamed by default streams the pipeline
+   phases live below the canvas; the Wizard variant lets you step through
+   <code>clarify_intent → choose_strategy → build_graph → validate → repair</code>).
+   Pick a <strong>Runtime intent</strong> preset (Fast local / Reliable local / Cloud
+   quality) in the Studio model modal to bake sensible timeouts into the
+   agent. → <a href="../../using/studio/">Studio</a></li>
 <li><strong>Give it skills</strong> — add the public skill directory and install one:
    <div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a>sy<span class="w"> </span>registry<span class="w"> </span>add<span class="w"> </span>https://www.skills.sh/
 </span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a>sy<span class="w"> </span>skill<span class="w"> </span>install<span class="w"> </span>anthropics/skills/skill-creator
 </span></code></pre></div>
    Every install passes a <a href="../../extend/safety/">security review</a> before you consent. → <a href="../../extend/skill-sources/">Skill sources</a></li>
-<li><strong>Put it on Telegram</strong> — a bot token and two YAML lines. → <a href="../../channels/telegram/">Channels</a></li>
-<li><strong>Schedule it</strong> — run every morning, with automatic catch-up after downtime. → <a href="../../using/schedules/">Schedules</a></li>
-<li><strong>Start from a template</strong> — Meeting Minutes, Inbox Triage, Market Monitor, Compliance Auditor, with guided readiness checks and mock tests. → <a href="../../using/templates/">Templates</a></li>
-<li><strong>Talk to it</strong> — configure <code>voice:</code> and hold a realtime conversation in Chat. → <a href="../../using/voice/">Voice</a></li>
+<li><strong>Put it on Telegram</strong> — a bot token and two YAML lines. The Channels page
+   has inline guided setup cards for Telegram / Slack / Discord / WhatsApp /
+   email / Teams / Google Chat, with per-field hints and a Test-delivery
+   button that returns a friendly Diagnose reason on failure. → <a href="../../channels/telegram/">Channels</a></li>
+<li><strong>Schedule it</strong> — run every morning, with automatic catch-up after
+   downtime. If the gateway missed a fire, the Automations row shows a
+   <code>⟳ auto-replayed</code> chip and Activity emits a
+   <code>schedule.missed_run_backfilled</code> event so you can tell "why did this fire
+   at 03:04?" apart from a normal cron. → <a href="../../using/schedules/">Schedules</a></li>
+<li><strong>Install a versioned package</strong> — <code>sy pull &lt;owner&gt;/&lt;repo&gt;</code> or import via
+   Agents → Import. The package v2 schema uses namespaced ids
+   (<code>owner/name</code>), calendar versioning (<code>2026.7.15</code>), and an install-time
+   secret gate that refuses to import if a required provider / channel /
+   secret / MCP server is missing (with an "I understand — import anyway"
+   opt-out for local experiments). → <a href="../../packaging/">Packaging</a></li>
 </ol>
 <h2 id="where-everything-lives">Where everything lives<a class="headerlink" href="#where-everything-lives" title="Permanent link">&para;</a></h2>
 <table>
@@ -3966,7 +4100,7 @@ Watch the <em>Thinking</em> section show reasoning steps and tool calls live.</p
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.action.edit"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>

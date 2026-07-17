@@ -23,7 +23,7 @@
       
       
       <link rel="icon" href="../../assets/logo.svg">
-      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.7">
     
     
       
@@ -31,7 +31,7 @@
       
     
     
-      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      <link rel="stylesheet" href="../../assets/stylesheets/main.ec1eaa64.min.css">
       
         
         <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
@@ -287,7 +287,7 @@
     
     
       <li class="md-tabs__item">
-        <a href="../../templates/" class="md-tabs__link">
+        <a href="../../template-guides/" class="md-tabs__link">
           
   
   
@@ -1084,6 +1084,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#run-history-and-support-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run history and support evidence
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -1301,7 +1312,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/" class="md-nav__link">
+      <a href="../../template-guides/" class="md-nav__link">
         
   
   
@@ -1329,7 +1340,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/weather/" class="md-nav__link">
+      <a href="../../template-guides/weather/" class="md-nav__link">
         
   
   
@@ -1357,7 +1368,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/stock-screener/" class="md-nav__link">
+      <a href="../../template-guides/stock-screener/" class="md-nav__link">
         
   
   
@@ -1385,7 +1396,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/deal-finder/" class="md-nav__link">
+      <a href="../../template-guides/deal-finder/" class="md-nav__link">
         
   
   
@@ -1413,7 +1424,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/research-librarian/" class="md-nav__link">
+      <a href="../../template-guides/research-librarian/" class="md-nav__link">
         
   
   
@@ -1441,7 +1452,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/document-ingestion/" class="md-nav__link">
+      <a href="../../template-guides/document-ingestion/" class="md-nav__link">
         
   
   
@@ -1469,7 +1480,7 @@
   
   
     <li class="md-nav__item">
-      <a href="../../templates/inbox-meeting/" class="md-nav__link">
+      <a href="../../template-guides/inbox-meeting/" class="md-nav__link">
         
   
   
@@ -2192,6 +2203,118 @@
     
   
     Discord
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/email/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Email / SMTP
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/teams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Microsoft Teams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/google-chat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Google Chat
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../channels/webhook/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Webhook
   
 
     
@@ -3661,6 +3784,17 @@
   
 </li>
       
+        <li class="md-nav__item">
+  <a href="#run-history-and-support-evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Run history and support evidence
+      
+    </span>
+  </a>
+  
+</li>
+      
     </ul>
   
 </nav>
@@ -3768,7 +3902,7 @@
 <tbody>
 <tr>
 <td><strong>Agent</strong></td>
-<td>The agent's display name</td>
+<td>The agent's display name. A small orange <code>⟳ auto-replayed</code> chip appears when the gateway missed a fire and replayed it at startup — hover for the missed / replayed timestamps and how much late the run was</td>
 </tr>
 <tr>
 <td><strong>Next run</strong></td>
@@ -3784,13 +3918,22 @@
 </tr>
 </tbody>
 </table>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>Save fails at the edit modal if <code>schedule.cron</code> is not a valid cron
+expression — the same parser the scheduler uses at registration time runs
+at Save time, so <code>* * *</code>, <code>hello world</code>, or <code>60 * * * *</code> are refused with
+the parser's own explanation ("expected exactly 5 fields, found 3").
+Previously an invalid string saved cleanly and the "Next run" column
+silently stayed blank forever.</p>
+</div>
 <h3 id="cron-agents-table">Cron agents table<a class="headerlink" href="#cron-agents-table" title="Permanent link">&para;</a></h3>
 <p>Every agent with <code>trigger: cron</code>, manageable in place: ID, name, cron expression, output bot, enabled state, and a live <strong>Status</strong> cell — <strong>Running…</strong> with a pulse while executing, <strong>⏰ runs in 4m 12s</strong> when a fire is imminent (within 15 minutes), or a plain countdown.</p>
 <p>Per-row actions:</p>
 <ul>
 <li><strong>▶ Run</strong> — manual trigger. If the next scheduled fire is imminent, a prompt asks whether to run now or wait (so you don't double-run). A running job can't be started again, and a scheduled fire is skipped while one is in progress.</li>
 <li><strong>Test output</strong> — sends a clearly marked smoke-test message through the configured <code>schedule.output</code> channel without invoking the LLM. Use it after adding or rotating a Telegram/Slack/Discord/WhatsApp destination.</li>
-<li><strong>📋 History</strong> — slide-out panel of past runs, each with a ✓ success / ✗ failed badge, timestamp, channel, expandable full output, and token/cost metrics. A run counts as failed if any tool returned an error, even when the agent still produced a reply.</li>
+<li><strong>📋 History</strong> — slide-out panel of past runs, each with a ✓ success / ✗ failed badge, timestamp, trigger source, delivery status, expandable full output, and token/cost metrics. A run counts as failed if any tool returned an error, even when the agent still produced a reply.</li>
 <li><strong>👁 Watch</strong> — jumps to the Activity page with live polling already on.</li>
 <li><strong>Edit / Clone / Delete</strong> — clone creates a disabled copy; delete removes the SOUL.yaml from disk.</li>
 </ul>
@@ -3813,6 +3956,12 @@
 <p class="admonition-title">Tip</p>
 <p>A daily-briefing agent is the classic candidate: with <code>run_missed_on_startup: true</code> and a <code>24h</code> window, booting your machine at 9:30 still gets you the 7:00 briefing — exactly once.</p>
 </div>
+<p>When a startup catch-up actually fires, the scheduler emits a
+<code>schedule.missed_run_backfilled</code> event carrying <code>{missed_at, replayed_at,
+late_by, window}</code> — visible on the Activity page's event stream, on the
+Automations row as the orange <code>⟳ auto-replayed</code> chip described above, and via
+the <code>backfills</code> map returned by <code>GET /api/v1/schedule/status</code>. This closes
+what used to be a silent "why did this fire at 03:04?" surprise.</p>
 <h2 id="scheduled-output">Scheduled output<a class="headerlink" href="#scheduled-output" title="Permanent link">&para;</a></h2>
 <p>By default a cron run's result stays internal (visible in History/Activity). To deliver it somewhere, configure <code>schedule.output</code> — in the Edit modal pick a <strong>Bot</strong> (any configured Telegram/Slack/Discord/WhatsApp bot), set the <strong>Destination ID</strong> (chat/channel/user ID), and optionally a <strong>Template</strong>:</p>
 <div class="language-text highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a>{reply}            the agent&#39;s reply (default template)
@@ -3822,6 +3971,20 @@
 <p class="admonition-title">Note</p>
 <p>Manual <strong>▶ Run</strong> returns the result to the page banner; only cron-fired runs are delivered through <code>schedule.output</code>. Use <strong>Test output</strong> to validate the channel and destination before waiting for the next cron fire.</p>
 </div>
+<h2 id="run-history-and-support-evidence">Run history and support evidence<a class="headerlink" href="#run-history-and-support-evidence" title="Permanent link">&para;</a></h2>
+<p>Schedule history is backed by the shared run ledger used by Activity and support
+bundles. It merges:</p>
+<ul>
+<li>durable action-log events from cron, HTTP, Slack, Telegram, Discord, and other
+  inbound channels;</li>
+<li>workflow run history captured by Studio and the runtime;</li>
+<li>schedule delivery records such as channel, destination, status, and failure
+  reason.</li>
+</ul>
+<p>The panel shows the ledger source and warns if the event scan was truncated. If
+you need to debug a production issue, download a support bundle; its
+<code>run_ledger.json</code> contains the same merged evidence with event counts and row
+limits.</p>
 
 
 
@@ -3938,7 +4101,7 @@
       <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.tabs", "navigation.tabs.sticky", "navigation.sections", "navigation.expand", "navigation.path", "navigation.top", "navigation.footer", "toc.follow", "search.suggest", "search.highlight", "content.code.copy", "content.code.annotate", "content.tabs.link", "content.action.edit"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"provider": "mike"}}</script>
     
     
-      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      <script src="../../assets/javascripts/bundle.d7400e89.min.js"></script>
       
     
   </body>
