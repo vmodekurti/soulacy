@@ -601,8 +601,13 @@ api GET /schedule | json_assert "'schedule' in doc"
 
 step "doctor"
 if [[ -x "$CLI" ]]; then
-  SOULACY_WORKSPACE="$WORKSPACE" "$CLI" --gateway "$URL" --api-key "$API_KEY" --json doctor check >/dev/null
-  SOULACY_WORKSPACE="$WORKSPACE" "$CLI" --gateway "$URL" --api-key "$API_KEY" launch check >/dev/null
+  # Point resolveSoulacyBinary() at the UAT-built gateway binary so the
+  # install check passes in CI runners where soulacy isn't on PATH /
+  # ~/.local/bin / /usr/local/bin / /opt/homebrew/bin. Locally installed
+  # setups (Mac Studio, dev laptops) have SOULACY_BIN unset and the resolver's
+  # fallback chain finds their real install — this only affects the CI case.
+  SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" --json doctor check >/dev/null
+  SOULACY_WORKSPACE="$WORKSPACE" SOULACY_BIN="$BIN" "$CLI" --gateway "$URL" --api-key "$API_KEY" launch check >/dev/null
   cat > "$WORKSPACE/release-manifest.json" <<JSON
 {"product":"soulacy","version":"99.0.0","artifacts":[{"name":"soulacy-test.tar.gz","os":"uat","arch":"uat","sha256":"abc123","bytes":123}]}
 JSON
