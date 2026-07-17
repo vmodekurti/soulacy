@@ -6,8 +6,73 @@ to follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Post-audit hardening (see `improvements.md`). Work in progress on the
-`post-audit-fixes` branch.
+_Nothing yet — post-v1.0.0 work lands here._
+
+## [1.0.0] - 2026-07-17
+
+First public release. Ships the full Cohort A–H productization sweep, the
+seven-story Cohort F security stack (untrusted-content envelope → intent gate →
+Security Doctor), Studio "Debug in Studio" run-repair loop, Learning evidence,
+Package v2 with install-time secret gate, credential-backed E2 UAT harness, and
+the workspace-scoped intent-gate default. `make production-parity` passes 13
+required checks in ~83 s on go1.26.5; the six opt-in checks
+(`SOULACY_PARITY_LIVE_CHANNELS`, `SOULACY_PARITY_BROWSER_MCP`,
+`SOULACY_PARITY_BROWSER_RENDER`, `SOULACY_PARITY_DOCS_SCREENSHOTS`,
+`SOULACY_PARITY_STUDIO_LIVE`, plus `.env.uat` credential-backed smoke) run via
+`scripts/uat-parity-full.sh`. See `docs/PRODUCTIZATION_REVIEW.md` for the full
+per-cohort ledger with file:line evidence.
+
+### Cohort headlines
+
+- **Cohort F — Security stack (S1–S7).** Untrusted-content envelope
+  (`internal/trust/`), 14-pattern injection scanner across 8 families
+  (`internal/injection/`), tool-call intent gate that composes with capability
+  tier + policy + guardrail + ConfirmTools (`internal/intent/`), production
+  readiness verdict blocking privileged agents on shared channels
+  (`internal/gateway/securityreadiness.go`), 7-fixture red-team regression pack
+  (`internal/regression/security_test.go`), Studio pre-save security preflight
+  (`internal/studio/security_preflight.go`), per-agent Security Doctor + dry-run
+  simulator (`internal/securitydoctor/`, `GET/POST /api/v1/agents/:id/security_doctor`).
+- **Cohort F-Bridge — workspace-scoped intent-gate default.** `security.intent_gate`
+  flows through runtime, Studio review, and Doctor; per-agent SOUL.yaml still wins.
+- **Cohort F-GUI — Svelte wiring** for every F backend surface (Activity chips,
+  Agents Security Doctor drawer, Studio security review panel + save-block,
+  Dashboard readiness row, Channels privileged-exposure explainer, Config
+  intent-gate toggle).
+- **Cohort E — Production go-live.** E1 UAT harness harden with per-step timing
+  + screenshot gallery, E2 credential-backed smoke harness
+  (`scripts/uat-credential-smoke.sh`), E4 provider/cron/hung-run diagnosers, E5
+  docs realign to the "local-first agent operating system" framing.
+- **Cohort G — Framework-level gap closure.** STARTTLS ordering fix in delivery
+  doctor, CI on `codex/**` branches, 30-test Vitest coverage for GUI helpers,
+  end-to-end security pipeline scenario test, config schema version stamp.
+- **Cohort H — production-parity blocker sweep.** `golangci-lint` clean sweep,
+  `.cache`-as-file recovery in UAT + release smoke.
+- **Story 7A — Agent Package v2.** Calendar versioning (`YYYY.MM.DD[.PATCH]`),
+  namespaced publisher ids, install-time secret gate refusing import when
+  required providers/channels/secrets/mcp-servers/peer-agents are missing,
+  `.soulacy-package.json` sidecar, `sy package validate <path>` CLI.
+- **Cohorts A/B/C — Productization sweep.** Launch readiness scoring
+  (`sy launch check/certify/proof`), Studio contract validators for reasoning
+  agents (11 checks), Debug-in-Studio failed-run replay + diff-preview repair,
+  Channel setup guides + delivery-doctor category catalog, capability-audit
+  save-blocking modal, UAT wired into CI with per-step timing report, learning
+  evidence with time-window filter + Studio lesson injection, Local-model
+  Studio intent presets (`fast_local`/`reliable_local`/`cloud_quality`) and
+  streamed/wizard generation pipeline.
+
+### Launch strategy
+
+- New `docs/LAUNCH_STRATEGY.md` — nine-section memo (§1 exec summary; §2 what
+  Soulacy has today, cited to file:line; §3 OpenClaw + competitive landscape;
+  §4 where "100x better" is real and where it isn't; §5 launch positioning; §6
+  ship-for-launch cohort; §7 launch playbook; §8 risks; §9 locked decisions).
+  Recommends the "agent framework you can put in production without a security
+  memo" positioning wedge.
+
+## [0.9.x] - pre-1.0 hardening
+
+Post-audit hardening from the `post-audit-fixes` branch.
 
 ### Breaking changes
 

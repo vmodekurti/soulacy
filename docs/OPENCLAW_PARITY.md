@@ -35,7 +35,7 @@ The remaining parity work is not "add more primitives." It is productization: li
 | Memory/learning | Persistent memory and skill learning | Episodic/semantic/procedural memory, proposals, accepted skill injection | Strong, still needs polished narrative |
 | Queues | Plugin/storage primitives | Built-in ephemeral queue tools and GUI | Closed |
 | Mobile companion | Native apps | Responsive Mobile operations page with Pocket Chat, approvals, active runs, retained run history, schedule actions, delivery checks, PWA install signals, and run-review readiness | MVP closed; native app remains deferred |
-| Voice | Voice/wake/talk-back | Chat push-to-talk voice MVP with ephemeral OpenAI Realtime keys, readiness/parity visibility, and safe key handling | MVP foundation present; credential-backed mic UAT and native/wake polish remain if voice is launch scope |
+| Voice | Voice/wake/talk-back | Chat push-to-talk voice MVP with ephemeral OpenAI Realtime keys, readiness/parity visibility, and safe key handling | **Not v1 scope** (`docs/LAUNCH_STRATEGY.md` §9 decision 3). The Chat push-to-talk MVP is present but deliberately not marketed for v1.0.0 — the security wedge is the launch narrative and voice dilutes it. Re-scope post-launch if voice becomes a differentiator worth investing in. |
 | Auto-update | npm/Sparkle-style update story | Manifest-backed `sy update check/install`, checksum verification, dry-run, backups, rollback docs, readiness/support-bundle visibility, signed release artifacts, SBOM, and optional macOS codesign/notarization | MVP closed |
 
 ## Soulacy Advantages To Preserve
@@ -55,7 +55,7 @@ The remaining parity work is not "add more primitives." It is productization: li
 4. **Channel polish:** Default outbound routing, agent-specific bot mappings, dry diagnosis, live delivery tests, companion-surface checks, Teams/Google Chat/Email outbound adapters, and opt-in credential-backed golden delivery smoke exist. Remaining work is collecting more real-world failure signatures into the doctor and keeping setup docs current as adapters are added.
 5. **Public docs:** Quickstarts, production deployment guide, channel setup guides, troubleshooting playbooks, strict docs build, GitHub Pages deploy workflow, canonical published installer, launch-readiness docs checks, and repeatable GUI screenshot evidence now exist. Remaining work is refreshing screenshots before launch tags.
 6. **Browser control hardening:** Domain policies, Browser trace wiring, action filters, trace export, screenshot gallery, deep links, authenticated local screenshot artifacts, and Activity run-history browser trace handoffs exist. Remaining work is opt-in live browser smoke coverage in release runs.
-7. **Voice/product narrative:** Decide whether the existing Chat voice MVP should be launch scope; if yes, run credential-backed mic UAT and polish native/wake/talk-back behavior.
+7. **Voice/product narrative:** Not v1 scope (per `docs/LAUNCH_STRATEGY.md` §9 decision 3). Chat push-to-talk MVP remains in the code; re-scope after launch signal warrants investment.
 
 ## Current Recommendation
 
