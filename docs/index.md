@@ -117,7 +117,7 @@ sy chat --agent assistant "What can you do?"
 | **LLM** | Any — local or cloud | Mostly cloud | Any |
 | **No-code** | GUI included in binary | Yes | No |
 | **Extensible** | Skills, plugins, sidecars in any language | JS nodes | Python |
-| **Security stack** | Untrusted-content envelope, injection scanner, intent gate, Security Doctor — [shipped](using/security.md) | Third-party plugin | Operator's problem |
+| **Security stack** | Untrusted-content envelope, injection scanner, intent gate, Security Doctor — shipped | Third-party plugin | Operator's problem |
 
 ## What Soulacy is NOT
 
