@@ -1,9 +1,12 @@
 # Studio — Intent-First Workflow Builder
 
+![Studio Visual Workflow Diagram](../assets/screenshots/studio_workflow.png)
+
 Studio turns a plain-English description of the automation you want into a
 runnable Soulacy workflow. You describe the outcome; Studio drafts a step plan,
 generates the graph, checks it end-to-end, and — when a run fails — proposes a
 fix you can review before saving.
+
 
 You never have to start by dragging boxes on a canvas. The graph is *generated
 from your intent*, not the other way around.

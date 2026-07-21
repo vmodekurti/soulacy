@@ -14,7 +14,10 @@ The sidebar is split into three groups: **main** (day-to-day work), **ops** (int
 
 ## Dashboard
 
+![Dashboard Overview](../assets/screenshots/dashboard.png)
+
 Your at-a-glance health view: gateway status and version, agent counts, and a **Live Event Log** streaming every runtime event over WebSocket, with filter presets (All / Errors / Tools / LLM / Messages).
+
 
 The **Launch Readiness** panel scores every load-bearing capability
 (providers, secrets, channels, Studio contracts, schedules, deployment, ops
@@ -33,6 +36,8 @@ The guided setup path for a fresh workspace. It helps you choose a first focus, 
 **Try first:** pick the focus closest to your use case, then follow the suggested next action.
 
 ## Studio
+
+![Studio Workflow Builder](../assets/screenshots/studio_workflow.png)
 
 The one-stop agent development surface. Describe an agent in plain language, let Studio draft the workflow, inspect the generated plan, edit nodes and connections on the canvas, run dry/live tests, validate integrity, and use self-heal when a real run fails. Studio can author Workflow, ReAct, and Plan-Execute agents, then save them as normal SOUL.yaml agents.
 
@@ -64,7 +69,10 @@ The one-stop agent development surface. Describe an agent in plain language, let
 
 ## Agents
 
+![Agent Configuration Overview](../assets/screenshots/agent_config.png)
+
 The full agent editor: identity, trigger, system prompt, LLM provider/model (with live model lists), memory scopes, reasoning strategy, brain memory layers, channels, tools, skills, knowledge bases, and peer agents.
+
 
 - Tool **Python file** fields have a **📂 Browse** picker that lists every script in the tool catalog — pick instead of typing paths.
 - Chip-picker fields (channels, skills, knowledge bases, peer agents, built-ins) have a **▾ browse** dropdown populated from what actually exists, so typos are impossible.
