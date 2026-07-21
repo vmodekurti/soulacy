@@ -21,6 +21,8 @@ import (
 	"github.com/soulacy/soulacy/internal/config"
 	"github.com/soulacy/soulacy/internal/credentials"
 	"github.com/soulacy/soulacy/internal/secrets"
+	"github.com/soulacy/soulacy/internal/updates"
+
 )
 
 type doctorStatus string
@@ -129,35 +131,35 @@ func collectDoctorReport() doctorReport {
 
 func checkUpdateManifest() doctorCheck {
 	source := resolveUpdateManifestSource("")
-	if strings.TrimSpace(source) == "" {
-		return doctorCheck{
-			Name:   "updates",
-			Status: doctorWarn,
-			Detail: "no update manifest configured",
-			Remedy: "set updates.manifest_url in config.yaml or SOULACY_UPDATE_MANIFEST so sy update check/install work without extra flags",
-		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	res, err := checkForUpdate(ctx, source, config.Version)
+	res, err := updates.CheckForUpdate(ctx, source, config.Version)
 	if err != nil {
 		return doctorCheck{
 			Name:   "updates",
 			Status: doctorWarn,
-			Detail: "configured manifest could not be checked: " + err.Error(),
-			Remedy: "verify updates.manifest_url is reachable and points at a valid Soulacy release manifest",
+			Detail: "could not check for updates: " + err.Error(),
+			Remedy: "verify internet connectivity or updates.manifest_url value",
 		}
 	}
 	status := doctorOK
+	remedy := ""
 	if res.UpdateAvailable {
 		status = doctorWarn
+		remedy = "run `sy upgrade` to install the latest version (" + res.LatestVersion + ")"
 	}
 	detail := res.Message
 	if res.Artifact != nil {
-		detail += " artifact=" + res.Artifact.Name
+		detail += " (artifact: " + res.Artifact.Name + ")"
 	}
-	return doctorCheck{Name: "updates", Status: status, Detail: detail}
+	return doctorCheck{
+		Name:   "updates",
+		Status: status,
+		Detail: detail,
+		Remedy: remedy,
+	}
 }
+
 
 // loadDoctorConfig unmarshals the viper-loaded configuration into a typed
 // config.Config for local (non-gateway) inspection. Returns nil on failure.
