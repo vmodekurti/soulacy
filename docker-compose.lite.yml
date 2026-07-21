@@ -33,7 +33,15 @@ services:
       SOULACY_LLM_PROVIDERS_OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       SOULACY_LLM_PROVIDERS_OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3}
 
-      # Auth
+      # Bind — 0.0.0.0 so the port mapping (ports: 18789:18789) can forward
+      # host traffic. Without this the gateway would bind container-loopback
+      # only and http://localhost:18789 from the host would connection-refuse.
+      SOULACY_SERVER_HOST: 0.0.0.0
+
+      # Auth — leaving SOULACY_API_KEY empty makes the gateway refuse to start
+      # because 0.0.0.0 is not a loopback address (SEC-4). For pure-loopback
+      # dev, change SOULACY_SERVER_HOST above back to 127.0.0.1 and clear
+      # SOULACY_API_KEY. For any actual use, set a key in .env.
       SOULACY_SERVER_API_KEY: ${SOULACY_API_KEY:-}
 
       # ── Security defaults (development-shaped) ────────────────────────────────
