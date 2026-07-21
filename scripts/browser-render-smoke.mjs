@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { mkdtempSync, mkdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, statSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs'
+
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
@@ -46,10 +47,25 @@ const port = process.env.SOULACY_BROWSER_RENDER_PORT || '18894'
 const apiKey = process.env.SOULACY_BROWSER_RENDER_API_KEY || 'sy_browser_render_smoke'
 const baseURL = `http://${host}:${port}`
 const workspace = process.env.SOULACY_BROWSER_RENDER_WORKSPACE || mkdtempSync(join(tmpdir(), 'soulacy-browser-render-'))
+
 const outDir = process.env.SOULACY_BROWSER_RENDER_OUT || join(workspace, 'screenshots')
 mkdirSync(join(workspace, 'agents'), { recursive: true })
 mkdirSync(join(workspace, 'logs'), { recursive: true })
 mkdirSync(outDir, { recursive: true })
+
+// Copy sample embedded agent templates into workspace so the GUI is populated with rich workflows & configurations
+const embeddedDir = join(root, 'internal', 'templates', 'embedded')
+try {
+  const files = readdirSync(embeddedDir)
+  for (const file of files) {
+    if (file.endsWith('.yaml')) {
+      copyFileSync(join(embeddedDir, file), join(workspace, 'agents', file))
+    }
+  }
+} catch (e) {
+  console.log('could not copy embedded templates:', e.message)
+}
+
 
 writeFileSync(join(workspace, 'config.yaml'), `server:
   host: "${host}"
@@ -104,7 +120,9 @@ try {
   const routes = [
     ['dashboard', '/'],
     ['studio', '/#studio'],
+    ['studio_workflow', '/#studio/github-issue-triage'],
     ['agents', '/#agents'],
+    ['agent_config', '/#agents/github-issue-triage'],
     ['chat', '/#chat'],
     ['channels', '/#channels'],
     ['knowledge', '/#knowledge'],
@@ -114,6 +132,7 @@ try {
     ['skills', '/#skills'],
     ['config', '/#config'],
   ]
+
 
   const manifest = {
     generated_at: new Date().toISOString(),
