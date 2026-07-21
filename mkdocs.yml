@@ -45,6 +45,9 @@ extra_css:
     - content.tabs.link
     - content.action.edit
 
+extra_css:
+  - stylesheets/extra.css
+
 plugins:
   - search
 
