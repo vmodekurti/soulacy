@@ -5075,7 +5075,7 @@ Use null for fields that are not present.`
   <!-- Studio model picker: choose the in-framework provider/model for Studio. -->
   {#if modelPicker.open}
     <div class="modal-backdrop" on:click|self={() => modelPicker = { ...modelPicker, open: false }} role="presentation">
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="model-title">
+      <div class="modal model-modal" role="dialog" aria-modal="true" aria-labelledby="model-title">
         <h2 id="model-title" class="modal-title">Studio model</h2>
         <p class="modal-body">
           Which provider/model should Studio use for its reasoning and code
@@ -5158,8 +5158,9 @@ Use null for fields that are not present.`
             </button>
           {/if}
         {/if}
+        <div class="mp-settings-grid">
         {#if studioPresets.length}
-          <div class="mp-section" style="margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border, #eee);">
+          <div class="mp-section">
             <div class="mp-label" style="font-weight:600;margin-bottom:.25rem;">Runtime intent (optional)</div>
             <p class="mp-hint" style="margin:.25rem 0;font-size:.85em;opacity:.75;">
               Overrides the model-derived default timeouts. Leave on "Model default" if you don't need to bias for speed or quality.
@@ -5204,7 +5205,7 @@ Use null for fields that are not present.`
             {/if}
           </div>
         {/if}
-        <div class="mp-section" style="margin-top:1rem;padding-top:.75rem;border-top:1px solid var(--border, #eee);">
+        <div class="mp-section">
           <div class="mp-label" style="font-weight:600;margin-bottom:.25rem;">Generate presentation</div>
           <p class="mp-hint" style="margin:.25rem 0;font-size:.85em;opacity:.75;">
             How Studio surfaces the generate pipeline. Streamed shows a live
@@ -5228,6 +5229,7 @@ Use null for fields that are not present.`
               </div>
             </label>
           </div>
+        </div>
         </div>
         <div class="modal-actions">
           <button class="btn" type="button" on:click={() => modelPicker = { ...modelPicker, open: false }} disabled={modelPicker.saving}>Cancel</button>
@@ -6847,6 +6849,26 @@ Use null for fields that are not present.`
     cursor: pointer; text-decoration: underline;
   }
   .modal-actions .btn { white-space: normal; }
+
+  /* The Studio model modal carries a lot more than the model list (two preset
+     groups too), so it gets a wider frame and lays the presets out side by side
+     instead of stacking everything into a cramped 460px column. */
+  .modal.model-modal { width: min(760px, 94vw); }
+  .mp-settings-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 22px;
+    margin-top: 16px;
+    padding-top: 14px;
+    border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  }
+  /* Grid owns the divider + top spacing; the sections inside sit flush. */
+  .mp-settings-grid > .mp-section { margin-top: 0; padding-top: 0; border-top: none; }
+  /* Give the model list a little more room now the modal is wider. */
+  .model-modal .mp-list { max-height: 240px; }
+  @media (max-width: 640px) {
+    .mp-settings-grid { grid-template-columns: 1fr; gap: 16px; }
+  }
 
   /* Browse SOUL.yaml: wider modal with an agent list beside a read-only viewer. */
   .modal.yaml-browser { width: min(920px, 94vw); }
