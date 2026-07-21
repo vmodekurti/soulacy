@@ -118,3 +118,9 @@ _mnt_writetest
 _valsuite_main.go
 sy-go-tmp-umask
 workspace/
+
+# wrangler files
+.wrangler
+.dev.vars*
+!.dev.vars.example
+!.env.example
