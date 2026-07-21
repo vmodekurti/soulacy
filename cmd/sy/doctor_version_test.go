@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/soulacy/soulacy/internal/config"
+	"github.com/soulacy/soulacy/internal/updates"
 )
 
 func TestCompareSemver(t *testing.T) {
@@ -67,10 +68,10 @@ func TestCheckUpdateManifestCurrentIsOK(t *testing.T) {
 	config.Version = "1.2.3"
 	defer func() { config.Version = oldVersion }()
 
-	manifest := writeUpdateManifest(t, updateManifest{
+	manifest := writeUpdateManifest(t, updates.UpdateManifest{
 		Product: "soulacy",
 		Version: "1.2.3",
-		Artifacts: []updateArtifact{{
+		Artifacts: []updates.UpdateArtifact{{
 			Name:   "soulacy.tar.gz",
 			OS:     runtime.GOOS,
 			Arch:   runtime.GOARCH,
@@ -90,10 +91,10 @@ func TestCheckUpdateManifestWarnsWhenUpdateAvailable(t *testing.T) {
 	config.Version = "1.2.3"
 	defer func() { config.Version = oldVersion }()
 
-	manifest := writeUpdateManifest(t, updateManifest{
+	manifest := writeUpdateManifest(t, updates.UpdateManifest{
 		Product: "soulacy",
 		Version: "1.3.0",
-		Artifacts: []updateArtifact{{
+		Artifacts: []updates.UpdateArtifact{{
 			Name:   "soulacy.tar.gz",
 			OS:     runtime.GOOS,
 			Arch:   runtime.GOARCH,

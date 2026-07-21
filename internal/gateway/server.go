@@ -643,6 +643,8 @@ func (s *Server) buildApp() *fiber.App {
 	api.Get("/admin/audit", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleAdminAudit)
 	api.Get("/onboarding/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleOnboardingStatus)
 	api.Get("/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleReadiness)
+	s.registerUpdatesRoutes(api)
+
 	api.Get("/deployment/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleDeploymentStatus)
 	api.Get("/security/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleSecurityReadiness)
 	// S7 (Cohort F) — Security Doctor: per-agent synthesis view +
@@ -1418,6 +1420,10 @@ func (s *Server) Listen(ctx context.Context) error {
 	if s.cfgPath != "" {
 		go s.watchConfig(ctx)
 	}
+
+	// Start release updates checker
+	s.startUpdatesChecker()
+
 
 	// Start TLS if configured
 	if s.cfg.Server.TLSCert != "" && s.cfg.Server.TLSKey != "" {

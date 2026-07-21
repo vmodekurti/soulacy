@@ -132,6 +132,7 @@ Quick start:
 		buildMCPCmd(),          // sy mcp — manage MCP servers
 		buildLaunchCmd(),       // sy launch — production readiness checks
 		buildUpdateCmd(),       // sy update — release update checks
+		buildUpgradeCmd(),      // sy upgrade — self-upgrade binaries
 		buildVersionCmd(),
 	)
 	return root

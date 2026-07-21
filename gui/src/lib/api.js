@@ -107,8 +107,13 @@ export const api = {
   costStatus: () => apiFetch('/costs/status'),
   opsAlertStatus: () => apiFetch('/ops/alerts/status'),
   opsAlertTest: () => apiFetch('/ops/alerts/test', { method: 'POST' }),
-  opsAlertEvaluate: () => apiFetch('/ops/alerts/evaluate', { method: 'POST' }),
   deploymentStatus: () => apiFetch('/deployment/status'),
+  updates: {
+    status: () => apiFetch('/system/updates/status'),
+    check: () => apiFetch('/system/updates/check', { method: 'POST' }),
+    upgrade: () => apiFetch('/system/updates/upgrade', { method: 'POST' }),
+  },
+
 
   // Cohort F — security readiness (S4), doctor (S7), and Studio preflight (S6).
   // Backend: internal/gateway/securityreadiness.go, internal/securitydoctor,
