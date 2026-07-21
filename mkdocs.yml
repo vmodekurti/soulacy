@@ -25,10 +25,6 @@ theme:
     code: JetBrains Mono
   logo: assets/logo.svg
   favicon: assets/logo.svg
-
-extra_css:
-  - stylesheets/extra.css
-
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -47,6 +43,7 @@ extra_css:
 
 extra_css:
   - stylesheets/extra.css
+
 
 plugins:
   - search
