@@ -1037,6 +1037,16 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 	s.loader.Register(def)
 	defer s.loader.Unregister(def.ID)
 
+	// Register ephemeral stubs for every helper agent the workflow references but
+	// that isn't persisted yet. A Studio-generated workflow can contain `agent`
+	// nodes pointing at brand-new peers that live only in draft.NewAgents — they
+	// are created on disk at SAVE time (handleStudioSave), but Run Live runs an
+	// UNSAVED draft, so those peers are not in the loader. Without this, an agent
+	// node dispatches `agent__<peer>` and runAgentCall fails with "not loaded".
+	// Registered non-persisted (SourcePath="") and Unregistered after the run.
+	cleanupPeers := s.registerEphemeralPeers(def, req.Workflow.NewAgents)
+	defer cleanupPeers()
+
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Context()), 120*time.Second)
 	defer cancel()
 
@@ -1131,6 +1141,69 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 		resp["error"] = runErr.Error()
 	}
 	return c.JSON(resp)
+}
+
+// registerEphemeralPeers registers an in-memory, non-persisted stub for every
+// helper agent that def's workflow references via an `agent` node but that is
+// not already in the loader. It mirrors the auto-stubbing handleStudioSave does
+// on disk (studio.SynthesizeAgent to fill any thin/blank profile) so a Run Live
+// of an UNSAVED draft can resolve `agent__<peer>` peers instead of failing with
+// "agent call: <id> not loaded". The returned cleanup func Unregisters every
+// stub it added and must be deferred by the caller. It is safe to call with a
+// nil/agent (no workflow) def — it simply registers nothing.
+func (s *Server) registerEphemeralPeers(def *agent.Definition, newAgents []studio.NewAgent) func() {
+	if def == nil || def.Workflow == nil {
+		return func() {}
+	}
+	byID := make(map[string]studio.NewAgent, len(newAgents))
+	for _, na := range newAgents {
+		byID[na.ID] = na
+	}
+	var registered []string
+	stubbed := map[string]bool{}
+	for _, node := range def.Workflow.Nodes {
+		if node.Kind != "agent" || node.Agent == "" || stubbed[node.Agent] {
+			continue
+		}
+		if existing := s.loader.Get(node.Agent); existing != nil {
+			continue // real (or already-registered) agent — leave it be
+		}
+		na, ok := byID[node.Agent]
+		if !ok || na.Name == "" || na.Description == "" || strings.TrimSpace(na.SystemPrompt) == "" {
+			synth := studio.SynthesizeAgent(node.Agent, node, def.Name)
+			if na.Name == "" {
+				na.Name = synth.Name
+			}
+			if na.Description == "" {
+				na.Description = synth.Description
+			}
+			if strings.TrimSpace(na.SystemPrompt) == "" {
+				na.SystemPrompt = synth.SystemPrompt
+			}
+		}
+		s.loader.Register(&agent.Definition{
+			ID:           node.Agent,
+			Name:         na.Name,
+			Description:  na.Description,
+			SystemPrompt: na.SystemPrompt,
+			Enabled:      true,
+			Unattended:   true, // throwaway run must not hang on a confirmation
+			MaxTurns:     15,
+			Memory:       agent.MemoryPolicy{MaxTokens: 8000},
+			LLM: agent.LLMConfig{
+				Provider:    s.cfg.LLM.DefaultProvider,
+				Temperature: 0.7,
+			},
+			SourcePath: "", // in-memory only, never persisted
+		})
+		registered = append(registered, node.Agent)
+		stubbed[node.Agent] = true
+	}
+	return func() {
+		for _, id := range registered {
+			s.loader.Unregister(id)
+		}
+	}
 }
 
 // handleStudioFailedRuns implements GET /api/v1/studio/failed-runs. It surfaces
