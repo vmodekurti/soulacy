@@ -513,7 +513,7 @@
   }
 
   /* ── Form elements ──────────────────────────────────────────────── */
-  :global(input), :global(textarea), :global(select) {
+  :global(input:not([type="radio"]):not([type="checkbox"])), :global(textarea), :global(select) {
     background: #1c1f35;
     border: 1px solid #2a2f4a;
     border-radius: 6px;
@@ -524,7 +524,14 @@
     width: 100%;
     transition: border-color 0.15s;
   }
+  :global(input[type="radio"]), :global(input[type="checkbox"]) {
+    width: auto;
+    margin: 0;
+    flex-shrink: 0;
+    cursor: pointer;
+  }
   :global(input:focus), :global(textarea:focus), :global(select:focus) {
+
     border-color: #6c63ff;
     box-shadow: 0 0 0 2px rgba(108, 99, 255, 0.15);
   }
