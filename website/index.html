@@ -18,6 +18,15 @@
   <meta name="twitter:title" content="Soulacy" />
   <meta name="twitter:description" content="The agent framework you can put in production without a security memo." />
 
+  <script>
+    // Inline script to prevent theme flash
+    if (localStorage.getItem('color-theme') === 'dark' || (!('color-theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    } else {
+      document.documentElement.classList.remove('dark');
+    }
+  </script>
+
   <!-- Tailwind via CDN (fine for launch; swap to built Tailwind post-signal) -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -26,7 +35,14 @@
       theme: {
         extend: {
           colors: {
-            ink:     { 50: '#f6f7fb', 100: '#e9ecf5', 400: '#8a90b8', 500: '#6b7299', 900: '#0b0d1a', 950: '#05070f' },
+            ink: {
+              50:  'var(--ink-50)',
+              100: 'var(--ink-100)',
+              400: 'var(--ink-400)',
+              500: 'var(--ink-500)',
+              900: 'var(--ink-900)',
+              950: 'var(--ink-950)',
+            },
             wire:    { 500: '#7e5cff', 600: '#6b3ffa' },
             signal:  { 400: '#48d597', 500: '#22c47a', 600: '#16a862' },
             hot:     { 400: '#ff7867', 500: '#ff4d3b', 600: '#e2331f' },
@@ -47,13 +63,46 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
 
   <style>
-    html, body { background: #05070f; color: #e9ecf5; }
+    :root {
+      /* Light Theme */
+      --bg-primary: #f8fafc;
+      --text-primary: #0f172a;
+      --ink-50: #0f172a;
+      --ink-100: #1e293b;
+      --ink-400: #64748b;
+      --ink-500: #475569;
+      --ink-900: #e2e8f0;
+      --ink-950: #ffffff;
+      --ink-950-rgb: 255, 255, 255;
+      --border-color: rgba(15, 23, 42, 0.08);
+      --card-bg-start: rgba(255, 255, 255, 0.95);
+      --card-bg-end: rgba(248, 250, 252, 0.95);
+      --grid-color: rgba(126, 92, 255, 0.03);
+    }
+    :root.dark {
+      /* Dark Theme */
+      --bg-primary: #05070f;
+      --text-primary: #e9ecf5;
+      --ink-50: #f6f7fb;
+      --ink-100: #e9ecf5;
+      --ink-400: #8a90b8;
+      --ink-500: #6b7299;
+      --ink-900: #0b0d1a;
+      --ink-950: #05070f;
+      --ink-950-rgb: 5, 7, 15;
+      --border-color: rgba(255, 255, 255, 0.06);
+      --card-bg-start: rgba(21, 25, 42, 0.9);
+      --card-bg-end: rgba(14, 17, 32, 0.9);
+      --grid-color: rgba(126, 92, 255, 0.06);
+    }
+
+    html, body { background: var(--bg-primary); color: var(--text-primary); transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease; }
     body { font-family: 'Inter', ui-sans-serif, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
     .code-font { font-family: 'JetBrains Mono', ui-monospace, monospace; }
     .grid-bg {
       background-image:
-        linear-gradient(rgba(126,92,255,0.06) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(126,92,255,0.06) 1px, transparent 1px);
+        linear-gradient(var(--grid-color) 1px, transparent 1px),
+        linear-gradient(90deg, var(--grid-color) 1px, transparent 1px);
       background-size: 32px 32px;
       background-position: center top;
     }
@@ -63,25 +112,29 @@
       -webkit-text-fill-color: transparent;
     }
     .card {
-      background: linear-gradient(180deg, rgba(21,25,42,0.9) 0%, rgba(14,17,32,0.9) 100%);
-      border: 1px solid rgba(255,255,255,0.06);
+      background: linear-gradient(180deg, var(--card-bg-start) 0%, var(--card-bg-end) 100%);
+      border: 1px solid var(--border-color);
       border-radius: 14px;
     }
-    .card:hover { border-color: rgba(126,92,255,0.35); }
+    .card:hover { border-color: rgba(126, 92, 255, 0.35); }
     .chip {
       display: inline-flex; align-items: center; gap: .35rem;
       padding: .18rem .55rem; border-radius: 999px; font-size: .72rem;
-      background: rgba(126,92,255,0.12); border: 1px solid rgba(126,92,255,0.35); color: #c8bbff;
+      background: rgba(126, 92, 255, 0.12); border: 1px solid rgba(126, 92, 255, 0.35); color: #c8bbff;
     }
     .chip-green { background: rgba(72,213,151,0.10); border-color: rgba(72,213,151,0.35); color: #a9edcc; }
     .chip-red   { background: rgba(255,120,103,0.10); border-color: rgba(255,120,103,0.35); color: #ffb2a7; }
     .copybtn:hover { background: rgba(255,255,255,0.06); }
+    .nav-bg {
+      background: rgba(var(--ink-950-rgb), 0.7);
+      border-color: var(--border-color);
+    }
   </style>
 </head>
 
 <body>
   <!-- ── NAV ────────────────────────────────────────────────────────────────── -->
-  <nav class="sticky top-0 z-50 backdrop-blur-md bg-ink-950/70 border-b border-white/5">
+  <nav class="sticky top-0 z-50 backdrop-blur-md nav-bg border-b">
     <div class="max-w-6xl mx-auto flex items-center justify-between px-5 py-3">
       <a href="/" class="flex items-center gap-2 font-semibold text-lg">
         <span class="inline-block w-6 h-6 rounded-md bg-gradient-to-br from-wire-500 to-signal-500"></span>
@@ -94,7 +147,14 @@
         <a href="https://docs.soulacy.io" class="hover:text-ink-100">Docs</a>
         <a href="https://github.com/vmodekurti/soulacy" class="hover:text-ink-100">GitHub</a>
       </div>
-      <a href="#install" class="inline-flex items-center rounded-lg bg-wire-500 hover:bg-wire-600 text-white px-3.5 py-1.5 text-sm font-medium shadow-glow-wire">Install</a>
+      <div class="flex items-center gap-4">
+        <!-- Theme Toggle Button -->
+        <button id="theme-toggle" class="text-ink-400 hover:text-ink-100 p-2 rounded-lg transition-colors" aria-label="Toggle Theme">
+          <svg id="theme-toggle-dark-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z"></path></svg>
+          <svg id="theme-toggle-light-icon" class="hidden w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.46 5.05l-.707-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 100 2h1z" fill-rule="evenodd" clip-rule="evenodd"></path></svg>
+        </button>
+        <a href="#install" class="inline-flex items-center rounded-lg bg-wire-500 hover:bg-wire-600 text-white px-3.5 py-1.5 text-sm font-medium shadow-glow-wire">Install</a>
+      </div>
     </div>
   </nav>
 
@@ -533,5 +593,36 @@
     </div>
   </footer>
 
+  <script>
+    // Theme Switcher Event Listener
+    const themeToggleBtn = document.getElementById('theme-toggle');
+    const darkIcon = document.getElementById('theme-toggle-dark-icon');
+    const lightIcon = document.getElementById('theme-toggle-light-icon');
+
+    // Sync icon states initially
+    if (document.documentElement.classList.contains('dark')) {
+      lightIcon.classList.remove('hidden');
+      darkIcon.classList.add('hidden');
+    } else {
+      darkIcon.classList.remove('hidden');
+      lightIcon.classList.add('hidden');
+    }
+
+    themeToggleBtn.addEventListener('click', function() {
+      // Toggle dark class on <html>
+      document.documentElement.classList.toggle('dark');
+      
+      const isDark = document.documentElement.classList.contains('dark');
+      if (isDark) {
+        localStorage.setItem('color-theme', 'dark');
+        lightIcon.classList.remove('hidden');
+        darkIcon.classList.add('hidden');
+      } else {
+        localStorage.setItem('color-theme', 'light');
+        darkIcon.classList.remove('hidden');
+        lightIcon.classList.add('hidden');
+      }
+    });
+  </script>
 </body>
 </html>

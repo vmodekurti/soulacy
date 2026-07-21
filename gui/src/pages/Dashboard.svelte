@@ -267,19 +267,19 @@
 
   <!-- Status cards -->
   <div class="cards">
-    <div class="card" class:card-ok={!!status}>
+    <div class="card" class:card-ok={!!status} data-tooltip="Active connection state of the local Soulacy gateway daemon">
       <div class="card-label">Gateway</div>
       <div class="card-value">{status ? '● Online' : authError ? '🔒 Authentication required' : '○ Offline'}</div>
       {#if status}<div class="card-sub">v{status.version}</div>{/if}
     </div>
 
-    <div class="card">
+    <div class="card" data-tooltip="Total number of active multi-agent runtimes loaded in your workspace">
       <div class="card-label">Deployed Agents</div>
       <div class="card-value">{agents.length}</div>
       <div class="card-sub">{agents.filter(a => a.enabled).length} enabled</div>
     </div>
 
-    <div class="card">
+    <div class="card" data-tooltip="Completed agent execution turns and workflow sessions since dashboard launch">
       <div class="card-label">Runs (session)</div>
       <div class="card-value">{events.length}</div>
       <div class="card-sub">{filteredEvents.length} shown · {$connected ? 'streaming live' : 'reconnecting…'}</div>
@@ -311,7 +311,7 @@
       </div>
       {#if ops}
         {#if readiness?.slo}
-          <div class="slo-strip {readiness.slo.status}">
+          <div class="slo-strip {readiness.slo.status}" data-tooltip="Evaluation of workspace reliability metrics against defined SLO thresholds">
             <div>
               <div class="ops-label">Production SLO</div>
               <strong>{readiness.slo.score || 0}% · {statusLabel(readiness.slo.status)}</strong>
@@ -326,7 +326,7 @@
           </div>
         {/if}
         {#if readiness?.ops_alerts}
-          <div class="slo-strip {readiness.ops_alerts.status}">
+          <div class="slo-strip {readiness.ops_alerts.status}" data-tooltip="Configuration state of active operations notification channels">
             <div>
               <div class="ops-label">Ops Alert Delivery</div>
               <strong>{statusLabel(readiness.ops_alerts.status)} · {readiness.ops_alerts.channel || 'not configured'}</strong>
@@ -407,7 +407,7 @@
         </div>
         <div class="readiness-actions">
           <button class="btn-primary" on:click={() => openHref('#studio')}>Open Studio</button>
-          <button class="btn-secondary" on:click={downloadSupportBundle} disabled={downloadingSupport}>
+          <button class="btn-secondary" on:click={downloadSupportBundle} disabled={downloadingSupport} data-tooltip="Generate a ZIP archive of diagnostics, configs, and active logs for troubleshooting">
             {downloadingSupport ? 'Preparing...' : 'Download support bundle'}
           </button>
         </div>
@@ -581,7 +581,7 @@
               <div class="suggest-detail">{s.detail}</div>
               <div class="suggest-action">→ {s.action}</div>
             </div>
-            <button class="suggest-dismiss" title="Dismiss" on:click={() => dismiss(s)}>×</button>
+            <button class="suggest-dismiss" data-tooltip="Dismiss" on:click={() => dismiss(s)}>×</button>
           </div>
         {/each}
       </div>

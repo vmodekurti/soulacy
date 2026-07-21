@@ -3361,12 +3361,12 @@ Use null for fields that are not present.`
         readonly
         placeholder="Describe what you want…  (click to open the editor)"
         aria-label="Open prompt editor"
-        title="Click to view and edit the full prompt"
+        data-tooltip="Click to view and edit the full prompt"
         on:focus={() => (promptViewer = true)}
         on:click={() => (promptViewer = true)}
         on:keydown={(e) => { if (e.key === 'Enter') promptViewer = true }}
       />
-      <button class="intent-expand" type="button" title="Open the full prompt editor" on:click={() => (promptViewer = true)} aria-label="Open prompt editor">⤢ Editor</button>
+      <button class="intent-expand" type="button" data-tooltip="Open the full prompt editor" on:click={() => (promptViewer = true)} aria-label="Open prompt editor">⤢ Editor</button>
     </div>
     <div class="generate-group" style="display:inline-flex;gap:.35rem;align-items:center;">
       <button class="btn primary" on:click={generateOrStream} disabled={compiling || refining || pipelineRunning || !!refinement || !intent.trim()}>
@@ -3381,7 +3381,7 @@ Use null for fields that are not present.`
       <button
         class="btn"
         type="button"
-        title={effectiveBuildUX === 'streamed' ? 'Streamed: live-transcript panel while the pipeline runs. Click to switch to Wizard for this generation only.' : 'Wizard: stepped modal that pauses between phases. Click to switch to Streamed for this generation only.'}
+        data-tooltip={effectiveBuildUX === 'streamed' ? 'Streamed: live-transcript panel while the pipeline runs. Click to switch to Wizard for this generation only.' : 'Wizard: stepped modal that pauses between phases. Click to switch to Streamed for this generation only.'}
         on:click={() => (buildUXOverride = effectiveBuildUX === 'streamed' ? 'wizard' : 'streamed')}
       >
         {effectiveBuildUX === 'streamed' ? '⚡ Streamed' : '🪄 Wizard'}
@@ -3391,17 +3391,17 @@ Use null for fields that are not present.`
 
     <!-- M6: draft management toolbar -->
     <div class="toolbar" role="group" aria-label="Draft management">
-      <button class="btn primary-ghost" type="button" on:click={startNewAgent} title="Start a new agent from scratch">+ New agent</button>
-      <button class="btn" type="button" on:click={openRules} title="Edit the SOUL.yaml authoring rules used when generating, validating, and fixing">📋 Rules</button>
-      <button class="btn" type="button" on:click={openModelPicker} title="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
-      <button class="btn" type="button" on:click={openTemplates} title="Start from a template">Templates</button>
-      <button class="btn" type="button" on:click={openLibrary} title="Reopen a saved draft or an existing workflow agent">My Workflows</button>
-      <button class="btn" type="button" on:click={openYamlBrowser} title="View the raw SOUL.yaml of any agent (read-only)">Browse SOUL.yaml</button>
-      <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} title="Save the current draft to the library">
+      <button class="btn primary-ghost" type="button" on:click={startNewAgent} data-tooltip="Start a new agent from scratch">+ New agent</button>
+      <button class="btn" type="button" on:click={openRules} data-tooltip="Edit the SOUL.yaml authoring rules used when generating, validating, and fixing">📋 Rules</button>
+      <button class="btn" type="button" on:click={openModelPicker} data-tooltip="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
+      <button class="btn" type="button" on:click={openTemplates} data-tooltip="Start from a template">Templates</button>
+      <button class="btn" type="button" on:click={openLibrary} data-tooltip="Reopen a saved draft or an existing workflow agent">My Workflows</button>
+      <button class="btn" type="button" on:click={openYamlBrowser} data-tooltip="View the raw SOUL.yaml of any agent (read-only)">Browse SOUL.yaml</button>
+      <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} data-tooltip="Save the current draft to the library">
         {savingDraft ? 'Saving…' : 'Save draft'}
       </button>
-      <button class="btn" type="button" on:click={exportDraft} disabled={!workflow} title="Download the current draft as a .studio.json file">Export</button>
-      <button class="btn" type="button" on:click={triggerImport} title="Load a .studio.json file from disk">Import</button>
+      <button class="btn" type="button" on:click={exportDraft} disabled={!workflow} data-tooltip="Download the current draft as a .studio.json file">Export</button>
+      <button class="btn" type="button" on:click={triggerImport} data-tooltip="Load a .studio.json file from disk">Import</button>
       <input
         bind:this={fileInputEl}
         class="hidden-file"
@@ -3447,18 +3447,18 @@ Use null for fields that are not present.`
             {#if currentMode === 'workflow'}
               <button class="vs-btn" class:active={viewMode === 'plan'} type="button"
                       role="tab" aria-selected={viewMode === 'plan'} on:click={showPlanView}
-                      title="Simple plan view — Trigger, Work Plan, Delivery lanes">📋 Plan</button>
+                      data-tooltip="Simple plan view — Trigger, Work Plan, Delivery lanes">📋 Plan</button>
             {/if}
             <button class="vs-btn" class:active={viewMode === 'canvas'} type="button"
                     role="tab" aria-selected={viewMode === 'canvas'} on:click={showCanvasView}
-                    title="Advanced view — the full graph you can edit node by node">{currentMode === 'workflow' ? '⬚ Canvas' : '🧠 Agent'}</button>
+                    data-tooltip="Advanced view — the full graph you can edit node by node">{currentMode === 'workflow' ? '⬚ Canvas' : '🧠 Agent'}</button>
             <button class="vs-btn" class:active={viewMode === 'code'} type="button"
                     role="tab" aria-selected={viewMode === 'code'} on:click={showCodeView}>{'</> SOUL.yaml'}</button>
-            {#if viewMode === 'code' && codeYaml !== codeOrig}<span class="vs-dirty" title="Unsaved YAML edits">●</span>{/if}
+            {#if viewMode === 'code' && codeYaml !== codeOrig}<span class="vs-dirty" data-tooltip="Unsaved YAML edits">●</span>{/if}
           </div>
           <!-- Execution-mode override: a fixed workflow, or a reasoning agent. -->
           <div class="mode-switch" role="group" aria-label="Execution mode"
-            title="How this agent runs. Workflow = a fixed graph. ReAct / Plan-Execute = a reasoning agent that chooses its tools/skills at runtime. Switching re-generates from your prompt.">
+            data-tooltip="How this agent runs. Workflow = a fixed graph. ReAct / Plan-Execute = a reasoning agent that chooses its tools/skills at runtime. Switching re-generates from your prompt.">
             <span class="ms-label">mode</span>
             <button class="ms-btn" class:active={currentMode === 'workflow'} type="button"
                     disabled={compiling} on:click={() => switchMode('workflow')}>Workflow</button>
@@ -3471,7 +3471,7 @@ Use null for fields that are not present.`
       {/if}
 
       {#if needsDelivery && viewMode === 'canvas'}
-        <div class="strip strip-delivery" title="Where this agent's result is sent">
+        <div class="strip strip-delivery" data-tooltip="Where this agent's result is sent">
           <span class="strip-label">Deliver to</span>
           <span class="dlv-hint">This {currentMode === 'workflow' ? 'workflow' : 'agent'} produces a result but has no delivery channel. Send it to:</span>
           {#each channelOptions as ch}
@@ -3481,7 +3481,7 @@ Use null for fields that are not present.`
       {/if}
 
       {#if workflow && unsetSecrets.length && viewMode === 'canvas'}
-        <Collapsible id="credentials" title="Credentials" sub={`${unsetSecrets.length} key${unsetSecrets.length === 1 ? '' : 's'} not set — your tools/MCP may need them`} open={false}>
+        <Collapsible id="credentials" data-tooltip="Credentials" sub={`${unsetSecrets.length} key${unsetSecrets.length === 1 ? '' : 's'} not set — your tools/MCP may need them`} open={false}>
           <div class="creds">
             <p class="creds-hint">Set the API keys your tools and MCP servers need, without leaving Studio. Values are stored in the gateway's secret store, never in the agent file.</p>
             {#each unsetSecrets as sec (sec.name)}
@@ -3506,13 +3506,13 @@ Use null for fields that are not present.`
       {/if}
 
       {#if codeWarnings.length}
-        <div class="strip strip-notes" title="Things the canvas can't show — they stay in the YAML">
+        <div class="strip strip-notes" data-tooltip="Things the canvas can't show — they stay in the YAML">
           <span class="strip-label">Kept in YAML</span>
           {#each codeWarnings as w}<span class="note">{w}</span>{/each}
         </div>
       {/if}
       {#if modelAdvice && (modelAdvice.severity === 'block' || modelAdvice.local_complexity_note || modelAdvice.cloud_escalation)}
-        <div class="strip strip-modeladvice" class:strip-local={modelAdvice.local} title="Builder model">
+        <div class="strip strip-modeladvice" class:strip-local={modelAdvice.local} data-tooltip="Builder model">
           <span class="strip-label">
             {#if modelAdvice.severity === 'block'}Pick a builder model
             {:else if modelAdvice.local}🔒 Local-first
@@ -3530,7 +3530,7 @@ Use null for fields that are not present.`
         </div>
       {/if}
       {#if generationProfile}
-        <div class="strip strip-modeladvice" class:strip-local={generationProfile.local} title="Studio generation guardrails">
+        <div class="strip strip-modeladvice" class:strip-local={generationProfile.local} data-tooltip="Studio generation guardrails">
           <span class="strip-label">
             {#if generationProfile.local}Local guardrails{:else}Builder guardrails{/if}
           </span>
@@ -3557,19 +3557,19 @@ Use null for fields that are not present.`
         <div class="strip strip-error strip-multiline">
           <span class="strip-icon" aria-hidden="true">⚠</span>
           <span class="strip-body">{compileError}</span>
-          <button class="strip-x" title="Dismiss" on:click={() => (compileError = '')}>×</button>
+          <button class="strip-x" data-tooltip="Dismiss" on:click={() => (compileError = '')}>×</button>
         </div>
       {/if}
 
       {#if notes.length}
-        <div class="strip strip-notes" title="What the compiler inferred">
+        <div class="strip strip-notes" data-tooltip="What the compiler inferred">
           <span class="strip-label">Inferred</span>
           {#each notes as n}<span class="note">{n}</span>{/each}
         </div>
       {/if}
 
       {#if workflow && workflow.recommendation && workflow.recommendation.mode}
-        <div class="strip strip-reco" title="Suggested execution model for this agent">
+        <div class="strip strip-reco" data-tooltip="Suggested execution model for this agent">
           <span class="strip-label">Recommended: {recoLabel(workflow.recommendation.mode)}</span>
           <span>{workflow.recommendation.rationale}</span>
           {#if workflow.recommendation.mode !== 'workflow' && currentMode === 'workflow'}
@@ -3622,14 +3622,14 @@ Use null for fields that are not present.`
       <!-- Validation strip (M3): non-blocking ok / N errors / N warnings. -->
       {#if workflow && validation}
         {#if validation.ok && !validation.warnings.length}
-          <div class="strip strip-ok" title="Workflow validates">
+          <div class="strip strip-ok" data-tooltip="Workflow validates">
             <span class="strip-label">Valid</span>
             <span>No issues found.</span>
           </div>
         {:else}
           <div
             class="strip {validation.errors.length ? 'strip-error' : 'strip-warn'}"
-            title="Validation issues"
+            data-tooltip="Validation issues"
           >
             <span class="strip-label">Validation</span>
             {#if validation.errors.length}
@@ -3639,10 +3639,10 @@ Use null for fields that are not present.`
               <span class="v-count v-warn">{validation.warnings.length} warning{validation.warnings.length === 1 ? '' : 's'}</span>
             {/if}
             {#each validation.errors as err}
-              <span class="v-msg v-err" title={err.nodeId || (err.edgeIndex != null ? 'edge ' + err.edgeIndex : '')}>{err.message}</span>
+              <span class="v-msg v-err" data-tooltip={err.nodeId || (err.edgeIndex != null ? 'edge ' + err.edgeIndex : '')}>{err.message}</span>
             {/each}
             {#each validation.warnings as w}
-              <span class="v-msg v-warn" title={w.nodeId || ''}>{w.message}</span>
+              <span class="v-msg v-warn" data-tooltip={w.nodeId || ''}>{w.message}</span>
             {/each}
           </div>
         {/if}
@@ -3729,17 +3729,17 @@ Use null for fields that are not present.`
                   {/if}
                   {#if codeValidation.fixes && codeValidation.fixes.length}
                     <button class="btn btn-sm cv-fixbtn" on:click={applyTemplateFixes} disabled={codeValidating || codeFixing}
-                            title="Instantly rewrite the flagged references to the suggested field">
+                            data-tooltip="Instantly rewrite the flagged references to the suggested field">
                       ⚡ Quick-fix {codeValidation.fixes.length}
                     </button>
                   {/if}
                   {#if codeValidation.errors || codeValidation.warnings}
                     <button class="btn btn-sm cv-fixbtn cv-aibtn" on:click={fixWithAI} disabled={codeFixing || codeValidating}
-                            title="Let the model rewrite the whole SOUL.yaml to fix every issue">
+                            data-tooltip="Let the model rewrite the whole SOUL.yaml to fix every issue">
                       {codeFixing ? '✨ Fixing…' : '✨ Fix with AI'}
                     </button>
                   {/if}
-                  <button class="icon-btn" title="Dismiss" on:click={() => (codeValidation = null)}>✕</button>
+                  <button class="icon-btn" data-tooltip="Dismiss" on:click={() => (codeValidation = null)}>✕</button>
                 </div>
                 {#if codeValidation.items && codeValidation.items.length}
                   <ul class="cv-list">
@@ -3794,7 +3794,7 @@ Use null for fields that are not present.`
               <span class="agent-spec-name">{workflow.name || 'Untitled agent'}</span>
               <span class="agent-spec-note">Reasons over its tools — no fixed graph. Loops & polls as needed.</span>
               <button class="agent-yaml-link" type="button" on:click={showCodeView}
-                title="Open the full SOUL.yaml — validate, AI-fix, and edit every field">{'</> Edit SOUL.yaml'}</button>
+                data-tooltip="Open the full SOUL.yaml — validate, AI-fix, and edit every field">{'</> Edit SOUL.yaml'}</button>
             </div>
 
             <label class="agent-field-label" for="agent-sys">System prompt (how the agent works)</label>
@@ -3817,7 +3817,7 @@ Use null for fields that are not present.`
               {#if workflow.new_agents && workflow.new_agents.length}<span><strong>Peer agents:</strong> {workflow.new_agents.map(a => a.name || a.id).join(', ')}</span>{/if}
               {#if workflow.channels && workflow.channels.length}
                 <span><strong>Delivers to:</strong>
-                  {#each workflow.channels as c}<span class="dlv-chip">{c}<button class="dlv-x" type="button" title="Remove delivery channel" on:click={() => removeDeliveryChannel(c)}>×</button></span>{/each}
+                  {#each workflow.channels as c}<span class="dlv-chip">{c}<button class="dlv-x" type="button" data-tooltip="Remove delivery channel" on:click={() => removeDeliveryChannel(c)}>×</button></span>{/each}
                 </span>
               {/if}
               {#if workflow.trigger && workflow.trigger.type}<span><strong>Runs:</strong> {workflow.trigger.type}{#if workflow.trigger.config && workflow.trigger.config.cron} ({workflow.trigger.config.cron}){/if}</span>{/if}
@@ -3918,7 +3918,7 @@ Use null for fields that are not present.`
           </SvelteFlow>
           <!-- Maximize / restore the canvas frame -->
           <button class="frame-max canvas-max" type="button"
-            title={maximizedFrame === 'canvas' ? 'Restore layout (Esc)' : 'Maximize canvas'}
+            data-tooltip={maximizedFrame === 'canvas' ? 'Restore layout (Esc)' : 'Maximize canvas'}
             on:click={() => toggleMax('canvas')}>{maximizedFrame === 'canvas' ? '⤡' : '⤢'}</button>
           <!-- Kind legend -->
           <div class="legend">
@@ -3957,7 +3957,7 @@ Use null for fields that are not present.`
             <button
               class="mode-btn"
               disabled
-              title="Live runs aren’t available for an unsaved draft — save & enable the agent and exercise it via its channel."
+              data-tooltip="Live runs aren’t available for an unsaved draft — save & enable the agent and exercise it via its channel."
               aria-label="Live runs aren’t available for an unsaved draft — save & enable the agent and exercise it via its channel."
               type="button"
             >Live</button>
@@ -3966,26 +3966,26 @@ Use null for fields that are not present.`
             {testing ? 'Testing…' : 'Test'}
           </button>
           <button class="btn" on:click={tryAgent} disabled={trying || !(workflow.flow && (workflow.flow.nodes || []).length)}
-            title="Run the workflow for real with the sample input and show the result + tool trace">
+            data-tooltip="Run the workflow for real with the sample input and show the result + tool trace">
             {trying ? 'Running…' : '▶ Run live'}
           </button>
           <button
             class="btn architect"
             on:click={buildUntilWorks}
             disabled={building || !workflow}
-            title="Autonomously fill gaps, fix every error, and run it until it works"
+            data-tooltip="Autonomously fill gaps, fix every error, and run it until it works"
           >
             {building ? 'Building…' : '🛠 Build until it works'}
           </button>
           {#if plan && plan.tier}
             <span
               class="tier-chip tier-{plan.tier}"
-              title={(plan.reasons && plan.reasons.length) ? plan.reasons.join('; ') : 'capability tier'}
+              data-tooltip={(plan.reasons && plan.reasons.length) ? plan.reasons.join('; ') : 'capability tier'}
             >
               {tierLabel(plan.tier)}
             </span>
           {/if}
-          <label class="unattended-toggle" title="Let this agent's system/network steps run automatically on scheduled runs, with no approval prompt. Only enable if you trust the steps.">
+          <label class="unattended-toggle" data-tooltip="Let this agent's system/network steps run automatically on scheduled runs, with no approval prompt. Only enable if you trust the steps.">
             <input
               type="checkbox"
               checked={!!(workflow && workflow.unattended)}
@@ -3994,11 +3994,11 @@ Use null for fields that are not present.`
             Unattended
           </label>
           <button class="btn btn-sm view-toggle" type="button" on:click={toggleTests}
-                  title="Show or hide the test & self-heal panels below the canvas">
+                  data-tooltip="Show or hide the test & self-heal panels below the canvas">
             {showTests ? 'Hide tests' : 'Show tests'}
           </button>
           <button class="btn btn-sm view-toggle" type="button" on:click={toggleInspector}
-                  title="Show or hide the inspector panel">
+                  data-tooltip="Show or hide the inspector panel">
             {showInspector ? 'Hide inspector' : 'Show inspector'}
           </button>
           {/if}
@@ -4007,7 +4007,7 @@ Use null for fields that are not present.`
               {codeValidating ? 'Validating…' : '✓ Validate'}
             </button>
             <button class="btn" on:click={reviewWithAI} disabled={reviewing}
-                    title="Ask the model to review the YAML against your rules (catches judgment-call issues the linter can't)">
+                    data-tooltip="Ask the model to review the YAML against your rules (catches judgment-call issues the linter can't)">
               {reviewing ? 'Reviewing…' : '🔍 AI review'}
             </button>
           {/if}
@@ -4059,7 +4059,7 @@ Use null for fields that are not present.`
                 {/if}
               </button>
               <button class="security-refresh" type="button"
-                      title="Re-run security review"
+                      data-tooltip="Re-run security review"
                       aria-label="Re-run security review"
                       on:click={refreshSecurityReview}>↺</button>
             </div>
@@ -4127,14 +4127,14 @@ Use null for fields that are not present.`
         {#if viewMode === 'canvas' && currentMode === 'workflow'}
           <!-- Drag this splitter to give the bottom workbench more/less height. -->
           <div class="wb-splitter" role="separator" aria-orientation="horizontal"
-            title="Drag to resize the workbench" on:pointerdown={startBenchResize}></div>
+            data-tooltip="Drag to resize the workbench" on:pointerdown={startBenchResize}></div>
         {/if}
         <div class="workbench" style={maximizedFrame === 'bench' ? '' : `max-height:${benchHeight}px`}>
           {#if viewMode === 'canvas' && currentMode === 'workflow'}
             <div class="wb-bar">
               <span class="wb-title">Workbench</span>
               <button class="frame-max" type="button"
-                title={maximizedFrame === 'bench' ? 'Restore layout (Esc)' : 'Maximize workbench'}
+                data-tooltip={maximizedFrame === 'bench' ? 'Restore layout (Esc)' : 'Maximize workbench'}
                 on:click={() => toggleMax('bench')}>{maximizedFrame === 'bench' ? '⤡' : '⤢'}</button>
             </div>
           {/if}
@@ -4161,7 +4161,7 @@ Use null for fields that are not present.`
                       type="button"
                       on:click={troubleshootLiveRun}
                       disabled={troubleshooting || !workflow}
-                      title="Ask Studio to repair the workflow using this live error and the steps it observed"
+                      data-tooltip="Ask Studio to repair the workflow using this live error and the steps it observed"
                     >
                       {troubleshooting ? 'Fixing…' : '✨ Self-correct workflow'}
                     </button>
@@ -4184,7 +4184,7 @@ Use null for fields that are not present.`
                           <span class="node-kind kind-{n.kind}">{n.kind}</span>
                           <span class="att-name">{n.node_id}</span>
                           {#if n.skipped}<span class="node-skip">skipped · needs consent</span>{/if}
-                          {#if n.adapted}<span class="node-adapted" title="The runtime salvaged this node with the LLM because the input shape was unexpected. The output is a reconstruction — consider fixing the node so it parses the real shape.">✦ auto-adapted</span>{/if}
+                          {#if n.adapted}<span class="node-adapted" data-tooltip="The runtime salvaged this node with the LLM because the input shape was unexpected. The output is a reconstruction — consider fixing the node so it parses the real shape.">✦ auto-adapted</span>{/if}
                           {#if !n.error && soft && !n.adapted}<span class="node-skip soft">ran, but output reports an error</span>{/if}
                           <span class="att-caret">{n._open ? '▾' : '▸'}</span>
                         </button>
@@ -4223,7 +4223,7 @@ Use null for fields that are not present.`
                       type="button"
                       on:click={adjustToLiveOutput}
                       disabled={repairing || !workflow}
-                      title="Have Studio observe what each node actually returned and propose a per-node adjustment"
+                      data-tooltip="Have Studio observe what each node actually returned and propose a per-node adjustment"
                     >
                       {repairing ? 'Analyzing the run…' : '🔎 Adjust to real output'}
                     </button>
@@ -4338,7 +4338,7 @@ Use null for fields that are not present.`
                 {pipelineRunning ? 'Generate pipeline running…' : 'Generate pipeline finished — see the canvas.'}
               </span>
               {#if !pipelineRunning}
-                <button class="icon-btn" title="Clear transcript" on:click={() => (pipelineLog = [])} style="margin-left:auto;">✕</button>
+                <button class="icon-btn" data-tooltip="Clear transcript" on:click={() => (pipelineLog = [])} style="margin-left:auto;">✕</button>
               {/if}
             </div>
             {#if pipelineLog.length}
@@ -4357,13 +4357,13 @@ Use null for fields that are not present.`
 
         <!-- ── Architect build report: what was wrong, and how it was fixed ── -->
         {#if buildReport}
-          <Collapsible id="build-report" title="Build report" sub={buildReport.summary}>
+          <Collapsible id="build-report" data-tooltip="Build report" sub={buildReport.summary}>
             <svelte:fragment slot="actions">
               <span class="build-badge" class:ok={buildReport.ok}>
                 {buildReport.verified ? '✓ Verified by running it' : buildReport.ok ? '✓ Validated' : '⚠ Needs attention'}
               </span>
-              <button class="icon-btn" title="Inspect every step of this build" on:click={() => (showBuildInspector = true)}>🔍 Inspect</button>
-              <button class="icon-btn" title="Dismiss" on:click={() => (buildReport = null)}>✕</button>
+              <button class="icon-btn" data-tooltip="Inspect every step of this build" on:click={() => (showBuildInspector = true)}>🔍 Inspect</button>
+              <button class="icon-btn" data-tooltip="Dismiss" on:click={() => (buildReport = null)}>✕</button>
             </svelte:fragment>
             {#if buildGlue && buildGlue.length}
               <ul class="build-glue">
@@ -4473,7 +4473,7 @@ Use null for fields that are not present.`
                       <button
                         class="btn small"
                         disabled={!fr.healable || !!healing}
-                        title={fr.healable ? 'Diagnose and repair the saved agent' : 'The agent for this run no longer exists'}
+                        data-tooltip={fr.healable ? 'Diagnose and repair the saved agent' : 'The agent for this run no longer exists'}
                         on:click={() => healFailedRun(fr.id)}
                       >
                         {healing === fr.id ? 'Healing…' : '✨ Fix with AI'}
@@ -4635,7 +4635,7 @@ Use null for fields that are not present.`
 
         <!-- Clarify panel -->
         {#if questions.length}
-          <Collapsible id="clarify" title="Clarify">
+          <Collapsible id="clarify" data-tooltip="Clarify">
             {#each questions as q (q.id)}
               <div class="q">
                 <label for={'q-' + q.id}>{q.text}</label>
@@ -4667,7 +4667,7 @@ Use null for fields that are not present.`
           </div>
         {/if}
         {#if testResult}
-          <Collapsible id="test-result" title="Test result">
+          <Collapsible id="test-result" data-tooltip="Test result">
             <!-- Overall pass/fail banner (only when assertions ran) -->
             {#if testResult.assertions && testResult.assertions.length}
               <div class="overall {testResult.passed ? 'overall-pass' : 'overall-fail'}">
@@ -4695,12 +4695,12 @@ Use null for fields that are not present.`
                     <span class="step-n">{i + 1}</span>
                     <div class="step-body">
                       <div class="step-head">
-                        {#if toolErr}<span class="status-dot fail" title="This step failed">✕</span>{:else}<span class="status-dot ok" title="This step succeeded">✓</span>{/if}
+                        {#if toolErr}<span class="status-dot fail" data-tooltip="This step failed">✕</span>{:else}<span class="status-dot ok" data-tooltip="This step succeeded">✓</span>{/if}
                         <strong>{step.nodeId}</strong>
                         {#if step.kind}<span class="step-kind">{step.kind}</span>{/if}
-                        {#if step.wiredPorts}<span class="wired-badge" title="Input assembled from typed port wires — no template">⮑ wired</span>{/if}
-                        {#if step.mocked}<span class="mock-badge" title="Output was mocked, node was not run">mocked</span>{/if}
-                        {#if step.durationMs != null}<span class="dur-badge" title="Wall-clock duration">{step.durationMs}ms</span>{/if}
+                        {#if step.wiredPorts}<span class="wired-badge" data-tooltip="Input assembled from typed port wires — no template">⮑ wired</span>{/if}
+                        {#if step.mocked}<span class="mock-badge" data-tooltip="Output was mocked, node was not run">mocked</span>{/if}
+                        {#if step.durationMs != null}<span class="dur-badge" data-tooltip="Wall-clock duration">{step.durationMs}ms</span>{/if}
                       </div>
                       {#if toolErr}
                         <div class="step-line err">{toolErr}</div>
@@ -4749,7 +4749,7 @@ Use null for fields that are not present.`
 
         <!-- ── Live run trace (Phase 1): the saved agent's last REAL run ──── -->
         {#if loadedAgentId}
-          <Collapsible id="run-trace" title="Run history" sub="Every run of this agent — scheduled or on-demand. Pick one to view its per-block trace.">
+          <Collapsible id="run-trace" data-tooltip="Run history" sub="Every run of this agent — scheduled or on-demand. Pick one to view its per-block trace.">
             <svelte:fragment slot="actions">
               <button class="btn btn-sm" type="button" on:click={() => loadRunTrace()} disabled={runTraceLoading}>
                 {runTraceLoading ? 'Loading…' : '↻ Refresh'}
@@ -4826,11 +4826,11 @@ Use null for fields that are not present.`
                     <span class="step-n">{i + 1}</span>
                     <div class="step-body">
                       <div class="step-head">
-                        {#if toolErr}<span class="status-dot fail" title="This step failed">✕</span>{:else}<span class="status-dot ok" title="This step succeeded">✓</span>{/if}
+                        {#if toolErr}<span class="status-dot fail" data-tooltip="This step failed">✕</span>{:else}<span class="status-dot ok" data-tooltip="This step succeeded">✓</span>{/if}
                         <strong>{step.nodeId}</strong>
                         {#if step.kind}<span class="step-kind">{step.kind}</span>{/if}
-                        {#if step.wiredPorts}<span class="wired-badge" title="Input assembled from typed port wires — no template">⮑ wired</span>{/if}
-                        {#if step.durationMs != null}<span class="dur-badge" title="Wall-clock duration">{step.durationMs}ms</span>{/if}
+                        {#if step.wiredPorts}<span class="wired-badge" data-tooltip="Input assembled from typed port wires — no template">⮑ wired</span>{/if}
+                        {#if step.durationMs != null}<span class="dur-badge" data-tooltip="Wall-clock duration">{step.durationMs}ms</span>{/if}
                       </div>
                       {#if toolErr}
                         <div class="step-line err">{toolErr}</div>
@@ -4855,7 +4855,7 @@ Use null for fields that are not present.`
 
         <!-- ── Run history (S5.4): last ~10 runs, IN MEMORY only ──────────── -->
         {#if history.length}
-          <Collapsible id="run-history" title="Run history" sub="Session-only — cleared on reload (no storage in the sandbox).">
+          <Collapsible id="run-history" data-tooltip="Run history" sub="Session-only — cleared on reload (no storage in the sandbox).">
             <svelte:fragment slot="actions">
               <button class="btn btn-sm" type="button" on:click={clearHistory}>Clear</button>
             </svelte:fragment>
@@ -4889,12 +4889,12 @@ Use null for fields that are not present.`
         class="insp-splitter"
         role="separator"
         aria-orientation="vertical"
-        title="Drag to resize the inspector"
+        data-tooltip="Drag to resize the inspector"
         on:pointerdown={startInspResize}
       ></div>
       <div class="insp-host" style={maximizedFrame === 'inspector' ? '' : `width:${inspectorWidth}px`}>
         <button class="frame-max insp-max" type="button"
-          title={maximizedFrame === 'inspector' ? 'Restore layout (Esc)' : 'Maximize inspector'}
+          data-tooltip={maximizedFrame === 'inspector' ? 'Restore layout (Esc)' : 'Maximize inspector'}
           on:click={() => toggleMax('inspector')}>{maximizedFrame === 'inspector' ? '⤡' : '⤢'}</button>
         <Inspector
           node={selectedNode}
@@ -5057,7 +5057,7 @@ Use null for fields that are not present.`
               {:else if yamlBrowser.yamlLoading}
                 <p class="muted">Loading SOUL.yaml…</p>
               {:else if yamlBrowser.yaml}
-                {#if yamlBrowser.path}<div class="yamlb-path" title={yamlBrowser.path}>{yamlBrowser.path}</div>{/if}
+                {#if yamlBrowser.path}<div class="yamlb-path" data-tooltip={yamlBrowser.path}>{yamlBrowser.path}</div>{/if}
                 <pre class="yamlb-code">{yamlBrowser.yaml}</pre>
               {:else}
                 <p class="muted">Select an agent to view its SOUL.yaml.</p>
@@ -5293,7 +5293,7 @@ Use null for fields that are not present.`
           <textarea class="pe-area rules-area" bind:value={rulesText} spellcheck="false" placeholder="Authoring rules…"></textarea>
         {/if}
         <div class="modal-actions">
-          <button class="btn" on:click={resetRulesToDefault} title="Replace the editor contents with the built-in default rules">Reset to default</button>
+          <button class="btn" on:click={resetRulesToDefault} data-tooltip="Replace the editor contents with the built-in default rules">Reset to default</button>
           <button class="btn" on:click={() => (rulesOpen = false)}>Close</button>
           <button class="btn primary" on:click={saveRules} disabled={rulesSaving || rulesLoading}>{rulesSaving ? 'Saving…' : 'Save'}</button>
           {#if rulesMsg}<span class="save-msg" class:ok={rulesMsg.startsWith('✓')}>{rulesMsg}</span>{/if}
@@ -5412,7 +5412,7 @@ Use null for fields that are not present.`
 
         <div class="modal-actions">
           <button class="btn" on:click={cancelPreflight} disabled={saving || fixing}>Back to editing</button>
-          <button class="btn" on:click={fixAutomatically} disabled={saving || fixing} title="Auto-wire empty inputs and reconcile mismatched variable names">
+          <button class="btn" on:click={fixAutomatically} disabled={saving || fixing} data-tooltip="Auto-wire empty inputs and reconcile mismatched variable names">
             {fixing ? 'Fixing…' : 'Fix automatically'}
           </button>
           <button class="btn" on:click={rerunPreflight} disabled={saving || fixing}>Re-check</button>
