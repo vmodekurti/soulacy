@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-07-14T11:14:43.159Z",
+  "generated_at": "2026-07-21T17:31:26.526Z",
   "base_url": "http://127.0.0.1:18894",
   "viewport": {
     "width": 1440,
@@ -10,35 +10,35 @@
       "name": "dashboard",
       "path": "/",
       "screenshot": "dashboard.png",
-      "bytes": 151104,
-      "text_length": 6092
+      "bytes": 149907,
+      "text_length": 3770
     },
     {
       "name": "studio",
       "path": "/#studio",
       "screenshot": "studio.png",
-      "bytes": 139119,
-      "text_length": 4844
+      "bytes": 51513,
+      "text_length": 2304
     },
     {
       "name": "agents",
       "path": "/#agents",
       "screenshot": "agents.png",
-      "bytes": 66793,
+      "bytes": 78529,
       "text_length": 444
     },
     {
       "name": "chat",
       "path": "/#chat",
       "screenshot": "chat.png",
-      "bytes": 80396,
-      "text_length": 486
+      "bytes": 96684,
+      "text_length": 589
     },
     {
       "name": "channels",
       "path": "/#channels",
       "screenshot": "channels.png",
-      "bytes": 53396,
+      "bytes": 179314,
       "text_length": 3900
     },
     {
@@ -52,36 +52,36 @@
       "name": "schedule",
       "path": "/#schedule",
       "screenshot": "schedule.png",
-      "bytes": 117829,
+      "bytes": 122631,
       "text_length": 1121
     },
     {
       "name": "providers",
       "path": "/#providers",
       "screenshot": "providers.png",
-      "bytes": 136437,
+      "bytes": 136341,
       "text_length": 1632
     },
     {
       "name": "activity",
       "path": "/#activity",
       "screenshot": "activity.png",
-      "bytes": 76812,
-      "text_length": 579
+      "bytes": 72258,
+      "text_length": 611
     },
     {
       "name": "skills",
       "path": "/#skills",
       "screenshot": "skills.png",
-      "bytes": 92919,
-      "text_length": 23244
+      "bytes": 92828,
+      "text_length": 1121
     },
     {
       "name": "config",
       "path": "/#config",
       "screenshot": "config.png",
-      "bytes": 201649,
-      "text_length": 6974
+      "bytes": 201193,
+      "text_length": 8323
     }
   ]
 }
