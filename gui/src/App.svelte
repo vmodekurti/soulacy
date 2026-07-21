@@ -383,7 +383,16 @@
   <header class="topbar">
     <button class="hamburger" on:click={() => sidebarOpen = !sidebarOpen}
             aria-label="Toggle navigation" aria-expanded={sidebarOpen}>☰</button>
-    <span class="brand-icon">⬡</span>
+    <svg class="brand-svg w-6 h-6" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="mobile-logo-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="#7e5cff" />
+          <stop offset="100%" stop-color="#22c47a" />
+        </linearGradient>
+      </defs>
+      <path d="M32 6 L54 14 V32 C54 45.5 44.5 55 32 58 C19.5 55 10 45.5 10 32 V14 L32 6 Z" fill="#0b0d1a" stroke="url(#mobile-logo-grad)" stroke-width="3" />
+      <path d="M42 20 L24 20 C20 20 18 22 18 26 C18 30 22 32 32 34 C42 36 46 38 46 42 C46 46 44 48 40 48 L22 48" stroke="url(#mobile-logo-grad)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
     <span class="brand-name">Soulacy</span>
   </header>
 
@@ -397,7 +406,18 @@
   <!-- Sidebar -->
   <aside class="sidebar" class:open={sidebarOpen} class:collapsed={navCollapsed}>
     <div class="brand">
-      <span class="brand-logo" aria-hidden="true"></span>
+      <span class="brand-logo" aria-hidden="true">
+        <svg class="brand-svg" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="sidebar-logo-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stop-color="#7e5cff" />
+              <stop offset="100%" stop-color="#22c47a" />
+            </linearGradient>
+          </defs>
+          <path d="M32 6 L54 14 V32 C54 45.5 44.5 55 32 58 C19.5 55 10 45.5 10 32 V14 L32 6 Z" fill="#0b0d1a" stroke="url(#sidebar-logo-grad)" stroke-width="3" />
+          <path d="M42 20 L24 20 C20 20 18 22 18 26 C18 30 22 32 32 34 C42 36 46 38 46 42 C46 46 44 48 40 48 L22 48" stroke="url(#sidebar-logo-grad)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+        </svg>
+      </span>
       <span class="brand-name">Soulacy</span>
       <button class="nav-toggle" on:click={toggleNav}
               title={navCollapsed ? 'Expand menu' : 'Collapse menu'}
@@ -405,6 +425,7 @@
         {navCollapsed ? '»' : '«'}
       </button>
     </div>
+
 
     <nav>
       {#each navGroups as grp}
@@ -622,14 +643,17 @@
     display: flex; align-items: center; gap: 0.7rem;
     padding: 1.15rem 1.1rem;
   }
-  /* Rounded circular logo mark (wireframe): dark disc with an inner accent dot. */
+  /* Vector shield logo mark */
   .brand-logo {
-    width: 30px; height: 30px; border-radius: 50%; flex-shrink: 0;
-    background: radial-gradient(circle at 50% 50%, #8b85ff 0 5px, transparent 6px),
-                linear-gradient(145deg, #2a2f52, #14162a);
-    box-shadow: inset 0 0 0 1px #3a3f68;
+    width: 30px; height: 30px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .brand-svg {
+    width: 28px; height: 28px;
+    filter: drop-shadow(0 0 6px rgba(126, 92, 255, 0.45));
   }
   .brand-name { font-weight: 700; font-size: 1.02rem; letter-spacing: 0.01em; color: #f2f3fb; }
+
 
   nav { flex: 1; padding: 0.5rem 0.5rem; overflow-y: auto; }
   /* Uppercase section header (CAPABILITIES / INTEGRATIONS / …). */

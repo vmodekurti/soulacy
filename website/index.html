@@ -6,6 +6,7 @@
   <title>Soulacy — The agent framework you can put in production without a security memo</title>
   <meta name="description" content="Soulacy is a local-first agent operating system. Single Go binary. YAML agents. A shipped defense-in-depth security stack — envelope, injection scanner, intent gate, red-team pack, Security Doctor. Runs on your laptop, a $5 VPS, or a Raspberry Pi." />
   <link rel="canonical" href="https://soulacy.io/" />
+  <link rel="icon" type="image/svg+xml" href="https://soulacy.io/favicon.svg" />
 
   <!-- Open Graph / Social -->
   <meta property="og:type" content="website" />
@@ -58,7 +59,8 @@
     }
     .gradient-text {
       background: linear-gradient(90deg, #7e5cff 0%, #48d597 100%);
-      -webkit-background-clip: text; background-clip: text; color: transparent;
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }
     .card {
       background: linear-gradient(180deg, rgba(21,25,42,0.9) 0%, rgba(14,17,32,0.9) 100%);
@@ -476,10 +478,20 @@
   <footer class="border-t border-white/5">
     <div class="max-w-6xl mx-auto px-5 py-12 grid md:grid-cols-4 gap-8">
       <div>
-        <div class="flex items-center gap-2 font-semibold text-lg mb-2">
-          <span class="inline-block w-6 h-6 rounded-md bg-gradient-to-br from-wire-500 to-signal-500"></span>
+        <div class="flex items-center gap-2.5 font-bold text-lg mb-2 text-ink-50">
+          <svg class="w-6 h-6 drop-shadow-[0_0_8px_rgba(126,92,255,0.5)]" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <defs>
+              <linearGradient id="footer-logo-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#7e5cff" />
+                <stop offset="100%" stop-color="#22c47a" />
+              </linearGradient>
+            </defs>
+            <path d="M32 6 L54 14 V32 C54 45.5 44.5 55 32 58 C19.5 55 10 45.5 10 32 V14 L32 6 Z" fill="#0b0d1a" stroke="url(#footer-logo-grad)" stroke-width="3" />
+            <path d="M42 20 L24 20 C20 20 18 22 18 26 C18 30 22 32 32 34 C42 36 46 38 46 42 C46 46 44 48 40 48 L22 48" stroke="url(#footer-logo-grad)" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
           Soulacy
         </div>
+
         <p class="text-sm text-ink-400 leading-relaxed">Local-first agent operating system. Apache 2.0.</p>
       </div>
       <div>
