@@ -6854,6 +6854,10 @@ Use null for fields that are not present.`
      groups too), so it gets a wider frame and lays the presets out side by side
      instead of stacking everything into a cramped 460px column. */
   .modal.model-modal { width: min(760px, 94vw); }
+  .mp-preset-row input[type="radio"] {
+    margin-top: 3px;
+    flex-shrink: 0;
+  }
   .mp-settings-grid {
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -6862,6 +6866,7 @@ Use null for fields that are not present.`
     padding-top: 14px;
     border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
   }
+
   /* Grid owns the divider + top spacing; the sections inside sit flush. */
   .mp-settings-grid > .mp-section { margin-top: 0; padding-top: 0; border-top: none; }
   /* Give the model list a little more room now the modal is wider. */
