@@ -1386,7 +1386,7 @@ console.log(reply);` : ''
     <h1>Deployed Agents</h1>
     <div class="hdr-actions">
       <button class="btn-secondary" on:click={openTemplates}>📋 From template…</button>
-      <button class="btn-secondary" on:click={triggerPackageImport} title="Inspect and import a .soulacy-agent.json package">Import package…</button>
+      <button class="btn-secondary" on:click={triggerPackageImport} data-tooltip="Inspect and import a .soulacy-agent.json package">Import package…</button>
       <button class="btn-primary"   on:click={newAgent}>+ New Agent</button>
       <input
         bind:this={packageFileInput}
@@ -1425,12 +1425,12 @@ console.log(reply);` : ''
             <div class="agent-meta">
               {agent.trigger} · {agent.llm?.provider || 'ollama'}/{agent.llm?.model || '?'}
             </div>
-            <div class="tier-pill" class:read={tiers[agent.id]?.tier === 'read_only'} class:active-tier={tiers[agent.id]?.tier === 'active'} class:privileged={tiers[agent.id]?.tier === 'privileged'}>
+            <div class="tier-pill" class:read={tiers[agent.id]?.tier === 'read_only'} class:active-tier={tiers[agent.id]?.tier === 'active'} class:privileged={tiers[agent.id]?.tier === 'privileged'} data-tooltip="Security capability tier: read_only, active, or privileged">
               {tierLabel(tiers[agent.id]?.tier)}
             </div>
           </div>
           <button class="toggle" class:on={agent.enabled}
-                  title={agent.enabled ? 'Disable' : 'Enable'}
+                  data-tooltip={agent.enabled ? 'Click to disable' : 'Click to enable'}
                   disabled={isSystemAgent(agent)}
                   on:click={(e) => toggleEnabled(agent, e)}>
             {agent.enabled ? '●' : '○'}
@@ -1450,37 +1450,37 @@ console.log(reply);` : ''
             <div class="hdr-actions">
               {#if selected}
                 <button class="btn-secondary" on:click={() => showExport = true}
-                        title="Show API snippets for this agent">&lt;/&gt; API</button>
+                        data-tooltip="Show API snippets for this agent">&lt;/&gt; API</button>
                 <button class="btn-secondary" on:click={downloadAgentPackage}
-                        title="Download a shareable package with SOUL.yaml, local tool files, and a setup checklist">Package</button>
+                        data-tooltip="Download a shareable package with SOUL.yaml, local tool files, and a setup checklist">Package</button>
                 <button class="btn-secondary" on:click={() => showPlay = !showPlay}
                         class:on={showPlay}
-                        title="Toggle inline chat panel">
+                        data-tooltip="Toggle inline chat panel">
                   {showPlay ? '× Close' : '💬 Test'}
                 </button>
-                <button class="btn-danger" on:click={deleteAgent} disabled={deleting || editingProtected}>
+                <button class="btn-danger" on:click={deleteAgent} disabled={deleting || editingProtected} data-tooltip="Permanently delete this agent config">
                   {deleting ? '…' : 'Delete'}
                 </button>
               {/if}
               {#if selected}
-                <button class="btn-secondary" on:click={openYaml} title="View and edit the raw SOUL.yaml">
+                <button class="btn-secondary" on:click={openYaml} data-tooltip="View and edit the raw SOUL.yaml">
                   View YAML
                 </button>
-                <button class="btn-secondary" on:click={openHistory} title="View saved versions and restore a prior SOUL.yaml">
+                <button class="btn-secondary" on:click={openHistory} data-tooltip="View saved versions and restore a prior SOUL.yaml">
                   History
                 </button>
                 <!-- F-GUI-2 — full doctor report + adversarial dry-run for the
                      S1+S2+S3 pipeline. Deep-linkable via
                      #agents?agent_id=X&doctor=1 from Dashboard's Security row
                      and other cohort surfaces. -->
-                <button class="btn-secondary" on:click={() => openDoctor(selected)} title="Full security posture + simulate a prompt-injection dry-run">
+                <button class="btn-secondary" on:click={() => openDoctor(selected)} data-tooltip="Full security posture + simulate a prompt-injection dry-run">
                   🛡 Security Doctor
                 </button>
               {/if}
-              <button class="btn-secondary" on:click={validateEditing} disabled={validating}>
+              <button class="btn-secondary" on:click={validateEditing} disabled={validating} data-tooltip="Verify that the agent manifest is valid and secure">
                 {validating ? 'Checking…' : 'Validate'}
               </button>
-              <button class="btn-primary" on:click={save} disabled={saving}>
+              <button class="btn-primary" on:click={save} disabled={saving} data-tooltip="Save changes to the agent manifest">
                 {saving ? 'Saving…' : 'Save'}
               </button>
               {#if saveMsg}
@@ -1832,8 +1832,8 @@ console.log(reply);` : ''
             <div class="sep">LLM</div>
 
             <div class="field">
-              <span class="field-label" title={llmTips.executionProfile}>Execution profile <span class="optional">(applies a tuned starting point; fields remain editable)</span></span>
-              <select title={llmTips.executionProfile} on:change={(e) => { if (e.target.value) { applyExecutionProfile(e.target.value); e.target.value = '' } }}>
+              <span class="field-label" data-tooltip={llmTips.executionProfile}>Execution profile <span class="optional">(applies a tuned starting point; fields remain editable)</span></span>
+              <select data-tooltip={llmTips.executionProfile} on:change={(e) => { if (e.target.value) { applyExecutionProfile(e.target.value); e.target.value = '' } }}>
                 <option value="">Choose a profile…</option>
                 {#each Object.entries(executionProfiles) as [key, profile]}
                   <option value={key}>{profile.label}</option>
@@ -1843,8 +1843,8 @@ console.log(reply);` : ''
 
             <div class="row-3">
               <div class="field">
-                <span class="field-label" title={llmTips.provider}>Provider</span>
-                <select bind:value={editing.llm.provider} on:change={onProviderChange} title={llmTips.provider}>
+                <span class="field-label" data-tooltip={llmTips.provider}>Provider</span>
+                <select bind:value={editing.llm.provider} on:change={onProviderChange} data-tooltip={llmTips.provider}>
                   {#if enabledProviders.length === 0}
                     <option value={editing.llm.provider}>{editing.llm.provider || 'ollama'}</option>
                   {:else}
@@ -1860,20 +1860,20 @@ console.log(reply);` : ''
                 </select>
               </div>
               <div class="field">
-                <span class="field-label field-label-row" title={llmTips.model}>
+                <span class="field-label field-label-row" data-tooltip={llmTips.model}>
                   <span>
                     Model
                     {#if modelsLoading[editing.llm.provider]}
                       <span class="mloading">loading…</span>
                     {:else if modelsError[editing.llm.provider]}
-                      <span class="merror" title={modelsError[editing.llm.provider]}>(can't reach provider)</span>
+                      <span class="merror" data-tooltip={modelsError[editing.llm.provider]}>(can't reach provider)</span>
                     {:else if modelOptions.length > 0}
                       <span class="mhint">{modelOptions.length} options</span>
                     {/if}
                   </span>
                   <button type="button"
                           class="mini-link"
-                          title="Reload this provider's model list after changing credentials, OmniRoute routing, or provider settings."
+                          data-tooltip="Reload this provider's model list after changing credentials, OmniRoute routing, or provider settings."
                           on:click={() => refreshModels(editing.llm.provider)}>
                     Refresh
                   </button>
@@ -1882,7 +1882,7 @@ console.log(reply);` : ''
                      in-place during list updates. Current model is always at [0]
                      (from modelOptions), so bind:value always has a match and the
                      browser never resets to the first option. -->
-                <select bind:value={editing.llm.model} title={llmTips.model}>
+                <select bind:value={editing.llm.model} data-tooltip={llmTips.model}>
                   {#if !editing.llm.model}
                     <option value="">— pick a model —</option>
                   {/if}
@@ -1901,32 +1901,32 @@ console.log(reply);` : ''
                        class:warn={modelStatus.kind === 'warn'}
                        class:info={modelStatus.kind === 'info'}
                        class="model-status"
-                       title={modelStatus.detail}>
+                       data-tooltip={modelStatus.detail}>
                     <b>{modelStatus.label}</b>
                     <span>{modelStatus.detail}</span>
                   </div>
                 {/if}
               </div>
               <div class="field">
-                <span class="field-label" title={llmTips.maxTokens}>Max tokens</span>
-                <input type="number" bind:value={editing.llm.max_tokens} min="64" max="8192" title={llmTips.maxTokens} />
+                <span class="field-label" data-tooltip={llmTips.maxTokens}>Max tokens</span>
+                <input type="number" bind:value={editing.llm.max_tokens} min="64" max="8192" data-tooltip={llmTips.maxTokens} />
               </div>
             </div>
 
             <div class="row-3">
               <div class="field">
-                <span class="field-label" title={llmTips.temperature}>Temperature</span>
+                <span class="field-label" data-tooltip={llmTips.temperature}>Temperature</span>
                 <input type="number" bind:value={editing.llm.temperature}
-                       min="0" max="2" step="0.05" title={llmTips.temperature} />
+                       min="0" max="2" step="0.05" data-tooltip={llmTips.temperature} />
               </div>
               <div class="field">
-                <span class="field-label" title={llmTips.topP}>Top P</span>
+                <span class="field-label" data-tooltip={llmTips.topP}>Top P</span>
                 <input type="number" bind:value={editing.llm.top_p}
-                       min="0" max="1" step="0.05" placeholder="provider default" title={llmTips.topP} />
+                       min="0" max="1" step="0.05" placeholder="provider default" data-tooltip={llmTips.topP} />
               </div>
               <div class="field">
-                <span class="field-label" title={llmTips.maxTurns}>Max turns</span>
-                <input type="number" bind:value={editing.max_turns} min="1" max="50" title={llmTips.maxTurns} />
+                <span class="field-label" data-tooltip={llmTips.maxTurns}>Max turns</span>
+                <input type="number" bind:value={editing.max_turns} min="1" max="50" data-tooltip={llmTips.maxTurns} />
               </div>
             </div>
 
@@ -1935,16 +1935,16 @@ console.log(reply);` : ''
               <div class="persona-inner">
                 <div class="field-row3">
                   <div class="field">
-                    <span class="field-label" title={llmTips.responseFormat}>Response format</span>
-                    <select bind:value={editing.llm.response_format} title={llmTips.responseFormat}>
+                    <span class="field-label" data-tooltip={llmTips.responseFormat}>Response format</span>
+                    <select bind:value={editing.llm.response_format} data-tooltip={llmTips.responseFormat}>
                       <option value="">provider default</option>
                       <option value="json">json</option>
                       <option value="json_schema">json_schema</option>
                     </select>
                   </div>
                   <div class="field">
-                    <span class="field-label" title={llmTips.reasoningEffort}>Reasoning effort</span>
-                    <select bind:value={editing.llm.reasoning_effort} title={llmTips.reasoningEffort}>
+                    <span class="field-label" data-tooltip={llmTips.reasoningEffort}>Reasoning effort</span>
+                    <select bind:value={editing.llm.reasoning_effort} data-tooltip={llmTips.reasoningEffort}>
                       <option value="">provider default</option>
                       <option value="low">low</option>
                       <option value="medium">medium</option>
@@ -1952,21 +1952,21 @@ console.log(reply);` : ''
                     </select>
                   </div>
                   <div class="field">
-                    <span class="field-label" title={llmTips.presencePenalty}>Presence penalty</span>
-                    <input type="number" bind:value={editing.llm.presence_penalty} min="-2" max="2" step="0.1" placeholder="0" title={llmTips.presencePenalty} />
+                    <span class="field-label" data-tooltip={llmTips.presencePenalty}>Presence penalty</span>
+                    <input type="number" bind:value={editing.llm.presence_penalty} min="-2" max="2" step="0.1" placeholder="0" data-tooltip={llmTips.presencePenalty} />
                   </div>
                 </div>
                 <div class="field-row3">
                   <div class="field">
-                    <span class="field-label" title={llmTips.frequencyPenalty}>Frequency penalty</span>
-                    <input type="number" bind:value={editing.llm.frequency_penalty} min="-2" max="2" step="0.1" placeholder="0" title={llmTips.frequencyPenalty} />
+                    <span class="field-label" data-tooltip={llmTips.frequencyPenalty}>Frequency penalty</span>
+                    <input type="number" bind:value={editing.llm.frequency_penalty} min="-2" max="2" step="0.1" placeholder="0" data-tooltip={llmTips.frequencyPenalty} />
                   </div>
                 </div>
               </div>
             </details>
 
             <div class="field">
-              <span class="field-label" title={llmTips.toolChoice}>Tool choice <span class="optional">(controls turn-1 tool selection — agent__&lt;peer&gt; triggers the engine's auto-delegate path)</span></span>
+              <span class="field-label" data-tooltip={llmTips.toolChoice}>Tool choice <span class="optional">(controls turn-1 tool selection — agent__&lt;peer&gt; triggers the engine's auto-delegate path)</span></span>
               <ChipPicker
                 value={editing.llm.tool_choice ? [editing.llm.tool_choice] : []}
                 options={toolChoiceOptions}
@@ -2006,7 +2006,7 @@ console.log(reply);` : ''
             <!-- ── Reasoning loop ── -->
             <div class="sep">Execution strategy <span class="optional">(how the agent runs its tools)</span></div>
             <div class="field">
-              <span class="field-label" title="Controls whether the agent uses native tool-calling, an explicit ReAct loop, or a plan-then-execute loop.">Strategy</span>
+              <span class="field-label" data-tooltip="Controls whether the agent uses native tool-calling, an explicit ReAct loop, or a plan-then-execute loop.">Strategy</span>
               <div class="strategy-cards">
                 {#each [
                   { val: '',             icon: '✨', title: 'Auto',          desc: 'Recommended — native tool-calling; engine picks the loop' },
@@ -2015,7 +2015,7 @@ console.log(reply);` : ''
                 ] as s}
                   <button
                     class="strategy-card {(editing.reasoning?.strategy||'') === s.val ? 'active' : ''}"
-                    title={s.desc}
+                    data-tooltip={s.desc}
                     on:click={() => { editing.reasoning = editing.reasoning || {}; editing.reasoning.strategy = s.val; editing = editing }}
                   >
                     <span class="sc-icon">{s.icon}</span>
@@ -2029,33 +2029,33 @@ console.log(reply);` : ''
             {#if editing.reasoning?.strategy}
               <div class="field-row">
                 <div class="field">
-                  <span class="field-label" title={llmTips.maxSteps}>Max steps <span class="optional">(default 8)</span></span>
+                  <span class="field-label" data-tooltip={llmTips.maxSteps}>Max steps <span class="optional">(default 8)</span></span>
                   <input type="number" min="1" max="50"
                     value={editing.reasoning?.max_steps || ''}
-                    title={llmTips.maxSteps}
+                    data-tooltip={llmTips.maxSteps}
                     on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.max_steps = Number(e.target.value)||0 }} />
                 </div>
                 {#if editing.reasoning?.strategy === 'plan_execute'}
                   <div class="field">
-                    <span class="field-label" title={llmTips.maxPlanSteps}>Max plan steps <span class="optional">(default 6)</span></span>
+                    <span class="field-label" data-tooltip={llmTips.maxPlanSteps}>Max plan steps <span class="optional">(default 6)</span></span>
                     <input type="number" min="1" max="20"
                       value={editing.reasoning?.max_plan_steps || ''}
-                      title={llmTips.maxPlanSteps}
+                      data-tooltip={llmTips.maxPlanSteps}
                       on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.max_plan_steps = Number(e.target.value)||0 }} />
                   </div>
                 {/if}
                 <div class="field">
-                  <span class="field-label" title={llmTips.stepTimeout}>Step timeout <span class="optional">(e.g. 30s)</span></span>
+                  <span class="field-label" data-tooltip={llmTips.stepTimeout}>Step timeout <span class="optional">(e.g. 30s)</span></span>
                   <input type="text" placeholder="30s"
                     value={editing.reasoning?.step_timeout || ''}
-                    title={llmTips.stepTimeout}
+                    data-tooltip={llmTips.stepTimeout}
                     on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.step_timeout = e.target.value }} />
                 </div>
                 <div class="field">
-                  <span class="field-label" title={llmTips.totalTimeout}>Total timeout <span class="optional">(e.g. 180s)</span></span>
+                  <span class="field-label" data-tooltip={llmTips.totalTimeout}>Total timeout <span class="optional">(e.g. 180s)</span></span>
                   <input type="text" placeholder="180s"
                     value={editing.reasoning?.total_timeout || ''}
-                    title={llmTips.totalTimeout}
+                    data-tooltip={llmTips.totalTimeout}
                     on:input={e => { editing.reasoning = editing.reasoning||{}; editing.reasoning.total_timeout = e.target.value }} />
                 </div>
               </div>
@@ -2072,10 +2072,10 @@ console.log(reply);` : ''
                     <div class="sep mini-sep">{phase.label} <span class="optional">({phase.hint})</span></div>
                     <div class="field-row3">
                       <div class="field">
-                        <span class="field-label" title={llmTips.phaseTemperature}>Temperature</span>
+                        <span class="field-label" data-tooltip={llmTips.phaseTemperature}>Temperature</span>
                         <input type="number" min="0" max="2" step="0.05"
                           value={cfg.temperature ?? ''}
-                          title={llmTips.phaseTemperature}
+                          data-tooltip={llmTips.phaseTemperature}
                           on:input={e => {
                             editing.reasoning = editing.reasoning || {}
                             editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
@@ -2083,10 +2083,10 @@ console.log(reply);` : ''
                           }} />
                       </div>
                       <div class="field">
-                        <span class="field-label" title={llmTips.phaseTopP}>Top P</span>
+                        <span class="field-label" data-tooltip={llmTips.phaseTopP}>Top P</span>
                         <input type="number" min="0" max="1" step="0.05"
                           value={cfg.top_p ?? ''}
-                          title={llmTips.phaseTopP}
+                          data-tooltip={llmTips.phaseTopP}
                           on:input={e => {
                             editing.reasoning = editing.reasoning || {}
                             editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
@@ -2094,10 +2094,10 @@ console.log(reply);` : ''
                           }} />
                       </div>
                       <div class="field">
-                        <span class="field-label" title={llmTips.phaseMaxTokens}>Max tokens</span>
+                        <span class="field-label" data-tooltip={llmTips.phaseMaxTokens}>Max tokens</span>
                         <input type="number" min="64" max="8192"
                           value={cfg.max_tokens || ''}
-                          title={llmTips.phaseMaxTokens}
+                          data-tooltip={llmTips.phaseMaxTokens}
                           on:input={e => {
                             editing.reasoning = editing.reasoning || {}
                             editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
@@ -2115,10 +2115,10 @@ console.log(reply);` : ''
                     ] as phase}
                       {@const cfg = editing.reasoning?.[phase.key] || {}}
                       <div class="field">
-                        <span class="field-label" title={llmTips.phaseFormat}>{phase.label} format</span>
+                        <span class="field-label" data-tooltip={llmTips.phaseFormat}>{phase.label} format</span>
                         <select
                           value={cfg.response_format || ''}
-                          title={llmTips.phaseFormat}
+                          data-tooltip={llmTips.phaseFormat}
                           on:change={e => {
                             editing.reasoning = editing.reasoning || {}
                             editing.reasoning[phase.key] = editing.reasoning[phase.key] || {}
@@ -2267,9 +2267,9 @@ console.log(reply);` : ''
                            bind:value={tool.name}
                            placeholder="tool_name (snake_case)" />
                     <div class="tool-ops">
-                      <button title="Move up"   on:click={() => moveTool(i, -1)} disabled={i === 0}>↑</button>
-                      <button title="Move down" on:click={() => moveTool(i, +1)} disabled={i === editing.tools.length - 1}>↓</button>
-                      <button title="Remove" class="rm" on:click={() => removeTool(i)}>✕</button>
+                      <button data-tooltip="Move up"   on:click={() => moveTool(i, -1)} disabled={i === 0}>↑</button>
+                      <button data-tooltip="Move down" on:click={() => moveTool(i, +1)} disabled={i === editing.tools.length - 1}>↓</button>
+                      <button data-tooltip="Remove" class="rm" on:click={() => removeTool(i)}>✕</button>
                     </div>
                   </div>
 
@@ -2292,13 +2292,13 @@ console.log(reply);` : ''
 
                   <div class="tool-grid">
                     <div class="field">
-                      <span class="field-label" title={llmTips.toolTimeout}>Timeout <span class="optional">(optional — overrides global; e.g. 30m, 1h)</span></span>
+                      <span class="field-label" data-tooltip={llmTips.toolTimeout}>Timeout <span class="optional">(optional — overrides global; e.g. 30m, 1h)</span></span>
                       <input bind:value={tool.timeout}
                              placeholder="30s (defaults to runtime.tool_timeout)" />
                     </div>
 
                     <div class="field">
-                      <span class="field-label" title={llmTips.toolRetries}>Retries <span class="optional">(0-5)</span></span>
+                      <span class="field-label" data-tooltip={llmTips.toolRetries}>Retries <span class="optional">(0-5)</span></span>
                       <input type="number"
                              min="0"
                              max="5"
@@ -2309,7 +2309,7 @@ console.log(reply);` : ''
                     </div>
 
                     <div class="field">
-                      <span class="field-label" title={llmTips.toolRetryBackoff}>Retry backoff <span class="optional">(e.g. 1s)</span></span>
+                      <span class="field-label" data-tooltip={llmTips.toolRetryBackoff}>Retry backoff <span class="optional">(e.g. 1s)</span></span>
                       <input bind:value={tool.retry_backoff}
                              placeholder="1s" />
                     </div>
@@ -2372,11 +2372,11 @@ console.log(reply);` : ''
               />
             </div>
             <div class="field-row">
-              <label class="check-row peer-toggle" title={llmTips.parallelPeerCalls}>
+              <label class="check-row peer-toggle" data-tooltip={llmTips.parallelPeerCalls}>
                 <input type="checkbox" bind:checked={editing.parallel_peer_calls} />
                 <span>Run independent peer calls in parallel</span>
               </label>
-              <label class="check-row peer-toggle" title={llmTips.structuredPeerResults}>
+              <label class="check-row peer-toggle" data-tooltip={llmTips.structuredPeerResults}>
                 <input type="checkbox" bind:checked={editing.structured_peer_results} />
                 <span>Return structured peer-result envelopes</span>
               </label>
@@ -2418,7 +2418,7 @@ console.log(reply);` : ''
             <div class="sep">Safety policy <span class="optional">(confirm before risky actions)</span></div>
             <div class="safety-card">
               <div class="field">
-                <span class="field-label" title={llmTips.confirmTools}>Confirm tools</span>
+                <span class="field-label" data-tooltip={llmTips.confirmTools}>Confirm tools</span>
                 <ChipPicker
                   value={editing.confirm_tools || []}
                   options={confirmToolOptions}
@@ -2436,7 +2436,7 @@ console.log(reply);` : ''
                 <button class="btn-secondary small" type="button" on:click={confirmAllTools}>Confirm all tools</button>
                 <button class="btn-secondary small" type="button" on:click={clearConfirmTools}>Clear</button>
               </div>
-              <label class="check-row safety-toggle" title={llmTips.unattended}>
+              <label class="check-row safety-toggle" data-tooltip={llmTips.unattended}>
                 <input type="checkbox" bind:checked={editing.unattended} />
                 <span>Unattended runs may auto-approve confirmation gates</span>
               </label>
@@ -2476,9 +2476,9 @@ console.log(reply);` : ''
               <button class="btn-secondary small" type="button" on:click={useSelectedLLMForPlayground}>Use agent defaults</button>
             </div>
             <div class="param-grid">
-              <label title={llmTips.playgroundProvider}>
+              <label data-tooltip={llmTips.playgroundProvider}>
                 <span>Provider</span>
-                <select bind:value={playProvider} disabled={!playUseOverrides} title={llmTips.playgroundProvider}>
+                <select bind:value={playProvider} disabled={!playUseOverrides} data-tooltip={llmTips.playgroundProvider}>
                   <option value="">unchanged</option>
                   {#if playProvider && !enabledProviders.some(p => p.id === playProvider)}
                     <option value={playProvider}>{playProvider} (disabled/unregistered)</option>
@@ -2488,54 +2488,54 @@ console.log(reply);` : ''
                   {/each}
                 </select>
               </label>
-              <label title={llmTips.playgroundModel}>
+              <label data-tooltip={llmTips.playgroundModel}>
                 <span>Model</span>
-                <input bind:value={playModel} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.playgroundModel} />
+                <input bind:value={playModel} placeholder="unchanged" disabled={!playUseOverrides} data-tooltip={llmTips.playgroundModel} />
               </label>
-              <label title={llmTips.temperature}>
+              <label data-tooltip={llmTips.temperature}>
                 <span>Temperature</span>
-                <input type="number" step="0.1" min="0" max="2" bind:value={playTemperature} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.temperature} />
+                <input type="number" step="0.1" min="0" max="2" bind:value={playTemperature} placeholder="unchanged" disabled={!playUseOverrides} data-tooltip={llmTips.temperature} />
               </label>
-              <label title={llmTips.topP}>
+              <label data-tooltip={llmTips.topP}>
                 <span>Top P</span>
-                <input type="number" step="0.05" min="0" max="1" bind:value={playTopP} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.topP} />
+                <input type="number" step="0.05" min="0" max="1" bind:value={playTopP} placeholder="unchanged" disabled={!playUseOverrides} data-tooltip={llmTips.topP} />
               </label>
-              <label title={llmTips.maxTokens}>
+              <label data-tooltip={llmTips.maxTokens}>
                 <span>Max tokens</span>
-                <input type="number" min="1" bind:value={playMaxTokens} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.maxTokens} />
+                <input type="number" min="1" bind:value={playMaxTokens} placeholder="unchanged" disabled={!playUseOverrides} data-tooltip={llmTips.maxTokens} />
               </label>
-              <label title={llmTips.maxTurns}>
+              <label data-tooltip={llmTips.maxTurns}>
                 <span>Max turns</span>
-                <input type="number" min="1" max="100" bind:value={playMaxTurns} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.maxTurns} />
+                <input type="number" min="1" max="100" bind:value={playMaxTurns} placeholder="unchanged" disabled={!playUseOverrides} data-tooltip={llmTips.maxTurns} />
               </label>
-              <label title={llmTips.responseFormat}>
+              <label data-tooltip={llmTips.responseFormat}>
                 <span>Format</span>
-                <select bind:value={playResponseFormat} disabled={!playUseOverrides} title={llmTips.responseFormat}>
+                <select bind:value={playResponseFormat} disabled={!playUseOverrides} data-tooltip={llmTips.responseFormat}>
                   <option value="">unchanged</option>
                   <option value="json">json</option>
                   <option value="json_schema">json_schema</option>
                 </select>
               </label>
-              <label title={llmTips.reasoningEffort}>
+              <label data-tooltip={llmTips.reasoningEffort}>
                 <span>Reasoning</span>
-                <select bind:value={playReasoningEffort} disabled={!playUseOverrides} title={llmTips.reasoningEffort}>
+                <select bind:value={playReasoningEffort} disabled={!playUseOverrides} data-tooltip={llmTips.reasoningEffort}>
                   <option value="">unchanged</option>
                   <option value="low">low</option>
                   <option value="medium">medium</option>
                   <option value="high">high</option>
                 </select>
               </label>
-              <label title={llmTips.presencePenalty}>
+              <label data-tooltip={llmTips.presencePenalty}>
                 <span>Presence</span>
-                <input type="number" step="0.1" min="-2" max="2" bind:value={playPresencePenalty} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.presencePenalty} />
+                <input type="number" step="0.1" min="-2" max="2" bind:value={playPresencePenalty} placeholder="unchanged" disabled={!playUseOverrides} data-tooltip={llmTips.presencePenalty} />
               </label>
-              <label title={llmTips.frequencyPenalty}>
+              <label data-tooltip={llmTips.frequencyPenalty}>
                 <span>Frequency</span>
-                <input type="number" step="0.1" min="-2" max="2" bind:value={playFrequencyPenalty} placeholder="unchanged" disabled={!playUseOverrides} title={llmTips.frequencyPenalty} />
+                <input type="number" step="0.1" min="-2" max="2" bind:value={playFrequencyPenalty} placeholder="unchanged" disabled={!playUseOverrides} data-tooltip={llmTips.frequencyPenalty} />
               </label>
-              <label title={llmTips.toolChoice}>
+              <label data-tooltip={llmTips.toolChoice}>
                 <span>Tool choice</span>
-                <input bind:value={playToolChoice} placeholder="auto, none, required, tool name" disabled={!playUseOverrides} title={llmTips.toolChoice} />
+                <input bind:value={playToolChoice} placeholder="auto, none, required, tool name" disabled={!playUseOverrides} data-tooltip={llmTips.toolChoice} />
               </label>
             </div>
           </div>
@@ -2923,7 +2923,7 @@ console.log(reply);` : ''
       {:else}
         <div class="yaml-tools">
           <span class="yaml-tools-label">Insert:</span>
-          <select bind:value={execBackendChoice} class="yaml-select" title="Execution backend">
+          <select bind:value={execBackendChoice} class="yaml-select" data-tooltip="Execution backend">
             <option value="">execution backend…</option>
             <option value="local">local</option>
             <option value="docker">docker</option>

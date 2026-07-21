@@ -819,4 +819,33 @@
   .login-submit:disabled { opacity: 0.55; cursor: not-allowed; }
   .login-hint { margin-top: 0.8rem; font-size: 0.72rem; line-height: 1.5; color: hsl(240, 12%, 60%); text-align: center; }
   .login-hint code { background: hsla(240, 30%, 12%, 0.7); padding: 0.05rem 0.3rem; border-radius: 4px; font-size: 0.7rem; }
+
+  /* ── Custom Tooltips ────────────────────────────────────────────────────── */
+  :global([data-tooltip]) {
+    position: relative;
+  }
+  :global([data-tooltip]::after) {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 125%;
+    left: 50%;
+    transform: translateX(-50%) scale(0.95);
+    background: #0f1123;
+    color: #dfe2ff;
+    padding: 6px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(126, 92, 255, 0.4);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+    font-size: 11px;
+    font-family: 'Inter', sans-serif;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    z-index: 10000;
+  }
+  :global([data-tooltip]:hover::after) {
+    opacity: 1;
+    transform: translateX(-50%) scale(1);
+  }
 </style>

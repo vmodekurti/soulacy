@@ -552,25 +552,25 @@
 
           <div class="field-row">
             <div class="field">
-              <label for="studio-provider" title="Provider used when Studio turns natural-language requests into workflows. Leave blank to use the default provider.">Studio builder — provider</label>
+              <label for="studio-provider" data-tooltip="Provider used when Studio turns natural-language requests into workflows. Leave blank to use the default provider.">Studio builder — provider</label>
               <select id="studio-provider" bind:value={studioProvider} disabled={!writable}
-                      title="Provider used when Studio turns natural-language requests into workflows. Leave blank to use the default provider."
+                      data-tooltip="Provider used when Studio turns natural-language requests into workflows. Leave blank to use the default provider."
                       on:change={() => pickProviderDefault(effectiveRoleProvider(studioProvider), (m) => studioModel = m)}>
                 <option value="">— use default —</option>
                 {#each providerOptions as p}<option value={p}>{p}</option>{/each}
               </select>
             </div>
             <div class="field">
-              <label for="studio-model" title="Model Studio uses for prompt refinement, workflow generation, and repair. Stronger models usually produce better workflow graphs.">
+              <label for="studio-model" data-tooltip="Model Studio uses for prompt refinement, workflow generation, and repair. Stronger models usually produce better workflow graphs.">
                 Studio model
                 {#if modelsLoading[effectiveRoleProvider(studioProvider)]}
                   <span class="inline-status">loading…</span>
                 {:else if modelsError[effectiveRoleProvider(studioProvider)]}
-                  <span class="inline-error" title={modelsError[effectiveRoleProvider(studioProvider)]}>models unavailable</span>
+                  <span class="inline-error" data-tooltip={modelsError[effectiveRoleProvider(studioProvider)]}>models unavailable</span>
                 {/if}
               </label>
               <select id="studio-model" bind:value={studioModel} disabled={!writable}
-                      title="Model Studio uses for prompt refinement, workflow generation, and repair. Stronger models usually produce better workflow graphs.">
+                      data-tooltip="Model Studio uses for prompt refinement, workflow generation, and repair. Stronger models usually produce better workflow graphs.">
                 <option value="">— provider default —</option>
                 {#each modelOptions(effectiveRoleProvider(studioProvider), studioModel) as m (m)}
                   <option value={m}>{m}</option>
@@ -585,25 +585,25 @@
 
           <div class="field-row">
             <div class="field">
-              <label for="reasoner-provider" title="Provider used by ReAct and Plan-Execute control loops. Pick a reliable structured-output model for tool-heavy agents.">Reasoner (ReAct / Plan-Execute) — provider</label>
+              <label for="reasoner-provider" data-tooltip="Provider used by ReAct and Plan-Execute control loops. Pick a reliable structured-output model for tool-heavy agents.">Reasoner (ReAct / Plan-Execute) — provider</label>
               <select id="reasoner-provider" bind:value={reasonerProvider} disabled={!writable}
-                      title="Provider used by ReAct and Plan-Execute control loops. Pick a reliable structured-output model for tool-heavy agents."
+                      data-tooltip="Provider used by ReAct and Plan-Execute control loops. Pick a reliable structured-output model for tool-heavy agents."
                       on:change={() => pickProviderDefault(effectiveRoleProvider(reasonerProvider), (m) => reasonerModel = m)}>
                 <option value="">— use default —</option>
                 {#each providerOptions as p}<option value={p}>{p}</option>{/each}
               </select>
             </div>
             <div class="field">
-              <label for="reasoner-model" title="Model used for internal thinking, planning, and final reflection. Lower-latency models are fine if they follow JSON reliably.">
+              <label for="reasoner-model" data-tooltip="Model used for internal thinking, planning, and final reflection. Lower-latency models are fine if they follow JSON reliably.">
                 Reasoner model
                 {#if modelsLoading[effectiveRoleProvider(reasonerProvider)]}
                   <span class="inline-status">loading…</span>
                 {:else if modelsError[effectiveRoleProvider(reasonerProvider)]}
-                  <span class="inline-error" title={modelsError[effectiveRoleProvider(reasonerProvider)]}>models unavailable</span>
+                  <span class="inline-error" data-tooltip={modelsError[effectiveRoleProvider(reasonerProvider)]}>models unavailable</span>
                 {/if}
               </label>
               <select id="reasoner-model" bind:value={reasonerModel} disabled={!writable}
-                      title="Model used for internal thinking, planning, and final reflection. Lower-latency models are fine if they follow JSON reliably.">
+                      data-tooltip="Model used for internal thinking, planning, and final reflection. Lower-latency models are fine if they follow JSON reliably.">
                 <option value="">— provider default —</option>
                 {#each modelOptions(effectiveRoleProvider(reasonerProvider), reasonerModel) as m (m)}
                   <option value={m}>{m}</option>
@@ -646,15 +646,15 @@
           </p>
           <div class="budget-row">
             <label class="field cost-rate">
-              <span title="Maximum estimated spend allowed over a rolling 24-hour window. Set 0 to disable this budget.">Daily budget</span>
+              <span data-tooltip="Maximum estimated spend allowed over a rolling 24-hour window. Set 0 to disable this budget.">Daily budget</span>
               <input type="number" step="0.01" min="0" bind:value={dailyBudgetUSD} placeholder="0.00" disabled={!writable} />
             </label>
             <label class="field cost-rate">
-              <span title="Maximum estimated spend allowed over a rolling 30-day window. Set 0 to disable this budget.">Monthly budget</span>
+              <span data-tooltip="Maximum estimated spend allowed over a rolling 30-day window. Set 0 to disable this budget.">Monthly budget</span>
               <input type="number" step="0.01" min="0" bind:value={monthlyBudgetUSD} placeholder="0.00" disabled={!writable} />
             </label>
             <label class="field cost-rate">
-              <span title="Fraction of a budget that should show warning status. 0.8 means warn at 80% of budget.">Alert threshold</span>
+              <span data-tooltip="Fraction of a budget that should show warning status. 0.8 means warn at 80% of budget.">Alert threshold</span>
               <input type="number" step="0.05" min="0.01" max="1" bind:value={costAlertThreshold} placeholder="0.80" disabled={!writable} />
             </label>
           </div>
@@ -664,19 +664,19 @@
           {#each costRows as row, idx}
             <div class="cost-row">
               <label class="field cost-selector">
-                <span title="Pricing selector. Use provider/model for exact pricing, provider/* for a provider default, or */model for a shared model default.">Selector</span>
+                <span data-tooltip="Pricing selector. Use provider/model for exact pricing, provider/* for a provider default, or */model for a shared model default.">Selector</span>
                 <input bind:value={row.selector} placeholder="openai/gpt-4.1-mini or omniroute/*" disabled={!writable} />
               </label>
               <label class="field cost-rate">
-                <span title="USD charged per 1 million prompt/input tokens. Leave 0 for local or prepaid providers.">Input $/M</span>
+                <span data-tooltip="USD charged per 1 million prompt/input tokens. Leave 0 for local or prepaid providers.">Input $/M</span>
                 <input type="number" step="0.0001" min="0" bind:value={row.input} placeholder="0.00" disabled={!writable} />
               </label>
               <label class="field cost-rate">
-                <span title="USD charged per 1 million completion/output tokens. Output is often more expensive than input.">Output $/M</span>
+                <span data-tooltip="USD charged per 1 million completion/output tokens. Output is often more expensive than input.">Output $/M</span>
                 <input type="number" step="0.0001" min="0" bind:value={row.output} placeholder="0.00" disabled={!writable} />
               </label>
               {#if writable}
-                <button class="link-danger cost-del" title="Remove pricing row" on:click={() => removeCostRow(idx)}>✕</button>
+                <button class="link-danger cost-del" data-tooltip="Remove pricing row" on:click={() => removeCostRow(idx)}>✕</button>
               {/if}
             </div>
           {/each}
@@ -693,39 +693,39 @@
           </p>
           <div class="slo-row">
             <label class="field">
-              <span title="Durable run-history window used for SLO checks. Examples: 24h, 7d, or 2026-07-01.">Window</span>
+              <span data-tooltip="Durable run-history window used for SLO checks. Examples: 24h, 7d, or 2026-07-01.">Window</span>
               <input bind:value={sloWindow} placeholder="24h" disabled={!writable} />
             </label>
             <label class="field">
-              <span title="Maximum allowed failed-run percentage in the SLO window. 0.10 means 10%.">Max failure rate</span>
+              <span data-tooltip="Maximum allowed failed-run percentage in the SLO window. 0.10 means 10%.">Max failure rate</span>
               <input type="number" min="0" max="1" step="0.01" bind:value={sloMaxFailureRate} disabled={!writable} />
             </label>
             <label class="field">
-              <span title="Maximum allowed incomplete-run percentage in the SLO window. Incomplete runs usually mean timeouts, crashes, or missing final replies.">Max incomplete rate</span>
+              <span data-tooltip="Maximum allowed incomplete-run percentage in the SLO window. Incomplete runs usually mean timeouts, crashes, or missing final replies.">Max incomplete rate</span>
               <input type="number" min="0" max="1" step="0.01" bind:value={sloMaxIncompleteRate} disabled={!writable} />
             </label>
           </div>
           <div class="slo-row compact">
             <label class="field">
-              <span title="Maximum acceptable P95 run duration. Use Go duration syntax such as 90s, 5m, or 1h.">P95 run duration</span>
+              <span data-tooltip="Maximum acceptable P95 run duration. Use Go duration syntax such as 90s, 5m, or 1h.">P95 run duration</span>
               <input bind:value={sloMaxP95RunDuration} placeholder="5m" disabled={!writable} />
             </label>
             <label class="field">
-              <span title="Minimum number of recent runs before the SLO signal is treated as reliable instead of sample-starved.">Minimum runs</span>
+              <span data-tooltip="Minimum number of recent runs before the SLO signal is treated as reliable instead of sample-starved.">Minimum runs</span>
               <input type="number" min="1" max="1000" step="1" bind:value={sloMinRunsForSignal} disabled={!writable} />
             </label>
           </div>
           <div class="slo-row compact">
             <label class="field">
-              <span title="Channel adapter used for production alerts when budget or SLO posture reaches the selected threshold. Examples: telegram, slack, discord, webhook.">Alert channel</span>
+              <span data-tooltip="Channel adapter used for production alerts when budget or SLO posture reaches the selected threshold. Examples: telegram, slack, discord, webhook.">Alert channel</span>
               <input bind:value={opsAlertChannel} placeholder="telegram" disabled={!writable} />
             </label>
             <label class="field">
-              <span title="Destination for alert messages. Use a Telegram chat ID, Slack channel ID, Discord channel ID, or webhook destination depending on the channel.">Alert destination</span>
+              <span data-tooltip="Destination for alert messages. Use a Telegram chat ID, Slack channel ID, Discord channel ID, or webhook destination depending on the channel.">Alert destination</span>
               <input bind:value={opsAlertTo} placeholder="-1001234567890" disabled={!writable} />
             </label>
             <label class="field">
-              <span title="warn sends alerts for warning and failure posture; fail sends only when a budget or SLO check is failing.">Alert threshold</span>
+              <span data-tooltip="warn sends alerts for warning and failure posture; fail sends only when a budget or SLO check is failing.">Alert threshold</span>
               <select bind:value={opsAlertMinStatus} disabled={!writable}>
                 <option value="fail">fail only</option>
                 <option value="warn">warn or fail</option>
@@ -742,9 +742,9 @@
           </p>
           <div class="field-row">
             <div class="field">
-              <label for="deployment-profile" title="Select local, development, staging, or production. Production enables strict launch blockers; local/development keep checks advisory.">Profile</label>
+              <label for="deployment-profile" data-tooltip="Select local, development, staging, or production. Production enables strict launch blockers; local/development keep checks advisory.">Profile</label>
               <select id="deployment-profile" bind:value={deploymentProfile} disabled={!writable}
-                      title="Select local, development, staging, or production. Production enables strict launch blockers; local/development keep checks advisory.">
+                      data-tooltip="Select local, development, staging, or production. Production enables strict launch blockers; local/development keep checks advisory.">
                 <option value="local">local</option>
                 <option value="development">development</option>
                 <option value="staging">staging</option>
@@ -752,22 +752,22 @@
               </select>
             </div>
             <div class="field">
-              <label for="deployment-owner" title="Team or person accountable for this workspace in production readiness reports.">Owner</label>
+              <label for="deployment-owner" data-tooltip="Team or person accountable for this workspace in production readiness reports.">Owner</label>
               <input id="deployment-owner" bind:value={deploymentOwner} placeholder="platform-team" disabled={!writable}
-                     title="Team or person accountable for this workspace in production readiness reports." />
+                     data-tooltip="Team or person accountable for this workspace in production readiness reports." />
             </div>
             <div class="field">
-              <label for="deployment-region" title="Primary region, environment, or customer location for this workspace.">Region</label>
+              <label for="deployment-region" data-tooltip="Primary region, environment, or customer location for this workspace.">Region</label>
               <input id="deployment-region" bind:value={deploymentRegion} placeholder="us-central" disabled={!writable}
-                     title="Primary region, environment, or customer location for this workspace." />
+                     data-tooltip="Primary region, environment, or customer location for this workspace." />
             </div>
           </div>
           <div class="field">
-            <label for="deployment-notes" title="Optional context shown in config and deployment diagnostics.">Notes</label>
+            <label for="deployment-notes" data-tooltip="Optional context shown in config and deployment diagnostics.">Notes</label>
             <textarea id="deployment-notes" bind:value={deploymentNotes} rows="2"
                       placeholder="Customer-facing workspace, staging burn-in, local demo, etc."
                       disabled={!writable}
-                      title="Optional context shown in config and deployment diagnostics."></textarea>
+                      data-tooltip="Optional context shown in config and deployment diagnostics."></textarea>
           </div>
         </div>
 
@@ -787,7 +787,7 @@
           <div class="field">
             <label for="intent-gate-mode">Intent gate mode</label>
             <div class="intent-gate-radio">
-              <label class:on={securityIntentGate === 'off'}>
+              <label class:on={securityIntentGate === 'off'} data-tooltip="Warning: Disables all injection safeguards on tool calls">
                 <input type="radio" name="intent-gate-mode" value="off"
                        bind:group={securityIntentGate} disabled={!writable} />
                 <div>
@@ -796,7 +796,7 @@
                   injection-driven tool escalation.</span>
                 </div>
               </label>
-              <label class:on={!securityIntentGate || securityIntentGate === '' || securityIntentGate === 'prompt'}>
+              <label class:on={!securityIntentGate || securityIntentGate === '' || securityIntentGate === 'prompt'} data-tooltip="Standard security confirmation prompt for high-risk calls">
                 <input type="radio" name="intent-gate-mode" value="prompt"
                        bind:group={securityIntentGate} disabled={!writable} />
                 <div>
@@ -806,7 +806,7 @@
                   bound channel.</span>
                 </div>
               </label>
-              <label class:on={securityIntentGate === 'deny'}>
+              <label class:on={securityIntentGate === 'deny'} data-tooltip="Recommended: Rejects any risky tool call under active injection">
                 <input type="radio" name="intent-gate-mode" value="deny"
                        bind:group={securityIntentGate} disabled={!writable} />
                 <div>
@@ -849,7 +849,7 @@
               <input id="max-sessions" type="number" bind:value={maxSessions} min="1" max="1000" disabled={!writable} />
             </div>
             <div class="field">
-              <label for="max-agent-call-depth" title="Caps recursive peer-agent delegation chains. Raise for deeper coordinator teams; lower to stop accidental loops sooner. Default is 5.">Max agent-call depth</label>
+              <label for="max-agent-call-depth" data-tooltip="Caps recursive peer-agent delegation chains. Raise for deeper coordinator teams; lower to stop accidental loops sooner. Default is 5.">Max agent-call depth</label>
               <input id="max-agent-call-depth" type="number" bind:value={maxAgentCallDepth} min="1" max="50" disabled={!writable} />
             </div>
           </div>
@@ -887,7 +887,7 @@
 
           <div class="field-row">
             <div class="field">
-              <label for="executor-backend" title="Default backend for Python tools. Agents can override it per tool with execution.backend when needed.">Default backend</label>
+              <label for="executor-backend" data-tooltip="Default backend for Python tools. Agents can override it per tool with execution.backend when needed.">Default backend</label>
               <select id="executor-backend" bind:value={executorBackend} disabled={!writable}>
                 <option value="process">process — fresh local process</option>
                 <option value="pool">pool — warm local workers</option>
@@ -896,50 +896,50 @@
               </select>
             </div>
             <div class="field">
-              <label for="executor-workers" title="Number of warm local Python workers used by pool mode. Higher values improve concurrency but consume memory.">Pool workers</label>
+              <label for="executor-workers" data-tooltip="Number of warm local Python workers used by pool mode. Higher values improve concurrency but consume memory.">Pool workers</label>
               <input id="executor-workers" type="number" bind:value={executorWorkers} min="1" max="64" disabled={!writable} />
             </div>
           </div>
 
           <div class="field-row">
             <div class="field">
-              <label for="docker-image" title="Container image used by docker execution. Keep it pinned for production repeatability.">Docker image</label>
+              <label for="docker-image" data-tooltip="Container image used by docker execution. Keep it pinned for production repeatability.">Docker image</label>
               <input id="docker-image" bind:value={dockerImage} placeholder="python:3.12-slim" disabled={!writable} />
             </div>
             <div class="field">
-              <label for="docker-network" title="Docker network mode. Use none for safer sandboxing, bridge only when tools need outbound network access.">Docker network</label>
+              <label for="docker-network" data-tooltip="Docker network mode. Use none for safer sandboxing, bridge only when tools need outbound network access.">Docker network</label>
               <input id="docker-network" bind:value={dockerNetwork} placeholder="none" disabled={!writable} />
             </div>
           </div>
           <div class="field">
-            <label for="docker-volumes" title="Explicit Docker volume allowlist, one mount per line as host:container[:ro]. Empty means no host paths are mounted.">Docker volume allowlist</label>
+            <label for="docker-volumes" data-tooltip="Explicit Docker volume allowlist, one mount per line as host:container[:ro]. Empty means no host paths are mounted.">Docker volume allowlist</label>
             <textarea id="docker-volumes" bind:value={dockerVolumes} rows="2" placeholder="/safe/data:/data:ro" disabled={!writable}></textarea>
           </div>
 
           <div class="field-row">
             <div class="field">
-              <label for="ssh-host" title="Remote host for SSH execution. Use host or user@host.">SSH host</label>
+              <label for="ssh-host" data-tooltip="Remote host for SSH execution. Use host or user@host.">SSH host</label>
               <input id="ssh-host" bind:value={sshHost} placeholder="worker.example.com" disabled={!writable} />
             </div>
             <div class="field">
-              <label for="ssh-user" title="Optional SSH username when it is not included in SSH host.">SSH user</label>
+              <label for="ssh-user" data-tooltip="Optional SSH username when it is not included in SSH host.">SSH user</label>
               <input id="ssh-user" bind:value={sshUser} placeholder="ubuntu" disabled={!writable} />
             </div>
           </div>
           <div class="field-row">
             <div class="field">
-              <label for="ssh-python-bin" title="Python executable on the remote host.">SSH Python binary</label>
+              <label for="ssh-python-bin" data-tooltip="Python executable on the remote host.">SSH Python binary</label>
               <input id="ssh-python-bin" bind:value={sshPythonBin} placeholder="python3" disabled={!writable} />
             </div>
             <div class="field">
-              <label for="ssh-identity-credential" title="Name of a vault secret containing the SSH private key. Prefer this over raw key paths.">SSH identity credential</label>
+              <label for="ssh-identity-credential" data-tooltip="Name of a vault secret containing the SSH private key. Prefer this over raw key paths.">SSH identity credential</label>
               <input id="ssh-identity-credential" bind:value={sshIdentityCredential} placeholder="remote-worker-key" disabled={!writable} />
             </div>
           </div>
 
           <div class="field-row">
             <div class="field">
-              <label for="cloud-preset" title="Optional cloud execution preset. The provider CLI must already be installed and authenticated on this host.">Cloud preset</label>
+              <label for="cloud-preset" data-tooltip="Optional cloud execution preset. The provider CLI must already be installed and authenticated on this host.">Cloud preset</label>
               <select id="cloud-preset" bind:value={cloudPreset} disabled={!writable}>
                 <option value="">— none —</option>
                 <option value="modal">modal</option>
@@ -948,12 +948,12 @@
               </select>
             </div>
             <div class="field">
-              <label for="cloud-target" title="Provider-specific cloud target such as a workspace, app, image, or pod id.">Cloud target</label>
+              <label for="cloud-target" data-tooltip="Provider-specific cloud target such as a workspace, app, image, or pod id.">Cloud target</label>
               <input id="cloud-target" bind:value={cloudTarget} placeholder="workspace/app/pod id" disabled={!writable} />
             </div>
           </div>
           <div class="field">
-            <label for="cloud-cli" title="Optional CLI binary override for the selected cloud preset. Leave blank to use the default CLI name.">Cloud CLI override</label>
+            <label for="cloud-cli" data-tooltip="Optional CLI binary override for the selected cloud preset. Leave blank to use the default CLI name.">Cloud CLI override</label>
             <input id="cloud-cli" bind:value={cloudCLI} placeholder="modal, runpodctl, or daytona" disabled={!writable} />
           </div>
         </div>
@@ -962,7 +962,7 @@
           <h2 class="section-title">Logging</h2>
           <div class="field-row">
             <div class="field">
-              <label for="log-level">Level</label>
+              <label for="log-level" data-tooltip="Set details level for gateway execution logs">Level</label>
               <select id="log-level" bind:value={logLevel} disabled={!writable}>
                 <option value="debug">debug</option>
                 <option value="info">info</option>
@@ -1029,7 +1029,7 @@
                     <input type="text" class="kv-val" placeholder="value (JSON for objects/numbers)"
                            bind:value={row.value} disabled={!writable} />
                     {#if writable}
-                      <button class="link-danger kv-del" title="Remove key"
+                      <button class="link-danger kv-del" data-tooltip="Remove key"
                               on:click={() => removeRow(pid, idx)}>✕</button>
                     {/if}
                   </div>
@@ -1069,7 +1069,7 @@
           <div class="section-heading">
             <h2 class="section-title">Admin audit</h2>
             <button class="btn-secondary tiny-btn" on:click={loadAdminAudit} disabled={auditLoading}
-                    title="Refresh the recent config, channel, secret, and gateway restart mutations recorded in the durable action log.">
+                    data-tooltip="Refresh the recent config, channel, secret, and gateway restart mutations recorded in the durable action log.">
               {auditLoading ? 'Loading…' : 'Refresh'}
             </button>
           </div>
