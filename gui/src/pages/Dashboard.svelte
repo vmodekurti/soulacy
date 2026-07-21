@@ -25,6 +25,10 @@
   // requires the richer /security/readiness payload.
   let securityReadiness = null
 
+  let updateInfo = null
+  let upgrading = false
+  let upgradeMessage = ''
+
   const EVENT_FILTERS = [
     { id: 'all', label: 'All' },
     { id: 'errors', label: 'Errors' },
@@ -73,12 +77,36 @@
       ops = null
       opsError = e.status === 503 ? 'Run reliability needs durable action logging.' : (e.message || 'Run reliability unavailable.')
     }
+    try {
+      updateInfo = await api.updates.status()
+    } catch {
+      updateInfo = null
+    }
+  }
+
+  async function startUpgrade() {
+    if (!confirm(`Are you sure you want to upgrade to ${updateInfo.latest_version}? The gateway will restart automatically.`)) {
+      return
+    }
+    upgrading = true
+    upgradeMessage = 'Downloading and installing the update...'
+    try {
+      const res = await api.updates.upgrade()
+      upgradeMessage = res.message || 'Upgrade complete. Waiting for server to restart...'
+      setTimeout(() => {
+        window.location.reload()
+      }, 5000)
+    } catch (e) {
+      upgrading = false
+      alert('Upgrade failed: ' + (e.message || e))
+    }
   }
 
   function dismiss(s) {
     dismissed.add(s.kind + ':' + s.agent_id)
     suggestions = suggestions.filter(x => x !== s)
   }
+
 
   function connectWS() {
     try { ws = createEventSocket() } catch { return }
@@ -262,6 +290,28 @@
       {:else}
         ⚠ {error}
       {/if}
+    </div>
+  {/if}
+
+  {#if updateInfo && updateInfo.update_available}
+    <div class="update-banner">
+      <div class="update-banner-icon">✨</div>
+      <div class="update-banner-content">
+        <strong>Update Available</strong>
+        <span>Soulacy {updateInfo.latest_version} is available! (Current: {updateInfo.current_version}).</span>
+      </div>
+      <div class="update-banner-actions">
+        <button class="btn-primary btn-sm" on:click={startUpgrade}>Upgrade Now</button>
+        <button class="btn-secondary btn-sm" on:click={() => window.open("https://github.com/vmodekurti/soulacy/releases/latest", "_blank")}>View Release Notes</button>
+      </div>
+    </div>
+  {/if}
+
+  {#if upgrading}
+    <div class="upgrading-overlay">
+      <div class="upgrading-spinner"></div>
+      <div class="upgrading-text">Upgrading Soulacy...</div>
+      <div class="upgrading-subtext">{upgradeMessage}</div>
     </div>
   {/if}
 
@@ -857,7 +907,86 @@
   .log-type  { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .log-agent { color: #6c63ff; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .log-data  { color: #6b7294; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .empty     { padding: 2.5rem 1rem; text-align: center; color: #6b7294; }
+  .update-banner {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 16px 24px;
+    margin-bottom: 24px;
+    background: linear-gradient(135deg, rgba(126, 92, 255, 0.12), rgba(34, 196, 122, 0.12));
+    border: 1px solid rgba(126, 92, 255, 0.35);
+    border-radius: 12px;
+    box-shadow: 0 8px 32px 0 rgba(126, 92, 255, 0.06);
+    backdrop-filter: blur(8px);
+    animation: fadeIn 0.4s ease-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .update-banner-icon {
+    font-size: 22px;
+  }
+  .update-banner-content {
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .update-banner-content strong {
+    font-size: 15px;
+    color: #fff;
+  }
+  .update-banner-content span {
+    font-size: 13px;
+    color: #a0aec0;
+  }
+  .update-banner-actions {
+    display: flex;
+    gap: 12px;
+  }
+  .btn-sm {
+    padding: 6px 14px;
+    font-size: 12px;
+  }
+  .upgrading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(10, 10, 15, 0.9);
+    backdrop-filter: blur(16px);
+    z-index: 10000;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: white;
+  }
+  .upgrading-spinner {
+    width: 60px;
+    height: 60px;
+    border: 4px solid rgba(255, 255, 255, 0.1);
+    border-top: 4px solid #7e5cff;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    margin-bottom: 24px;
+  }
+  @keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+  }
+  .upgrading-text {
+    font-size: 20px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    letter-spacing: -0.02em;
+  }
+  .upgrading-subtext {
+    font-size: 13px;
+    color: #8a91b8;
+  }
 
   @media (max-width: 640px) {
     /* Event log: time+type on row 1, agent+data on row 2 */

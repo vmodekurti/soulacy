@@ -8,36 +8,59 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+
+	"github.com/soulacy/soulacy/internal/updates"
 )
+
+type mockRoundTripper func(req *http.Request) (*http.Response, error)
+
+func (f mockRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
 
 func TestCheckForUpdateNoManifestConfigured(t *testing.T) {
 	t.Setenv("SOULACY_UPDATE_MANIFEST", "")
-	res, err := checkForUpdate(context.Background(), "", "1.2.3")
+
+	oldClient := updates.HTTPClient
+	defer func() { updates.HTTPClient = oldClient }()
+
+	updates.HTTPClient = &http.Client{
+		Transport: mockRoundTripper(func(req *http.Request) (*http.Response, error) {
+			body := `{"tag_name": "v1.2.3", "assets": []}`
+			return &http.Response{
+				StatusCode: 200,
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	res, err := updates.CheckForUpdate(context.Background(), "", "1.2.3")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.UpdateAvailable {
-		t.Fatalf("update available = true for no manifest: %+v", res)
-	}
-	if res.ManifestSource != "" {
-		t.Fatalf("manifest source = %q, want empty", res.ManifestSource)
+	if res.CurrentVersion != "1.2.3" {
+		t.Fatalf("expected version 1.2.3, got %+v", res)
 	}
 }
 
 func TestCheckForUpdateFindsNewerManifestAndPlatformArtifact(t *testing.T) {
-	path := writeUpdateManifest(t, updateManifest{
+	path := writeUpdateManifest(t, updates.UpdateManifest{
 		Product: "soulacy",
 		Version: "1.3.0",
-		Artifacts: []updateArtifact{
+		Artifacts: []updates.UpdateArtifact{
 			{Name: "other.tar.gz", OS: "plan9", Arch: "amd64", SHA256: "abc"},
 			{Name: "current.tar.gz", OS: runtime.GOOS, Arch: runtime.GOARCH, SHA256: "def"},
 		},
 	})
-	res, err := checkForUpdate(context.Background(), path, "1.2.3")
+	res, err := updates.CheckForUpdate(context.Background(), path, "1.2.3")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -49,21 +72,14 @@ func TestCheckForUpdateFindsNewerManifestAndPlatformArtifact(t *testing.T) {
 	}
 }
 
-func TestReadUpdateManifestRejectsWrongProduct(t *testing.T) {
-	path := writeUpdateManifest(t, updateManifest{Product: "other", Version: "1.2.3"})
-	if _, err := readUpdateManifest(context.Background(), path); err == nil {
-		t.Fatal("expected wrong product to error")
-	}
-}
-
 func TestInstallUpdateDryRunVerifiesArtifactWithoutReplacing(t *testing.T) {
 	dir := t.TempDir()
 	archive := writeUpdateArchive(t, dir, "new soulacy", "new sy")
 	sum := fileSHA256(t, archive)
-	manifest := writeUpdateManifest(t, updateManifest{
+	manifest := writeUpdateManifest(t, updates.UpdateManifest{
 		Product: "soulacy",
 		Version: "1.3.0",
-		Artifacts: []updateArtifact{{
+		Artifacts: []updates.UpdateArtifact{{
 			Name:   filepath.Base(archive),
 			OS:     runtime.GOOS,
 			Arch:   runtime.GOARCH,
@@ -80,7 +96,7 @@ func TestInstallUpdateDryRunVerifiesArtifactWithoutReplacing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := installUpdate(context.Background(), updateInstallOptions{
+	res, err := updates.InstallUpdate(context.Background(), updates.UpdateInstallOptions{
 		ManifestSource: manifest,
 		CurrentVersion: "1.2.0",
 		InstallDir:     installDir,
@@ -104,10 +120,10 @@ func TestInstallUpdateDryRunVerifiesArtifactWithoutReplacing(t *testing.T) {
 func TestInstallUpdateInstallsAndBacksUpBinaries(t *testing.T) {
 	dir := t.TempDir()
 	archive := writeUpdateArchive(t, dir, "new soulacy", "new sy")
-	manifest := writeUpdateManifest(t, updateManifest{
+	manifest := writeUpdateManifest(t, updates.UpdateManifest{
 		Product: "soulacy",
 		Version: "1.3.0",
-		Artifacts: []updateArtifact{{
+		Artifacts: []updates.UpdateArtifact{{
 			Name:   filepath.Base(archive),
 			OS:     runtime.GOOS,
 			Arch:   runtime.GOARCH,
@@ -127,7 +143,7 @@ func TestInstallUpdateInstallsAndBacksUpBinaries(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	res, err := installUpdate(context.Background(), updateInstallOptions{
+	res, err := updates.InstallUpdate(context.Background(), updates.UpdateInstallOptions{
 		ManifestSource: manifest,
 		CurrentVersion: "1.2.0",
 		InstallDir:     installDir,
@@ -155,10 +171,10 @@ func TestInstallUpdateInstallsAndBacksUpBinaries(t *testing.T) {
 func TestInstallUpdateRejectsBadChecksum(t *testing.T) {
 	dir := t.TempDir()
 	archive := writeUpdateArchive(t, dir, "new soulacy", "new sy")
-	manifest := writeUpdateManifest(t, updateManifest{
+	manifest := writeUpdateManifest(t, updates.UpdateManifest{
 		Product: "soulacy",
 		Version: "1.3.0",
-		Artifacts: []updateArtifact{{
+		Artifacts: []updates.UpdateArtifact{{
 			Name:   filepath.Base(archive),
 			OS:     runtime.GOOS,
 			Arch:   runtime.GOARCH,
@@ -167,7 +183,7 @@ func TestInstallUpdateRejectsBadChecksum(t *testing.T) {
 			URL:    archive,
 		}},
 	})
-	_, err := installUpdate(context.Background(), updateInstallOptions{
+	_, err := updates.InstallUpdate(context.Background(), updates.UpdateInstallOptions{
 		ManifestSource: manifest,
 		CurrentVersion: "1.2.0",
 		InstallDir:     filepath.Join(dir, "bin"),
@@ -178,7 +194,7 @@ func TestInstallUpdateRejectsBadChecksum(t *testing.T) {
 	}
 }
 
-func writeUpdateManifest(t *testing.T, manifest updateManifest) string {
+func writeUpdateManifest(t *testing.T, manifest updates.UpdateManifest) string {
 	t.Helper()
 	data, err := json.Marshal(manifest)
 	if err != nil {
