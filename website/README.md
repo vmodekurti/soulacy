@@ -38,11 +38,16 @@ Any static server works. There's no build step.
    - **Build command:** _(leave empty)_
    - **Build output directory:** `website`
    - **Root directory:** _(leave empty)_
+   - The repo also declares `pages_build_output_dir = ./website` in `wrangler.jsonc` so Pages V2 builds publish the same directory.
 4. Save & Deploy. First build takes ~10 seconds since nothing is built.
 5. Under the deployed project → Custom domains → Set up custom domain → `soulacy.io` and `www.soulacy.io`.
 6. Cloudflare will provision Let's Encrypt certs and route the apex + www.
 
 **On every push to `main`:** Cloudflare rebuilds automatically (fast — it's just copying files). Preview deploys fire on every PR.
+
+## Deploy — Cloudflare Workers static assets
+
+If a Cloudflare Workers project is also connected to this repository, keep its assets directory pointed at `website/`. The `wrangler.jsonc` file intentionally mirrors the Pages publish directory so the Workers preview and Pages preview serve the same launch site instead of the GUI source tree.
 
 ## Deploy — alternatives (if you're not using Cloudflare)
 
