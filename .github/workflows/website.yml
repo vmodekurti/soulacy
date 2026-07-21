@@ -1,0 +1,29 @@
+name: Deploy Website to Cloudflare Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "website/**"
+      - "wrangler.jsonc"
+      - ".github/workflows/website.yml"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to Cloudflare Pages
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deploy to Cloudflare Pages
+        uses: cloudflare/pages-action@v1
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          projectName: soulacy
+          directory: website
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
