@@ -8,23 +8,27 @@ edit_uri: edit/main/docs/
 theme:
   name: material
   palette:
-    - scheme: default
-      primary: deep purple
-      accent: purple
-      toggle:
-        icon: material/brightness-7
-        name: Switch to dark mode
     - scheme: slate
       primary: deep purple
       accent: purple
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
+    - scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
   font:
     text: Inter
     code: JetBrains Mono
   logo: assets/logo.svg
   favicon: assets/logo.svg
+
+extra_css:
+  - stylesheets/extra.css
+
   features:
     - navigation.tabs
     - navigation.tabs.sticky
@@ -112,10 +116,14 @@ markdown_extensions:
 
 extra:
   social:
+    - icon: fontawesome/solid/globe
+      link: https://soulacy.io
+      name: Main Website (soulacy.io)
     - icon: fontawesome/brands/github
       link: https://github.com/vmodekurti/soulacy
   version:
     provider: mike
+
 
 nav:
   - Home: index.md
