@@ -65,12 +65,25 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
  */
 export function parseMarkdown(text) {
   if (text == null || text === '') return ''
+  let str = String(text).trim()
+  if (str.startsWith('{') && str.endsWith('}')) {
+    try {
+      const parsed = JSON.parse(str)
+      if (parsed && typeof parsed.response === 'string' && parsed.response.trim() !== '') {
+        str = parsed.response.trim()
+      } else if (parsed && typeof parsed.text === 'string' && parsed.text.trim() !== '') {
+        str = parsed.text.trim()
+      } else if (parsed && typeof parsed.message === 'string' && parsed.message.trim() !== '') {
+        str = parsed.message.trim()
+      }
+    } catch (_) {}
+  }
   let html
   try {
-    html = marked.parse(String(text), { async: false })
+    html = marked.parse(str, { async: false })
   } catch (_) {
     // Never let a parse error break the bubble — fall back to escaped text.
-    return DOMPurify.sanitize(String(text))
+    return DOMPurify.sanitize(str)
   }
   return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
 }
