@@ -39,6 +39,7 @@ under "Tier 2" so the builder knows each tool's real shape.
 - R16. Every channel the agent delivers to must be configured and enabled.
 - R17. Clean Channel Delivery: Agents that deliver output to channels (Telegram, Slack, Discord, WhatsApp) MUST output ONLY final clean text. System prompts MUST explicitly instruct the agent NOT to emit internal progress commentary (e.g. "data retrieved, now composing...") or thought headers.
 - R18. Execution Strategy Selection: Always select 'auto' for standard tool-calling, conversational, and scheduled digest agents. Reserve 'react' or 'plan_execute' ONLY for open-ended, multi-stage planning tasks.
+- R19. Plain Text Formatting: Conversational and chat agents MUST output strictly as plain Markdown text. System prompts MUST instruct the agent NOT to wrap its response in a JSON object or JSON key-value pairs unless output_format is explicitly configured to json.
 
 ## Tier 2 — Tool contracts (input args + output shapes)
 
