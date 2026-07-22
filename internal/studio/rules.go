@@ -37,6 +37,8 @@ under "Tier 2" so the builder knows each tool's real shape.
 ### Scheduling & Delivery
 - R15. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
 - R16. Every channel the agent delivers to must be configured and enabled.
+- R17. Clean Channel Delivery: Agents that deliver output to channels (Telegram, Slack, Discord, WhatsApp) MUST output ONLY final clean text. System prompts MUST explicitly instruct the agent NOT to emit internal progress commentary (e.g. "data retrieved, now composing...") or thought headers.
+- R18. Execution Strategy Selection: Always select 'auto' for standard tool-calling, conversational, and scheduled digest agents. Reserve 'react' or 'plan_execute' ONLY for open-ended, multi-stage planning tasks.
 
 ## Tier 2 — Tool contracts (input args + output shapes)
 

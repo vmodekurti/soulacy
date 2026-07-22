@@ -299,13 +299,19 @@ func (b *AnthropicBackend) doComplete(ctx context.Context, payload anthropicRequ
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 // formatStepHistory renders the step trace as thought/action/observation triplets.
+// It deduplicates consecutive identical thoughts to prevent prompt context repetition loops.
 func formatStepHistory(steps []Step) string {
 	if len(steps) == 0 {
 		return "(no steps yet)"
 	}
 	var sb strings.Builder
+	var lastThought string
 	for _, s := range steps {
-		sb.WriteString(fmt.Sprintf("Thought: %s\n", s.Thought))
+		trimmedThought := strings.TrimSpace(s.Thought)
+		if trimmedThought != "" && trimmedThought != lastThought {
+			sb.WriteString(fmt.Sprintf("Thought: %s\n", trimmedThought))
+			lastThought = trimmedThought
+		}
 		if s.Action.Tool != "" {
 			sb.WriteString(fmt.Sprintf("Action: %s(%s)\n", s.Action.Tool, formatActionArgsForHistory(s.Action)))
 		}
