@@ -200,6 +200,13 @@ func fetchLatestGitHubReleaseManifest(ctx context.Context, repo string) (UpdateM
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode == http.StatusNotFound {
+		// No GitHub release has been published yet. Return a dummy manifest matching dev version.
+		return UpdateManifest{
+			Product: "soulacy",
+			Version: "dev",
+		}, nil
+	}
 	if resp.StatusCode != http.StatusOK {
 		return UpdateManifest{}, fmt.Errorf("github API: HTTP %d from %s", resp.StatusCode, urlStr)
 	}
