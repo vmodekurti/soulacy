@@ -811,14 +811,19 @@ func cloneMapAny(m map[string]any) map[string]any {
 // by the gateway and scheduler so per-agent caps apply consistently across
 // manual triggers, HTTP chat, and cron-driven runs.
 func (d *Definition) ResolvedRunTimeout(fallback time.Duration) time.Duration {
+	resolved := fallback
 	if d == nil || d.RunTimeout == "" {
-		return fallback
+		resolved = fallback
+	} else if t, err := time.ParseDuration(d.RunTimeout); err == nil && t > 0 {
+		resolved = t
 	}
-	t, err := time.ParseDuration(d.RunTimeout)
-	if err != nil || t <= 0 {
-		return fallback
+
+	if d != nil && d.Reasoning.TotalTimeout != "" {
+		if rt, err := time.ParseDuration(d.Reasoning.TotalTimeout); err == nil && rt > resolved {
+			return rt
+		}
 	}
-	return t
+	return resolved
 }
 
 // HasCapability reports whether the agent has been granted the named

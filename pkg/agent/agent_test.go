@@ -111,6 +111,17 @@ func TestResolvedRunTimeoutZero(t *testing.T) {
 	}
 }
 
+func TestResolvedRunTimeoutHonorsLongerReasoningTimeout(t *testing.T) {
+	d := &Definition{
+		RunTimeout: "10m",
+		Reasoning:  ReasoningConfig{TotalTimeout: "15m"},
+	}
+	got := d.ResolvedRunTimeout(5 * time.Minute)
+	if got != 15*time.Minute {
+		t.Errorf("reasoning timeout should extend run timeout: got %v, want 15m", got)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Clone
 // ---------------------------------------------------------------------------
@@ -290,7 +301,7 @@ func TestCloneScheduleWithOutput(t *testing.T) {
 	d := &Definition{
 		ID: "ag",
 		Schedule: &Schedule{
-			Cron: "0 9 * * *",
+			Cron:   "0 9 * * *",
 			Output: &ScheduleOutput{Channel: "telegram", To: "123"},
 		},
 	}
