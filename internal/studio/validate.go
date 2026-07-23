@@ -264,24 +264,32 @@ func Validate(draft Draft) ValidateResult {
 		Warnings: []ValidateWarning{},
 	}
 
-	if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
-		res.Ok = false
-		res.Errors = append(res.Errors, attributeFlowError(draft.Flow, err))
-		// A graph that doesn't compile: report the hard error only. Soft
-		// warnings about reachability are unreliable on an invalid graph.
-		return res
-	}
+	if !draft.IsAgent() {
+		if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
+			res.Ok = false
+			res.Errors = append(res.Errors, attributeFlowError(draft.Flow, err))
+			// A graph that doesn't compile: report the hard error only. Soft
+			// warnings about reachability are unreliable on an invalid graph.
+			return res
+		}
 
-	res.Warnings = append(res.Warnings, flowWarnings(draft.Flow)...)
+		res.Warnings = append(res.Warnings, flowWarnings(draft.Flow)...)
+		res.Warnings = append(res.Warnings, nodeTimeoutWarnings(draft.Flow)...)
+		res.Warnings = append(res.Warnings, systemToolWarnings(draft.Flow)...)
+	}
 	res.Warnings = append(res.Warnings, triggerWarnings(draft.Trigger)...)
-	res.Warnings = append(res.Warnings, nodeTimeoutWarnings(draft.Flow)...)
-	res.Warnings = append(res.Warnings, systemToolWarnings(draft.Flow)...)
 	outputErrors, outputWarnings := outputContractValidateIssues(draft)
 	if len(outputErrors) > 0 {
 		res.Ok = false
 		res.Errors = append(res.Errors, outputErrors...)
 	}
 	res.Warnings = append(res.Warnings, outputWarnings...)
+	completionErrors, completionWarnings := completionContractValidateIssues(draft)
+	if len(completionErrors) > 0 {
+		res.Ok = false
+		res.Errors = append(res.Errors, completionErrors...)
+	}
+	res.Warnings = append(res.Warnings, completionWarnings...)
 	// "Python is for data glue, not for calling tools": a python step shelling out
 	// to a CLI is a blocker when an MCP is available (use the tool), else a warning.
 	shellBlocks, shellWarns := shellSmellIssues(draft)

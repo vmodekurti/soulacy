@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/soulacy/soulacy/internal/agentprompt"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -181,16 +182,8 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	if def.Trigger == agent.TriggerCron {
 		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
 			def.Schedule = &agent.Schedule{Cron: cron}
-			if draft.Output != nil {
-				out := &agent.ScheduleOutput{
-					Channel:  strings.TrimSpace(draft.Output.Channel),
-					To:       strings.TrimSpace(draft.Output.To),
-					BotName:  strings.TrimSpace(draft.Output.BotName),
-					Template: strings.TrimSpace(draft.Output.Template),
-				}
-				if out.Channel != "" && out.To != "" {
-					def.Schedule.Output = out
-				}
+			if out := scheduleOutputFromDraft(draft.Output); out != nil {
+				def.Schedule.Output = out
 			}
 		}
 	}
@@ -214,6 +207,8 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 // drives an allowlist of tools/skills/peers dynamically.
 func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure bool) (agent.Definition, error) {
 	strategy := strings.ToLower(strings.TrimSpace(draft.Strategy))
+	reasoningCfg := reasoningConfigFor(draft, strategy)
+	runTimeout := normalizedRunTimeout(draft.RunTimeout, reasoningCfg.TotalTimeout)
 
 	def := agent.Definition{
 		ID:              id,
@@ -229,13 +224,13 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 		MaxTurns:        maxTurnsOr(draft.MaxTurns, 15),
 		Memory:          agent.MemoryPolicy{MaxTokens: 8000},
 		LLM:             llmConfigFor(draft),
-		RunTimeout:      strings.TrimSpace(draft.RunTimeout),
+		RunTimeout:      runTimeout,
 		// The reasoning loop — the whole point. No Workflow block. Studio sets
 		// sensible reasoning timeouts up front (the engine's bare defaults of
 		// 30s/step and 180s total are tuned for fast cloud calls and trip the
 		// validator as "may be too short"); plan_execute runs more steps so it
 		// gets the more generous budget. The user can still override in SOUL.yaml.
-		Reasoning:  reasoningConfigFor(draft, strategy),
+		Reasoning:  reasoningCfg,
 		Unattended: draft.Unattended,
 	}
 
@@ -277,6 +272,9 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 	if def.Trigger == agent.TriggerCron {
 		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
 			def.Schedule = &agent.Schedule{Cron: cron}
+			if out := scheduleOutputFromDraft(draft.Output); out != nil {
+				def.Schedule.Output = out
+			}
 		}
 	}
 	if acceptPrivilegedExposure && len(def.Channels) > 0 {
@@ -337,6 +335,10 @@ func reactSystemPrompt(draft Draft) string {
 		b.WriteString("\n\n")
 		b.WriteString(reactLoopGuidance)
 	}
+	if contract := completionContractPrompt(draft); contract != "" && !strings.Contains(b.String(), completionContractHeading) {
+		b.WriteString("\n\n")
+		b.WriteString(contract)
+	}
 	if t := strings.TrimSpace(draft.Intent); t != "" {
 		if goal := "Goal: " + t; !strings.Contains(b.String(), goal) {
 			b.WriteString("\n\n")
@@ -346,6 +348,25 @@ func reactSystemPrompt(draft Draft) string {
 	// Self-heal prompts that already accumulated duplicate guidance paragraphs
 	// from earlier saves: keep the first occurrence, drop the rest, tidy blanks.
 	return dedupeParagraph(b.String(), reactLoopGuidance)
+}
+
+func scheduleOutputFromDraft(out *ScheduleOutput) *agent.ScheduleOutput {
+	if out == nil {
+		return nil
+	}
+	res := &agent.ScheduleOutput{
+		Channel:  strings.TrimSpace(out.Channel),
+		To:       strings.TrimSpace(out.To),
+		BotName:  strings.TrimSpace(out.BotName),
+		Template: strings.TrimSpace(out.Template),
+	}
+	if res.Channel == "" {
+		return nil
+	}
+	if res.To == "" {
+		return nil
+	}
+	return res
 }
 
 // dedupeParagraph keeps the first occurrence of para in text and removes every
@@ -370,9 +391,12 @@ func dedupeParagraph(text, para string) string {
 // warnings) and survives slower providers. plan_execute typically runs more
 // steps, so it gets a larger total budget. Values are deliberately generous but
 // bounded; the user can override any of them in SOUL.yaml.
-func defaultReasoningConfig(strategy string) agent.ReasoningConfig {
+func defaultReasoningConfig(draft Draft, strategy string) agent.ReasoningConfig {
+	maxSteps, maxPlanSteps := defaultReasoningBudgets(draft, strategy)
 	cfg := agent.ReasoningConfig{
 		Strategy:     strategy,
+		MaxSteps:     maxSteps,
+		MaxPlanSteps: maxPlanSteps,
 		StepTimeout:  "120s",
 		TotalTimeout: "600s",
 	}
@@ -387,14 +411,92 @@ func defaultReasoningConfig(strategy string) agent.ReasoningConfig {
 // only filling Studio's sensible defaults where the draft left them empty — so a
 // canvas re-save never silently resets hand-set budgets.
 func reasoningConfigFor(draft Draft, strategy string) agent.ReasoningConfig {
-	cfg := defaultReasoningConfig(strategy)
+	cfg := defaultReasoningConfig(draft, strategy)
 	if t := strings.TrimSpace(draft.StepTimeout); t != "" {
 		cfg.StepTimeout = t
 	}
 	if t := strings.TrimSpace(draft.TotalTimeout); t != "" {
 		cfg.TotalTimeout = t
 	}
+	if draft.MaxSteps > 0 {
+		cfg.MaxSteps = draft.MaxSteps
+	}
+	if draft.MaxPlanSteps > 0 {
+		cfg.MaxPlanSteps = draft.MaxPlanSteps
+	}
 	return cfg
+}
+
+func defaultReasoningBudgets(draft Draft, strategy string) (int, int) {
+	if strings.EqualFold(strategy, "plan_execute") {
+		if highComplexityReasoningTask(draft) {
+			return 24, 12
+		}
+		return 16, 8
+	}
+	if highComplexityReasoningTask(draft) {
+		return 18, 8
+	}
+	return 8, 6
+}
+
+func highComplexityReasoningTask(draft Draft) bool {
+	text := strings.ToLower(strings.Join([]string{
+		draft.Intent,
+		draft.RawIntent,
+		draft.SystemPrompt,
+		strings.Join(draft.Tools, " "),
+	}, " "))
+	if strings.Contains(text, "notebooklm") || strings.Contains(text, "notebook lm") ||
+		strings.Contains(text, "podcast") || strings.Contains(text, "audio overview") {
+		return true
+	}
+	hits := 0
+	for _, word := range []string{
+		"search", "find", "fetch", "read", "rank", "filter", "summarize",
+		"create", "generate", "poll", "wait", "store", "ingest", "send", "deliver",
+	} {
+		if strings.Contains(text, word) {
+			hits++
+		}
+	}
+	if hits >= 4 {
+		return true
+	}
+	mcpCount := 0
+	for _, tool := range draft.Tools {
+		if strings.HasPrefix(strings.TrimSpace(tool), "mcp__") {
+			mcpCount++
+		}
+	}
+	return len(draft.Tools) >= 8 || mcpCount >= 4
+}
+
+func normalizedRunTimeout(runTimeout, reasoningTotal string) string {
+	runTimeout = strings.TrimSpace(runTimeout)
+	total := parsePositiveDuration(reasoningTotal)
+	run := parsePositiveDuration(runTimeout)
+	if total <= 0 {
+		if runTimeout == "" {
+			return ""
+		}
+		return runTimeout
+	}
+	if run <= 0 || run < total {
+		return total.String()
+	}
+	return runTimeout
+}
+
+func parsePositiveDuration(s string) time.Duration {
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // maxTurnsOr returns v when positive, else the fallback — so a user-tuned
@@ -610,6 +712,10 @@ func buildSystemPrompt(draft Draft) string {
 
 	if len(draft.Channels) > 0 {
 		fmt.Fprintf(&b, "Output: deliver results to the following channel(s): %s.\n\n", strings.Join(draft.Channels, ", "))
+	}
+	if contract := completionContractPrompt(draft); contract != "" && !strings.Contains(b.String(), completionContractHeading) {
+		b.WriteString(contract)
+		b.WriteString("\n\n")
 	}
 
 	if flowHasHostExecution(draft.Flow) {

@@ -1367,20 +1367,35 @@ func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) (
 		OutputFormat: env.Config.OutputFormat,
 	})
 	if isPrematureFinalAnswer(resp.Output) && planExecutionHadIssue(steps) {
+		steps = append(steps, planExecuteControllerStep("reflect output was a progress note after a failed or skipped plan step"))
 		resp.Output = planExecuteFallbackOutput(steps)
+	} else if looksLikePendingAsyncPayload(stripJSONFence(strings.TrimSpace(resp.Output))) {
+		steps = append(steps, planExecuteControllerStep("reflect output was an async status payload, not a completed final deliverable"))
+		resp.Output = planExecuteAsyncPendingOutput(steps)
 	} else if strings.TrimSpace(resp.Output) == "" || isPrematureFinalAnswer(resp.Output) {
-		if obs := lastUsefulObservation(steps); obs != "" {
-			resp.Output = obs
-		} else {
-			resp.Output = planExecuteFallbackOutput(steps)
-		}
+		steps = append(steps, planExecuteControllerStep("reflect did not produce a completed user-facing answer"))
+		resp.Output = planExecuteFallbackOutput(steps)
 	}
 	return steps, resp
+}
+
+func planExecuteControllerStep(reason string) Step {
+	return Step{
+		ID:      "controller-finalization",
+		Thought: "Plan-Execute could not produce a reliable final deliverable.",
+		Obs: Observation{
+			Content: "controller: " + reason,
+			Source:  "controller",
+		},
+	}
 }
 
 func planExecuteFallbackOutput(steps []Step) string {
 	if len(steps) == 0 {
 		return "The run could not produce a plan to execute. Retry with a clearer request or choose a ReAct agent for open-ended tool use."
+	}
+	if planExecutionHasPendingAsyncPayload(steps) {
+		return planExecuteAsyncPendingOutput(steps)
 	}
 	failed := 0
 	skipped := 0
@@ -1396,7 +1411,30 @@ func planExecuteFallbackOutput(steps []Step) string {
 	if failed > 0 || skipped > 0 {
 		return fmt.Sprintf("The plan could not fully complete: %d step(s) failed and %d dependent step(s) were skipped. Open the run trace to inspect the failed step, then fix the tool input, credential, or workflow dependency.", failed, skipped)
 	}
+	completed := 0
+	for _, step := range steps {
+		if step.Obs.Source == "controller" || strings.TrimSpace(step.Action.Tool) == "" {
+			continue
+		}
+		completed++
+	}
+	if completed > 0 {
+		return fmt.Sprintf("The workflow made progress (%d tool step(s) completed), but it did not produce the required final deliverable. I did not publish raw tool output as the final answer. Open the run trace to inspect the completed steps, then rerun after fixing the model/step output.", completed)
+	}
 	return "The plan executed but the model did not produce a final answer. Open the run trace to inspect the completed steps."
+}
+
+func planExecuteAsyncPendingOutput(steps []Step) string {
+	return asyncIncompleteFallback(steps)
+}
+
+func planExecutionHasPendingAsyncPayload(steps []Step) bool {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if looksLikePendingAsyncPayload(steps[i].Obs.Content) {
+			return true
+		}
+	}
+	return false
 }
 
 func planSystemPrompt(systemPrompt string, toolNames []string) string {

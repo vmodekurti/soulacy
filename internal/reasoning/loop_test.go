@@ -162,6 +162,18 @@ func (h *htmlExecutor) Execute(_ context.Context, call reasoning.ToolCall) reaso
 	}
 }
 
+type pendingAsyncExecutor struct{}
+
+func (p *pendingAsyncExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
+	if call.Tool == "mcp__notebooklm__studio_status" {
+		return reasoning.Observation{
+			Source:  call.Tool,
+			Content: `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`,
+		}
+	}
+	return reasoning.Observation{Source: call.Tool, Content: `{"status":"success","artifact_id":"audio_1"}`}
+}
+
 type htmlHistoryLLM struct {
 	thinkCalls int
 	sawRawHTML bool
@@ -193,6 +205,22 @@ func (h *htmlHistoryLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.
 
 func (h *htmlHistoryLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
 	return reasoning.ReflectResponse{Output: "done"}, nil
+}
+
+type emptyReflectPlanner struct {
+	planSteps []reasoning.PlannedStep
+}
+
+func (e *emptyReflectPlanner) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	return reasoning.ThinkResponse{}, errors.New("react fallback not expected")
+}
+
+func (e *emptyReflectPlanner) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{Goal: "fetch and publish", Steps: e.planSteps}, nil
+}
+
+func (e *emptyReflectPlanner) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	return reasoning.ReflectResponse{}, nil
 }
 
 type alwaysBadThinkLLM struct {
@@ -981,7 +1009,7 @@ func TestPlanExecuteDoesNotCompleteFailedDependencies(t *testing.T) {
 
 	result := loop.Run(context.Background(), "planner", "fetch and summarize")
 
-	if len(result.Steps) != 2 {
+	if len(result.Steps) < 2 {
 		t.Fatalf("steps = %d, want failed step plus skipped dependent step", len(result.Steps))
 	}
 	if result.Steps[0].Obs.Error == nil {
@@ -998,6 +1026,62 @@ func TestPlanExecuteDoesNotCompleteFailedDependencies(t *testing.T) {
 	}
 	if result.Confident {
 		t.Fatalf("failed plan-execute run should not be confident")
+	}
+}
+
+func TestPlanExecuteDoesNotPublishRawObservationWhenFinalReflectFails(t *testing.T) {
+	planSteps := []reasoning.PlannedStep{
+		{ID: "fetch", Description: "fetch source data", Tool: "fetch_url"},
+	}
+	llm := &emptyReflectPlanner{planSteps: planSteps}
+
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"fetch_url"},
+	}, llm, &htmlExecutor{})
+
+	result := loop.Run(context.Background(), "podcast-agent", "fetch content and create a podcast")
+
+	if strings.Contains(result.Output, "HTML fetched") || strings.Contains(result.Output, "URL: https://example.com") {
+		t.Fatalf("fallback should not expose raw fetch_url output: %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "did not produce the required final deliverable") {
+		t.Fatalf("fallback should explain incomplete deliverable, got %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("empty final reflection should mark plan-execute run not confident")
+	}
+}
+
+func TestPlanExecuteDoesNotPublishPendingAsyncStatus(t *testing.T) {
+	pending := `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`
+	planSteps := []reasoning.PlannedStep{
+		{ID: "audio", Description: "create NotebookLM audio", Tool: "mcp__notebooklm__studio_create"},
+		{ID: "poll", Description: "poll until audio is ready", Tool: "mcp__notebooklm__studio_status", DependsOn: []string{"audio"}},
+	}
+	llm := &stubLLM{planSteps: planSteps, reflectOut: pending}
+
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"mcp__notebooklm__studio_create", "mcp__notebooklm__studio_status"},
+	}, llm, &pendingAsyncExecutor{})
+
+	result := loop.Run(context.Background(), "podcast-agent", "create a NotebookLM podcast")
+
+	if strings.HasPrefix(strings.TrimSpace(result.Output), "{") || strings.Contains(result.Output, `"in_progress"`) {
+		t.Fatalf("pending async JSON leaked into final output: %q", result.Output)
+	}
+	if !strings.Contains(strings.ToLower(result.Output), "still processing") {
+		t.Fatalf("expected pending async fallback, got %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("pending async finalization should mark plan-execute run not confident")
 	}
 }
 
