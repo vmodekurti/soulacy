@@ -45,6 +45,55 @@ func TestGetOrCreateSession_IsolatesByAgent(t *testing.T) {
 	}
 }
 
+func TestFinalizeReplySanitizesControlEnvelope(t *testing.T) {
+	mem, err := memory.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("memory store: %v", err)
+	}
+	sink := &captureSink6{}
+	e := NewEngine(nil, nil, mem, nil, "", time.Second, zap.NewNop(), sink, nil, "", nil, nil, nil, nil, nil)
+	def := &agent.Definition{ID: "stock-advisor", Name: "Stock Advisor", Enabled: true}
+	sess := &Session{ID: "sess-1", AgentID: def.ID, CreatedAt: time.Now().UTC()}
+	msg := testUserMessage(def.ID, sess.ID, "What are the best stocks if I have $33K?")
+	raw := `{"thought":"I have enough data","is_done":true,"final_answer":"## Best Stocks to Invest $33K\n\n| Ticker | Allocation |\n| --- | ---: |\n| V | $8,000 |"}`
+
+	reply := e.finalizeReply(context.Background(), def, sess, msg, raw)
+	got := flattenParts(reply.Parts)
+	if !strings.HasPrefix(got, "## Best Stocks to Invest $33K") {
+		t.Fatalf("reply was not unwrapped: %q", got)
+	}
+	if strings.Contains(got, `"thought"`) || strings.Contains(got, `"final_answer"`) {
+		t.Fatalf("control envelope leaked into reply: %q", got)
+	}
+	outs := eventsByType(sink.events, "message.out")
+	if len(outs) != 1 {
+		t.Fatalf("message.out events = %d, want 1", len(outs))
+	}
+	emitted := flattenEventText(t, outs[0])
+	if emitted != got {
+		t.Fatalf("message.out payload = %q, reply = %q", emitted, got)
+	}
+}
+
+func eventsByType(events []message.Event, typ string) []message.Event {
+	var out []message.Event
+	for _, ev := range events {
+		if ev.Type == typ {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+func flattenEventText(t *testing.T, ev message.Event) string {
+	t.Helper()
+	msg, ok := ev.Payload.(message.Message)
+	if !ok {
+		t.Fatalf("event payload type = %T, want message.Message", ev.Payload)
+	}
+	return flattenParts(msg.Parts)
+}
+
 // TestAgentCallDepth_Roundtrip verifies the context.Value-based depth counter
 // used by runAgentCall to bound recursion.
 func TestAgentCallDepth_Roundtrip(t *testing.T) {

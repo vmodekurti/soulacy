@@ -87,7 +87,7 @@ func (b *OllamaBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.chat(ctx, b.ThinkModel, system, user, phaseParamsWithDefaults(b.ThinkParams, 1024, 0.1, "json"))
+	raw, err := b.chat(ctx, b.ThinkModel, system, user, phaseParamsWithDefaults(b.ThinkParams, 4096, 0.1, "json"))
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/ollama: Think: %w", err)
 	}
@@ -152,7 +152,7 @@ func (b *OllamaBackend) Reflect(ctx context.Context, req ReflectRequest) (Reflec
 	user := fmt.Sprintf("Task: %s\n\nStep trace:\n%s\n\nProduce the final answer.",
 		req.TaskInput, formatStepHistory(req.Steps))
 
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, phaseParamsWithDefaults(b.ReflectParams, 2048, 0.1, "json"))
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, phaseParamsWithDefaults(b.ReflectParams, 4096, 0.1, "json"))
 	if err != nil {
 		return ReflectResponse{}, fmt.Errorf("reasoning/ollama: Reflect: %w", err)
 	}
