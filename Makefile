@@ -7,7 +7,7 @@ PLAYWRIGHT_RUNNER ?= $(shell if [ -e .cache ] && [ ! -d .cache ]; then echo tmp/
 .PHONY: all build build-gateway build-cli gui up install which test regression uat uat-public uat-full uat-credential docs-build docs-screenshots release-smoke production-parity channel-golden-smoke browser-mcp-smoke lint dev run-dev sdk-install tidy \
         docker-up docker-down docker-up-lite docker-build docker-push \
         release release-linux release-linux-amd64 release-linux-arm64 \
-        release-darwin release-darwin-arm64 release-darwin-amd64 release-package \
+        release-darwin release-darwin-arm64 release-darwin-amd64 release-package release-create release-create-github \
         service-install service-uninstall deploy help
 
 ## Full build: unified GUI (Studio is built in as a first-class route), then
@@ -381,6 +381,17 @@ release-darwin-amd64:
 release-package:
 	VERSION=$(VERSION) RELEASE_DIR=$(RELEASE_DIR) bash scripts/package-release.sh
 
+## Create a release tag from origin/main and push it to trigger GitHub Actions.
+release-create:
+	VERSION=$(VERSION) bash scripts/create-release.sh
+
+## Ask GitHub Actions to create the release tag, which triggers the release workflow.
+release-create-github:
+	@if ! printf '%s\n' "$(VERSION)" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$$'; then \
+	  echo "VERSION must look like v1.2.3 or v1.2.3-rc.1, e.g. make release-create-github VERSION=v0.1.0"; exit 2; \
+	fi
+	gh workflow run create-release.yml -f version=$(VERSION) -f target_ref=$(or $(RELEASE_REF),main) -f dry_run=false
+
 ## Show help
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## //' | column -t -s '—'
@@ -395,3 +406,7 @@ help:
 	@echo "  make rollback         Restore the previous build after an upgrade"
 	@echo "  make health           Run diagnostics (sy doctor)"
 	@echo "  make logs-bundle      Collect a redacted support bundle"
+	@echo "  make release-create VERSION=v0.1.0"
+	@echo "                        Tag origin/main and start the GitHub release workflow"
+	@echo "  make release-create-github VERSION=v0.1.0"
+	@echo "                        Ask GitHub Actions to create the release tag"

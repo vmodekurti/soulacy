@@ -50,13 +50,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Module cache first so dep changes don't bust the source layer.
 COPY go.mod go.sum ./
+COPY sdk/go.mod ./sdk/go.mod
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     go mod download
 
 # Copy source + the prebuilt GUI bundle into the embed location.
 COPY . .
-COPY --from=gui /src/gui/dist /src/internal/webui/dist
+COPY --from=gui /src/internal/webui/dist /src/internal/webui/dist
 
 # Build with cgo on (sqlite-vec requires it). GOARCH inherits from the
 # buildx --platform flag so the same Dockerfile produces amd64 or arm64.

@@ -539,6 +539,19 @@
     opacity: 0.5; cursor: not-allowed;
   }
   :global(textarea) { resize: vertical; }
+  /* Radios and checkboxes are native controls, not text fields. The rule above
+     (width:100% + padding + border + background) turns them into padded boxes
+     that shrink to a different width per row inside flex layouts, throwing off
+     alignment (e.g. the Studio model modal preset rows). Opt them out so they
+     render at their intrinsic size and line up. */
+  :global(input[type="radio"]), :global(input[type="checkbox"]) {
+    width: auto;
+    flex: none;
+    padding: 0;
+    border: none;
+    border-radius: 0;
+    background: none;
+  }
 
   /* ── Buttons ────────────────────────────────────────────────────── */
   :global(button) { cursor: pointer; border: none; font-size: 14px; transition: background 0.15s, opacity 0.15s; }
