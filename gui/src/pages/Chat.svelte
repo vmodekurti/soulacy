@@ -2780,15 +2780,18 @@
     position: fixed; top: 0; left: 0; right: 0; bottom: 0;
     background: rgba(10, 12, 24, 0.8); backdrop-filter: blur(4px);
     z-index: 1000; display: flex; align-items: center; justify-content: center;
-    padding: clamp(0.75rem, 3vh, 1.5rem);
+    padding: 1rem;
     box-sizing: border-box;
   }
   .confirm-modal {
     background: #1c1f35; border: 1px solid #2a2f4a; border-radius: 8px;
     padding: 1.5rem; max-width: 560px; width: min(100%, 560px);
-    max-height: min(86dvh, 760px);
+    max-height: calc(100vh - 2rem);
+    max-height: min(760px, calc(100dvh - 2rem));
     box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-    display: flex; flex-direction: column; gap: 1rem;
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 1rem;
     overflow: hidden;
   }
   .confirm-modal h2 { margin: 0; color: #fff; font-size: 1.25rem; }
@@ -2801,8 +2804,9 @@
     min-width: 0;
   }
   .confirm-content {
-    flex: 1 1 auto;
     min-height: 0;
+    max-height: calc(100vh - 13rem);
+    max-height: calc(100dvh - 13rem);
     overflow: auto;
     display: flex;
     flex-direction: column;
@@ -2816,7 +2820,7 @@
   }
   .args-box pre {
     margin: 0.5rem 0 0 0; white-space: pre-wrap; word-wrap: break-word;
-    overflow-wrap: anywhere; max-height: 34dvh; overflow: auto;
+    overflow-wrap: anywhere; max-height: 28vh; max-height: 28dvh; overflow: auto;
     color: #a3d9a5; font-family: monospace; font-size: 0.8rem;
   }
   .explain-box {
@@ -2834,7 +2838,6 @@
   .explain-steps li { color: #b7bbd6; font-size: 0.82rem; }
   .explain-meta { margin: 0.5rem 0 0 0; color: #8a90b0; font-size: 0.78rem; font-style: italic; }
   .confirm-actions {
-    flex: 0 0 auto;
     display: flex; gap: 0.75rem; justify-content: flex-end;
     margin-top: 0.25rem;
     padding-top: 0.75rem;
