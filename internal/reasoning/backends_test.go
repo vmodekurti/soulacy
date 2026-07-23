@@ -896,6 +896,55 @@ func TestOpenAIBackend_Think_Done(t *testing.T) {
 	}
 }
 
+// A reasoning model can return empty `content` while leaving the JSON step in
+// `reasoning_content`. We must recover the step from there instead of failing
+// with an empty-parse error.
+func TestOpenAIBackend_Think_RecoversFromReasoningContent(t *testing.T) {
+	step := `{"thought":"done","is_done":true,"final_answer":"MU is a hold."}`
+	ft := &fakeTransport{fn: func(r *http.Request) (*http.Response, error) {
+		body := map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{
+					"content":           "",
+					"reasoning_content": "Let me think... " + step + " that's my step.",
+				}},
+			},
+		}
+		return jsonResponse(200, body), nil
+	}}
+
+	b := newOpenAIWithTransport(ft)
+	resp, err := b.Think(context.Background(), reasoning.ThinkRequest{TaskInput: "MU stock?"})
+	if err != nil {
+		t.Fatalf("Think returned error: %v", err)
+	}
+	if !resp.IsDone || resp.FinalAnswer != "MU is a hold." {
+		t.Errorf("expected recovered final answer, got done=%v ans=%q", resp.IsDone, resp.FinalAnswer)
+	}
+}
+
+// Empty content with finish_reason=length must yield an actionable token-limit
+// error, not a bare "unexpected end of JSON input".
+func TestOpenAIBackend_Think_EmptyContentTokenLimit(t *testing.T) {
+	ft := &fakeTransport{fn: func(r *http.Request) (*http.Response, error) {
+		body := map[string]any{
+			"choices": []map[string]any{
+				{"message": map[string]any{"content": ""}, "finish_reason": "length"},
+			},
+		}
+		return jsonResponse(200, body), nil
+	}}
+
+	b := newOpenAIWithTransport(ft)
+	_, err := b.Think(context.Background(), reasoning.ThinkRequest{TaskInput: "MU stock?"})
+	if err == nil {
+		t.Fatal("expected an error for empty content")
+	}
+	if !strings.Contains(err.Error(), "token limit") {
+		t.Errorf("expected a token-limit error, got %v", err)
+	}
+}
+
 func TestOpenAIBackend_Think_APIError(t *testing.T) {
 	body := map[string]any{
 		"error": map[string]any{

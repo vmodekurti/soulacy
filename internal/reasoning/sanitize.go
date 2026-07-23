@@ -32,6 +32,18 @@ type controlJSONShape struct {
 // JSON, the embedded final_answer/output is extracted; failing that, a graceful
 // message is returned. Empty output also yields the graceful message.
 func SanitizeFinalOutput(output string, steps []Step) string {
+	return sanitizeFinalOutput(output, steps, true)
+}
+
+// SanitizeControlOutput removes leaked ReAct/control JSON while preserving
+// ordinary JSON answer payloads. Use it for agents with an explicit
+// output_schema, where {"answer":"..."} or {"output":"..."} may be the
+// intentional user-facing contract.
+func SanitizeControlOutput(output string, steps []Step) string {
+	return sanitizeFinalOutput(output, steps, false)
+}
+
+func sanitizeFinalOutput(output string, steps []Step, unwrapAnswerEnvelope bool) string {
 	trimmed := strings.TrimSpace(output)
 	if trimmed == "" {
 		return gracefulFallback(steps)
@@ -39,7 +51,7 @@ func SanitizeFinalOutput(output string, steps []Step) string {
 
 	body := stripJSONFence(trimmed)
 	// Fast path: the whole reply is the envelope.
-	if ans, ok := unwrapEnvelope(body, steps); ok {
+	if ans, ok := unwrapEnvelope(body, steps, unwrapAnswerEnvelope); ok {
 		return ans
 	}
 	// The model often appends prose AFTER the JSON object (or wraps the envelope
@@ -47,9 +59,25 @@ func SanitizeFinalOutput(output string, steps []Step) string {
 	// `{"thought":…,"final_answer":…}` leaked to the user. Extract the FIRST
 	// balanced {…} object and try to unwrap just that.
 	if obj := firstJSONObject(body); obj != "" && obj != body {
-		if ans, ok := unwrapEnvelope(obj, steps); ok {
+		if ans, ok := unwrapEnvelope(obj, steps, unwrapAnswerEnvelope); ok {
 			return ans
 		}
+	}
+	// Last-resort boundary guard: some providers return an object with leading
+	// provider metadata before the actual ReAct control object, or malformed
+	// control JSON that still contains a valid JSON string final_answer. Scan
+	// every balanced object and then try a tolerant field extraction so
+	// `{"thought":...,"is_done":true,"final_answer":"..."}` never reaches chat.
+	for _, obj := range jsonObjects(body) {
+		if ans, ok := unwrapEnvelope(obj, steps, unwrapAnswerEnvelope); ok {
+			return ans
+		}
+	}
+	if ans, ok := tolerantControlAnswer(body); ok {
+		return ans
+	}
+	if looksLikeSanitizerControlPayload(body) {
+		return gracefulFallback(steps)
 	}
 	return output
 }
@@ -58,15 +86,17 @@ func SanitizeFinalOutput(output string, steps []Step) string {
 // human-answer envelope. The bool reports whether body was recognised as either
 // (so the caller knows not to surface it verbatim); when it is control JSON with
 // no usable answer, a graceful fallback is returned.
-func unwrapEnvelope(body string, steps []Step) (string, bool) {
+func unwrapEnvelope(body string, steps []Step, unwrapAnswerEnvelope bool) (string, bool) {
 	if shape, ok := decodeControlJSON(body); ok {
 		if ans := firstNonEmpty(shape.FinalAnswer, shape.Output, shape.Reply, shape.Answer, shape.Message, shape.Text); strings.TrimSpace(ans) != "" {
 			return strings.TrimSpace(ans), true
 		}
 		return gracefulFallback(steps), true
 	}
-	if ans, ok := decodeAnswerEnvelope(body); ok {
-		return strings.TrimSpace(ans), true
+	if unwrapAnswerEnvelope {
+		if ans, ok := decodeAnswerEnvelope(body); ok {
+			return strings.TrimSpace(ans), true
+		}
 	}
 	return "", false
 }
@@ -75,9 +105,21 @@ func unwrapEnvelope(body string, steps []Step) (string, bool) {
 // (respecting string literals and escapes), or "" if there is none. It lets the
 // sanitizer recover a leaked envelope even when the model wrapped it in prose.
 func firstJSONObject(s string) string {
+	objs := jsonObjects(s)
+	if len(objs) == 0 {
+		return ""
+	}
+	return objs[0]
+}
+
+// jsonObjects returns each top-level, brace-balanced {…} object in s
+// (respecting string literals and escapes). It is intentionally small and
+// dependency-free because it runs on every final answer boundary.
+func jsonObjects(s string) []string {
+	var out []string
 	start := strings.IndexByte(s, '{')
 	if start < 0 {
-		return ""
+		return nil
 	}
 	depth := 0
 	inStr := false
@@ -99,15 +141,18 @@ func firstJSONObject(s string) string {
 		case '"':
 			inStr = true
 		case '{':
+			if depth == 0 {
+				start = i
+			}
 			depth++
 		case '}':
 			depth--
 			if depth == 0 {
-				return s[start : i+1]
+				out = append(out, s[start:i+1])
 			}
 		}
 	}
-	return "" // unbalanced — no complete object
+	return out
 }
 
 // decodeControlJSON reports whether s is a JSON object carrying the loop's
@@ -120,12 +165,13 @@ func decodeControlJSON(s string) (controlJSONShape, bool) {
 	}
 	var shape controlJSONShape
 	if err := json.Unmarshal([]byte(s), &shape); err != nil {
+		if len(jsonObjects(s)) > 1 {
+			return controlJSONShape{}, false
+		}
 		// Malformed JSON that still smells like control output (common when a
 		// model appends prose) — sniff for the tell-tale keys so we don't render
 		// it verbatim.
-		low := strings.ToLower(s)
-		if strings.Contains(low, `"thought"`) &&
-			(strings.Contains(low, `"action"`) || strings.Contains(low, `"is_done"`)) {
+		if looksLikeSanitizerControlPayload(s) {
 			return controlJSONShape{}, true
 		}
 		return controlJSONShape{}, false
@@ -177,6 +223,73 @@ func decodeAnswerEnvelope(s string) (string, bool) {
 	return ans, strings.TrimSpace(ans) != ""
 }
 
+func looksLikeSanitizerControlPayload(s string) bool {
+	low := strings.ToLower(s)
+	return strings.Contains(low, `"thought"`) &&
+		(strings.Contains(low, `"action"`) || strings.Contains(low, `"is_done"`) || strings.Contains(low, `"final_answer"`))
+}
+
+// tolerantControlAnswer extracts a JSON-string final_answer/output/etc from a
+// malformed or prose-wrapped control payload. It does not parse arbitrary JSON;
+// it only decodes the string value for known answer fields after control keys
+// are present, so legitimate JSON answers remain untouched.
+func tolerantControlAnswer(s string) (string, bool) {
+	if !looksLikeSanitizerControlPayload(s) {
+		return "", false
+	}
+	for _, key := range []string{"final_answer", "output", "reply", "answer", "message", "text"} {
+		if ans, ok := extractJSONStringField(s, key); ok && strings.TrimSpace(ans) != "" {
+			return strings.TrimSpace(ans), true
+		}
+	}
+	return "", false
+}
+
+func extractJSONStringField(s, key string) (string, bool) {
+	needle := `"` + key + `"`
+	idx := strings.Index(s, needle)
+	if idx < 0 {
+		return "", false
+	}
+	i := idx + len(needle)
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n') {
+		i++
+	}
+	if i >= len(s) || s[i] != ':' {
+		return "", false
+	}
+	i++
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n') {
+		i++
+	}
+	if i >= len(s) || s[i] != '"' {
+		return "", false
+	}
+	start := i
+	i++
+	esc := false
+	for ; i < len(s); i++ {
+		c := s[i]
+		if esc {
+			esc = false
+			continue
+		}
+		if c == '\\' {
+			esc = true
+			continue
+		}
+		if c == '"' {
+			raw := s[start : i+1]
+			var decoded string
+			if err := json.Unmarshal([]byte(raw), &decoded); err == nil {
+				return decoded, true
+			}
+			return "", false
+		}
+	}
+	return "", false
+}
+
 // gracefulFallback derives a readable answer when no clean one is available:
 // the most recent non-empty tool observation if it looks human-readable,
 // otherwise a short message pointing at the reasoning trace.
@@ -197,14 +310,18 @@ func gracefulFallback(steps []Step) string {
 // looksReadable rejects observations that are themselves control JSON, HTML, or
 // otherwise unsuitable to show as a final answer.
 func looksReadable(s string) bool {
+	t := strings.TrimSpace(s)
 	if _, isControl := decodeControlJSON(s); isControl {
 		return false
 	}
 	if len(s) > 4000 {
 		return false
 	}
-	if strings.HasPrefix(strings.TrimSpace(s), "<") && strings.Contains(s, "</") {
+	if strings.HasPrefix(t, "<") && strings.Contains(s, "</") {
 		return false // looks like HTML
+	}
+	if strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") {
+		return false // raw structured tool output (e.g. a web_search JSON blob)
 	}
 	return true
 }

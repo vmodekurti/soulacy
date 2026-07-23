@@ -67,6 +67,23 @@ func TestSanitize_LeakedStep_UsesReadableObservation(t *testing.T) {
 	}
 }
 
+// A leaked step whose only observation is a RAW tool JSON blob (e.g. web_search
+// results) must NOT be dumped verbatim as the answer — the user should get the
+// graceful "couldn't finish" message instead of {"query":…,"results":[…]}.
+func TestSanitize_LeakedStep_SkipsRawJSONObservation(t *testing.T) {
+	steps := []Step{
+		{Thought: "search", Obs: Observation{Content: `{"query":"SNDK","result_count":5,"results":[{"title":"..."}]}`}},
+	}
+	in := `{"thought":"continuing","is_done":false,"action":{"tool":"web_search"}}`
+	got := SanitizeFinalOutput(in, steps)
+	if strings.Contains(got, `"results"`) || strings.HasPrefix(strings.TrimSpace(got), "{") {
+		t.Fatalf("raw JSON observation was surfaced as the answer: %q", got)
+	}
+	if !strings.Contains(got, "couldn't produce a clean final answer") {
+		t.Fatalf("expected graceful fallback message, got %q", got)
+	}
+}
+
 func TestSanitize_FencedControlJSON(t *testing.T) {
 	in := "```json\n{\"thought\":\"x\",\"is_done\":false,\"action\":{\"tool\":\"t\"}}\n```"
 	got := SanitizeFinalOutput(in, nil)
@@ -86,6 +103,18 @@ func TestSanitize_LegitJSONAnswerPreserved(t *testing.T) {
 	in := `{"name":"Alice","score":42}`
 	if got := SanitizeFinalOutput(in, nil); got != in {
 		t.Fatalf("legit JSON answer was altered: %q", got)
+	}
+}
+
+func TestSanitizeControlOutput_PreservesStructuredAnswerJSON(t *testing.T) {
+	in := `{"answer":"fixed"}`
+	if got := SanitizeControlOutput(in, nil); got != in {
+		t.Fatalf("structured JSON answer was altered: %q", got)
+	}
+
+	control := `{"thought":"done","is_done":true,"final_answer":"Human answer."}`
+	if got := SanitizeControlOutput(control, nil); got != "Human answer." {
+		t.Fatalf("control JSON was not unwrapped: %q", got)
 	}
 }
 
@@ -118,5 +147,23 @@ func TestSanitize_EnvelopeWithBracesInAnswer(t *testing.T) {
 	got := SanitizeFinalOutput(in, nil)
 	if got != `Use {"a":1} as the body.` {
 		t.Fatalf("brace balancing failed, got %q", got)
+	}
+}
+
+func TestSanitize_ExtractsControlEnvelopeAfterProviderMetadata(t *testing.T) {
+	in := `{"id":"chatcmpl-1","object":"chat.completion"}` +
+		"\n" +
+		`{"thought":"I have enough data","is_done":true,"final_answer":"## Best Stocks\n\n| Ticker | Allocation |\n| --- | ---: |\n| V | $8,000 |"}`
+	got := SanitizeFinalOutput(in, nil)
+	if !strings.HasPrefix(got, "## Best Stocks") || strings.Contains(got, `"thought"`) {
+		t.Fatalf("expected control envelope after metadata to unwrap, got %q", got)
+	}
+}
+
+func TestSanitize_TolerantMalformedControlJSON(t *testing.T) {
+	in := `{"thought":"done","is_done":true,"final_answer":"## Report\n\nUse this answer." trailing malformed`
+	got := SanitizeFinalOutput(in, nil)
+	if got != "## Report\n\nUse this answer." {
+		t.Fatalf("expected tolerant final_answer extraction, got %q", got)
 	}
 }

@@ -81,7 +81,11 @@ func (b *OpenAIBackend) Think(ctx context.Context, req ThinkRequest) (ThinkRespo
 
 	user := fmt.Sprintf("Task: %s\n\n%s", req.TaskInput, formatStepHistory(req.StepHistory))
 
-	raw, err := b.chat(ctx, b.ThinkModel, system, user, phaseParamsWithDefaults(b.ThinkParams, 1024, 0.1, "json"))
+	// 4096 default (was 1024): reasoning models spend output tokens on hidden
+	// chain-of-thought before the JSON step, and a tight budget made them return
+	// empty content ("parse \"\": unexpected end of JSON input"). Agents can still
+	// override via reasoning.think.max_tokens.
+	raw, err := b.chat(ctx, b.ThinkModel, system, user, phaseParamsWithDefaults(b.ThinkParams, 4096, 0.1, "json"))
 	if err != nil {
 		return ThinkResponse{}, fmt.Errorf("reasoning/openai: Think: %w", err)
 	}
@@ -139,7 +143,7 @@ func (b *OpenAIBackend) Reflect(ctx context.Context, req ReflectRequest) (Reflec
 	user := fmt.Sprintf("Task: %s\n\nStep trace:\n%s\n\nProduce the final answer.",
 		req.TaskInput, formatStepHistory(req.Steps))
 
-	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, phaseParamsWithDefaults(b.ReflectParams, 2048, 0.1, "json"))
+	raw, err := b.chat(ctx, b.PlanReflectModel, system, user, phaseParamsWithDefaults(b.ReflectParams, 4096, 0.1, "json"))
 	if err != nil {
 		return ReflectResponse{}, fmt.Errorf("reasoning/openai: Reflect: %w", err)
 	}
@@ -176,7 +180,14 @@ type openaiChatResponse struct {
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
+			// ReasoningContent is where GLM / DeepSeek-style REASONING models put
+			// their chain-of-thought. When such a model spends its whole token
+			// budget thinking, `content` comes back empty while the intended JSON
+			// often sits (or can be recovered) here — so we fall back to it rather
+			// than treating the step as a blank failure.
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"message"`
+		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Error *struct {
 		Message string `json:"message"`
@@ -243,5 +254,21 @@ func (b *OpenAIBackend) chat(ctx context.Context, model, system, user string, pa
 	if len(or.Choices) == 0 {
 		return "", fmt.Errorf("reasoning/openai: no choices in response")
 	}
-	return strings.TrimSpace(or.Choices[0].Message.Content), nil
+	choice := or.Choices[0]
+	content := strings.TrimSpace(choice.Message.Content)
+	if content == "" {
+		// Reasoning-model fallback: the visible answer is empty, so try to recover
+		// a JSON object the model left in its reasoning trace (chain-of-thought).
+		if obj := firstJSONObject(choice.Message.ReasoningContent); obj != "" {
+			return obj, nil
+		}
+		// Still nothing usable. If the model was cut off mid-thought (finish
+		// reason "length"), say so — that's a token-budget problem the caller can
+		// act on, not a mysterious empty parse.
+		if strings.EqualFold(choice.FinishReason, "length") {
+			return "", fmt.Errorf("reasoning/openai: model %q returned no content — it hit the token limit while reasoning (raise reasoning think/reflect max_tokens, or use a non-reasoning model)", model)
+		}
+		return "", fmt.Errorf("reasoning/openai: model %q returned empty content", model)
+	}
+	return content, nil
 }

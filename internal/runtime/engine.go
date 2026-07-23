@@ -2597,6 +2597,16 @@ func (e *Engine) writeEpisodic(def *agent.Definition, agentID, taskInput, finalC
 // to session memory, write the episodic brain record, build the reply,
 // emit message.out, and append both turns to the durable history store.
 func (e *Engine) finalizeReply(ctx context.Context, def *agent.Definition, sess *Session, msg message.Message, finalContent string) message.Message {
+	// Last line of defense before persistence and channel delivery: no runtime
+	// path should surface ReAct/control JSON or provider answer envelopes as the
+	// assistant's visible reply. SanitizeFinalOutput preserves legitimate JSON
+	// payloads and only unwraps known answer/control shapes.
+	if def != nil && def.LLM.OutputSchema != nil {
+		finalContent = reasoning.SanitizeControlOutput(finalContent, nil)
+	} else {
+		finalContent = reasoning.SanitizeFinalOutput(finalContent, nil)
+	}
+
 	// Append final assistant response to the in-memory session history
 	sess.mu.Lock()
 	e.appendHistoryLocked(sess, llm.ChatMessage{
