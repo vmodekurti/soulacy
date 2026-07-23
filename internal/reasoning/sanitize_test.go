@@ -67,20 +67,44 @@ func TestSanitize_LeakedStep_UsesReadableObservation(t *testing.T) {
 	}
 }
 
-// A leaked step whose only observation is a RAW tool JSON blob (e.g. web_search
-// results) must NOT be dumped verbatim as the answer — the user should get the
-// graceful "couldn't finish" message instead of {"query":…,"results":[…]}.
-func TestSanitize_LeakedStep_SkipsRawJSONObservation(t *testing.T) {
+// A leaked step whose observation is structured JSON should be compacted into a
+// readable summary, never dumped verbatim as {"query":…,"results":[…]}.
+func TestSanitize_LeakedStep_SummarizesRawJSONObservation(t *testing.T) {
 	steps := []Step{
-		{Thought: "search", Obs: Observation{Content: `{"query":"SNDK","result_count":5,"results":[{"title":"..."}]}`}},
+		{Thought: "search", Action: ToolCall{Tool: "web_search"}, Obs: Observation{Source: "web_search", Content: `{"query":"SNDK","result_count":5,"results":[{"title":"SNDK Stock Analysis","url":"https://example.com/sndk"}]}`}},
 	}
 	in := `{"thought":"continuing","is_done":false,"action":{"tool":"web_search"}}`
 	got := SanitizeFinalOutput(in, steps)
 	if strings.Contains(got, `"results"`) || strings.HasPrefix(strings.TrimSpace(got), "{") {
 		t.Fatalf("raw JSON observation was surfaced as the answer: %q", got)
 	}
-	if !strings.Contains(got, "couldn't produce a clean final answer") {
-		t.Fatalf("expected graceful fallback message, got %q", got)
+	if !strings.Contains(got, "Search returned 5 result(s) for SNDK") || !strings.Contains(got, "SNDK Stock Analysis") {
+		t.Fatalf("expected compact search summary, got %q", got)
+	}
+}
+
+func TestSanitize_PlaceholderFinalAnswerFallsBackToSearchSummary(t *testing.T) {
+	steps := []Step{
+		{Thought: "search", Action: ToolCall{Tool: "web_search"}, Obs: Observation{Source: "web_search", Content: `{"query":"best stocks","result_count":2,"results":[{"title":"33 Undervalued Stocks to Buy Before the Market Catches On","url":"https://morningstar.example/stocks"},{"title":"3 New Analyst Picks for Q3","url":"https://morningstar.example/q3"}]}`}},
+		{Thought: "load skill", Action: ToolCall{Tool: "read_skill"}, Obs: Observation{Source: "read_skill", Content: `<skill_content name="yfinance-data">Do not show this internal instruction.</skill_content>`}},
+	}
+	in := `{"thought":"done","is_done":true,"final_answer":"answer"}`
+	got := SanitizeFinalOutput(in, steps)
+	if got == "answer" || strings.Contains(got, "<skill_content") || strings.Contains(got, "Do not show this") {
+		t.Fatalf("placeholder or instructional content leaked: %q", got)
+	}
+	if !strings.Contains(got, "Search returned 2 result(s) for best stocks") || !strings.Contains(got, "33 Undervalued Stocks") {
+		t.Fatalf("expected fallback to search summary, got %q", got)
+	}
+}
+
+func TestSanitize_BarePlaceholderOutputFallsBack(t *testing.T) {
+	steps := []Step{
+		{Thought: "tool", Obs: Observation{Source: "web_search", Content: "Found relevant analyst picks for the user's portfolio question."}},
+	}
+	got := SanitizeFinalOutput(" answer ", steps)
+	if got == "answer" || !strings.Contains(got, "Found relevant analyst picks") {
+		t.Fatalf("expected placeholder output to fall back to observation, got %q", got)
 	}
 }
 

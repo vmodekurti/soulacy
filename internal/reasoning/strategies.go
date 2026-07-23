@@ -452,21 +452,70 @@ func looksPresentable(content string) bool {
 	return true
 }
 
-// lastPresentableObservation returns the most recent human-readable observation,
-// skipping raw JSON tool payloads so the degraded stop messages never dump them.
+type observationDisplay struct {
+	text   string
+	failed bool
+}
+
+// displayObservation returns a user-facing observation snippet. Successful
+// structured payloads are compacted instead of being discarded, so degraded
+// ReAct replies can still show the useful facts gathered by tools.
+func displayObservation(s Step) (observationDisplay, bool) {
+	if s.Obs.Source == "controller" {
+		return observationDisplay{}, false
+	}
+	if isInstructionalObservation(s) {
+		return observationDisplay{}, false
+	}
+	content := strings.TrimSpace(s.Obs.Content)
+	if content == "" && s.Obs.Error != nil {
+		content = strings.TrimSpace(s.Obs.Error.Error())
+	}
+	if content == "" {
+		return observationDisplay{}, false
+	}
+	failed := isToolFailure(s.Obs)
+	if looksPresentable(content) {
+		return observationDisplay{text: truncateForPrompt(content, 420), failed: failed}, true
+	}
+	if failed {
+		return observationDisplay{}, false
+	}
+	if summary := compactStructuredObservation(content); summary != "" {
+		return observationDisplay{text: truncateForPrompt(summary, 420), failed: false}, true
+	}
+	return observationDisplay{}, false
+}
+
+func isInstructionalObservation(s Step) bool {
+	source := strings.ToLower(strings.TrimSpace(s.Obs.Source))
+	tool := strings.ToLower(strings.TrimSpace(s.Action.Tool))
+	if source == "read_skill" || source == "read_skill_file" || tool == "read_skill" || tool == "read_skill_file" {
+		return true
+	}
+	content := strings.ToLower(strings.TrimSpace(s.Obs.Content))
+	return strings.HasPrefix(content, "<skill_content") || strings.Contains(content, "<skill_resources>")
+}
+
+// lastPresentableObservation returns the most recent successful readable
+// observation. Tool errors are only used when no successful evidence exists.
 func lastPresentableObservation(steps []Step) string {
+	if obs := lastObservationDisplay(steps, false); obs != "" {
+		return obs
+	}
+	return lastObservationDisplay(steps, true)
+}
+
+func lastObservationDisplay(steps []Step, includeFailures bool) string {
 	for i := len(steps) - 1; i >= 0; i-- {
-		s := steps[i]
-		if s.Obs.Source == "controller" {
+		obs, ok := displayObservation(steps[i])
+		if !ok {
 			continue
 		}
-		content := strings.TrimSpace(s.Obs.Content)
-		if content == "" && s.Obs.Error != nil {
-			content = strings.TrimSpace(s.Obs.Error.Error())
+		if obs.failed && !includeFailures {
+			continue
 		}
-		if looksPresentable(content) {
-			return truncateForPrompt(content, 420)
-		}
+		return obs.text
 	}
 	return ""
 }
@@ -475,26 +524,220 @@ func recentUsefulObservations(steps []Step, max int) []string {
 	if max <= 0 {
 		return nil
 	}
+	if out := recentObservationDisplays(steps, max, false); len(out) > 0 {
+		return out
+	}
+	return recentObservationDisplays(steps, max, true)
+}
+
+func recentObservationDisplays(steps []Step, max int, includeFailures bool) []string {
 	reversed := make([]string, 0, max)
 	for i := len(steps) - 1; i >= 0 && len(reversed) < max; i-- {
-		s := steps[i]
-		if s.Obs.Source == "controller" {
+		obs, ok := displayObservation(steps[i])
+		if !ok {
 			continue
 		}
-		content := strings.TrimSpace(s.Obs.Content)
-		if content == "" && s.Obs.Error != nil {
-			content = s.Obs.Error.Error()
+		if obs.failed && !includeFailures {
+			continue
 		}
-		if !looksPresentable(content) {
-			continue // skip raw JSON/control payloads — not a readable answer
-		}
-		reversed = append(reversed, truncateForPrompt(content, 420))
+		reversed = append(reversed, obs.text)
 	}
 	out := make([]string, len(reversed))
 	for i := range reversed {
 		out[len(reversed)-1-i] = reversed[i]
 	}
 	return out
+}
+
+func compactStructuredObservation(content string) string {
+	var decoded any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &decoded); err != nil {
+		return ""
+	}
+	return summarizeJSONValue(decoded)
+}
+
+func summarizeJSONValue(v any) string {
+	switch typed := v.(type) {
+	case map[string]any:
+		return summarizeJSONObject(typed)
+	case []any:
+		if len(typed) == 0 {
+			return "Tool returned an empty list."
+		}
+		parts := []string{fmt.Sprintf("Tool returned %d item(s).", len(typed))}
+		for i, item := range typed {
+			if i >= 2 {
+				break
+			}
+			if summary := summarizeJSONValue(item); summary != "" {
+				parts = append(parts, summary)
+			}
+		}
+		return strings.Join(parts, " ")
+	default:
+		if scalar, ok := scalarString(typed); ok {
+			return scalar
+		}
+	}
+	return ""
+}
+
+func summarizeJSONObject(obj map[string]any) string {
+	if output, ok := stringField(obj, "output"); ok && looksPresentable(output) {
+		return output
+	}
+	if results, ok := obj["results"].([]any); ok {
+		return summarizeSearchResults(obj, results)
+	}
+	if summary := summarizeFinanceObject(obj); summary != "" {
+		return summary
+	}
+
+	keys := []string{
+		"title", "name", "symbol", "ticker", "query", "status", "ok", "count",
+		"source", "url", "summary", "description", "reason", "message",
+	}
+	parts := make([]string, 0, 8)
+	seen := map[string]bool{}
+	for _, key := range keys {
+		if value, ok := obj[key]; ok {
+			if scalar, ok := scalarString(value); ok {
+				parts = append(parts, fmt.Sprintf("%s: %s", key, scalar))
+				seen[key] = true
+			}
+		}
+	}
+	for key, value := range obj {
+		if len(parts) >= 8 {
+			break
+		}
+		if seen[key] || isNoisyJSONKey(key) {
+			continue
+		}
+		if scalar, ok := scalarString(value); ok {
+			parts = append(parts, fmt.Sprintf("%s: %s", key, scalar))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
+}
+
+func summarizeSearchResults(obj map[string]any, results []any) string {
+	query, _ := stringField(obj, "query")
+	count := len(results)
+	if n, ok := scalarString(obj["result_count"]); ok {
+		query = strings.TrimSpace(query)
+		prefix := fmt.Sprintf("Search returned %s result(s)", n)
+		if query != "" {
+			prefix += " for " + query
+		}
+		return prefix + summarizeResultTitles(results)
+	}
+	prefix := fmt.Sprintf("Search returned %d result(s)", count)
+	if strings.TrimSpace(query) != "" {
+		prefix += " for " + query
+	}
+	return prefix + summarizeResultTitles(results)
+}
+
+func summarizeResultTitles(results []any) string {
+	titles := make([]string, 0, 2)
+	for _, item := range results {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		title, ok := firstStringField(obj, "title", "name")
+		if !ok {
+			continue
+		}
+		if url, ok := stringField(obj, "url"); ok && url != "" {
+			title += " (" + url + ")"
+		}
+		titles = append(titles, title)
+		if len(titles) == 2 {
+			break
+		}
+	}
+	if len(titles) == 0 {
+		return "."
+	}
+	return ": " + strings.Join(titles, "; ") + "."
+}
+
+func summarizeFinanceObject(obj map[string]any) string {
+	symbol, ok := firstStringField(obj, "symbol", "ticker")
+	if !ok {
+		return ""
+	}
+	name, _ := firstStringField(obj, "longName", "shortName", "name")
+	header := symbol
+	if name != "" && name != symbol {
+		header += " (" + name + ")"
+	}
+	fields := []string{"currentPrice", "regularMarketPrice", "marketCap", "sector", "industry", "forwardPE", "trailingPE", "targetMeanPrice", "recommendationKey", "fiftyTwoWeekRange"}
+	parts := []string{header}
+	for _, key := range fields {
+		if value, ok := obj[key]; ok {
+			if scalar, ok := scalarString(value); ok {
+				parts = append(parts, fmt.Sprintf("%s: %s", key, scalar))
+			}
+		}
+	}
+	if len(parts) == 1 {
+		return ""
+	}
+	return strings.Join(parts, "; ")
+}
+
+func firstStringField(obj map[string]any, keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := stringField(obj, key); ok {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func stringField(obj map[string]any, key string) (string, bool) {
+	value, ok := obj[key]
+	if !ok {
+		return "", false
+	}
+	return scalarString(value)
+}
+
+func scalarString(value any) (string, bool) {
+	switch typed := value.(type) {
+	case nil:
+		return "", false
+	case string:
+		t := strings.TrimSpace(typed)
+		if t == "" {
+			return "", false
+		}
+		return truncateForPrompt(t, 140), true
+	case float64:
+		return fmt.Sprintf("%v", typed), true
+	case bool:
+		return fmt.Sprintf("%t", typed), true
+	default:
+		return "", false
+	}
+}
+
+func isNoisyJSONKey(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "longbusinesssummary", "companyofficers", "calendar", "earnings",
+		"financialdata", "summarydetail", "defaultkeystatistics", "price",
+		"recommendationtrend", "upgradedowngradehistory":
+		return true
+	default:
+		return false
+	}
 }
 
 func reflectAfterRepeatedThinkErrors(ctx context.Context, env Env, taskInput string, steps []Step) (ReflectResponse, bool) {
