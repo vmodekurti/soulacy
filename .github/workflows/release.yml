@@ -271,6 +271,52 @@ jobs:
             | xargs sha256sum > checksums.sha256
           cat checksums.sha256
 
+      - name: Generate release update manifest
+        env:
+          VERSION: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import pathlib
+          from datetime import datetime, timezone
+
+          artifacts_dir = pathlib.Path("artifacts")
+          checksums = {}
+          for line in (artifacts_dir / "checksums.sha256").read_text().splitlines():
+              parts = line.split()
+              if len(parts) >= 2:
+                  checksums[parts[1]] = parts[0]
+
+          version = os.environ["VERSION"]
+          release_artifacts = []
+          for archive in sorted(artifacts_dir.glob(f"soulacy_{version}_*.tar.gz")):
+              suffix = archive.name.removeprefix(f"soulacy_{version}_").removesuffix(".tar.gz")
+              os_name, arch = suffix.rsplit("_", 1)
+              release_artifacts.append({
+                  "name": archive.name,
+                  "os": os_name,
+                  "arch": arch,
+                  "sha256": checksums.get(archive.name, ""),
+                  "bytes": archive.stat().st_size,
+              })
+
+          manifest = {
+              "product": "soulacy",
+              "version": version,
+              "commit": os.environ["COMMIT"],
+              "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+              "artifacts": release_artifacts,
+          }
+          (artifacts_dir / "release-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+          print((artifacts_dir / "release-manifest.json").read_text())
+          if not release_artifacts:
+              raise SystemExit("release-manifest.json has no artifacts")
+          if any(not item["sha256"] for item in release_artifacts):
+              raise SystemExit("release-manifest.json has an artifact without sha256")
+          PY
+
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
 
@@ -380,6 +426,7 @@ jobs:
             artifacts/checksums.sha256.sig
             artifacts/checksums.sha256.pem
             artifacts/checksums.sha256.cosign.bundle
+            artifacts/release-manifest.json
             artifacts/*.tar.gz.sig
             artifacts/*.tar.gz.pem
             artifacts/*.tar.gz.cosign.bundle
