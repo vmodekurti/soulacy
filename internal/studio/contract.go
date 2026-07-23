@@ -117,6 +117,7 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 	if draft.IsAgent() {
 		pass("architecture.fit", "Architecture fit", "This draft is a reasoning agent, so Studio will not force it into a brittle fixed workflow graph.")
 		assessReasoningAgentRules(draft, opts, add, pass)
+		assessCompletionContractRules(draft, add, pass)
 		return
 	}
 
@@ -146,6 +147,23 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 		for _, a := range bad {
 			add("agents.prompts", "Helper-agent prompts", "warn", a, "Helper agent \""+a+"\" has a very short or missing system prompt.", "Give each helper agent a self-contained role, constraints, available inputs, and expected output format.")
 		}
+	}
+	assessCompletionContractRules(draft, add, pass)
+}
+
+func assessCompletionContractRules(draft Draft, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {
+	errs, warns := completionContractValidateIssues(draft)
+	if len(errs) == 0 && len(warns) == 0 {
+		if requiresCompletionContract(draft) {
+			pass("completion.contract", "Completion contract", "The draft has an explicit done-condition contract for multi-step work.")
+		}
+		return
+	}
+	for _, e := range errs {
+		add("completion.contract", "Completion contract", "block", e.NodeID, e.Message, "Add the missing operation(s), set a real output route, or switch to an Auto reasoning agent for adaptive multi-step work.")
+	}
+	for _, w := range warns {
+		add("completion.contract", "Completion contract", "warn", w.NodeID, w.Message, "Add a completion contract and/or configure the missing output/storage route.")
 	}
 }
 

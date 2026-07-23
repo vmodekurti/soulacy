@@ -282,6 +282,12 @@ func Validate(draft Draft) ValidateResult {
 		res.Errors = append(res.Errors, outputErrors...)
 	}
 	res.Warnings = append(res.Warnings, outputWarnings...)
+	completionErrors, completionWarnings := completionContractValidateIssues(draft)
+	if len(completionErrors) > 0 {
+		res.Ok = false
+		res.Errors = append(res.Errors, completionErrors...)
+	}
+	res.Warnings = append(res.Warnings, completionWarnings...)
 	// "Python is for data glue, not for calling tools": a python step shelling out
 	// to a CLI is a blocker when an MCP is available (use the tool), else a warning.
 	shellBlocks, shellWarns := shellSmellIssues(draft)

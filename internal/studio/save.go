@@ -181,16 +181,8 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	if def.Trigger == agent.TriggerCron {
 		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
 			def.Schedule = &agent.Schedule{Cron: cron}
-			if draft.Output != nil {
-				out := &agent.ScheduleOutput{
-					Channel:  strings.TrimSpace(draft.Output.Channel),
-					To:       strings.TrimSpace(draft.Output.To),
-					BotName:  strings.TrimSpace(draft.Output.BotName),
-					Template: strings.TrimSpace(draft.Output.Template),
-				}
-				if out.Channel != "" && out.To != "" {
-					def.Schedule.Output = out
-				}
+			if out := scheduleOutputFromDraft(draft.Output); out != nil {
+				def.Schedule.Output = out
 			}
 		}
 	}
@@ -277,6 +269,9 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 	if def.Trigger == agent.TriggerCron {
 		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
 			def.Schedule = &agent.Schedule{Cron: cron}
+			if out := scheduleOutputFromDraft(draft.Output); out != nil {
+				def.Schedule.Output = out
+			}
 		}
 	}
 	if acceptPrivilegedExposure && len(def.Channels) > 0 {
@@ -337,6 +332,10 @@ func reactSystemPrompt(draft Draft) string {
 		b.WriteString("\n\n")
 		b.WriteString(reactLoopGuidance)
 	}
+	if contract := completionContractPrompt(draft); contract != "" && !strings.Contains(b.String(), completionContractHeading) {
+		b.WriteString("\n\n")
+		b.WriteString(contract)
+	}
 	if t := strings.TrimSpace(draft.Intent); t != "" {
 		if goal := "Goal: " + t; !strings.Contains(b.String(), goal) {
 			b.WriteString("\n\n")
@@ -346,6 +345,25 @@ func reactSystemPrompt(draft Draft) string {
 	// Self-heal prompts that already accumulated duplicate guidance paragraphs
 	// from earlier saves: keep the first occurrence, drop the rest, tidy blanks.
 	return dedupeParagraph(b.String(), reactLoopGuidance)
+}
+
+func scheduleOutputFromDraft(out *ScheduleOutput) *agent.ScheduleOutput {
+	if out == nil {
+		return nil
+	}
+	res := &agent.ScheduleOutput{
+		Channel:  strings.TrimSpace(out.Channel),
+		To:       strings.TrimSpace(out.To),
+		BotName:  strings.TrimSpace(out.BotName),
+		Template: strings.TrimSpace(out.Template),
+	}
+	if res.Channel == "" {
+		return nil
+	}
+	if res.To == "" {
+		return nil
+	}
+	return res
 }
 
 // dedupeParagraph keeps the first occurrence of para in text and removes every
@@ -610,6 +628,10 @@ func buildSystemPrompt(draft Draft) string {
 
 	if len(draft.Channels) > 0 {
 		fmt.Fprintf(&b, "Output: deliver results to the following channel(s): %s.\n\n", strings.Join(draft.Channels, ", "))
+	}
+	if contract := completionContractPrompt(draft); contract != "" && !strings.Contains(b.String(), completionContractHeading) {
+		b.WriteString(contract)
+		b.WriteString("\n\n")
 	}
 
 	if flowHasHostExecution(draft.Flow) {

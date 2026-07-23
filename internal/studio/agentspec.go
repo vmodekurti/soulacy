@@ -64,6 +64,7 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	sb.WriteString("- If delivery routing is uncertain or channel.send fails, call channel.status once and follow its diagnosis/fix instead of retrying channel.send with guessed fields.\n")
 	sb.WriteString("- For ordinary interactive replies, do not call channel.send just to answer the user. Return the answer normally; use channel.send only for explicit out-of-band delivery.\n")
 	sb.WriteString("- The system_prompt is where the procedure lives: spell out the steps as INSTRUCTIONS (e.g. \"create the notebook, then add EACH source one at a time, then start audio generation, then POLL the status until it reports ready, then deliver the link\").\n")
+	sb.WriteString("- The system_prompt MUST include a completion contract: the run is not done until every requested operation is complete. Raw search JSON, IDs, delivery receipts, or intermediate tool output are not final answers; if a later operation cannot complete, return a clear fallback naming the failed step.\n")
 	sb.WriteString("- ")
 	sb.WriteString(agentprompt.InstructionForBuilders())
 	sb.WriteString("\n")
