@@ -21,6 +21,10 @@ type controlJSONShape struct {
 	Action      json.RawMessage `json:"action"`
 	FinalAnswer string          `json:"final_answer"`
 	Output      string          `json:"output"`
+	Reply       string          `json:"reply"`
+	Answer      string          `json:"answer"`
+	Message     string          `json:"message"`
+	Text        string          `json:"text"`
 }
 
 // SanitizeFinalOutput returns a clean, user-facing answer for a reasoning run.
@@ -37,10 +41,13 @@ func SanitizeFinalOutput(output string, steps []Step) string {
 	if shape, ok := decodeControlJSON(body); ok {
 		// It decoded into the control shape — treat it as leaked control JSON and
 		// pull out any real answer the model did include.
-		if ans := firstNonEmpty(shape.FinalAnswer, shape.Output); strings.TrimSpace(ans) != "" {
+		if ans := firstNonEmpty(shape.FinalAnswer, shape.Output, shape.Reply, shape.Answer, shape.Message, shape.Text); strings.TrimSpace(ans) != "" {
 			return strings.TrimSpace(ans)
 		}
 		return gracefulFallback(steps)
+	}
+	if ans, ok := decodeAnswerEnvelope(body); ok {
+		return strings.TrimSpace(ans)
 	}
 	return output
 }
@@ -67,6 +74,49 @@ func decodeControlJSON(s string) (controlJSONShape, bool) {
 	}
 	isControl := shape.Thought != "" || shape.IsDone != nil || len(shape.Action) > 0
 	return shape, isControl
+}
+
+// decodeAnswerEnvelope unwraps a model's final-answer envelope, e.g.
+// {"output":"## Markdown..."} or {"reply":"Done"}. These are not tool/control
+// payloads; they are human answers accidentally wrapped as JSON by a provider
+// or prompt. Arbitrary JSON data remains untouched.
+func decodeAnswerEnvelope(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}") {
+		return "", false
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(s), &obj); err != nil {
+		return "", false
+	}
+	answerKeys := []string{"final_answer", "output", "reply", "answer", "message", "text"}
+	foundKey := ""
+	for _, key := range answerKeys {
+		if _, ok := obj[key]; ok {
+			foundKey = key
+			break
+		}
+	}
+	if foundKey == "" {
+		return "", false
+	}
+	allowed := map[string]bool{
+		foundKey:        true,
+		"updated_rules": true,
+		"confidence":    true,
+		"confident":     true,
+		"metadata":      true,
+	}
+	for key := range obj {
+		if !allowed[key] {
+			return "", false
+		}
+	}
+	var ans string
+	if err := json.Unmarshal(obj[foundKey], &ans); err != nil {
+		return "", false
+	}
+	return ans, strings.TrimSpace(ans) != ""
 }
 
 // gracefulFallback derives a readable answer when no clean one is available:

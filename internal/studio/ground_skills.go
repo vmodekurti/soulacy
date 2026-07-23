@@ -17,6 +17,7 @@ package studio
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 )
 
@@ -137,14 +138,73 @@ func groundSkills(draft *Draft, cat Catalog) []string {
 	}
 	intentLow := strings.ToLower(matchText)
 	intentTokens := tokenize(matchText)
+
+	// Only count DISTINCTIVE shared tokens. A token that appears in a large share
+	// of the installed skills (e.g. "data", "user", "analysis", "report") carries
+	// no signal — a long intent shares such words with hundreds of unrelated
+	// skills, which is exactly what flooded a stock agent with "wedding-immortalist"
+	// and "drone-inspection-specialist". Down-weighting them (IDF-style) means only
+	// genuinely on-topic skills — sharing rare words like "stock"/"ticker"/"quotes"
+	// — are injected, while still catching description matches like yfinance.
+	df := map[string]int{}
+	for _, e := range index {
+		for tok := range e.tokens {
+			df[tok]++
+		}
+	}
+	total := len(index)
+	distinctive := func(tok string) bool {
+		// Generic only in a catalog big enough to judge: a token in >25% of skills
+		// AND in more than 5 of them. Small catalogs keep every token meaningful.
+		d := df[tok]
+		return !(d > 5 && d*4 > total)
+	}
+	distinctiveOverlap := func(a, b map[string]bool) int {
+		n := 0
+		for t := range b {
+			if a[t] && distinctive(t) {
+				n++
+			}
+		}
+		return n
+	}
+
+	type cand struct {
+		name  string
+		score int
+	}
+	var cands []cand
 	for _, e := range index {
 		if chosen[e.name] {
 			continue
 		}
-		if nameMentioned(intentLow, e.name) || overlap(intentTokens, e.tokens) >= 2 {
-			if add(e.name) {
-				notes = append(notes, "Added installed skill \""+e.name+"\" — it matches your prompt.")
+		ov := distinctiveOverlap(intentTokens, e.tokens)
+		if nameMentioned(intentLow, e.name) || ov >= 2 {
+			score := ov
+			if nameMentioned(intentLow, e.name) {
+				score += 2 // an explicit name mention is the strongest signal
 			}
+			cands = append(cands, cand{name: e.name, score: score})
+		}
+	}
+	// Deterministic order: strongest match first, ties broken by name.
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		return cands[i].name < cands[j].name
+	})
+	// Safety cap: even with precise matching, never auto-attach a runaway number
+	// of skills to one agent. Beyond this the user should pick explicitly.
+	const maxInjectedSkills = 12
+	injected := 0
+	for _, c := range cands {
+		if injected >= maxInjectedSkills {
+			break
+		}
+		if add(c.name) {
+			injected++
+			notes = append(notes, "Added installed skill \""+c.name+"\" — it matches your prompt.")
 		}
 	}
 
