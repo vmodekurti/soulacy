@@ -48,11 +48,14 @@ func sanitizeFinalOutput(output string, steps []Step, unwrapAnswerEnvelope bool)
 	if trimmed == "" {
 		return gracefulFallback(steps)
 	}
+	if isPlaceholderFinalAnswer(trimmed) {
+		return gracefulFallback(steps)
+	}
 
 	body := stripJSONFence(trimmed)
 	// Fast path: the whole reply is the envelope.
 	if ans, ok := unwrapEnvelope(body, steps, unwrapAnswerEnvelope); ok {
-		return ans
+		return usableOrFallback(ans, steps)
 	}
 	// The model often appends prose AFTER the JSON object (or wraps the envelope
 	// in surrounding text), so the whole-string check above fails and the raw
@@ -60,7 +63,7 @@ func sanitizeFinalOutput(output string, steps []Step, unwrapAnswerEnvelope bool)
 	// balanced {…} object and try to unwrap just that.
 	if obj := firstJSONObject(body); obj != "" && obj != body {
 		if ans, ok := unwrapEnvelope(obj, steps, unwrapAnswerEnvelope); ok {
-			return ans
+			return usableOrFallback(ans, steps)
 		}
 	}
 	// Last-resort boundary guard: some providers return an object with leading
@@ -70,16 +73,23 @@ func sanitizeFinalOutput(output string, steps []Step, unwrapAnswerEnvelope bool)
 	// `{"thought":...,"is_done":true,"final_answer":"..."}` never reaches chat.
 	for _, obj := range jsonObjects(body) {
 		if ans, ok := unwrapEnvelope(obj, steps, unwrapAnswerEnvelope); ok {
-			return ans
+			return usableOrFallback(ans, steps)
 		}
 	}
 	if ans, ok := tolerantControlAnswer(body); ok {
-		return ans
+		return usableOrFallback(ans, steps)
 	}
 	if looksLikeSanitizerControlPayload(body) {
 		return gracefulFallback(steps)
 	}
 	return output
+}
+
+func usableOrFallback(answer string, steps []Step) string {
+	if isPlaceholderFinalAnswer(answer) {
+		return gracefulFallback(steps)
+	}
+	return strings.TrimSpace(answer)
 }
 
 // unwrapEnvelope pulls the real answer out of a leaked control-JSON step or a
@@ -294,17 +304,32 @@ func extractJSONStringField(s, key string) (string, bool) {
 // the most recent non-empty tool observation if it looks human-readable,
 // otherwise a short message pointing at the reasoning trace.
 func gracefulFallback(steps []Step) string {
+	if obs := lastObservationDisplay(steps, false); obs != "" {
+		return obs
+	}
+	if obs := lastObservationDisplay(steps, true); obs != "" {
+		return obs
+	}
 	for i := len(steps) - 1; i >= 0; i-- {
-		obs := strings.TrimSpace(steps[i].Obs.Content)
-		if obs == "" {
+		content := strings.TrimSpace(steps[i].Obs.Content)
+		if content == "" || isInstructionalObservation(steps[i]) {
 			continue
 		}
-		if looksReadable(obs) {
-			return obs
+		if looksReadable(content) {
+			return content
 		}
-		break
 	}
 	return "I worked through several reasoning steps but couldn't produce a clean final answer. Open the reasoning trace above to see what happened, or ask me to continue."
+}
+
+func isPlaceholderFinalAnswer(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "answer", "final_answer", "output", "reply", "message", "text",
+		"user-facing answer", "completed answer", "write the answer":
+		return true
+	default:
+		return false
+	}
 }
 
 // looksReadable rejects observations that are themselves control JSON, HTML, or

@@ -464,6 +464,9 @@ func displayObservation(s Step) (observationDisplay, bool) {
 	if s.Obs.Source == "controller" {
 		return observationDisplay{}, false
 	}
+	if isInstructionalObservation(s) {
+		return observationDisplay{}, false
+	}
 	content := strings.TrimSpace(s.Obs.Content)
 	if content == "" && s.Obs.Error != nil {
 		content = strings.TrimSpace(s.Obs.Error.Error())
@@ -482,6 +485,16 @@ func displayObservation(s Step) (observationDisplay, bool) {
 		return observationDisplay{text: truncateForPrompt(summary, 420), failed: false}, true
 	}
 	return observationDisplay{}, false
+}
+
+func isInstructionalObservation(s Step) bool {
+	source := strings.ToLower(strings.TrimSpace(s.Obs.Source))
+	tool := strings.ToLower(strings.TrimSpace(s.Action.Tool))
+	if source == "read_skill" || source == "read_skill_file" || tool == "read_skill" || tool == "read_skill_file" {
+		return true
+	}
+	content := strings.ToLower(strings.TrimSpace(s.Obs.Content))
+	return strings.HasPrefix(content, "<skill_content") || strings.Contains(content, "<skill_resources>")
 }
 
 // lastPresentableObservation returns the most recent successful readable

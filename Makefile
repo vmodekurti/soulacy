@@ -69,16 +69,20 @@ BINDIR ?= $(shell d=$$(command -v $(BINARY_GATEWAY) 2>/dev/null); if [ -n "$$d" 
 install: all
 	@echo "→ Installing to $(BINDIR)..."
 	@mkdir -p "$(BINDIR)"
-	@if cmp -s bin/$(BINARY_GATEWAY) "$(BINDIR)/$(BINARY_GATEWAY)" 2>/dev/null; then \
-	  echo "• $(BINARY_GATEWAY) already current in $(BINDIR)"; \
-	else \
-	  cp bin/$(BINARY_GATEWAY) "$(BINDIR)/$(BINARY_GATEWAY)"; \
-	fi
-	@if cmp -s bin/$(BINARY_CLI) "$(BINDIR)/$(BINARY_CLI)" 2>/dev/null; then \
-	  echo "• $(BINARY_CLI) already current in $(BINDIR)"; \
-	else \
-	  cp bin/$(BINARY_CLI) "$(BINDIR)/$(BINARY_CLI)"; \
-	fi
+	@install_bin() { \
+	  src="$$1"; dst="$(BINDIR)/$$2"; tmp="$${dst}.tmp.$$PPID"; \
+	  if [ -f "$$dst" ] && shasum -a 256 "$$src" "$$dst" 2>/dev/null | awk '{print $$1}' | uniq -d | grep -q .; then \
+	    echo "• $$2 already current in $(BINDIR)"; \
+	    return 0; \
+	  fi; \
+	  rm -f "$$tmp"; \
+	  cp "$$src" "$$tmp"; \
+	  chmod 0755 "$$tmp"; \
+	  command -v xattr >/dev/null 2>&1 && xattr -c "$$tmp" 2>/dev/null || true; \
+	  mv -f "$$tmp" "$$dst"; \
+	}; \
+	install_bin bin/$(BINARY_GATEWAY) $(BINARY_GATEWAY); \
+	install_bin bin/$(BINARY_CLI) $(BINARY_CLI)
 	@echo "✓ Installed soulacy and sy to $(BINDIR)"
 	@# Shadow check: confirm the copy we just wrote is the one PATH resolves.
 	@resolved=$$(command -v $(BINARY_GATEWAY) 2>/dev/null); \
