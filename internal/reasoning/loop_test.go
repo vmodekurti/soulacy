@@ -162,6 +162,18 @@ func (h *htmlExecutor) Execute(_ context.Context, call reasoning.ToolCall) reaso
 	}
 }
 
+type pendingAsyncExecutor struct{}
+
+func (p *pendingAsyncExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
+	if call.Tool == "mcp__notebooklm__studio_status" {
+		return reasoning.Observation{
+			Source:  call.Tool,
+			Content: `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`,
+		}
+	}
+	return reasoning.Observation{Source: call.Tool, Content: `{"status":"success","artifact_id":"audio_1"}`}
+}
+
 type htmlHistoryLLM struct {
 	thinkCalls int
 	sawRawHTML bool
@@ -1041,6 +1053,35 @@ func TestPlanExecuteDoesNotPublishRawObservationWhenFinalReflectFails(t *testing
 	}
 	if result.Confident {
 		t.Fatalf("empty final reflection should mark plan-execute run not confident")
+	}
+}
+
+func TestPlanExecuteDoesNotPublishPendingAsyncStatus(t *testing.T) {
+	pending := `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`
+	planSteps := []reasoning.PlannedStep{
+		{ID: "audio", Description: "create NotebookLM audio", Tool: "mcp__notebooklm__studio_create"},
+		{ID: "poll", Description: "poll until audio is ready", Tool: "mcp__notebooklm__studio_status", DependsOn: []string{"audio"}},
+	}
+	llm := &stubLLM{planSteps: planSteps, reflectOut: pending}
+
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"mcp__notebooklm__studio_create", "mcp__notebooklm__studio_status"},
+	}, llm, &pendingAsyncExecutor{})
+
+	result := loop.Run(context.Background(), "podcast-agent", "create a NotebookLM podcast")
+
+	if strings.HasPrefix(strings.TrimSpace(result.Output), "{") || strings.Contains(result.Output, `"in_progress"`) {
+		t.Fatalf("pending async JSON leaked into final output: %q", result.Output)
+	}
+	if !strings.Contains(strings.ToLower(result.Output), "still processing") {
+		t.Fatalf("expected pending async fallback, got %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("pending async finalization should mark plan-execute run not confident")
 	}
 }
 

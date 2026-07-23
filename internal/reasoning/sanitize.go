@@ -2,6 +2,7 @@ package reasoning
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -53,6 +54,9 @@ func sanitizeFinalOutput(output string, steps []Step, unwrapAnswerEnvelope bool)
 	}
 
 	body := stripJSONFence(trimmed)
+	if looksLikePendingAsyncPayload(body) {
+		return asyncIncompleteFallback(steps)
+	}
 	// Fast path: the whole reply is the envelope.
 	if ans, ok := unwrapEnvelope(body, steps, unwrapAnswerEnvelope); ok {
 		return usableOrFallback(ans, steps)
@@ -90,6 +94,20 @@ func usableOrFallback(answer string, steps []Step) string {
 		return gracefulFallback(steps)
 	}
 	return strings.TrimSpace(answer)
+}
+
+func asyncIncompleteFallback(steps []Step) string {
+	completed := 0
+	for _, step := range steps {
+		if step.Obs.Source == "controller" || strings.TrimSpace(step.Action.Tool) == "" || isToolFailure(step.Obs) {
+			continue
+		}
+		completed++
+	}
+	if completed > 0 {
+		return fmt.Sprintf("The workflow started an async artifact job, but the final artifact was still processing when the run ended. I did not publish the raw status payload as the final answer. Open the run trace to inspect the job status, or rerun after it finishes. Completed tool steps: %d.", completed)
+	}
+	return "The workflow started an async artifact job, but the final artifact was still processing when the run ended. I did not publish the raw status payload as the final answer. Open the run trace to inspect the job status, or rerun after it finishes."
 }
 
 // unwrapEnvelope pulls the real answer out of a leaked control-JSON step or a
@@ -237,6 +255,76 @@ func looksLikeSanitizerControlPayload(s string) bool {
 	low := strings.ToLower(s)
 	return strings.Contains(low, `"thought"`) &&
 		(strings.Contains(low, `"action"`) || strings.Contains(low, `"is_done"`) || strings.Contains(low, `"final_answer"`))
+}
+
+func looksLikePendingAsyncPayload(s string) bool {
+	s = strings.TrimSpace(s)
+	if !(strings.HasPrefix(s, "{") || strings.HasPrefix(s, "[")) {
+		return false
+	}
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return false
+	}
+	return containsPendingAsyncSignal(v)
+}
+
+func containsPendingAsyncSignal(v any) bool {
+	pendingStatus := map[string]bool{
+		"in_progress": true, "inprogress": true, "in-progress": true,
+		"pending": true, "running": true, "processing": true,
+		"generating": true, "queued": true, "working": true,
+		"started": true, "not_ready": true, "notready": true, "waiting": true,
+	}
+	pendingCounters := map[string]bool{
+		"in_progress": true, "inprogress": true, "pending": true,
+		"processing": true, "running": true, "queued": true,
+	}
+
+	switch x := v.(type) {
+	case map[string]any:
+		for k, val := range x {
+			key := strings.ToLower(strings.TrimSpace(k))
+			if key == "status" || key == "state" || key == "phase" {
+				if s, ok := val.(string); ok && pendingStatus[strings.ToLower(strings.TrimSpace(s))] {
+					return true
+				}
+			}
+			if pendingCounters[key] {
+				if n, ok := jsonNumberToFloat(val); ok && n > 0 {
+					return true
+				}
+			}
+			if containsPendingAsyncSignal(val) {
+				return true
+			}
+		}
+	case []any:
+		for _, item := range x {
+			if containsPendingAsyncSignal(item) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func jsonNumberToFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
 }
 
 // tolerantControlAnswer extracts a JSON-string final_answer/output/etc from a

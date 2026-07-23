@@ -60,12 +60,12 @@ builder automatically from the live catalog; add OUTPUT shapes here.)
 - queue_list — input {queue, limit}; output {ok,count,items:[{id,item,created_at,expires_at}]} without removing items. queue defaults to "default".
 - queue_clear — input {queue}; output {ok,cleared}. queue defaults to "default".
 - (add your tools below, e.g.)
-- mcp__notebooklm__notebook_create — output {notebook_id, title}; the notebook id is
+- mcp__notebooklm__notebook_create — input {title}. Do not use {name}. output {notebook_id, title}; the notebook id is
   {{ .<output>.notebook_id }}.
-- mcp__notebooklm__source_add — input {notebook_id, source_type, urls (array of strings), wait (boolean)}.
-- mcp__notebooklm__studio_create — input {notebook_id, artifact_type}.
+- mcp__notebooklm__source_add — input {notebook_id, source_type, url|text|file_path, wait}. Do not use {content}. For fetched article text use {"notebook_id":"...","source_type":"text","text":"...","wait":true}; for multiple URLs, add sources one at a time unless the live tool schema explicitly supports urls[].
+- mcp__notebooklm__studio_create — input {notebook_id, artifact_type}. If it returns pending_confirmation, retry once with {notebook_id, artifact_type, confirm:true}.
 - mcp__notebooklm__studio_status — input needs the notebook id (notebook_id),
-  not the audio/artifact id.
+  not the audio/artifact id. Poll until the status/artifact is completed and an audio_url or final artifact link exists; never treat completed:0, in_progress>0, pending, running, or generating status JSON as a final answer.
 `
 
 // RulesPromptBlock wraps the (possibly user-edited) rulebook for injection into

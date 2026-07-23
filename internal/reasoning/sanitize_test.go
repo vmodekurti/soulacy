@@ -130,6 +130,29 @@ func TestSanitize_LegitJSONAnswerPreserved(t *testing.T) {
 	}
 }
 
+func TestSanitize_PendingAsyncStatusFallsBack(t *testing.T) {
+	in := `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`
+	steps := []Step{
+		{ID: "audio", Action: ToolCall{Tool: "mcp__notebooklm__studio_create"}, Obs: Observation{Source: "mcp__notebooklm__studio_create", Content: `{"status":"success","artifact_id":"audio_1"}`}},
+		{ID: "poll", Action: ToolCall{Tool: "mcp__notebooklm__studio_status"}, Obs: Observation{Source: "mcp__notebooklm__studio_status", Content: in}},
+	}
+	got := SanitizeFinalOutput(in, steps)
+	low := strings.ToLower(got)
+	if strings.HasPrefix(strings.TrimSpace(got), "{") || strings.Contains(got, `"in_progress"`) {
+		t.Fatalf("pending async status leaked into output: %q", got)
+	}
+	if !strings.Contains(low, "still processing") || !strings.Contains(low, "raw status payload") {
+		t.Fatalf("expected async incomplete fallback, got %q", got)
+	}
+}
+
+func TestSanitize_CompletedAsyncJSONPreserved(t *testing.T) {
+	in := `{"status":"success","summary":{"total":1,"completed":1,"in_progress":0},"artifacts":[{"artifact_id":"audio_1","status":"completed","audio_url":"https://example.com/audio.mp3"}]}`
+	if got := SanitizeFinalOutput(in, nil); got != in {
+		t.Fatalf("completed structured payload was altered: %q", got)
+	}
+}
+
 func TestSanitizeControlOutput_PreservesStructuredAnswerJSON(t *testing.T) {
 	in := `{"answer":"fixed"}`
 	if got := SanitizeControlOutput(in, nil); got != in {
