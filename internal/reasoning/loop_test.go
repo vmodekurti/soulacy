@@ -130,6 +130,28 @@ func (r *recordingExecutor) Execute(_ context.Context, call reasoning.ToolCall) 
 	return reasoning.Observation{Content: "ok", Source: call.Tool}
 }
 
+type stockJSONExecutor struct {
+	calls []reasoning.ToolCall
+}
+
+func (s *stockJSONExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
+	s.calls = append(s.calls, call)
+	if _, ok := call.Arguments["symbol"]; ok {
+		return reasoning.Observation{
+			Content: `tool error: Error executing tool get_stock_info: ticker Field required [type=missing, input_value={"symbol":"V"}]`,
+			Source:  call.Tool,
+		}
+	}
+	switch call.Arguments["ticker"] {
+	case "V":
+		return reasoning.Observation{Source: call.Tool, Content: `{"symbol":"V","longName":"Visa Inc.","currentPrice":352.49,"marketCap":680000000000,"sector":"Financial Services","industry":"Credit Services","forwardPE":28.1,"targetMeanPrice":402.66,"recommendationKey":"buy"}`}
+	case "MSFT":
+		return reasoning.Observation{Source: call.Tool, Content: `{"symbol":"MSFT","longName":"Microsoft Corporation","currentPrice":505.75,"marketCap":3750000000000,"sector":"Technology","industry":"Software - Infrastructure","forwardPE":32.1,"targetMeanPrice":555.75,"recommendationKey":"buy"}`}
+	default:
+		return reasoning.Observation{Source: call.Tool, Content: `{"symbol":"WMT","longName":"Walmart Inc.","currentPrice":97.44,"marketCap":780000000000,"sector":"Consumer Defensive","recommendationKey":"buy"}`}
+	}
+}
+
 type htmlExecutor struct{}
 
 func (h *htmlExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
@@ -638,6 +660,45 @@ func TestReActFallsBackToUsefulObservationWhenThinkAndReflectAreInvalid(t *testi
 	}
 	if !strings.Contains(result.Output, "best available result") || !strings.Contains(result.Output, "ok") {
 		t.Fatalf("unexpected fallback output: %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("invalid Think fallback should mark the run not confident")
+	}
+}
+
+func TestReActFallbackPrefersSuccessfulStructuredObservationsOverEarlierToolError(t *testing.T) {
+	llm := &scriptedLLM{
+		responses: []reasoning.ThinkResponse{
+			{Thought: "wrong arg", IsDone: false, Action: reasoning.ToolCall{Tool: "mcp__yahoo-finance__get_stock_info", Arguments: map[string]any{"symbol": "V"}}},
+			{Thought: "retry visa", IsDone: false, Action: reasoning.ToolCall{Tool: "mcp__yahoo-finance__get_stock_info", Arguments: map[string]any{"ticker": "V"}}},
+			{Thought: "get microsoft", IsDone: false, Action: reasoning.ToolCall{Tool: "mcp__yahoo-finance__get_stock_info", Arguments: map[string]any{"ticker": "MSFT"}}},
+			{},
+			{},
+		},
+		reflectOutputs: []string{
+			"I will now summarize the successful stock data.",
+			"I will now summarize the successful stock data.",
+		},
+	}
+	exec := &stockJSONExecutor{}
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyReAct,
+		MaxSteps:     10,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"mcp__yahoo-finance__get_stock_info"},
+	}, llm, exec)
+
+	result := loop.Run(context.Background(), "stock-advisor", "best stocks")
+
+	if !strings.Contains(result.Output, "Visa Inc.") || !strings.Contains(result.Output, "Microsoft Corporation") {
+		t.Fatalf("fallback did not include successful structured observations: %q", result.Output)
+	}
+	if strings.Contains(result.Output, "ticker Field required") || strings.Contains(result.Output, "tool error:") {
+		t.Fatalf("fallback should not prefer earlier tool error over later success: %q", result.Output)
+	}
+	if strings.Contains(result.Output, `{"symbol"`) {
+		t.Fatalf("fallback should compact structured JSON instead of dumping it: %q", result.Output)
 	}
 	if result.Confident {
 		t.Fatalf("invalid Think fallback should mark the run not confident")
