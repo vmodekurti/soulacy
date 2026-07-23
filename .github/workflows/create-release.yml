@@ -1,0 +1,86 @@
+name: Create Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version to create, for example v0.1.0"
+        required: true
+        type: string
+      target_ref:
+        description: "Commit, branch, or tag to release"
+        required: false
+        default: "main"
+        type: string
+      dry_run:
+        description: "Validate only; do not create or push the tag"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: create-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  create-tag:
+    name: Create release tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.target_ref }}
+
+      - name: Validate release request
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ inputs.version }}"
+          target_ref="${{ inputs.target_ref }}"
+
+          if [[ ! "${version}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Version must look like v1.2.3 or v1.2.3-rc.1; got '${version}'"
+            exit 2
+          fi
+
+          git fetch --tags origin
+          if git ls-remote --exit-code --tags origin "refs/tags/${version}" >/dev/null 2>&1; then
+            echo "::error::Release tag '${version}' already exists on origin."
+            exit 1
+          fi
+
+          commit="$(git rev-parse HEAD)"
+          short_commit="$(git rev-parse --short HEAD)"
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "commit=${commit}" >> "${GITHUB_OUTPUT}"
+          echo "short_commit=${short_commit}" >> "${GITHUB_OUTPUT}"
+
+          echo "Release request is valid."
+          echo "Version: ${version}"
+          echo "Target: ${target_ref} (${short_commit})"
+
+      - name: Dry run summary
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "Dry run only. Would create tag '${{ steps.release.outputs.version }}' at ${{ steps.release.outputs.short_commit }}."
+
+      - name: Create and push release tag
+        if: ${{ !inputs.dry_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release.outputs.version }}"
+          commit="${{ steps.release.outputs.commit }}"
+
+          git config user.name "soulacy-release-bot"
+          git config user.email "bot@soulacy.local"
+          git tag -a "${version}" "${commit}" -m "Soulacy ${version}"
+          git push origin "refs/tags/${version}"
+
+          echo "Created ${version} at ${{ steps.release.outputs.short_commit }}."
+          echo "The tag push will trigger .github/workflows/release.yml."
