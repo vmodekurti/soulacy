@@ -3067,6 +3067,37 @@ Use null for fields that are not present.`
   // Live-transcript state for a streamed generate.
   let pipelineLog = [] // [{phase, status, message, payload}]
   let pipelineRunning = false
+  // Progress modal: shown while any generation is in flight so the user can see
+  // what's happening instead of staring at a blank/"Compiling…" canvas. It works
+  // for BOTH the streamed pipeline (pipelineRunning, with real per-phase events)
+  // and the classic refine→compile path (refining/compiling, no sub-events).
+  // `pipelineModalHidden` lets them dismiss the overlay and let it run on.
+  let pipelineModalHidden = false
+  $: genBusy = pipelineRunning || compiling || refining
+  $: pipelineLatest = pipelineLog.length ? pipelineLog[pipelineLog.length - 1] : null
+  // Real backend phase names (from internal/studio/generatepipeline.go) — not
+  // invented UI copy. Used to label the streamed events the server actually
+  // emits, and to derive the current-operation line.
+  function phaseLabel(phase) {
+    switch (phase) {
+      case 'clarify_intent':  return 'Clarifying intent'
+      case 'choose_strategy': return 'Choosing strategy'
+      case 'build_graph':     return 'Building the graph'
+      case 'validate':        return 'Validating'
+      case 'repair':          return 'Repairing wiring'
+      default:                return phase || 'Working'
+    }
+  }
+  // The one-line "what's happening right now", reflecting the real operation in
+  // flight rather than a scripted step. The refine and compile calls ARE real
+  // builder-model calls; the streamed path names its actual current phase.
+  $: genStatusText = refining
+      ? 'Refining your prompt into a build-ready spec…'
+      : pipelineRunning
+        ? (pipelineLatest ? phaseLabel(pipelineLatest.phase) + '…' : 'Starting the build pipeline…')
+        : compiling
+          ? 'Asking the builder model to write the workflow…'
+          : 'Working…'
 
   $: providerOptions = (catalog && catalog.providers && catalog.providers.providers)
     ? Object.keys(catalog.providers.providers) : []
@@ -3136,6 +3167,7 @@ Use null for fields that are not present.`
       if (!ok) return
     }
     pipelineRunning = true
+    pipelineModalHidden = false
     pipelineLog = []
     compileError = ''
     try {
@@ -4329,8 +4361,11 @@ Use null for fields that are not present.`
           </div>
         {/if}
 
-        <!-- ── Story 9 M (Cohort C): streamed generate pipeline transcript ── -->
-        {#if pipelineRunning || pipelineLog.length}
+        <!-- ── Story 9 M (Cohort C): streamed generate pipeline transcript ──
+             Hidden while the progress modal is on screen (it shows the same
+             phases); reappears as the post-run summary, or as the live
+             transcript if the user ran the modal in the background. -->
+        {#if (pipelineRunning || pipelineLog.length) && !(pipelineRunning && !pipelineModalHidden)}
           <div class="panel build-progress">
             <div class="build-head">
               {#if pipelineRunning}<span class="spinner" aria-hidden="true"></span>{/if}
@@ -5241,6 +5276,44 @@ Use null for fields that are not present.`
     </div>
   {/if}
 
+  <!-- Generate progress modal — a centered overlay with a phase stepper so the
+       user can see what the (often slow) build pipeline is doing instead of
+       staring at an empty canvas. Dismissible to run in the background. -->
+  {#if genBusy && !pipelineModalHidden}
+    <div class="modal-backdrop" role="presentation">
+      <div class="modal gen-progress-modal" role="dialog" aria-modal="true"
+           aria-labelledby="gen-progress-title" aria-live="polite">
+        <h2 id="gen-progress-title" class="modal-title">Generating your workflow</h2>
+        <div class="gen-status">
+          <span class="spinner" aria-hidden="true"></span>
+          <span>{genStatusText}</span>
+        </div>
+        {#if pipelineLog.length}
+          <!-- Real events streamed by the build pipeline — the actual phase and
+               the server's own message for it (refined spec, chosen strategy,
+               node/agent counts, validation verdict, repairs). Newest last. -->
+          <ul class="gen-events">
+            {#each pipelineLog as ev}
+              <li class="gen-ev gen-ev-{ev.status}">
+                <span class="gen-ev-phase">{phaseLabel(ev.phase)}</span>
+                {#if ev.message}<span class="gen-ev-msg">{ev.message}</span>{/if}
+              </li>
+            {/each}
+          </ul>
+        {:else}
+          <p class="gen-latest">
+            This calls the builder model ({studioModelLabel || 'your builder model'}). A
+            complex prompt can take a minute — switch to Streamed mode to watch each
+            phase as it runs.
+          </p>
+        {/if}
+        <div class="modal-actions">
+          <button class="btn" type="button" on:click={() => (pipelineModalHidden = true)}>Run in background</button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
   <!-- Consent dialog (M2): shown before saving a privileged, channel-bound
        workflow, or on the server's 409 consent fallback. -->
   <!-- Full prompt viewer/editor — the top bar truncates long prompts. -->
@@ -5810,6 +5883,18 @@ Use null for fields that are not present.`
   /* Maximize states: one frame fills the editor, the others fold away. */
   .body.max-canvas .workbench, .body.max-canvas .wb-splitter,
   .body.max-canvas .insp-host, .body.max-canvas .insp-splitter { display: none; }
+  /* Focus the canvas: maximizing hides not just the side/bottom frames but the
+     rest of the surrounding chrome too — the palette, the explainer / builder-
+     guardrail / validation strips, the "needs setup" cards and the security
+     panel — so only the workflow graph (and its compact toolbar) remains.
+     Restore everything with the ⤡ button on the canvas or the Esc key. */
+  .body.max-canvas .center .strip,
+  .body.max-canvas .center .explain-panel,
+  .body.max-canvas .center .needs-setup,
+  .body.max-canvas .center .security-panel { display: none; }
+  /* Palette is a child component, so its root needs :global to match under the
+     scoped .body.max-canvas ancestor. */
+  .body.max-canvas :global(.palette) { display: none; }
   .body.max-bench .canvas, .body.max-bench .wb-splitter,
   .body.max-bench .insp-host, .body.max-bench .insp-splitter { display: none; }
   .body.max-bench .workbench { flex: 1 1 auto; max-height: none !important; }
@@ -5928,7 +6013,12 @@ Use null for fields that are not present.`
     min-width: 0;
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    /* Scroll vertically when the chrome above the canvas (strips, explainer,
+       needs-setup) plus the security panel below it exceed the viewport — the
+       canvas keeps its min-height and the whole column scrolls so the bottom
+       (security review, recommendations) is always reachable. */
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   /* Transparency strips */
@@ -6853,6 +6943,25 @@ Use null for fields that are not present.`
   /* The Studio model modal carries a lot more than the model list (two preset
      groups too), so it gets a wider frame and lays the presets out side by side
      instead of stacking everything into a cramped 460px column. */
+  /* Generate progress modal. */
+  .gen-progress-modal { width: min(480px, 92vw); }
+  .gen-status { display: flex; align-items: center; gap: 10px; margin: 6px 0 12px; font-size: 13px; font-weight: 600; color: var(--text); }
+  .gen-events {
+    list-style: none; margin: 0; padding: 8px 10px;
+    display: flex; flex-direction: column; gap: 6px;
+    max-height: 260px; overflow-y: auto;
+    border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+    border-radius: 8px;
+    background: color-mix(in srgb, var(--bg) 55%, transparent);
+  }
+  .gen-ev { font-size: 12px; line-height: 1.45; color: var(--text-muted); display: flex; gap: 8px; align-items: baseline; }
+  .gen-ev-phase { flex: none; font-weight: 600; color: var(--text); min-width: 108px; }
+  .gen-ev-msg { color: var(--text-muted); }
+  .gen-ev.gen-ev-complete .gen-ev-phase { color: #4caf82; }
+  .gen-ev.gen-ev-error .gen-ev-phase { color: var(--error, #f06060); }
+  .gen-ev.gen-ev-skip { opacity: .6; }
+  .gen-latest { margin: 10px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+
   .modal.model-modal { width: min(760px, 94vw); }
   .mp-preset-row input[type="radio"] {
     margin-top: 3px;
@@ -7272,6 +7381,11 @@ Use null for fields that are not present.`
     border-radius: 8px;
     padding: .35rem .6rem;
     font-size: .78rem;
+    /* Don't let a long review (blockers + warnings + recs) grow unbounded and
+       push the canvas off-screen — cap it and let its own body scroll. */
+    flex: 0 0 auto;
+    max-height: 42vh;
+    overflow-y: auto;
   }
   .security-panel.has-warnings { border-color: rgba(245,167,66,.4); }
   .security-panel.has-blockers { border-color: rgba(240,96,96,.45); }

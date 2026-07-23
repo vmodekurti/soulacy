@@ -89,3 +89,19 @@ func LocalHTTPClient(timeout time.Duration) *http.Client {
 		Timeout:   timeout,
 	}
 }
+
+// LongGenHTTPClient is for cloud providers whose response can withhold headers
+// for a long time — notably a NON-STREAMING completion, where the provider
+// sends no response headers until the entire body has been generated. The
+// shared transport's 120s ResponseHeaderTimeout would abort such a legitimate
+// long generation with "timeout awaiting response headers" (seen with large
+// reasoning models like glm/qwen served over an OpenAI-compatible endpoint), so
+// this client uses a transport with NO header cap and relies on the overall
+// timeout (and the request context) as the single upper bound. Pass a generous
+// timeout; pass 0 to let the context be the only bound.
+func LongGenHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: LocalTransport(),
+		Timeout:   timeout,
+	}
+}

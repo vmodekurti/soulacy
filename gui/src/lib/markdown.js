@@ -58,6 +58,94 @@ DOMPurify.addHook('afterSanitizeAttributes', (node) => {
   }
 })
 
+// Video support (untrusted content, so defense-in-depth). We let <video>/<source>
+// through for direct file playback and <iframe> ONLY for known video-embed hosts.
+// Any iframe whose src is not a whitelisted embed URL is dropped — an agent can't
+// smuggle an arbitrary iframe past this even though the tag is allowed.
+const VIDEO_FILE_RE = /\.(mp4|webm|ogg|ogv|mov|m4v)(\?[^#\s]*)?(#[^\s]*)?$/i
+const EMBED_HOST_RE = /^https:\/\/(www\.)?(youtube\.com\/embed\/|player\.vimeo\.com\/video\/)/i
+DOMPurify.addHook('uponSanitizeElement', (node, data) => {
+  if (data.tagName !== 'iframe') return
+  const src = (node.getAttribute && node.getAttribute('src')) || ''
+  if (!EMBED_HOST_RE.test(src)) {
+    // Not a trusted embed — remove the element entirely.
+    if (node.parentNode) node.parentNode.removeChild(node)
+  }
+})
+
+// Map a YouTube / Vimeo watch URL to its privacy-friendly embed URL, or null if
+// the URL isn't a recognised video host.
+function toEmbedURL(href) {
+  try {
+    const u = new URL(href)
+    const host = u.hostname.replace(/^www\./, '')
+    if (host === 'youtu.be') {
+      const id = u.pathname.slice(1)
+      if (id) return `https://www.youtube.com/embed/${encodeURIComponent(id)}`
+    }
+    if (host === 'youtube.com' || host === 'm.youtube.com') {
+      if (u.pathname === '/watch') {
+        const id = u.searchParams.get('v')
+        if (id) return `https://www.youtube.com/embed/${encodeURIComponent(id)}`
+      }
+      if (u.pathname.startsWith('/shorts/')) {
+        const id = u.pathname.split('/')[2]
+        if (id) return `https://www.youtube.com/embed/${encodeURIComponent(id)}`
+      }
+    }
+    if (host === 'vimeo.com') {
+      const id = (u.pathname.match(/\/(\d+)/) || [])[1]
+      if (id) return `https://player.vimeo.com/video/${encodeURIComponent(id)}`
+    }
+  } catch (_) { /* not a URL */ }
+  return null
+}
+
+// Replace links that point at a playable video with an inline player. Runs on the
+// parsed-but-unsanitized HTML; DOMPurify (below) then vets the result, so even
+// the markup we inject is subject to the same sanitisation as everything else.
+function embedVideos(html) {
+  if (!html || (!html.includes('<a ') && !html.includes('http'))) return html
+  let doc
+  try {
+    doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
+  } catch (_) {
+    return html
+  }
+  const root = doc.body.firstChild
+  if (!root) return html
+  root.querySelectorAll('a[href]').forEach((a) => {
+    // Only convert "bare" links (link text equals the href) so we never eat a
+    // link the author deliberately wrapped around words.
+    const href = a.getAttribute('href') || ''
+    const bare = (a.textContent || '').trim() === href.trim()
+    if (!bare) return
+    if (VIDEO_FILE_RE.test(href)) {
+      const v = doc.createElement('video')
+      v.setAttribute('controls', '')
+      v.setAttribute('preload', 'metadata')
+      v.setAttribute('src', href)
+      v.className = 'md-video'
+      a.replaceWith(v)
+      return
+    }
+    const embed = toEmbedURL(href)
+    if (embed) {
+      const wrap = doc.createElement('div')
+      wrap.className = 'md-embed'
+      const f = doc.createElement('iframe')
+      f.setAttribute('src', embed)
+      f.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture')
+      f.setAttribute('allowfullscreen', '')
+      f.setAttribute('loading', 'lazy')
+      f.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin')
+      wrap.appendChild(f)
+      a.replaceWith(wrap)
+    }
+  })
+  return root.innerHTML
+}
+
 /**
  * Parse markdown (with math) into sanitized HTML safe for `{@html}`.
  * @param {string} text
@@ -81,11 +169,15 @@ export function parseMarkdown(text) {
   let html
   try {
     html = marked.parse(str, { async: false })
+    html = embedVideos(html)
   } catch (_) {
     // Never let a parse error break the bubble — fall back to escaped text.
     return DOMPurify.sanitize(str)
   }
-  return DOMPurify.sanitize(html, { ADD_ATTR: ['target', 'rel'] })
+  return DOMPurify.sanitize(html, {
+    ADD_TAGS: ['video', 'source', 'iframe'],
+    ADD_ATTR: ['target', 'rel', 'controls', 'preload', 'src', 'type', 'allow', 'allowfullscreen', 'loading', 'referrerpolicy', 'frameborder'],
+  })
 }
 
 // ── Mermaid (initialized lazily, once) ───────────────────────────────────────

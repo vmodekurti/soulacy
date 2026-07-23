@@ -212,3 +212,31 @@
   padding: 2px 0;
 }
 .markdown-body .katex { font-size: 1.05em; }
+
+/* Inline video: a direct .mp4/.webm/etc link becomes a real player. */
+.markdown-body .md-video {
+  display: block;
+  max-width: 100%;
+  max-height: 420px;
+  margin: 0.7em 0;
+  border-radius: 8px;
+  background: #000;
+}
+/* YouTube / Vimeo embed: responsive 16:9 frame. */
+.markdown-body .md-embed {
+  position: relative;
+  width: 100%;
+  max-width: 640px;
+  margin: 0.7em 0;
+  aspect-ratio: 16 / 9;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+.markdown-body .md-embed iframe {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}

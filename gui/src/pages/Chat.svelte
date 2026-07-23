@@ -543,7 +543,7 @@
     if (!part) return ''
     if (part.url) return part.url
     if (part.data) {
-      const mime = part.mime_type || (part.type === 'image' ? 'image/png' : part.type === 'audio' ? 'audio/mpeg' : 'application/octet-stream')
+      const mime = part.mime_type || (part.type === 'image' ? 'image/png' : part.type === 'audio' ? 'audio/mpeg' : part.type === 'video' ? 'video/mp4' : 'application/octet-stream')
       return `data:${mime};base64,${part.data}`
     }
     return ''
@@ -580,6 +580,29 @@
     }
   }
 
+  // True when an attachment is a video, by mime type or filename extension —
+  // used to render an inline <video> player instead of a download chip.
+  function isVideoAttachment(a) {
+    if (!a) return false
+    const mt = (a.mime_type || a.mimeType || a.content_type || '').toLowerCase()
+    if (mt.startsWith('video/')) return true
+    const name = (a.filename || a.name || '').toLowerCase()
+    return /\.(mp4|webm|ogg|ogv|mov|m4v)$/.test(name)
+  }
+
+  // Object URLs for playing already-sent video attachments inline (fetched lazily
+  // on first play), keyed by attachment id. Revoked on thread teardown.
+  let attachmentVideoUrls = {}
+  async function playAttachment(a) {
+    if (!activeThread || !a?.id || attachmentVideoUrls[a.id]) return
+    try {
+      const res = await api.downloadChatAttachment(activeThread.agentId, activeThread.sessionId, a.id, a.filename)
+      attachmentVideoUrls = { ...attachmentVideoUrls, [a.id]: URL.createObjectURL(res.blob) }
+    } catch (e) {
+      error = e.message || 'Could not load video'
+    }
+  }
+
   async function uploadFiles(files) {
     if (!activeThread?.agentId || !activeThread?.sessionId || !files?.length) return
     uploadingAttachment = true
@@ -587,7 +610,15 @@
     try {
       for (const file of Array.from(files)) {
         const res = await api.uploadChatAttachment(activeThread.agentId, activeThread.sessionId, file)
-        if (res?.attachment) pendingAttachments = [...pendingAttachments, res.attachment]
+        if (res?.attachment) {
+          const att = res.attachment
+          // Keep a local object URL so the user can preview the video they just
+          // attached, before it's ever sent. Revoked in removePendingAttachment.
+          if ((file.type || '').startsWith('video/') || isVideoAttachment(att)) {
+            att._previewUrl = URL.createObjectURL(file)
+          }
+          pendingAttachments = [...pendingAttachments, att]
+        }
       }
     } catch (e) {
       error = e.message || 'Upload failed'
@@ -598,6 +629,8 @@
   }
 
   function removePendingAttachment(id) {
+    const a = pendingAttachments.find(x => x.id === id)
+    if (a && a._previewUrl) { try { URL.revokeObjectURL(a._previewUrl) } catch (_) { /* noop */ } }
     pendingAttachments = pendingAttachments.filter(a => a.id !== id)
   }
 
@@ -1702,10 +1735,22 @@
                   {#if msg.attachments && msg.attachments.length}
                     <div class="attachment-chips sent">
                       {#each msg.attachments as a (a.id)}
-                        <button class="attachment-chip" on:click={() => downloadAttachment(a)} title="Download {a.filename}">
-                          <span class="attachment-name">{a.filename}</span>
-                          <span class="attachment-size">{artifactSize(a.size_bytes)}</span>
-                        </button>
+                        {#if isVideoAttachment(a)}
+                          {#if attachmentVideoUrls[a.id]}
+                            <!-- svelte-ignore a11y-media-has-caption -->
+                            <video class="attachment-video" controls preload="metadata" src={attachmentVideoUrls[a.id]}></video>
+                          {:else}
+                            <button class="attachment-chip" on:click={() => playAttachment(a)} title="Play {a.filename}">
+                              <span class="attachment-name">▶ {a.filename}</span>
+                              <span class="attachment-size">{artifactSize(a.size_bytes)}</span>
+                            </button>
+                          {/if}
+                        {:else}
+                          <button class="attachment-chip" on:click={() => downloadAttachment(a)} title="Download {a.filename}">
+                            <span class="attachment-name">{a.filename}</span>
+                            <span class="attachment-size">{artifactSize(a.size_bytes)}</span>
+                          </button>
+                        {/if}
                       {/each}
                     </div>
                   {/if}
@@ -1734,6 +1779,9 @@
                       <img class="part-image" src={partSrc(part)} alt={part.name || 'image'} />
                     {:else if part.type === 'audio'}
                       <audio class="part-audio" controls src={partSrc(part)}></audio>
+                    {:else if part.type === 'video'}
+                      <!-- svelte-ignore a11y-media-has-caption -->
+                      <video class="part-video" controls preload="metadata" src={partSrc(part)}></video>
                     {:else if part.type === 'file'}
                       <a class="part-file" href={partSrc(part)} target="_blank" rel="noopener" download>
                         📎 {part.name || part.url || 'Download file'}
@@ -1881,11 +1929,22 @@
     {#if pendingAttachments.length}
       <div class="pending-attachments">
         {#each pendingAttachments as a (a.id)}
-          <div class="pending-chip">
-            <span class="attachment-name">{a.filename}</span>
-            <span class="attachment-size">{artifactSize(a.size_bytes)}</span>
-            <button class="pending-remove" on:click={() => removePendingAttachment(a.id)} title="Remove attachment">×</button>
-          </div>
+          {#if isVideoAttachment(a) && a._previewUrl}
+            <div class="pending-chip pending-video">
+              <!-- svelte-ignore a11y-media-has-caption -->
+              <video class="pending-video-el" controls preload="metadata" src={a._previewUrl}></video>
+              <div class="pending-video-row">
+                <span class="attachment-name">{a.filename}</span>
+                <button class="pending-remove" on:click={() => removePendingAttachment(a.id)} title="Remove attachment">×</button>
+              </div>
+            </div>
+          {:else}
+            <div class="pending-chip">
+              <span class="attachment-name">{a.filename}</span>
+              <span class="attachment-size">{artifactSize(a.size_bytes)}</span>
+              <button class="pending-remove" on:click={() => removePendingAttachment(a.id)} title="Remove attachment">×</button>
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -2352,6 +2411,11 @@
   .cite-chip:hover { color: #c5c9e8; border-color: #3a406a; }
   .part-image { max-width: 100%; max-height: 360px; border-radius: 8px; align-self: flex-start; }
   .part-audio { width: 100%; max-width: 420px; }
+  .part-video { width: 100%; max-width: 480px; max-height: 360px; border-radius: 8px; background: #000; align-self: flex-start; }
+  .attachment-video { width: 100%; max-width: 360px; max-height: 300px; border-radius: 8px; background: #000; }
+  .pending-chip.pending-video { display: flex; flex-direction: column; gap: 4px; padding: 4px; }
+  .pending-video-el { width: 220px; max-width: 100%; max-height: 160px; border-radius: 6px; background: #000; }
+  .pending-video-row { display: flex; align-items: center; gap: 6px; }
   .part-file { font-size: .85rem; color: var(--accent, #6c8cff); text-decoration: none; }
   .part-file:hover { text-decoration: underline; }
   .btime { font-size: .68rem; opacity: .55; align-self: flex-end; }
