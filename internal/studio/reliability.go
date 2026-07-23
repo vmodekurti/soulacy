@@ -74,9 +74,9 @@ func completionContractValidateIssues(draft Draft) ([]ValidateError, []ValidateW
 	}
 
 	if deliveryRequested(intent) && !hasDeliveryConfigured(draft) {
-		errs = append(errs, ValidateError{Message: "The intent asks for delivery/notification, but no output channel or schedule output is configured."})
+		errs = append(errs, ValidateError{Message: "The intent asks for delivery/notification, but no routable output channel or schedule output is configured. HTTP is an inbound trigger/testing surface, not a cron delivery destination."})
 	}
-	if strings.EqualFold(strings.TrimSpace(draft.Trigger.Type), "schedule") && len(draft.Channels) == 0 && (draft.Output == nil || strings.TrimSpace(draft.Output.Channel) == "") {
+	if strings.EqualFold(strings.TrimSpace(draft.Trigger.Type), "schedule") && !hasDeliveryConfigured(draft) {
 		warns = append(warns, ValidateWarning{Message: "This scheduled agent has no explicit output channel. If no global default output exists, completed runs will only appear in Runs/Activity."})
 	}
 
@@ -104,10 +104,24 @@ func completionContractValidateIssues(draft Draft) ([]ValidateError, []ValidateW
 }
 
 func hasDeliveryConfigured(draft Draft) bool {
-	if len(draft.Channels) > 0 {
+	if draft.Output != nil && isRoutableOutputChannel(draft.Output.Channel) {
 		return true
 	}
-	return draft.Output != nil && strings.TrimSpace(draft.Output.Channel) != ""
+	for _, ch := range draft.Channels {
+		if isRoutableOutputChannel(ch) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRoutableOutputChannel(ch string) bool {
+	switch strings.ToLower(strings.TrimSpace(ch)) {
+	case "", "http", "webhook":
+		return false
+	default:
+		return true
+	}
 }
 
 func searchOnlyFinal(draft Draft) bool {

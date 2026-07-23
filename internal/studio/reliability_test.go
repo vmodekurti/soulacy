@@ -70,6 +70,61 @@ func TestReasoningAgentCarriesScheduleOutputWhenFullyConfigured(t *testing.T) {
 	}
 }
 
+func TestReasoningAgentRaisesBudgetsForNotebookPodcastWork(t *testing.T) {
+	d := Draft{
+		Name:         "AI Articles Podcast Briefing",
+		Strategy:     "plan_execute",
+		Intent:       "Search recent AI articles, fetch each article, create a NotebookLM podcast briefing, poll until audio is ready, and send it to Slack",
+		SystemPrompt: "Create a podcast briefing from recent AI articles using NotebookLM source_add and studio_create.",
+		Trigger:      Trigger{Type: "schedule", Config: map[string]any{"cron": "0 7 * * *"}},
+		Channels:     []string{"slack"},
+		Output:       &ScheduleOutput{Channel: "slack", To: "C123"},
+		Tools: []string{
+			"web_search",
+			"fetch_url",
+			"channel.send",
+			"mcp__notebooklm__refresh_auth",
+			"mcp__notebooklm__notebook_create",
+			"mcp__notebooklm__source_add",
+			"mcp__notebooklm__studio_create",
+			"mcp__notebooklm__studio_status",
+		},
+		RunTimeout: "600s",
+	}
+	def, err := ToAgentDefinition(d, false)
+	if err != nil {
+		t.Fatalf("ToAgentDefinition: %v", err)
+	}
+	if def.Reasoning.MaxSteps < 24 {
+		t.Fatalf("complex podcast agent should get a larger max_steps budget, got %d", def.Reasoning.MaxSteps)
+	}
+	if def.Reasoning.MaxPlanSteps < 12 {
+		t.Fatalf("complex podcast agent should get a larger max_plan_steps budget, got %d", def.Reasoning.MaxPlanSteps)
+	}
+	if def.RunTimeout != "15m0s" {
+		t.Fatalf("run_timeout should be raised to match reasoning total timeout, got %q", def.RunTimeout)
+	}
+}
+
+func TestValidateScheduleDeliveryDoesNotAcceptHTTPOnly(t *testing.T) {
+	d := Draft{
+		Name:         "Daily Briefing",
+		Strategy:     "plan_execute",
+		Intent:       "Every morning create a briefing and send it to the team",
+		SystemPrompt: "Create a briefing and deliver it.",
+		Trigger:      Trigger{Type: "schedule", Config: map[string]any{"cron": "0 7 * * *"}},
+		Channels:     []string{"http"},
+		Tools:        []string{"web_search"},
+	}
+	got := Validate(d)
+	if got.Ok {
+		t.Fatalf("http-only scheduled delivery should not validate: %+v", got)
+	}
+	if !validateHasError(got, "routable output channel") {
+		t.Fatalf("expected routable output error, got %+v", got.Errors)
+	}
+}
+
 func validateHasError(res ValidateResult, want string) bool {
 	for _, e := range res.Errors {
 		if strings.Contains(e.Message, want) {

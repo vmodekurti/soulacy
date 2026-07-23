@@ -264,18 +264,20 @@ func Validate(draft Draft) ValidateResult {
 		Warnings: []ValidateWarning{},
 	}
 
-	if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
-		res.Ok = false
-		res.Errors = append(res.Errors, attributeFlowError(draft.Flow, err))
-		// A graph that doesn't compile: report the hard error only. Soft
-		// warnings about reachability are unreliable on an invalid graph.
-		return res
-	}
+	if !draft.IsAgent() {
+		if _, err := reasoning.CompileFlow(draft.spec()); err != nil {
+			res.Ok = false
+			res.Errors = append(res.Errors, attributeFlowError(draft.Flow, err))
+			// A graph that doesn't compile: report the hard error only. Soft
+			// warnings about reachability are unreliable on an invalid graph.
+			return res
+		}
 
-	res.Warnings = append(res.Warnings, flowWarnings(draft.Flow)...)
+		res.Warnings = append(res.Warnings, flowWarnings(draft.Flow)...)
+		res.Warnings = append(res.Warnings, nodeTimeoutWarnings(draft.Flow)...)
+		res.Warnings = append(res.Warnings, systemToolWarnings(draft.Flow)...)
+	}
 	res.Warnings = append(res.Warnings, triggerWarnings(draft.Trigger)...)
-	res.Warnings = append(res.Warnings, nodeTimeoutWarnings(draft.Flow)...)
-	res.Warnings = append(res.Warnings, systemToolWarnings(draft.Flow)...)
 	outputErrors, outputWarnings := outputContractValidateIssues(draft)
 	if len(outputErrors) > 0 {
 		res.Ok = false

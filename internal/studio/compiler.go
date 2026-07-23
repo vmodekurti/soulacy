@@ -202,6 +202,8 @@ type Draft struct {
 	// defaults on re-save. Empty/zero means "use Studio's sensible default".
 	StepTimeout  string `json:"step_timeout,omitempty"`
 	TotalTimeout string `json:"total_timeout,omitempty"`
+	MaxSteps     int    `json:"max_steps,omitempty"`
+	MaxPlanSteps int    `json:"max_plan_steps,omitempty"`
 	MaxTurns     int    `json:"max_turns,omitempty"`
 	// RunTimeout is the whole-run wall-clock cap (top-level agent field, distinct
 	// from the reasoning step/total budgets). Carried so it survives a Studio

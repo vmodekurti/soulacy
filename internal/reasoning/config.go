@@ -304,12 +304,12 @@ func LoopConfigFromDefinition(def *agent.Definition, systemPrompt string, suppor
 
 	cfg.MaxSteps = rc.MaxSteps
 	if cfg.MaxSteps <= 0 {
-		cfg.MaxSteps = 8
+		cfg.MaxSteps = defaultMaxSteps(def, cfg.Strategy)
 	}
 
 	cfg.MaxPlanSteps = rc.MaxPlanSteps
 	if cfg.MaxPlanSteps <= 0 {
-		cfg.MaxPlanSteps = 6
+		cfg.MaxPlanSteps = defaultMaxPlanSteps(def, cfg.Strategy)
 	}
 
 	if rc.StepTimeout != "" {
@@ -341,4 +341,81 @@ func LoopConfigFromDefinition(def *agent.Definition, systemPrompt string, suppor
 	cfg.Flow = def.Workflow.FlowSpec()
 
 	return cfg, true
+}
+
+func defaultMaxSteps(def *agent.Definition, strategy LoopStrategy) int {
+	if strategy == StrategyPlanExecute {
+		if complexReasoningDefinition(def) {
+			return 24
+		}
+		return 16
+	}
+	if complexReasoningDefinition(def) {
+		return 18
+	}
+	return 8
+}
+
+func defaultMaxPlanSteps(def *agent.Definition, strategy LoopStrategy) int {
+	if strategy == StrategyPlanExecute {
+		if complexReasoningDefinition(def) {
+			return 12
+		}
+		return 8
+	}
+	return 6
+}
+
+func complexReasoningDefinition(def *agent.Definition) bool {
+	if def == nil {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{
+		def.StudioIntent,
+		def.StudioRawIntent,
+		def.SystemPrompt,
+		strings.Join(toolNamesFromDefinition(def), " "),
+	}, " "))
+	if strings.Contains(text, "notebooklm") || strings.Contains(text, "notebook lm") ||
+		strings.Contains(text, "podcast") || strings.Contains(text, "audio overview") {
+		return true
+	}
+	hits := 0
+	for _, word := range []string{
+		"search", "find", "fetch", "read", "rank", "filter", "summarize",
+		"create", "generate", "poll", "wait", "store", "ingest", "send", "deliver",
+	} {
+		if strings.Contains(text, word) {
+			hits++
+		}
+	}
+	if hits >= 4 {
+		return true
+	}
+	mcpCount := 0
+	for _, name := range toolNamesFromDefinition(def) {
+		if strings.HasPrefix(strings.TrimSpace(name), "mcp__") {
+			mcpCount++
+		}
+	}
+	return len(toolNamesFromDefinition(def)) >= 8 || mcpCount >= 4
+}
+
+func toolNamesFromDefinition(def *agent.Definition) []string {
+	if def == nil {
+		return nil
+	}
+	var names []string
+	for _, t := range def.Tools {
+		if strings.TrimSpace(t.Name) != "" {
+			names = append(names, t.Name)
+		}
+	}
+	if def.Builtins != nil {
+		names = append(names, *def.Builtins...)
+	}
+	if def.MCPTools != nil {
+		names = append(names, *def.MCPTools...)
+	}
+	return names
 }

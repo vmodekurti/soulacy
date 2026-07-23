@@ -69,6 +69,8 @@ func FromAgentDefinition(def agent.Definition) Draft {
 		// user tuned in SOUL.yaml back to Studio defaults.
 		d.StepTimeout = def.Reasoning.StepTimeout
 		d.TotalTimeout = def.Reasoning.TotalTimeout
+		d.MaxSteps = def.Reasoning.MaxSteps
+		d.MaxPlanSteps = def.Reasoning.MaxPlanSteps
 		d.MaxTurns = def.MaxTurns
 		for _, id := range def.Agents {
 			if id = strings.TrimSpace(id); id != "" {
