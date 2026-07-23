@@ -41,6 +41,21 @@ func wbTaskStatus(t *testing.T, s *Server, taskID string) string {
 	return st
 }
 
+func wbWaitTaskStatus(t *testing.T, s *Server, taskID, want string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	var got string
+	for time.Now().Before(deadline) {
+		got = wbTaskStatus(t, s, taskID)
+		if got == want {
+			return got
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("task status did not become %q within 5s; last status = %q", want, got)
+	return got
+}
+
 // wbCreateRunnableAgent registers an enabled agent backed by the fake LLM
 // provider so engine.Handle succeeds.
 func wbCreateRunnableAgent(t *testing.T, s *Server, id string) {
@@ -127,7 +142,7 @@ func TestWorkboardRun_SuccessPath(t *testing.T) {
 	if final["ended_at"] == nil {
 		t.Error("ended_at should be set")
 	}
-	if got := wbTaskStatus(t, s, id); got != "needs_review" {
+	if got := wbWaitTaskStatus(t, s, id, "needs_review"); got != "needs_review" {
 		t.Errorf("task status after successful run = %q, want needs_review", got)
 	}
 }
@@ -151,7 +166,7 @@ func TestWorkboardRun_FailurePath(t *testing.T) {
 	if reason == "" {
 		t.Error("failure_reason should be captured")
 	}
-	if got := wbTaskStatus(t, s, id); got != "failed" {
+	if got := wbWaitTaskStatus(t, s, id, "failed"); got != "failed" {
 		t.Errorf("task status after failed run = %q, want failed", got)
 	}
 }

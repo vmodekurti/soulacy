@@ -176,8 +176,17 @@
     margin: 0;
     padding: 12px 14px;
     border: 0;
-    font: inherit;
-    line-height: inherit;
+    /* Pin IDENTICAL text metrics on both layers with !important. Relying on
+       `font: inherit` let the app's global `:global(textarea)` rule (font-size
+       14px) leak into the textarea while the <pre> stayed 13px, so the caret's
+       line box and the highlighted text drifted apart — the caret landed on the
+       previous/next line. Explicit, equal values keep them pixel-locked. */
+    font-family: ui-monospace, SFMono-Regular, Menlo, "Cascadia Code", monospace !important;
+    font-size: 13px !important;
+    line-height: 20px !important;
+    letter-spacing: 0 !important;
+    word-spacing: 0 !important;
+    font-variant-ligatures: none;
     tab-size: 2;
     white-space: pre;
     overflow: auto;
@@ -227,11 +236,13 @@
   .yv :global(.y-num)     { color: #e7b765; }
   .yv :global(.y-bool)    { color: #c792ea; }
   .yv :global(.y-comment) { color: #5a6080; font-style: italic; }
-  /* Template expressions get a pill so {{ .notebook.id }} stands out. */
+  /* Template expressions are tinted so {{ .notebook.id }} stands out. NO padding
+     or border — those widen the highlight layer's glyphs relative to the plain
+     textarea and push the caret sideways off the text. Background + radius are
+     paint-only, so they don't shift layout. */
   .yv :global(.y-tmpl) {
     color: #ffd479;
-    background: rgba(255,212,121,.10);
-    border-radius: 4px;
-    padding: 0 2px;
+    background: rgba(255,212,121,.14);
+    border-radius: 3px;
   }
 </style>

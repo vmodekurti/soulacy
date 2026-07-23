@@ -201,6 +201,7 @@
   let workflow = null
   let questions = []
   let notes = []
+  let notesExpanded = false  // collapse the compiler-notes pills by default
   let answers = {}            // { [questionId]: value }
   let explanation = null      // plain-language "what Studio built" (Story #10)
   let generationProfile = null // local/cloud builder guardrails used for compile
@@ -1231,6 +1232,7 @@ Use null for fields that are not present.`
     }
     questions = (data && Array.isArray(data.questions)) ? data.questions : []
     notes = (data && Array.isArray(data.notes)) ? data.notes : []
+    notesExpanded = false
     explanation = (data && data.explanation) || null
     generationProfile = (data && data.generation) || null
     // M4: surface missing-capability suggestions (non-blocking). Keep only the
@@ -3596,7 +3598,12 @@ Use null for fields that are not present.`
       {#if notes.length}
         <div class="strip strip-notes" data-tooltip="What the compiler inferred">
           <span class="strip-label">Inferred</span>
-          {#each notes as n}<span class="note">{n}</span>{/each}
+          {#each (notesExpanded ? notes : notes.slice(0, 3)) as n}<span class="note" title={n}>{n}</span>{/each}
+          {#if notes.length > 3}
+            <button type="button" class="note note-toggle" on:click={() => (notesExpanded = !notesExpanded)}>
+              {notesExpanded ? 'Show less' : `+${notes.length - 3} more`}
+            </button>
+          {/if}
         </div>
       {/if}
 
@@ -6043,7 +6050,19 @@ Use null for fields that are not present.`
     border: 1px solid var(--border);
     border-radius: 999px;
     padding: 1px 8px;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
+  /* The +N more / Show less toggle reads as a clickable accent pill. */
+  .note-toggle {
+    cursor: pointer;
+    color: var(--accent);
+    border-color: color-mix(in srgb, var(--accent, #6c63ff) 45%, var(--border));
+    font: inherit;
+  }
+  .note-toggle:hover { background: color-mix(in srgb, var(--accent, #6c63ff) 14%, transparent); }
   .strip-error { background: rgba(255, 107, 129, 0.12); color: var(--error); }
   /* Multi-line, actionable generation errors (model name + the fixes). */
   .strip-multiline { align-items: flex-start; flex-wrap: nowrap; padding: 10px 14px; }

@@ -22,14 +22,26 @@ func TestSanitize_ExtractsFinalAnswerFromControlJSON(t *testing.T) {
 
 func TestSanitize_ExtractsOutputField(t *testing.T) {
 	in := `{"output":"All done."}`
-	// Bare {"output":...} is NOT control JSON (no thought/action/is_done) → passes through unchanged.
-	if got := SanitizeFinalOutput(in, nil); got != in {
-		t.Fatalf("bare output JSON should pass through, got %q", got)
+	if got := SanitizeFinalOutput(in, nil); got != "All done." {
+		t.Fatalf("expected answer envelope to unwrap, got %q", got)
 	}
-	// But with control fields present, output is extracted.
 	in2 := `{"thought":"finishing","action":null,"output":"All done."}`
 	if got := SanitizeFinalOutput(in2, nil); got != "All done." {
 		t.Fatalf("expected extracted output, got %q", got)
+	}
+}
+
+func TestSanitize_FencedAnswerEnvelope(t *testing.T) {
+	in := "```json\n{\"output\":\"## Report\\n\\nUseful markdown.\"}\n```"
+	if got := SanitizeFinalOutput(in, nil); got != "## Report\n\nUseful markdown." {
+		t.Fatalf("expected fenced answer envelope to unwrap, got %q", got)
+	}
+}
+
+func TestSanitize_EnvelopeWithMetadata(t *testing.T) {
+	in := `{"reply":"Queued for processing.","confidence":"high","updated_rules":""}`
+	if got := SanitizeFinalOutput(in, nil); got != "Queued for processing." {
+		t.Fatalf("expected reply envelope to unwrap, got %q", got)
 	}
 }
 
@@ -74,5 +86,37 @@ func TestSanitize_LegitJSONAnswerPreserved(t *testing.T) {
 	in := `{"name":"Alice","score":42}`
 	if got := SanitizeFinalOutput(in, nil); got != in {
 		t.Fatalf("legit JSON answer was altered: %q", got)
+	}
+}
+
+// Regression: a control envelope with trailing prose after the closing brace
+// must still be unwrapped — the old whole-string check let the raw
+// {"thought":…,"final_answer":…} leak to the user (the "SNDK" chat bug).
+func TestSanitize_ExtractsEnvelopeWithTrailingText(t *testing.T) {
+	in := `{"thought":"analysis complete","is_done":true,"final_answer":"## Verdict\n\nDo not enter now."}` +
+		"\n\nHope that helps!"
+	got := SanitizeFinalOutput(in, nil)
+	if got != "## Verdict\n\nDo not enter now." {
+		t.Fatalf("expected unwrapped final_answer, got %q", got)
+	}
+}
+
+// An envelope wrapped in leading prose is also recovered.
+func TestSanitize_ExtractsEnvelopeWithLeadingText(t *testing.T) {
+	in := "Here is my answer: " +
+		`{"thought":"ok","is_done":true,"final_answer":"The stock is a hold."}`
+	got := SanitizeFinalOutput(in, nil)
+	if got != "The stock is a hold." {
+		t.Fatalf("expected unwrapped final_answer, got %q", got)
+	}
+}
+
+// The final_answer may itself contain braces (e.g. JSON/code samples); brace
+// balancing must not stop early.
+func TestSanitize_EnvelopeWithBracesInAnswer(t *testing.T) {
+	in := `{"thought":"x","is_done":true,"final_answer":"Use {\"a\":1} as the body."} trailing`
+	got := SanitizeFinalOutput(in, nil)
+	if got != `Use {"a":1} as the body.` {
+		t.Fatalf("brace balancing failed, got %q", got)
 	}
 }
