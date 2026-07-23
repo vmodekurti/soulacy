@@ -376,7 +376,7 @@ func reflectAfterRepeatedToolFailures(ctx context.Context, env Env, taskInput st
 }
 
 func repeatedToolFailureStopMessage(steps []Step) string {
-	last := lastUsefulObservation(steps)
+	last := lastPresentableObservation(steps)
 	if last != "" {
 		return "The run stopped because the same tool call failed repeatedly. Last useful observation: " + last
 	}
@@ -384,7 +384,7 @@ func repeatedToolFailureStopMessage(steps []Step) string {
 }
 
 func thinkErrorStopMessage(steps []Step) string {
-	last := lastUsefulObservation(steps)
+	last := lastPresentableObservation(steps)
 	if last != "" {
 		return "The run stopped because the model returned invalid ReAct JSON too many times. The last useful observation was: " + last
 	}
@@ -392,7 +392,7 @@ func thinkErrorStopMessage(steps []Step) string {
 }
 
 func invalidActionStopMessage(steps []Step) string {
-	last := lastUsefulObservation(steps)
+	last := lastPresentableObservation(steps)
 	if last != "" {
 		return "The run stopped because the model repeatedly returned is_done=false without a usable action.tool. The last useful observation was: " + last
 	}
@@ -433,6 +433,44 @@ func synthesizeAfterInvalidActions(steps []Step) string {
 	return b.String()
 }
 
+// looksPresentable reports whether an observation is human-readable prose worth
+// surfacing as a degraded final answer. Raw structured tool output (a JSON
+// object/array, e.g. a web_search results blob) and control payloads are NOT —
+// dumping them verbatim gives the user `{"query":…,"results":[…]}` instead of an
+// answer, which is worse than a clean "couldn't finish" message.
+func looksPresentable(content string) bool {
+	t := strings.TrimSpace(content)
+	if t == "" {
+		return false
+	}
+	if strings.HasPrefix(t, "{") || strings.HasPrefix(t, "[") {
+		return false
+	}
+	if looksLikeMalformedControlPayload(t) {
+		return false
+	}
+	return true
+}
+
+// lastPresentableObservation returns the most recent human-readable observation,
+// skipping raw JSON tool payloads so the degraded stop messages never dump them.
+func lastPresentableObservation(steps []Step) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		s := steps[i]
+		if s.Obs.Source == "controller" {
+			continue
+		}
+		content := strings.TrimSpace(s.Obs.Content)
+		if content == "" && s.Obs.Error != nil {
+			content = strings.TrimSpace(s.Obs.Error.Error())
+		}
+		if looksPresentable(content) {
+			return truncateForPrompt(content, 420)
+		}
+	}
+	return ""
+}
+
 func recentUsefulObservations(steps []Step, max int) []string {
 	if max <= 0 {
 		return nil
@@ -447,8 +485,8 @@ func recentUsefulObservations(steps []Step, max int) []string {
 		if content == "" && s.Obs.Error != nil {
 			content = s.Obs.Error.Error()
 		}
-		if content == "" {
-			continue
+		if !looksPresentable(content) {
+			continue // skip raw JSON/control payloads — not a readable answer
 		}
 		reversed = append(reversed, truncateForPrompt(content, 420))
 	}
