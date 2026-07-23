@@ -38,9 +38,9 @@ type PromptRefinement struct {
 	Questions []Question `json:"questions"`
 	// RecommendedMode is the architecture the analyst judges best: "workflow"
 	// (fixed pipeline), "auto" (normal tool-calling agent), "react" (explicit
-	// reasoning loop), or "plan_execute". The wizard uses it to decide whether
-	// Generate produces a flow or an agent. ModeReason is a one-line
-	// justification.
+	// reasoning loop, advanced/manual only), or "plan_execute". The wizard uses
+	// it to decide whether Generate produces a flow or an agent. ModeReason is a
+	// one-line justification.
 	RecommendedMode string `json:"recommended_mode"`
 	ModeReason      string `json:"mode_reason"`
 }
@@ -113,9 +113,9 @@ func writeUnifiedArchitectureGuidance(sb *strings.Builder) {
 	sb.WriteString("Also decide the best ARCHITECTURE using the same rule Studio uses for generation, and return it:\n")
 	sb.WriteString("- \"workflow\": a fixed, deterministic pipeline: the same steps in the same order every run, knowable up front (e.g. each morning search X, summarize, post to Telegram).\n")
 	sb.WriteString("- \"auto\": the recommended default for a conversational or tool-using agent that decides which available tool to call at run time (e.g. weather assistant, flight finder, research assistant, deal finder). The engine runs it as a native tool-calling loop with no fixed graph.\n")
-	sb.WriteString("- \"react\": an explicit reasoning loop for genuinely open-ended execution where the agent must think/act/observe over many steps, route dynamically across broad capabilities, loop over items, or poll asynchronous jobs until done.\n")
+	sb.WriteString("- \"react\": an advanced/manual escape hatch ONLY when the user explicitly asks for ReAct, a think-act-observe loop, or a classic reasoning-loop experiment. Do not choose it automatically.\n")
 	sb.WriteString("- \"plan_execute\": a long, multi-phase job where the agent should make a plan first and then execute the plan.\n")
-	sb.WriteString("Do NOT choose \"react\" merely because the agent uses tools. Ordinary tool use should be \"auto\"; fixed scheduled pipelines should be \"workflow\".\n\n")
+	sb.WriteString("Do NOT choose \"react\" merely because the agent uses tools, loops over items, polls jobs, or does research. Ordinary tool use should be \"auto\"; long adaptive work should be \"plan_execute\"; fixed scheduled pipelines should be \"workflow\".\n\n")
 }
 
 // writeCatalogGrounding appends the available-capabilities context (skills, MCP
@@ -342,6 +342,7 @@ func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	} else if mode == "" {
 		mode = inferModeFromIntent(combined)
 	}
+	mode = avoidImplicitReAct(mode, combined)
 	return PromptRefinement{
 		Original:        intent,
 		RefinedIntent:   strings.TrimSpace(payload.RefinedIntent),
@@ -353,7 +354,7 @@ func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	}, nil
 }
 
-// normalizeMode canonicalizes a model-supplied mode to workflow|react|
+// normalizeMode canonicalizes a model-supplied mode to workflow|auto|react|
 // plan_execute, or "" if unrecognized.
 func normalizeMode(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -369,13 +370,39 @@ func normalizeMode(s string) string {
 	return ""
 }
 
-// hasStrongReactCues reports whether the intent has signals that a FIXED flow
+// explicitReActRequested reports whether the user intentionally asked for the
+// classic ReAct loop. Without this explicit request, Studio must not produce
+// ReAct automatically; it should pick Auto or Plan-Execute instead.
+func explicitReActRequested(intent string) bool {
+	t := strings.ToLower(intent)
+	cues := []string{
+		"react", "re-act", "reasoning loop", "think-act-observe", "think act observe",
+		"thought/action/observation", "thought action observation", "classic react",
+		"force react", "explicit react",
+	}
+	for _, c := range cues {
+		if strings.Contains(t, c) {
+			return true
+		}
+	}
+	return false
+}
+
+func avoidImplicitReAct(mode, intent string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "react") && !explicitReActRequested(intent) {
+		return "plan_execute"
+	}
+	return mode
+}
+
+// hasStrongReasoningCues reports whether the intent has signals that a FIXED flow
 // cannot satisfy (asynchronous jobs that must be polled, per-item loops, or
 // driving an interactive multi-step external service like NotebookLM). These
 // override a model's "workflow" guess — we've seen fixed flows fail every time
-// on these. Distinct from inferModeFromIntent's softer cues (used only as a
+// on these. They now route to Plan-Execute unless the user explicitly asks for
+// ReAct. Distinct from inferModeFromIntent's softer cues (used only as a
 // no-model fallback).
-func hasStrongReactCues(intent string) bool {
+func hasStrongReasoningCues(intent string) bool {
 	t := strings.ToLower(intent)
 	strong := []string{
 		// Async jobs / polling / per-item loops a fixed DAG physically can't do.
@@ -404,6 +431,11 @@ func hasStrongReactCues(intent string) bool {
 	return false
 }
 
+// hasStrongReactCues is kept as a compatibility alias for older tests/helpers.
+func hasStrongReactCues(intent string) bool {
+	return hasStrongReasoningCues(intent)
+}
+
 // hasPlanExecuteCues reports whether the intent describes an explicitly
 // MULTI-PHASE job that benefits from planning the whole sequence before acting —
 // the Plan-Execute pattern. Checked before the ReAct cues because a long
@@ -425,35 +457,48 @@ func hasPlanExecuteCues(intent string) bool {
 }
 
 // RecommendAgentMode is the SINGLE authoritative architecture decision. It
-// returns the full verdict — "plan_execute", "react", or "" (a deterministic
-// workflow) — from the intent text. Both the refine recommendation and the
-// server-side compile route call it on the SAME (raw + refined) text, so Studio
-// never generates a fixed workflow for a task that is really a reasoning agent
-// (the source of "it says ReAct but builds a workflow"), and the decision can't
-// diverge by entry path.
+// returns the full verdict — "auto", "plan_execute", "react", or "" (a
+// deterministic workflow) — from the intent text. ReAct is advanced/manual:
+// automatic classification picks Auto or Plan-Execute unless the user explicitly
+// asks for ReAct.
 func RecommendAgentMode(intent string) string {
+	if explicitReActRequested(intent) {
+		return "react"
+	}
 	if hasPlanExecuteCues(intent) {
 		return "plan_execute"
 	}
-	if hasStrongReactCues(intent) {
-		return "react"
+	if hasStrongReasoningCues(intent) {
+		return "plan_execute"
 	}
 	return ""
 }
 
 // inferModeFromIntent is a deterministic backstop: phrases implying loops over
-// items, polling, or driving an interactive external service lean ReAct; else
-// workflow.
+// items, polling, or driving an interactive external service lean Plan-Execute;
+// ordinary conversational/tool assistants lean Auto; else workflow.
 func inferModeFromIntent(intent string) string {
 	t := strings.ToLower(intent)
-	reactCues := []string{
+	if explicitReActRequested(intent) {
+		return "react"
+	}
+	planCues := []string{
 		"poll", "until ready", "until complete", "until done", "wait for",
 		"each ", "every item", "one by one", "iterate", "loop over",
 		"notebooklm", "notebook lm", "research and then", "figure out", "explore", "manage",
 	}
-	for _, c := range reactCues {
+	for _, c := range planCues {
 		if strings.Contains(t, c) {
-			return "react"
+			return "plan_execute"
+		}
+	}
+	autoCues := []string{
+		"assistant", "answers questions", "answer questions", "responds to", "chat",
+		"tool", "skill", "find", "search", "research assistant", "deal finder",
+	}
+	for _, c := range autoCues {
+		if strings.Contains(t, c) {
+			return "auto"
 		}
 	}
 	return "workflow"

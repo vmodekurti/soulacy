@@ -17,7 +17,7 @@ under "Tier 2" so the builder knows each tool's real shape.
 ## Tier 1 — Generic rules (apply to every agent)
 
 ### Macro-Workflow Architecture
-- R1. Choose the architecture first, then generate. Use a Macro-Workflow graph for fixed, predictable pipelines; use an 'auto' tool-calling agent for conversational assistants and ordinary runtime tool selection; use 'react' or 'plan_execute' only for genuinely open-ended, long-horizon reasoning.
+- R1. Choose the architecture first, then generate. Use a Macro-Workflow graph for fixed, predictable pipelines; use an 'auto' tool-calling agent for conversational assistants and ordinary runtime tool selection; use 'plan_execute' for long multi-phase jobs. Use 'react' only when the user explicitly asks for ReAct/think-act-observe.
 - R2. Visual Macro-Workflows MUST be high-level and simple (usually max 3-5 nodes). Do NOT generate 10-15 node pipelines.
 - R3. Instead of creating a separate node for every step of data extraction or cleaning, combine data manipulation, filtering, and JSON parsing into a SINGLE 'python' node.
 - R4. Delegate complex summarizing or domain reasoning to an 'agent' node. For example, create a 'Summarizer' or 'Researcher' peer agent and call it in one node.
@@ -38,7 +38,7 @@ under "Tier 2" so the builder knows each tool's real shape.
 - R15. A schedule trigger needs a valid cron (e.g. "0 7 * * *").
 - R16. Every channel the agent delivers to must be configured and enabled.
 - R17. Clean Channel Delivery: Agents that deliver output to channels (Telegram, Slack, Discord, WhatsApp) MUST output ONLY final clean text. System prompts MUST explicitly instruct the agent NOT to emit internal progress commentary (e.g. "data retrieved, now composing...") or thought headers.
-- R18. Execution Strategy Selection: Always select 'auto' for standard tool-calling, conversational, and scheduled digest agents. Reserve 'react' or 'plan_execute' ONLY for open-ended, multi-stage planning tasks.
+- R18. Execution Strategy Selection: Always select 'auto' for standard tool-calling, conversational, and scheduled digest agents. Select 'plan_execute' for open-ended, multi-stage planning tasks. Do not auto-select 'react'; reserve it for explicit ReAct experiments or a user override.
 - R19. Plain Text Formatting: Conversational and chat agents MUST output strictly as plain Markdown text. System prompts MUST instruct the agent NOT to wrap its response in a JSON object or JSON key-value pairs unless output_format is explicitly configured to json.
 
 ## Tier 2 — Tool contracts (input args + output shapes)

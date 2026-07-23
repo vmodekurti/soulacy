@@ -6,14 +6,16 @@ import (
 )
 
 func TestRefinePrompt_StrongCuesOverrideModelWorkflow(t *testing.T) {
-	// Model insists "workflow" but the task is a NotebookLM audio job → react.
+	// Model insists "workflow" but the task is a NotebookLM audio job →
+	// plan_execute. ReAct is now an explicit/manual strategy, not Studio's
+	// automatic escape hatch.
 	out := `{"refined_intent":"Daily at 7am, authenticate with NotebookLM, create a notebook, add each source, generate the audio overview and poll status until ready, then deliver.","summary":"daily audio briefing","recommended_mode":"workflow","mode_reason":"fixed daily sequence"}`
 	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "daily ai audio news briefing with notebooklm", Catalog{})
 	if err != nil {
 		t.Fatalf("RefinePrompt: %v", err)
 	}
-	if r.RecommendedMode != "react" {
-		t.Errorf("strong async/notebooklm cues must override to react, got %q", r.RecommendedMode)
+	if r.RecommendedMode != "plan_execute" {
+		t.Errorf("strong async/notebooklm cues must override to plan_execute, got %q", r.RecommendedMode)
 	}
 }
 
@@ -39,6 +41,31 @@ func TestRefinePrompt_PreservesAutoRecommendation(t *testing.T) {
 	}
 }
 
+func TestRefinePrompt_DemotesImplicitReactRecommendation(t *testing.T) {
+	out := `{"refined_intent":"Research SNDK prospects using finance tools and web search, then synthesize the answer.","summary":"stock research","recommended_mode":"react","mode_reason":"dynamic tool use"}`
+	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "Tell me about SNDK prospects", Catalog{})
+	if err != nil {
+		t.Fatalf("RefinePrompt: %v", err)
+	}
+	if r.RecommendedMode == "react" {
+		t.Fatalf("implicit model ReAct recommendation should be demoted; got %q", r.RecommendedMode)
+	}
+	if r.RecommendedMode != "plan_execute" {
+		t.Fatalf("implicit ReAct should become plan_execute for adaptive research; got %q", r.RecommendedMode)
+	}
+}
+
+func TestRefinePrompt_AllowsExplicitReactRequest(t *testing.T) {
+	out := `{"refined_intent":"Build a classic ReAct agent that loops through thought, action, and observation while researching.","summary":"react experiment","recommended_mode":"workflow","mode_reason":"x"}`
+	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "Build a ReAct stock research agent", Catalog{})
+	if err != nil {
+		t.Fatalf("RefinePrompt: %v", err)
+	}
+	if r.RecommendedMode != "react" {
+		t.Fatalf("explicit ReAct request should remain react; got %q", r.RecommendedMode)
+	}
+}
+
 func TestHasStrongReactCues(t *testing.T) {
 	if !hasStrongReactCues("add each source then poll until ready") {
 		t.Error("expected strong cues")
@@ -49,14 +76,15 @@ func TestHasStrongReactCues(t *testing.T) {
 }
 
 // The finance-assistant pattern — an interactive agent that maps a question to
-// the appropriate skill — must classify as a reasoning agent, not a workflow.
-// This is the case that kept (wrongly) generating a workflow.
+// the appropriate skill — must classify as an agent, not a workflow. It should
+// no longer become ReAct by default; Studio should use Plan-Execute/Auto unless
+// the user explicitly asks for ReAct.
 func TestRecommendAgentMode_SkillRoutingAssistant(t *testing.T) {
 	intent := `An interactive, on-demand financial assistant that responds to user questions ` +
 		`about stocks and markets. Based on the parsed intent, it selects and calls the ` +
 		`appropriate skill(s) from the deployed finance catalog.`
-	if got := RecommendAgentMode(intent); got != "react" {
-		t.Fatalf("a dynamic skill-routing assistant must be react; got %q", got)
+	if got := RecommendAgentMode(intent); got != "plan_execute" {
+		t.Fatalf("a dynamic skill-routing assistant must be plan_execute by default; got %q", got)
 	}
 	// A genuinely fixed pipeline must NOT be forced to an agent.
 	fixed := "Every weekday at 8am, search the web for AI news, summarize the top 5, and post to Telegram."

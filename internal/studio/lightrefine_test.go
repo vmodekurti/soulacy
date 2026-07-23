@@ -46,8 +46,10 @@ func TestRefineInstructionsUseUnifiedArchitectureGuidance(t *testing.T) {
 		for _, want := range []string{
 			"workflow|auto|react|plan_execute",
 			"\"auto\": the recommended default",
+			"advanced/manual escape hatch ONLY",
 			"Do NOT choose \"react\" merely because the agent uses tools",
 			"Ordinary tool use should be \"auto\"",
+			"long adaptive work should be \"plan_execute\"",
 		} {
 			if !strings.Contains(p, want) {
 				t.Errorf("%s refine instruction missing %q", name, want)

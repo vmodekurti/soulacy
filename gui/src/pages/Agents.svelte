@@ -18,6 +18,9 @@
   let validating = false
   let validationReport = null
   let tiers = {} // agent id -> { tier, reasons }
+  let strategyManualOverride = false
+  let strategyAutoNotice = ''
+  let lastAutoStrategyKey = ''
 
   // Capability-ack modal state. When the backend returns 409 with
   // {needs_ack: true, capability_audit}, we open a blocking modal that shows
@@ -452,7 +455,7 @@
     presencePenalty: 'Positive values encourage new ideas instead of reusing already-mentioned concepts.',
     frequencyPenalty: 'Positive values reduce repeated words and phrases. Useful when responses loop or sound repetitive.',
     toolChoice: 'Controls the first tool call. Use auto for normal routing, none to answer directly, required to force a tool, or a specific tool name.',
-    maxSteps: 'Maximum ReAct loop steps. Raise for multi-tool research; lower to prevent long or stuck runs.',
+    maxSteps: 'Maximum reasoning-loop steps. Raise for multi-tool research; lower to prevent long or stuck runs.',
     maxPlanSteps: 'Maximum plan items in Plan-Execute mode. Lower keeps plans compact; higher allows more detailed decomposition.',
     stepTimeout: 'Per-step wall-clock timeout. Use shorter values for interactive agents and longer values for slow tools.',
     totalTimeout: 'Whole-run timeout across all reasoning and tool steps.',
@@ -632,12 +635,19 @@
 
   function onProviderChange() {
     if (!editing?.llm) return
+    strategyManualOverride = false
+    strategyAutoNotice = ''
     const prov = providers.find(p => p.id === editing.llm.provider)
     if (prov && prov.defaultModel) {
       editing.llm.model = prov.defaultModel
     } else {
       editing.llm.model = ''
     }
+  }
+
+  function onModelChange() {
+    strategyManualOverride = false
+    strategyAutoNotice = ''
   }
 
   // Lazy-fetch the model list for one provider (cached). Called whenever the
@@ -699,6 +709,53 @@
     loading: !!modelsLoading[editing?.llm?.provider],
     error: modelsError[editing?.llm?.provider] || '',
   })
+
+  function nativeToolingConfidence(provider, model) {
+    const p = String(provider || '').toLowerCase()
+    const m = String(model || '').toLowerCase()
+    if (!p || !m) return { capable: false, reason: '' }
+    const hosted = ['openai', 'anthropic', 'google', 'gemini', 'ollama_cloud', 'ollama-cloud', 'openrouter', 'openroute', 'groq', 'mistral', 'deepseek', 'together', 'nvidia']
+    if (hosted.some(x => p.includes(x))) {
+      return { capable: true, reason: 'This provider/model should handle tool calls through the native Auto loop.' }
+    }
+    if (p.includes('ollama')) {
+      const strongLocal = /(70b|72b|34b|32b|30b|27b|22b|20b|14b|13b|qwen3|qwen2\.5|llama3\.1|llama3\.2|llama3\.3|gpt-oss|mixtral|mistral-large|command-r)/.test(m)
+      if (strongLocal) {
+        return { capable: true, reason: 'This local model looks capable enough for native Auto tool calling.' }
+      }
+    }
+    return { capable: false, reason: '' }
+  }
+
+  $: nativeTooling = nativeToolingConfidence(editing?.llm?.provider, editing?.llm?.model)
+  $: maybeAutoSwitchStrategy(nativeTooling, editing?.llm?.provider, editing?.llm?.model)
+
+  function maybeAutoSwitchStrategy(capability, provider, model) {
+    if (!editing?.reasoning || !capability?.capable) return
+    const key = `${provider || ''}/${model || ''}`
+    if (lastAutoStrategyKey === key) return
+    lastAutoStrategyKey = key
+    if ((editing.reasoning.strategy || '') === 'react' && !strategyManualOverride) {
+      editing.reasoning.strategy = ''
+      strategyAutoNotice = `Switched strategy to Auto for ${key}; ReAct is now an advanced manual override.`
+      editing = editing
+    }
+  }
+
+  function setStrategy(val) {
+    if (!editing) return
+    editing.reasoning = editing.reasoning || {}
+    editing.reasoning.strategy = val
+    strategyManualOverride = true
+    if (val === 'react' && nativeTooling?.capable) {
+      strategyAutoNotice = 'Manual ReAct override kept. Auto is recommended for this model unless you are intentionally testing the classic loop.'
+    } else if (val === '') {
+      strategyAutoNotice = 'Auto selected. The engine will use the most reliable native tool-calling path for this model.'
+    } else {
+      strategyAutoNotice = ''
+    }
+    editing = editing
+  }
 
   // ── Tools editing ─────────────────────────────────────────────────────────
   function addTool() {
@@ -917,6 +974,9 @@
     saveAudit = null
     validationReport = null
     showHistory = false
+    strategyManualOverride = false
+    strategyAutoNotice = ''
+    lastAutoStrategyKey = ''
   }
 
   function newAgent() {
@@ -926,6 +986,9 @@
     saveAudit = null
     validationReport = null
     showHistory = false
+    strategyManualOverride = false
+    strategyAutoNotice = ''
+    lastAutoStrategyKey = ''
   }
 
   function openStudioStarter() {
@@ -1882,7 +1945,7 @@ console.log(reply);` : ''
                      in-place during list updates. Current model is always at [0]
                      (from modelOptions), so bind:value always has a match and the
                      browser never resets to the first option. -->
-                <select bind:value={editing.llm.model} data-tooltip={llmTips.model}>
+                <select bind:value={editing.llm.model} on:change={onModelChange} data-tooltip={llmTips.model}>
                   {#if !editing.llm.model}
                     <option value="">— pick a model —</option>
                   {/if}
@@ -2006,17 +2069,17 @@ console.log(reply);` : ''
             <!-- ── Reasoning loop ── -->
             <div class="sep">Execution strategy <span class="optional">(how the agent runs its tools)</span></div>
             <div class="field">
-              <span class="field-label" data-tooltip="Controls whether the agent uses native tool-calling, an explicit ReAct loop, or a plan-then-execute loop.">Strategy</span>
+              <span class="field-label" data-tooltip="Controls whether the agent uses native tool-calling, an advanced/manual ReAct loop, or a plan-then-execute loop. Capable models should usually stay on Auto.">Strategy</span>
               <div class="strategy-cards">
                 {#each [
                   { val: '',             icon: '✨', title: 'Auto',          desc: 'Recommended — native tool-calling; engine picks the loop' },
-                  { val: 'react',        icon: '🔄', title: 'ReAct',         desc: 'Force iterative think → act → observe' },
+                  { val: 'react',        icon: '🔄', title: 'ReAct',         desc: 'Advanced/manual — force think → act → observe' },
                   { val: 'plan_execute', icon: '📋', title: 'Plan-Execute',  desc: 'Force decompose → execute plan steps' },
                 ] as s}
                   <button
                     class="strategy-card {(editing.reasoning?.strategy||'') === s.val ? 'active' : ''}"
                     data-tooltip={s.desc}
-                    on:click={() => { editing.reasoning = editing.reasoning || {}; editing.reasoning.strategy = s.val; editing = editing }}
+                    on:click={() => setStrategy(s.val)}
                   >
                     <span class="sc-icon">{s.icon}</span>
                     <span class="sc-title">{s.title}</span>
@@ -2024,6 +2087,14 @@ console.log(reply);` : ''
                   </button>
                 {/each}
               </div>
+              {#if nativeTooling?.capable}
+                <div class="strategy-advice info" data-tooltip={nativeTooling.reason}>
+                  Auto recommended for {editing.llm.provider}/{editing.llm.model}. {nativeTooling.reason}
+                </div>
+              {/if}
+              {#if strategyAutoNotice}
+                <div class="strategy-advice ok">{strategyAutoNotice}</div>
+              {/if}
             </div>
 
             {#if editing.reasoning?.strategy}
@@ -3715,6 +3786,13 @@ console.log(reply);` : ''
   .sc-icon  { font-size: 1.2rem; }
   .sc-title { font-size: .83rem; font-weight: 600; color: #c5c9e8; }
   .sc-desc  { font-size: .72rem; color: #6b7294; line-height: 1.4; }
+  .strategy-advice {
+    margin-top: .45rem; padding: .5rem .65rem; border-radius: 6px;
+    border: 1px solid #1f2743; background: #101528; color: #8f96bb;
+    font-size: .74rem; line-height: 1.4;
+  }
+  .strategy-advice.info { border-color: #2e4578; color: #9db8ff; background: rgba(59, 95, 180, .1); }
+  .strategy-advice.ok { border-color: #245d46; color: #8de3b0; background: rgba(37, 145, 95, .1); }
   .field-row { display: flex; gap: .6rem; flex-wrap: wrap; }
   .field-row .field { flex: 1; min-width: 120px; }
 
