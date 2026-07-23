@@ -129,9 +129,9 @@ type BuildReport struct {
 	// not be fixed automatically — and what to do about it. It is set when the
 	// loop detects it is repairing the same failure over and over (cosmetic edits
 	// that don't converge), most importantly when a fixed flow is fighting a
-	// reasoning task and the answer is to switch to an agent (ReAct) instead.
+	// reasoning task and the answer is to switch to an agent instead.
 	Diagnosis string `json:"diagnosis,omitempty"`
-	// SuggestMode, when non-empty ("react"|"plan_execute"), tells the GUI the loop
+	// SuggestMode, when non-empty ("auto"|"plan_execute"|"react"), tells the GUI the loop
 	// believes this task should be authored as an agent in that mode, so it can
 	// offer a one-click switch. Embodies "Studio figures it out, not the user."
 	SuggestMode string `json:"suggest_mode,omitempty"`
@@ -201,7 +201,7 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			// Repair non-convergence: if this EXACT blocker set already came back
 			// after a prior repair, editing the flow isn't resolving it. Stop —
 			// and if the residual is reasoning-fit (a fixed flow carrying an agent
-			// task), recommend ReAct instead of looping to the attempt budget.
+			// task), recommend an agent mode instead of looping to the attempt budget.
 			problemSig := strings.Join(dedupeStrings(problems), "\n")
 			if seenProblemSets[problemSig] {
 				att.Action = "same problems recurred after repair — stopping (not converging)"
@@ -252,7 +252,7 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 				rep.Attempts = append(rep.Attempts, att)
 				rep.Residual = problems
 				// If the unfixable blockers are reasoning-fit, this flow can't be
-				// repaired in workflow mode — point the user at ReAct.
+				// repaired in workflow mode — point the user at an agent mode.
 				if problemsAreReasoningFit(problems) {
 					rep.Diagnosis, rep.SuggestMode = reasoningFitDiagnosis()
 					emit(BuildEvent{Kind: "result", Attempt: n, Phase: "repair", Message: rep.Diagnosis})
@@ -407,7 +407,7 @@ func isHandoffReasoningError(msg string) bool {
 // problemsAreReasoningFit reports whether the residual build problems are, in the
 // main, the signature of a fixed flow carrying a reasoning task (steps wired to
 // values nothing produces, template/parse handoff failures). When they are, no
-// amount of flow editing will fix it — the right move is an agent (ReAct).
+// amount of flow editing will fix it — the right move is an Auto/Plan-Execute agent.
 func problemsAreReasoningFit(problems []string) bool {
 	if len(problems) == 0 {
 		return false
@@ -424,19 +424,19 @@ func problemsAreReasoningFit(problems []string) bool {
 // reasoningFitDiagnosis is the verdict shown when the residual blockers say the
 // task belongs in an agent, not a fixed flow. Returns the message + suggest mode.
 func reasoningFitDiagnosis() (diagnosis, suggestMode string) {
-	return "These steps reference values — like the user's message, the conversation context, or the channel — that no fixed step can produce. The workflow is being asked to route and reason over free-form input, which is an agent's job, not a fixed graph. Switch to the ReAct reasoning loop and the agent will pick the right skill/tool per request.", "react"
+	return "These steps reference values — like the user's message, the conversation context, or the channel — that no fixed step can produce. The workflow is being asked to route and reason over free-form input, which is an agent's job, not a fixed graph. Switch to an Auto tool-calling agent so capable models can use native tool calling; use Plan-Execute for longer multi-phase work.", "auto"
 }
 
 // nonConvergenceDiagnosis explains why the loop gave up and what to do about it.
 // When the recurring failure is a handoff/parse error, the verdict is decisive:
 // this is a reasoning task wrongly cast as a fixed pipeline — author it as an
-// agent (ReAct) and let the agent pick the skill/tool per query. Returns the
+// Auto/Plan-Execute agent and let the agent pick the skill/tool per query. Returns the
 // human-readable diagnosis plus a suggested mode for the GUI's one-click switch.
 func nonConvergenceDiagnosis(err string) (diagnosis, suggestMode string) {
 	if isHandoffReasoningError(err) {
-		return "This step keeps failing because a fixed workflow is trying to read fields out of an upstream step's free-form output (an LLM or agent reply), which has no guaranteed shape — each repair just renames the field and it breaks again. This is a reasoning task, not a fixed pipeline: switch it to an agent with the ReAct mode toggle and let the agent choose the skill/tool per request.", "react"
+		return "This step keeps failing because a fixed workflow is trying to read fields out of an upstream step's free-form output (an LLM or agent reply), which has no guaranteed shape — each repair just renames the field and it breaks again. This is an agent task, not a fixed pipeline: switch it to Auto so the agent can choose the skill/tool per request, or Plan-Execute for longer multi-phase work.", "auto"
 	}
-	return "The same failure recurred after repair, so automatic fixing stopped to avoid looping. Review the run error above and adjust the step, or try authoring this as an agent (ReAct) if the flow is fighting free-form data.", ""
+	return "The same failure recurred after repair, so automatic fixing stopped to avoid looping. Review the run error above and adjust the step, or try authoring this as an Auto agent if the flow is fighting free-form data.", ""
 }
 
 // errOrNil adapts a string error field to an error for the trace Step closure.

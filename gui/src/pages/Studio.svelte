@@ -797,7 +797,7 @@ Use null for fields that are not present.`
         summary: (data && data.summary) || '',
         assumptions: (data && Array.isArray(data.assumptions)) ? data.assumptions : [],
         questions: (data && Array.isArray(data.questions)) ? data.questions : [],
-        // The framework's architecture call ('workflow' | 'react' | 'plan_execute')
+        // The framework's architecture call ('workflow' | 'auto' | 'react' | 'plan_execute')
         // and why — so confirmRefinement can build the AGENT directly instead of
         // drawing a fixed flow that a reasoning task can never satisfy.
         recommended_mode: (data && data.recommended_mode) || '',
@@ -827,7 +827,7 @@ Use null for fields that are not present.`
   }
 
   // Confirm the refinement dialog. The framework's recommended architecture
-  // decides what we generate: a fixed workflow (canvas) OR a ReAct/Plan-Execute
+  // decides what we generate: a fixed workflow (canvas) OR an Auto/ReAct/Plan-Execute
   // AGENT (no canvas — it reasons over tools). This is the wizard branch point.
   async function confirmRefinement() {
     if (!refinement || compiling) return
@@ -875,7 +875,7 @@ Use null for fields that are not present.`
     if (workflow && workflow.strategy) routeToAgent(m, rec.rationale || '')
   }
 
-  // Generate a ReAct/Plan-Execute agent (no flow). The result draft carries
+  // Generate an Auto/ReAct/Plan-Execute agent (no flow). The result draft carries
   // `strategy`, so the UI renders the agent-spec panel instead of the canvas,
   // and Save persists a strategy-based agent.
   async function runAgentCompile(text, mode, ans) {
@@ -1073,13 +1073,13 @@ Use null for fields that are not present.`
     repairProposals = repairProposals.filter(x => x !== p)
   }
 
-  // ── Execution-mode override (Workflow ⇄ ReAct ⇄ Plan-Execute) ──────────────
+  // ── Execution-mode override (Workflow ⇄ Auto ⇄ ReAct ⇄ Plan-Execute) ───────
   // The current draft's mode: a fixed workflow (no strategy) or a reasoning agent.
   $: currentMode = workflow && workflow.strategy ? String(workflow.strategy).toLowerCase() : 'workflow'
 
   // switchMode lets the developer override how Studio classified the task —
-  // converting a result that's better as a reasoning agent (e.g. an autonomous
-  // skill router built as a brittle fixed flow) into a ReAct/Plan-Execute agent,
+  // converting a result that's better as an agent (e.g. an autonomous
+  // skill router built as a brittle fixed flow) into an Auto/Plan-Execute agent,
   // or back to a workflow. It re-compiles the original intent in the chosen mode,
   // reusing the same agent/flow compilers Generate uses.
   async function switchMode(mode) {
@@ -1179,7 +1179,7 @@ Use null for fields that are not present.`
   // Friendly label for the compiler's recommended execution mode.
   function recoLabel(mode) {
     if (mode === 'auto') return 'Auto tool agent'
-    if (mode === 'react') return 'ReAct (reasoning loop)'
+    if (mode === 'react') return 'ReAct (advanced loop)'
     if (mode === 'plan_execute') return 'Plan-Execute'
     if (mode === 'workflow') return 'Workflow (fixed flow)'
     return mode || 'Workflow'
@@ -3490,14 +3490,16 @@ Use null for fields that are not present.`
                     role="tab" aria-selected={viewMode === 'code'} on:click={showCodeView}>{'</> SOUL.yaml'}</button>
             {#if viewMode === 'code' && codeYaml !== codeOrig}<span class="vs-dirty" data-tooltip="Unsaved YAML edits">●</span>{/if}
           </div>
-          <!-- Execution-mode override: a fixed workflow, or a reasoning agent. -->
+          <!-- Execution-mode override: a fixed workflow, or an agent. -->
           <div class="mode-switch" role="group" aria-label="Execution mode"
-            data-tooltip="How this agent runs. Workflow = a fixed graph. ReAct / Plan-Execute = a reasoning agent that chooses its tools/skills at runtime. Switching re-generates from your prompt.">
+            data-tooltip="How this agent runs. Workflow = a fixed graph. Auto = recommended native tool-calling. Plan-Execute = long multi-step planning. ReAct is an advanced manual override. Switching re-generates from your prompt.">
             <span class="ms-label">mode</span>
             <button class="ms-btn" class:active={currentMode === 'workflow'} type="button"
                     disabled={compiling} on:click={() => switchMode('workflow')}>Workflow</button>
+            <button class="ms-btn" class:active={currentMode === 'auto'} type="button"
+                    disabled={compiling} on:click={() => switchMode('auto')}>Auto</button>
             <button class="ms-btn" class:active={currentMode === 'react'} type="button"
-                    disabled={compiling} on:click={() => switchMode('react')}>ReAct</button>
+                    disabled={compiling} on:click={() => switchMode('react')}>ReAct (advanced)</button>
             <button class="ms-btn" class:active={currentMode === 'plan_execute'} type="button"
                     disabled={compiling} on:click={() => switchMode('plan_execute')}>Plan-Execute</button>
           </div>

@@ -9,7 +9,8 @@ func TestDefaultSOULRulesAlignArchitectureModes(t *testing.T) {
 	for _, want := range []string{
 		"Use a Macro-Workflow graph for fixed, predictable pipelines",
 		"use an 'auto' tool-calling agent for conversational assistants",
-		"use 'react' or 'plan_execute' only for genuinely open-ended",
+		"use 'plan_execute' for long multi-phase jobs",
+		"Use 'react' only when the user explicitly asks",
 		"channel.send uses the exact JSON arguments",
 		"The field is text, not message",
 	} {

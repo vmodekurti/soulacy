@@ -95,7 +95,8 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 }
 
 // CompileAgent generates a tool/reasoning agent Draft (no flow) from an intent.
-// strategy is "auto" (default native tool calling), "react", or "plan_execute".
+// strategy is "auto" (default native tool calling), "react" (manual/advanced),
+// or "plan_execute".
 // Like Compile it is tolerant of fenced/prose-wrapped model output; it validates
 // that the result has a system prompt and at least one tool or peer agent.
 func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, strategy string, answers map[string]string) (Result, error) {
@@ -109,7 +110,7 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	switch strategy {
 	case "auto", "react", "plan_execute":
 	default:
-		strategy = "react"
+		strategy = "auto"
 	}
 
 	prompt := BuildAgentPrompt(intent, catalog, strategy, answers)

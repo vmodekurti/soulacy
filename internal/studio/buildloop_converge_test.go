@@ -24,7 +24,8 @@ func (v *handoffVerifier) Verify(ctx context.Context, d Draft, tc TestCase) Veri
 }
 
 // A runtime handoff/parse error the loop can't repair must end with a verdict
-// that recommends authoring this as an agent (ReAct), not endless flow edits.
+// that recommends authoring this as an Auto agent, not endless flow edits or
+// implicit ReAct.
 func TestBuildLoop_HandoffErrorRecommendsAgentMode(t *testing.T) {
 	d := Draft{Name: "finance", Trigger: Trigger{Type: "manual"}}
 	v := &handoffVerifier{}
@@ -39,11 +40,11 @@ func TestBuildLoop_HandoffErrorRecommendsAgentMode(t *testing.T) {
 	if rep.OK || rep.Verified {
 		t.Fatalf("a never-passing flow must not report OK/Verified; got %+v", rep)
 	}
-	if rep.SuggestMode != "react" {
-		t.Errorf("a handoff/template failure should suggest react mode; got %q (diagnosis: %q)", rep.SuggestMode, rep.Diagnosis)
+	if rep.SuggestMode != "auto" {
+		t.Errorf("a handoff/template failure should suggest auto mode; got %q (diagnosis: %q)", rep.SuggestMode, rep.Diagnosis)
 	}
 	if !strings.Contains(strings.ToLower(rep.Diagnosis), "agent") {
-		t.Errorf("diagnosis should point the user at agent/ReAct mode; got %q", rep.Diagnosis)
+		t.Errorf("diagnosis should point the user at agent mode; got %q", rep.Diagnosis)
 	}
 	if rep.Summary != rep.Diagnosis {
 		t.Errorf("the diagnosis should headline the summary; summary=%q", rep.Summary)
@@ -51,9 +52,9 @@ func TestBuildLoop_HandoffErrorRecommendsAgentMode(t *testing.T) {
 }
 
 // Preflight blockers that say a step references a value nothing upstream
-// produces (the user's message / context / channel) are reasoning-fit: a fixed
-// flow can't satisfy them. The loop must classify them as such and recommend
-// ReAct rather than reporting them as ordinary "still unresolved" problems.
+// produces (the user's message / context / channel) are agent-fit: a fixed flow
+// can't satisfy them. The loop must classify them as such and recommend Auto
+// rather than reporting them as ordinary "still unresolved" problems.
 func TestProblemsAreReasoningFit_PreflightHandoffBlockers(t *testing.T) {
 	problems := []string{
 		`step "produce": Step references {{ .message }} but no earlier step produces "message".`,
@@ -65,8 +66,8 @@ func TestProblemsAreReasoningFit_PreflightHandoffBlockers(t *testing.T) {
 		t.Fatalf("a flow referencing values nothing produces should be reasoning-fit")
 	}
 	d, mode := reasoningFitDiagnosis()
-	if mode != "react" || !strings.Contains(strings.ToLower(d), "agent") {
-		t.Errorf("reasoning-fit verdict should recommend the react agent; got mode=%q diag=%q", mode, d)
+	if mode != "auto" || !strings.Contains(strings.ToLower(d), "agent") {
+		t.Errorf("reasoning-fit verdict should recommend the auto agent; got mode=%q diag=%q", mode, d)
 	}
 	// A normal blocker set (e.g. a missing required arg) must NOT be reasoning-fit.
 	ordinary := []string{`step "fetch": required argument "ticker" is empty.`}
@@ -77,8 +78,8 @@ func TestProblemsAreReasoningFit_PreflightHandoffBlockers(t *testing.T) {
 
 // The PREFLIGHT-phase convergence guard must stop when the same blocker set
 // recurs after a repair (the LLM keeps "fixing" without resolving it), instead
-// of burning the whole attempt budget — and recommend ReAct when the residual is
-// reasoning-fit. Regression for the seenProblemSets guard.
+// of burning the whole attempt budget — and recommend Auto when the residual is
+// agent-fit. Regression for the seenProblemSets guard.
 func TestBuildLoop_PreflightNonConvergenceStops(t *testing.T) {
 	// A flow node references a value nothing upstream produces — an unresolvable
 	// handoff blocker. The fake LLM "repairs" by returning the SAME draft, so the
@@ -105,8 +106,8 @@ func TestBuildLoop_PreflightNonConvergenceStops(t *testing.T) {
 	if len(rep.Attempts) > 3 {
 		t.Errorf("non-convergence guard should stop early; ran %d attempts", len(rep.Attempts))
 	}
-	if rep.SuggestMode != "react" {
-		t.Errorf("a recurring handoff blocker should recommend react; got %q (diag %q)", rep.SuggestMode, rep.Diagnosis)
+	if rep.SuggestMode != "auto" {
+		t.Errorf("a recurring handoff blocker should recommend auto; got %q (diag %q)", rep.SuggestMode, rep.Diagnosis)
 	}
 }
 

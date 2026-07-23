@@ -19,7 +19,7 @@ func studioFake(t *testing.T) (*Server, *fakeLLMProvider) {
 
 // /studio/compile must return a reasoning AGENT (strategy set, no flow) for an
 // intent with strong reasoning cues — the server-side authoritative routing
-// guarantee. Regression for "it says ReAct but builds a workflow".
+// guarantee. Regression for "it says agent but builds a brittle workflow".
 func TestStudioCompile_RoutesReasoningTaskToAgent(t *testing.T) {
 	s, fake := studioFake(t)
 	fake.content = `{
@@ -40,8 +40,8 @@ func TestStudioCompile_RoutesReasoningTaskToAgent(t *testing.T) {
 	if wf == nil {
 		t.Fatalf("no workflow in response: %v", out)
 	}
-	if wf["strategy"] != "react" {
-		t.Errorf("expected /compile to return a react agent, got strategy=%v", wf["strategy"])
+	if wf["strategy"] != "plan_execute" {
+		t.Errorf("expected /compile to return a plan_execute agent, got strategy=%v", wf["strategy"])
 	}
 }
 
