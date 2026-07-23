@@ -32,6 +32,16 @@ type OpenAIProvider struct {
 	client            *http.Client
 }
 
+// DefaultOpenAITimeout is the overall per-request timeout for an
+// OpenAI-compatible provider. It is generous because a large NON-STREAMING
+// generation from a cloud reasoning model (e.g. glm/qwen served over an
+// OpenAI-compatible endpoint) can legitimately run for minutes before it
+// returns the full body — and the Studio builder makes exactly such calls. The
+// header cap is dropped (LongGenHTTPClient) so a slow-to-first-header
+// generation isn't aborted; this timeout and the request context are the bound.
+// Override per provider with the `request_timeout` config key.
+const DefaultOpenAITimeout = 300 * time.Second
+
 func NewOpenAIProvider(id, baseURL, apiKey, model string) *OpenAIProvider {
 	return NewOpenAIProviderWithOptions(id, baseURL, apiKey, model, "", nil)
 }
@@ -41,7 +51,17 @@ func NewOpenAIProviderWithOptions(id, baseURL, apiKey, model, organization strin
 	return &OpenAIProvider{
 		id: id, baseURL: baseURL, apiKey: apiKey, model: model,
 		organization: organization, parallelToolCalls: parallelToolCalls,
-		client: SharedHTTPClient(120 * time.Second),
+		client: LongGenHTTPClient(DefaultOpenAITimeout),
+	}
+}
+
+// SetRequestTimeout overrides the overall HTTP timeout for this provider's
+// requests. A value <= 0 is ignored (the default is kept). Used to honour a
+// per-provider `request_timeout` config for slow cloud reasoning models whose
+// large (non-streaming) generations exceed the default.
+func (p *OpenAIProvider) SetRequestTimeout(d time.Duration) {
+	if d > 0 {
+		p.client = LongGenHTTPClient(d)
 	}
 }
 

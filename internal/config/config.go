@@ -693,12 +693,18 @@ type SnapshotRetentionConfig struct {
 }
 
 type ProviderConfig struct {
-	BaseURL       string         `mapstructure:"base_url"`
-	APIKey        string         `mapstructure:"api_key"`
-	Model         string         `mapstructure:"model"`
-	KeepAlive     string         `mapstructure:"keep_alive"`
-	Options       map[string]any `mapstructure:"options"`
-	PromptCaching bool           `mapstructure:"prompt_caching"` // cache system prompt + tools between turns (provider support varies; Anthropic: 90% discount on cache hits)
+	BaseURL   string         `mapstructure:"base_url"`
+	APIKey    string         `mapstructure:"api_key"`
+	Model     string         `mapstructure:"model"`
+	KeepAlive string         `mapstructure:"keep_alive"`
+	Options   map[string]any `mapstructure:"options"`
+	// RequestTimeout overrides the overall per-request HTTP timeout for
+	// OpenAI-compatible providers (openai, nvidia, and custom OpenAI endpoints).
+	// A Go duration string, e.g. "300s" or "10m". Empty = provider default
+	// (DefaultOpenAITimeout, 300s). Raise it for slow cloud reasoning models
+	// whose large non-streaming generations (e.g. the Studio builder) run long.
+	RequestTimeout string `mapstructure:"request_timeout"`
+	PromptCaching  bool   `mapstructure:"prompt_caching"` // cache system prompt + tools between turns (provider support varies; Anthropic: 90% discount on cache hits)
 
 	// ── Google-specific ──────────────────────────────────────────────────────
 	// ThinkingBudget controls Gemini 2.5 extended thinking.
