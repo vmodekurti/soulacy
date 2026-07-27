@@ -133,6 +133,134 @@ func TestWorkflowExecutor_LLMNodeExtractsJSONForTool(t *testing.T) {
 	}
 }
 
+func TestWorkflowExecutor_RuntimeHealsTemplateShapeAndContinues(t *testing.T) {
+	store := newTestCheckpointStore(t)
+	router := llm.NewRouter("test")
+	provider := &fakeHandleProvider{
+		responses: []llm.CompletionResponse{{Content: `{"source_type":"text","text":"recovered source pack"}`}},
+	}
+	router.Register(provider)
+	var addedText string
+	e := &Engine{llmRouter: router, adaptiveNodes: true}
+	e.builtins = []BuiltinTool{
+		{
+			Name: "produce_pack",
+			Handler: func(_ context.Context, _ map[string]any) (string, error) {
+				return `{"items":[{"title":"AI article","url":"https://example.com/ai"}]}`, nil
+			},
+		},
+		{
+			Name: "add_source",
+			Parameters: map[string]any{
+				"type":     "object",
+				"required": []any{"source_type", "text"},
+				"properties": map[string]any{
+					"source_type": map[string]any{"type": "string"},
+					"text":        map[string]any{"type": "string"},
+				},
+			},
+			Handler: func(_ context.Context, args map[string]any) (string, error) {
+				addedText, _ = args["text"].(string)
+				return `{"ok":true}`, nil
+			},
+		},
+	}
+	w := NewWorkflowExecutor(agent.WorkflowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "curate", Kind: sdkr.FlowNodeTool, Tool: "produce_pack", Output: "source_pack"},
+			{
+				ID:       "add",
+				Kind:     sdkr.FlowNodeTool,
+				Tool:     "add_source",
+				Input:    `{"source_type":"text","text":{{toJson .source_pack.text}}}`,
+				Adaptive: true,
+			},
+		},
+		Edges: []sdkr.FlowEdge{{From: "curate", To: "add"}},
+	}, e, store, zap.NewNop())
+
+	if _, err := w.Run(context.Background(), workflowTestMessage("go"), "flow-heal-template"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if addedText != "recovered source pack" {
+		t.Fatalf("add_source text = %q", addedText)
+	}
+	reqs := provider.requestsSnapshot()
+	if len(reqs) != 1 || reqs[0].ResponseFormat != "json" {
+		t.Fatalf("repair requests = %+v, want one JSON request", reqs)
+	}
+	if !strings.Contains(reqs[0].Messages[1].Content, `"items"`) ||
+		!strings.Contains(reqs[0].Messages[1].Content, "Target tool JSON schema") {
+		t.Fatalf("repair prompt missing live shape/schema:\n%s", reqs[0].Messages[1].Content)
+	}
+}
+
+func TestWorkflowExecutor_RuntimeRepairsToolArgumentsAndRetriesRealTool(t *testing.T) {
+	store := newTestCheckpointStore(t)
+	router := llm.NewRouter("test")
+	provider := &fakeHandleProvider{
+		responses: []llm.CompletionResponse{{Content: `{"ticker":"SNDK"}`}},
+	}
+	router.Register(provider)
+	calls := 0
+	e := &Engine{llmRouter: router, adaptiveNodes: true}
+	e.builtins = []BuiltinTool{{
+		Name: "stock_info",
+		Parameters: map[string]any{
+			"type":     "object",
+			"required": []any{"ticker"},
+			"properties": map[string]any{
+				"ticker": map[string]any{"type": "string"},
+			},
+		},
+		Handler: func(_ context.Context, args map[string]any) (string, error) {
+			calls++
+			if args["ticker"] == nil {
+				return "", errors.New("validation error: field required: ticker")
+			}
+			return `{"ticker":"SNDK","price":42}`, nil
+		},
+	}}
+	w := NewWorkflowExecutor(agent.WorkflowSpec{
+		Nodes: []sdkr.FlowNode{{
+			ID:       "quote",
+			Kind:     sdkr.FlowNodeTool,
+			Tool:     "stock_info",
+			Input:    `{"symbol":"SNDK"}`,
+			Adaptive: true,
+		}},
+	}, e, store, zap.NewNop())
+
+	out, err := w.Run(context.Background(), workflowTestMessage("quote SNDK"), "flow-heal-args")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("tool calls = %d, want initial call plus one repaired retry", calls)
+	}
+	if !strings.Contains(string(out), `"ticker":"SNDK"`) {
+		t.Fatalf("output = %s", out)
+	}
+}
+
+func TestRuntimeHealingNeverRetriesSecurityOrTransportFailures(t *testing.T) {
+	for _, reason := range []string{
+		"consent grant is missing",
+		"permission denied",
+		"401 unauthorized",
+		"403 forbidden",
+		"connection refused",
+		"context deadline exceeded",
+	} {
+		if isRepairableToolArgumentFailure(reason) {
+			t.Errorf("%q must not be runtime-healable", reason)
+		}
+	}
+	if !isRepairableToolArgumentFailure("validation error: field required: ticker") {
+		t.Fatal("expected schema validation failure to be runtime-healable")
+	}
+}
+
 // TestWorkflowExecutor_TypedPortHandoffAndTrace is the Phase 1 end-to-end check
 // through the real executor: a NotebookLM-shaped flow hands a created notebook's
 // id to a later tool via a TYPED PORT WIRE (no {{ }} template), and the per-block

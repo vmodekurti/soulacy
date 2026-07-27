@@ -1,6 +1,10 @@
 package studio
 
-import "strings"
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
 
 // DefaultSOULRules is the built-in authoring rulebook. It is injected into the
 // builder (generate), the AI fixer, and shown in the GUI editor where the user
@@ -60,13 +64,39 @@ builder automatically from the live catalog; add OUTPUT shapes here.)
 - queue_list — input {queue, limit}; output {ok,count,items:[{id,item,created_at,expires_at}]} without removing items. queue defaults to "default".
 - queue_clear — input {queue}; output {ok,cleared}. queue defaults to "default".
 - (add your tools below, e.g.)
-- mcp__notebooklm__notebook_create — output {notebook_id, title}; the notebook id is
+- mcp__notebooklm__notebook_create — input {title}. Do not use {name}. output {notebook_id, title}; the notebook id is
   {{ .<output>.notebook_id }}.
-- mcp__notebooklm__source_add — input {notebook_id, source_type, urls (array of strings), wait (boolean)}.
-- mcp__notebooklm__studio_create — input {notebook_id, artifact_type}.
+- mcp__notebooklm__source_add — input {notebook_id, source_type, url|text|file_path, wait}. Do not use {content}. For fetched article text use {"notebook_id":"...","source_type":"text","text":"...","wait":true}; for multiple URLs, add sources one at a time unless the live tool schema explicitly supports urls[].
+- mcp__notebooklm__studio_create — input {notebook_id, artifact_type}. If it returns pending_confirmation, retry once with {notebook_id, artifact_type, confirm:true}.
 - mcp__notebooklm__studio_status — input needs the notebook id (notebook_id),
-  not the audio/artifact id.
+  not the audio/artifact id. Poll until the status/artifact is completed and an audio_url or final artifact link exists; never treat completed:0, in_progress>0, pending, running, or generating status JSON as a final answer.
 `
+
+// RulesVersion returns a short, stable content version for a rulebook.
+//
+// Rules are a bare file the user can overwrite at any time, so "the agent
+// validated cleanly" is an unanchored claim: it does not say WHICH rulebook it
+// validated against. That is the failure mode this prevents — an agent
+// certified under one rulebook, silently re-read under an edited one, with no
+// way to tell that the ground moved. A deployment pins this value so a later
+// diff can answer "did the rules change, or did the agent?".
+//
+// Content-hash based, so it needs no counter, no coordination and no storage:
+// identical rules always version identically, on any machine. Whitespace-only
+// and line-ending differences are normalised away so a CRLF round trip through
+// an editor does not read as a rules change.
+//
+// An empty rulebook returns "" — "no rules in force" is a real state and must
+// not be dressed up as a version.
+func RulesVersion(rules string) string {
+	normalized := strings.ReplaceAll(rules, "\r\n", "\n")
+	normalized = strings.TrimSpace(normalized)
+	if normalized == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(normalized))
+	return "r" + hex.EncodeToString(sum[:])[:12]
+}
 
 // RulesPromptBlock wraps the (possibly user-edited) rulebook for injection into
 // an LLM prompt. Returns "" when there are no rules so callers can append it

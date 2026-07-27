@@ -112,6 +112,11 @@ type Request struct {
 	// into the prompt so a re-compile incorporates them, closing the
 	// clarify round-trip. Optional.
 	Answers map[string]string `json:"answers,omitempty"`
+	// ForceWorkflow makes /compile build a fixed workflow graph and skip the
+	// server-side RecommendAgentMode routing. Set when the user EXPLICITLY picks
+	// the Workflow mode toggle — an explicit human choice overrides the
+	// reasoning-fit heuristic, which otherwise reverts their pick to an agent.
+	ForceWorkflow bool `json:"force_workflow,omitempty"`
 }
 
 // Trigger describes how the workflow starts.
@@ -186,6 +191,13 @@ type Draft struct {
 	// the Studio toggle; mapped to Definition.Unattended on save.
 	Unattended bool `json:"unattended,omitempty"`
 
+	// Outcome is the draft's BUSINESS-OUTCOME CONTRACT (P0-4): what a run must
+	// actually achieve. Assertions used to live only in a test run and were
+	// discarded at save, so a saved agent was judged in production by "did a
+	// node error" alone. Mapped to Definition.Outcome on save, where the runtime
+	// re-evaluates it against real runs.
+	Outcome *OutcomeSpec `json:"outcome,omitempty"`
+
 	// ── ReAct / Plan-Execute agent form (local-first pivot) ───────────────────
 	// When Strategy is set ("react" or "plan_execute"), this Draft is NOT a fixed
 	// workflow — it's a reasoning agent. The engine runs the strategy loop and
@@ -197,11 +209,22 @@ type Draft struct {
 	Strategy string   `json:"strategy,omitempty"`
 	Tools    []string `json:"tools,omitempty"`
 	Skills   []string `json:"skills,omitempty"`
+	// Policy carries the per-strategy contract the Studio Build step edits: the
+	// agent's goal and completion criteria, the ReAct loop's stop/recovery rules,
+	// and the Plan-Execute planner's steps and approval gates.
+	//
+	// These were previously implicit — a reasoning agent's stop condition lived
+	// only in prose inside SystemPrompt, so it could not be shown, validated, or
+	// enforced. Nil means "use Studio's defaults for the selected strategy",
+	// which is what every existing draft gets.
+	Policy *AgentPolicy `json:"policy,omitempty"`
 	// Reasoning-loop budgets for an agent draft. Preserved across the canvas/YAML
 	// round-trip so a user who tuned them in SOUL.yaml doesn't have them reset to
 	// defaults on re-save. Empty/zero means "use Studio's sensible default".
 	StepTimeout  string `json:"step_timeout,omitempty"`
 	TotalTimeout string `json:"total_timeout,omitempty"`
+	MaxSteps     int    `json:"max_steps,omitempty"`
+	MaxPlanSteps int    `json:"max_plan_steps,omitempty"`
 	MaxTurns     int    `json:"max_turns,omitempty"`
 	// RunTimeout is the whole-run wall-clock cap (top-level agent field, distinct
 	// from the reasoning step/total budgets). Carried so it survives a Studio
@@ -213,6 +236,13 @@ type Draft struct {
 	// ToAgentDefinition re-emitted a hard-coded default, silently clobbering a
 	// provider/model the user set on the Agents screen or directly in SOUL.yaml.
 	LLM agent.LLMConfig `json:"llm,omitempty"`
+
+	// ConfirmTools and Security are generated alongside the architecture so
+	// Studio does not leave production guardrails as after-the-fact warnings.
+	// They map directly to agent.Definition on save and round-trip through
+	// Studio edits.
+	ConfirmTools []string              `json:"confirm_tools,omitempty"`
+	Security     *agent.SecurityConfig `json:"security,omitempty"`
 }
 
 // ScheduleOutput describes the scheduled delivery target for generated agents.
@@ -289,6 +319,10 @@ type Result struct {
 	// configured Studio provider/model and returned so the UI can explain why a
 	// local model got stricter checks or why Studio recommends build verification.
 	Generation *GenerationProfile `json:"generation,omitempty"`
+	// Contract is the deterministic generation verdict for the returned draft.
+	// It lets Studio surface blockers immediately after generation, before the
+	// operator gets as far as Save or creates a broken agent on disk.
+	Contract *ContractResult `json:"contract,omitempty"`
 }
 
 // canonicalExample is the shape the model is instructed to emit. It is
@@ -378,6 +412,7 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- KEEP GRAPHS SIMPLE, but COMPOSE THE CAPABILITIES YOU HAVE: aim for a handful of meaningful nodes, not a 10-15 step pipeline. Collapse pure DATA GLUE (parsing, reshaping, dedupe, formatting) into a SINGLE `python` node. But do NOT collapse real OPERATIONS into python: when an available tool / MCP tool / skill performs the operation, emit a discrete `tool` node that CALLS it, and sequence several such nodes for a multi-step external job (e.g. create -> add sources -> generate -> poll). Delegate open-ended reasoning/summarizing to an `agent` node.\n")
 	sb.WriteString("- USE `llm` NODES FOR FUZZY HUMAN LANGUAGE: when a downstream tool needs clean structured arguments (city, ticker, date range, product query, intent) but the trigger text may be phrased many ways, insert a `llm` node before the tool. Put the raw text in `input`, set params.system to an extraction instruction, set params.response_format to \"json\", and store the object in `output`. Then wire/pass only the extracted scalar fields to tools. Do not use brittle regex Python for natural-language intent extraction.\n")
 	sb.WriteString("- PRODUCTION MINDSET: Treat every intent as a production workload. Handle empty states, edge cases, and failure modes explicitly (e.g. using a branch node to emit a fallback message if no items are found).\n")
+	sb.WriteString("- COMPLETION CONTRACT: the workflow is not complete until every operation the user asked for has actually happened. If the intent says search/find PLUS create/generate/store/send/deliver, the graph must include the later operation(s); never stop at raw search JSON, IDs, delivery receipts, or intermediate tool output. The output node must be the final human-readable content or a clear fallback explaining which required operation failed.\n")
 	sb.WriteString("- STANDARD DATA FORMAT — every handoff between steps is JSON, always. A step's output is a JSON value; the next step receives JSON. To pass a structured value (list/object) into a tool or python input, EITHER leave a python node's input EMPTY (it then auto-receives all upstream outputs as a JSON `inputs` dict) OR use {{ toJson .var }} UNQUOTED, e.g. \"urls\": {{ toJson .urls }}. NEVER write \"urls\": \"{{ .urls }}\" — Go renders a list/object that way as `[map[...] ...]` text (not JSON) and the next step breaks. A bare {{ .scalar }} is only for a single scalar value inside a string.\n")
 	sb.WriteString("- system_prompt: Write a rich, conversational system prompt for the overarching agent (2-4 sentences). Give it a clear persona, define its goal based on the intent, and explicitly outline the multi-step strategy it must follow. Instruct it to gracefully emit a fallback message on errors rather than failing.\n")
 	sb.WriteString("- SHARED SYSTEM PROMPT CONTRACT: ")
@@ -522,6 +557,7 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- No structured value is passed as \"key\": \"{{ .var }}\" (quoted) — that yields Go `map[...]` text, not JSON. Use \"key\": {{ toJson .var }} (unquoted) or leave a python node's input empty.\n")
 	sb.WriteString("- Every {{ .var }} is produced by an EARLIER node's output; pass the RIGHT id (a status/poll step needs the resource id, not a sub-artifact id).\n")
 	sb.WriteString("- Any poll/wait loop sets max_iterations (>1) on the back edge, or it only runs once.\n")
+	sb.WriteString("- If the intent requests a finished artifact/report/storage/delivery, the graph contains the actual artifact/report/storage/delivery step(s), not just discovery/search.\n")
 	sb.WriteString("- Exactly one entry; every path ends at \"end\"; a branch's last/fallback edge has an empty \"if\".\n")
 	sb.WriteString("- Obey every AUTHORING RULE above. Re-read them and correct the draft before returning.\n")
 

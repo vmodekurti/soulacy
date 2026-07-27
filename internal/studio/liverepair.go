@@ -75,7 +75,9 @@ func Classify(run LiveNodeRun) RepairClass {
 	el := strings.ToLower(e)
 
 	// Template funcmap / syntax problems (caught at render, before the tool ran).
-	for _, s := range []string{"function \"", "not defined", "unexpected \"", "unterminated", "unclosed", "template:"} {
+	// Keep the generic "template:" marker out of this first pass: Go includes it
+	// in field-shape errors too, and those need upstream-shape diagnosis.
+	for _, s := range []string{"function \"", "not defined", "unexpected \"", "unterminated", "unclosed"} {
 		if strings.Contains(el, s) {
 			return RepairTemplateError
 		}
@@ -93,6 +95,9 @@ func Classify(run LiveNodeRun) RepairClass {
 		if strings.Contains(el, s) {
 			return RepairShapeDrift
 		}
+	}
+	if strings.Contains(el, "template:") {
+		return RepairTemplateError
 	}
 	// Auth / HTTP / network: a real failure the user must fix, not a reshape.
 	for _, s := range []string{"401", "403", "404", "429", "500", "unauthorized", "forbidden", "timeout", "no such host", "connection refused"} {

@@ -287,6 +287,33 @@ func TestLoopConfigFromDefinition_DefaultValues(t *testing.T) {
 	}
 }
 
+func TestLoopConfigFromDefinition_DynamicDefaultsForComplexPlanExecute(t *testing.T) {
+	builtins := []string{"web_search", "fetch_url", "channel.send"}
+	mcpTools := []string{
+		"mcp__notebooklm__refresh_auth",
+		"mcp__notebooklm__notebook_create",
+		"mcp__notebooklm__source_add",
+		"mcp__notebooklm__studio_create",
+		"mcp__notebooklm__studio_status",
+	}
+	def := &agent.Definition{
+		SystemPrompt: "Search recent AI articles, fetch each one, create a NotebookLM podcast briefing, poll until audio is ready, and deliver it.",
+		Reasoning:    agent.ReasoningConfig{Strategy: "plan_execute"},
+		Builtins:     &builtins,
+		MCPTools:     &mcpTools,
+	}
+	cfg, ok := reasoning.LoopConfigFromDefinition(def, "sys", true)
+	if !ok {
+		t.Fatal("expected ok=true for plan_execute strategy")
+	}
+	if cfg.MaxSteps < 24 {
+		t.Fatalf("complex plan_execute should get larger default max steps, got %d", cfg.MaxSteps)
+	}
+	if cfg.MaxPlanSteps < 12 {
+		t.Fatalf("complex plan_execute should get larger default max plan steps, got %d", cfg.MaxPlanSteps)
+	}
+}
+
 func TestLoopConfigFromDefinition_InvalidDurations(t *testing.T) {
 	// Invalid duration strings should fall back to defaults.
 	def := &agent.Definition{

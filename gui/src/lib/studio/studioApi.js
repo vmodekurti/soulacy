@@ -54,13 +54,16 @@ export async function loadCatalogParts(loaders, timeoutMs = CATALOG_TIMEOUT_MS) 
   return Object.fromEntries(entries)
 }
 
-// Hoist the structured consent fields apiFetch parked on err.body up to the
-// top level, matching the old bridge's rejection shape.
-function hoistConsent(err) {
+// Hoist structured Studio failure fields apiFetch parked on err.body up to the
+// top level, matching the old bridge's rejection shape for consent and letting
+// save-time contract failures open the same preflight modal.
+function hoistStudioError(err) {
   const b = err && err.body
   if (b && typeof b === 'object') {
     if (b.requiresConsent != null) err.requiresConsent = b.requiresConsent
     if (b.consentItems != null) err.consentItems = b.consentItems
+    if (b.contract != null) err.contract = b.contract
+    if (b.preflight != null) err.preflight = b.preflight
   }
   return err
 }
@@ -88,15 +91,34 @@ export const bridge = {
   refinePrompt: (intent, catalog, light) =>
     api.studio.refinePrompt({ intent, catalog, light }),
 
-  compile: (intent, answers, catalog, rawIntent) =>
-    api.studio.compile({ intent, answers, catalog, rawIntent }),
+  compile: (intent, answers, catalog, rawIntent, forceWorkflow) =>
+    api.studio.compile({ intent, answers, catalog, rawIntent, forceWorkflow }),
 
   // Try an unsaved reasoning agent against one sample question.
-  tryAgent: (workflow, question) => api.studio.tryAgent({ workflow, question }),
+  // `ack` is the user's acknowledgement of the run preview the server returned
+  // with a 409: { confirm_side_effects, acknowledged_tools }.
+  tryAgent: (workflow, question, ack) =>
+    api.studio.tryAgent({
+      workflow,
+      question,
+      confirm_side_effects: !!(ack && ack.confirm_side_effects),
+      acknowledged_tools: (ack && ack.acknowledged_tools) || undefined,
+    }),
 
   // Learn from Run Live: propose repairs from the node trace, apply one approved.
   repairLive: (workflow, node_trace) => api.studio.repairLive({ workflow, node_trace }),
-  applyRepair: (workflow, proposal) => api.studio.applyRepair({ workflow, proposal }),
+  // The trace is optional on the wire but not optional in practice: without it
+  // the server cannot replay the fix and can only report it as unproven.
+  applyRepair: (workflow, proposal, failing_input, node_trace, preview) =>
+    api.studio.applyRepair({ workflow, proposal, failing_input, node_trace, preview }),
+
+  // Story surfaces: structured spec, readable plan, model cards, run preview.
+  buildSpec: (intent, previous_intent) => api.studio.buildSpec({ intent, previous_intent }),
+  planView: (workflow) => api.studio.planView({ workflow }),
+  modelCapabilities: (model, provider) => api.studio.modelCapabilities({ model, provider }),
+  runPreview: (workflow) => api.studio.runPreview({ workflow }),
+  readiness: (workflow, acceptPrivilegedExposure) =>
+    api.studio.readiness({ workflow, acceptPrivilegedExposure }),
 
   // Credentials: list configured secrets (with a `set` flag) and set one inline.
   listSecrets: () => api.secrets.list(),
@@ -133,6 +155,9 @@ export const bridge = {
       ...(opts.mocks ? { mocks: opts.mocks } : {}),
       ...(opts.assertions ? { assertions: opts.assertions } : {}),
       ...(opts.mode ? { mode: opts.mode } : {}),
+      ...(opts.variables ? { variables: opts.variables } : {}),
+      ...(opts.environment ? { environment: opts.environment } : {}),
+      ...(opts.startNode ? { startNode: opts.startNode } : {}),
     }),
 
   // Consolidated pre-save validation (missing capabilities, empty required
@@ -148,7 +173,7 @@ export const bridge = {
   // http_request → MCP). Backend: internal/studio/security_preflight.go.
   securityReview: (workflow) => api.studio.securityReview({ workflow }),
 
-  // Deterministic + iterative-LLM repair (auto-wire + reconcile + fix blockers).
+  // Deterministic + iterative repair (contract structure + wiring + blockers).
   autowire: (workflow) => api.studio.autowire({ workflow }),
 
   // AI troubleshoot of a runtime error.
@@ -190,11 +215,15 @@ export const bridge = {
   // the top level so the save handler can open the consent dialog unchanged.
   // grants (optional) is the per-node code-consent array collected from the
   // consent dialog: [{ nodeId, hash, capabilities, scope }].
-  save: async (workflow, acceptPrivilegedExposure, grants) => {
+  // acceptWarningsReason is the operator's recorded justification for saving
+  // past a warnings-only report. Empty on a clean save.
+  save: async (workflow, acceptPrivilegedExposure, grants, acceptWarningsReason) => {
     try {
-      return await api.studio.save({ workflow, acceptPrivilegedExposure, grants })
+      return await api.studio.save({
+        workflow, acceptPrivilegedExposure, grants, acceptWarningsReason,
+      })
     } catch (e) {
-      throw hoistConsent(e)
+      throw hoistStudioError(e)
     }
   },
 
@@ -248,6 +277,14 @@ export const bridge = {
   allAgents: () => api.agents.list(),
   agentYaml: (id) => api.agents.getYaml(id),
 
+  // Deployment control from the library (ST-15). `enabled` is what decides
+  // whether a schedule actually fires, so this is the deploy/undeploy switch.
+  agentEnable: (id) => api.agents.enable(id),
+  agentDisable: (id) => api.agents.disable(id),
+  // Version history + rollback for a deployed agent.
+  agentVersions: (id) => api.agents.versions(id),
+  agentRollback: (id, version) => api.agents.rollback(id, version),
+
   // Framework-written Python for a node: deterministic scaffolds, or the
   // framework's own configured model writing the code (no external service).
   scaffolds: () => api.studio.scaffolds(),
@@ -269,6 +306,8 @@ export const bridge = {
     api.config.patch({ llm: { studio: { build_ux: mode } } }),
   // Streamed generate pipeline — emits one PipelineEvent per phase-boundary
   // and a terminating `done` frame with the full PipelineResult.
-  generateStream: (intent, opts, onEvent) =>
-    api.studio.generateStream({ intent, ...opts }, onEvent),
+  // `signal` aborts the stream; the server cancels the run when the connection
+  // drops, so this stops the work rather than only hiding it.
+  generateStream: (intent, opts, onEvent, signal) =>
+    api.studio.generateStream({ intent, ...opts }, onEvent, signal),
 }

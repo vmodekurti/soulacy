@@ -75,7 +75,17 @@ func checkDataFlow(draft Draft, add func(sev, kind, node, msg, fix string)) {
 	anc := ancestors(draft.Flow.Edges, nodes)
 
 	for _, n := range nodes {
-		checkTemplateVars(n.ID, n.Input, producer, anc, add)
+		checkTemplateVars(n.ID, n.ForEach, producer, anc, nil, add)
+		locals := map[string]bool{}
+		if strings.TrimSpace(n.ForEach) != "" {
+			itemVar := strings.TrimSpace(n.ItemVar)
+			if itemVar == "" {
+				itemVar = "item"
+			}
+			locals[itemVar] = true
+			locals[itemVar+"_index"] = true
+		}
+		checkTemplateVars(n.ID, n.Input, producer, anc, locals, add)
 		if strings.TrimSpace(n.Kind) == sdkr.FlowNodePython {
 			checkPythonInputs(n, draft.Flow.Entry, draft.Flow.Edges, producer, anc, add)
 		}
@@ -84,7 +94,7 @@ func checkDataFlow(draft Draft, add func(sev, kind, node, msg, fix string)) {
 	for i, e := range draft.Flow.Edges {
 		edgeID := "edge " + itoa(i+1)
 		if !flowTerminal(e.To) {
-			checkTemplateVars(edgeID, e.If, producer, anc, add)
+			checkTemplateVars(edgeID, e.If, producer, anc, nil, add)
 		}
 		if strings.TrimSpace(e.ToPort) == "" {
 			continue
@@ -143,9 +153,9 @@ func checkOutputContracts(draft Draft, add func(sev, kind, node, msg, fix string
 	}
 }
 
-func checkTemplateVars(nodeID, input string, producer map[string]string, anc map[string]map[string]bool, add func(sev, kind, node, msg, fix string)) {
+func checkTemplateVars(nodeID, input string, producer map[string]string, anc map[string]map[string]bool, locals map[string]bool, add func(sev, kind, node, msg, fix string)) {
 	for _, v := range referencedVars(input) {
-		if builtinFlowVars[v] {
+		if builtinFlowVars[v] || locals[v] {
 			continue // always seeded by the runtime — not a step dependency
 		}
 		prod, ok := producer[v]

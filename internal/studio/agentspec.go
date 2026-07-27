@@ -64,12 +64,14 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	sb.WriteString("- If delivery routing is uncertain or channel.send fails, call channel.status once and follow its diagnosis/fix instead of retrying channel.send with guessed fields.\n")
 	sb.WriteString("- For ordinary interactive replies, do not call channel.send just to answer the user. Return the answer normally; use channel.send only for explicit out-of-band delivery.\n")
 	sb.WriteString("- The system_prompt is where the procedure lives: spell out the steps as INSTRUCTIONS (e.g. \"create the notebook, then add EACH source one at a time, then start audio generation, then POLL the status until it reports ready, then deliver the link\").\n")
+	sb.WriteString("- The system_prompt MUST include a completion contract: the run is not done until every requested operation is complete. Raw search JSON, IDs, delivery receipts, or intermediate tool output are not final answers; if a later operation cannot complete, return a clear fallback naming the failed step.\n")
 	sb.WriteString("- ")
 	sb.WriteString(agentprompt.InstructionForBuilders())
 	sb.WriteString("\n")
 	sb.WriteString("- Include authentication/setup steps the user asked for as the FIRST instruction if a matching tool exists (e.g. refresh/login tools).\n")
 	sb.WriteString("- Invent a peer agent ONLY if needed, and give it a full reusable system_prompt in new_agents.\n")
 	sb.WriteString("- Pull concrete values from the user's words (queries, counts, schedule cadence, target channel).\n\n")
+	writeAgentStrategyGuidance(&sb, strategy)
 
 	sb.WriteString(GenerationProfilePromptBlock(catalog.Generation))
 	writeCatalogGrounding(&sb, catalog)
@@ -92,6 +94,27 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	sb.WriteString(intent)
 	sb.WriteString("\n")
 	return sb.String()
+}
+
+func writeAgentStrategyGuidance(sb *strings.Builder, strategy string) {
+	sb.WriteString("Strategy-specific system_prompt requirements:\n")
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "plan_execute":
+		sb.WriteString("- Plan-Execute agents MUST keep a compact numbered plan internally, execute it phase by phase, and mark a phase complete only after tool output proves the success criteria were met.\n")
+		sb.WriteString("- Include explicit success criteria for each major phase: discovery, validation, creation, polling, delivery, and final confirmation when those phases apply.\n")
+		sb.WriteString("- Bound loops and polling: name the item list, process each item once unless a retry is justified, set a clear max poll/retry count, and preserve partial results if a downstream phase fails.\n")
+		sb.WriteString("- On a blocker, revise the plan at most once using the actual error. Do not keep retrying the same failed call with identical arguments.\n")
+		sb.WriteString("- Final response must state completed phases, skipped items, failed phase if any, and the best usable artifact/result.\n\n")
+	case "auto":
+		sb.WriteString("- Auto agents should rely on the model's native tool-calling ability. Do not ask the model to emit Thought/Action JSON, ReAct transcripts, or a visible plan protocol.\n")
+		sb.WriteString("- The system_prompt should focus on role, tool choice rules, safety/delivery rules, completion criteria, and the final answer format.\n")
+		sb.WriteString("- Use Auto for capable models unless the user explicitly needs a visible step trace, strict phased execution, or a long asynchronous job.\n\n")
+	default:
+		sb.WriteString("- ReAct agents MUST follow an observe-decide-act cycle: inspect the request/context, choose the smallest next action, call exactly one tool, read the actual result, then decide the next step.\n")
+		sb.WriteString("- Validate required tool arguments before every call. Repair obvious aliases once (for example message->text or ticker->symbol), but never retry the same failed tool call with identical arguments.\n")
+		sb.WriteString("- If the same tool/argument shape fails twice, switch approach or stop with a clear blocker and partial result.\n")
+		sb.WriteString("- Keep reasoning internal. The final answer must be user-facing, not raw tool JSON, ReAct JSON, or internal scratchpad text.\n\n")
+	}
 }
 
 // CompileAgent generates a tool/reasoning agent Draft (no flow) from an intent.
@@ -175,6 +198,7 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	// in the agent editor. Runs before ExplainDraft so the explanation reflects the
 	// grounded set.
 	groundNotes := GroundAgentCapabilities(&draft, catalog)
+	defaultNotes := applyGenerationDefaults(&draft, intent)
 
 	explanation := ExplainDraft(draft)
 	notes := []string{"Generated a " + recoLabelGo(strategy) + " agent — it reasons over its tools rather than running a fixed graph."}
@@ -185,6 +209,7 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 		notes = append(notes, "Enables skill(s): "+strings.Join(sk, ", ")+".")
 	}
 	notes = append(notes, groundNotes...)
+	notes = append(notes, defaultNotes...)
 	if catalog.Generation != nil {
 		gp := *catalog.Generation
 		gp.PatternMatched = len(MatchPatterns(intent, catalog, 1)) > 0

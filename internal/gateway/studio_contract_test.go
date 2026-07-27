@@ -37,3 +37,25 @@ func TestStudioContractEndpointReportsAuthoringRules(t *testing.T) {
 		t.Fatalf("expected data.contracts warning in %v", checks)
 	}
 }
+
+func TestStudioSaveRejectsContractBlockersBeforeCreatingAgent(t *testing.T) {
+	s, _ := studioFake(t)
+	before := len(s.loader.All())
+	body := `{"workflow":{"name":"Born Broken","trigger":{"type":"manual"},"flow":{
+	  "entry":"missing",
+	  "nodes":[]}}}`
+
+	status, out := gatewayJSON(t, s, http.MethodPost, "/api/v1/studio/save", "k", body)
+	if status != http.StatusUnprocessableEntity {
+		t.Fatalf("status=%d body=%v", status, out)
+	}
+	if _, ok := out["contract"].(map[string]any); !ok {
+		t.Fatalf("save failure should include contract details: %v", out)
+	}
+	if _, ok := out["preflight"].(map[string]any); !ok {
+		t.Fatalf("save failure should include preflight details: %v", out)
+	}
+	if after := len(s.loader.All()); after != before {
+		t.Fatalf("invalid Studio save created an agent: before=%d after=%d", before, after)
+	}
+}

@@ -80,6 +80,27 @@ channels:
         allowed_chat_ids: ""
         allowed_sender_ids: ""
 
+# ── Web search ────────────────────────────────────────────────────────────────
+# Backs the built-in web_search tool, available to every agent regardless of
+# which LLM provider it runs on. Leave api_key blank to read the provider's env
+# var instead (OLLAMA_API_KEY / TAVILY_API_KEY / SERPER_API_KEY).
+search:
+    provider: ollama # ollama | tavily | serper
+    # api_key: "…"
+    #
+    # timeout bounds how long web_search waits for the provider. A Go duration
+    # ("90s", "2m") or a bare number of seconds ("90"). Default 30s.
+    #
+    # Raise this if you see:
+    #   web_search: request failed: context deadline exceeded
+    #   (Client.Timeout exceeded while awaiting headers)
+    #
+    # …especially with a fan-out block running several searches at once, which
+    # makes a slow provider much more likely to blow the ceiling. A workflow
+    # node can also override it per call with a `timeout_s` argument, and any
+    # value is capped at 10m.
+    # timeout: 90s
+
 # ── LLM providers ─────────────────────────────────────────────────────────────
 llm:
     default_provider: ollama

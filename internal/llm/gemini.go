@@ -124,6 +124,8 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 		model = p.model
 	}
 
+	origToWire, wireToOrig := buildGeminiToolMaps(req.Tools)
+
 	// Translate ChatMessage list → Gemini contents + system_instruction.
 	//
 	// Gemini enforces strict turn alternation:
@@ -160,9 +162,13 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 				parts = append(parts, map[string]any{"text": m.Content})
 			}
 			for _, tc := range m.ToolCalls {
+				name := tc.Name
+				if wire, ok := origToWire[name]; ok {
+					name = wire
+				}
 				part := map[string]any{
 					"functionCall": map[string]any{
-						"name": tc.Name,
+						"name": name,
 						"args": tc.Arguments,
 					},
 				}
@@ -188,11 +194,15 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 			parts := []map[string]any{}
 			for i < len(req.Messages) && req.Messages[i].Role == "tool" {
 				tm := req.Messages[i]
+				name := tm.Name
+				if wire, ok := origToWire[name]; ok {
+					name = wire
+				}
 				parts = append(parts, map[string]any{
 					"functionResponse": map[string]any{
-						"name": tm.Name,
+						"name": name,
 						"response": map[string]any{
-							"name":    tm.Name,
+							"name":    name,
 							"content": tm.Content,
 						},
 					},
@@ -328,8 +338,12 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	if len(req.Tools) > 0 {
 		funcs := make([]map[string]any, len(req.Tools))
 		for i, t := range req.Tools {
+			name := t.Name
+			if wire, ok := origToWire[name]; ok {
+				name = wire
+			}
 			funcs[i] = map[string]any{
-				"name":        t.Name,
+				"name":        name,
 				"description": t.Description,
 				"parameters":  sanitizeSchemaForGemini(t.Parameters),
 			}
@@ -432,9 +446,13 @@ func (p *GeminiProvider) Complete(ctx context.Context, req CompletionRequest) (*
 			r.Content += part.Text
 		}
 		if part.FunctionCall != nil {
+			name := part.FunctionCall.Name
+			if orig, ok := wireToOrig[name]; ok {
+				name = orig
+			}
 			r.ToolCalls = append(r.ToolCalls, message.ToolCall{
-				ID:               fmt.Sprintf("call_%d_%s", i, part.FunctionCall.Name),
-				Name:             part.FunctionCall.Name,
+				ID:               fmt.Sprintf("call_%d_%s", i, name),
+				Name:             name,
 				Arguments:        part.FunctionCall.Args,
 				ThoughtSignature: part.ThoughtSignature, // on the Part, not inside FunctionCall
 			})
@@ -629,4 +647,68 @@ func geminiUnsupportedOptionalParam(body []byte) string {
 		}
 	}
 	return ""
+}
+
+func buildGeminiToolMaps(tools []ToolSchema) (map[string]string, map[string]string) {
+	origToWire := map[string]string{}
+	wireToOrig := map[string]string{}
+	used := map[string]int{}
+	for _, t := range tools {
+		wire := geminiSafeToolName(t.Name)
+		if n := used[wire]; n > 0 {
+			used[wire] = n + 1
+			suffix := fmt.Sprintf("_%d", n+1)
+			maxBase := 64 - len(suffix)
+			if maxBase < 1 {
+				maxBase = 1
+			}
+			if len(wire) > maxBase {
+				wire = wire[:maxBase]
+			}
+			wire += suffix
+		} else {
+			used[wire] = 1
+		}
+		origToWire[t.Name] = wire
+		wireToOrig[wire] = t.Name
+	}
+	return origToWire, wireToOrig
+}
+
+func geminiSafeToolName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "tool"
+	}
+	var b strings.Builder
+	b.Grow(len(name))
+	for i, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+			b.WriteRune(r)
+		case r >= 'A' && r <= 'Z':
+			b.WriteRune(r)
+		case r >= '0' && r <= '9':
+			if i == 0 {
+				b.WriteByte('_')
+			}
+			b.WriteRune(r)
+		case r == '_':
+			b.WriteRune(r)
+		default:
+			if i == 0 {
+				b.WriteByte('a')
+			} else {
+				b.WriteByte('_')
+			}
+		}
+		if b.Len() >= 64 {
+			break
+		}
+	}
+	out := b.String()
+	if out == "" {
+		return "tool"
+	}
+	return out
 }

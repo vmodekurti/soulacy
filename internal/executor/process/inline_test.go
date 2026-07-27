@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"encoding/json"
 	"os/exec"
 	"strings"
 	"testing"
@@ -35,5 +36,29 @@ func TestRunInlineHarness(t *testing.T) {
 	}
 	if strings.TrimSpace(out2) != "ok" {
 		t.Fatalf("stray print leaked into output: %q", out2)
+	}
+}
+
+func TestRunInlineHarnessPreservesLargeSingleLineJSON(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 not available")
+	}
+	ex := New("python3")
+
+	out, err := ex.Run(context.Background(), "", "run",
+		"def run(inputs):\n    return {'text': 'x' * (128 * 1024), 'count': 1}",
+		[]byte(`{}`))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var got struct {
+		Text  string `json:"text"`
+		Count int    `json:"count"`
+	}
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("large output is not valid JSON: %v", err)
+	}
+	if len(got.Text) != 128*1024 || got.Count != 1 {
+		t.Fatalf("large output was truncated: text=%d count=%d", len(got.Text), got.Count)
 	}
 }

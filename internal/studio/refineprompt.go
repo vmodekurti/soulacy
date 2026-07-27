@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -316,17 +317,11 @@ func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 
 	payload, perr := parseRefinement(raw)
 	if perr != nil || strings.TrimSpace(payload.RefinedIntent) == "" {
-		// Graceful degradation: never block generation on a bad refine. Fall
-		// back to the original intent + a deterministic mode guess.
-		degraded := RecommendAgentMode(intent)
-		if degraded == "" {
-			degraded = inferModeFromIntent(intent)
-		}
-		return PromptRefinement{
-			Original:        intent,
-			RefinedIntent:   intent,
-			RecommendedMode: degraded,
-		}, nil
+		// Graceful degradation: never block generation on a bad refine, but do
+		// not echo the rough prompt back to the user. Refine's UI contract is a
+		// build-ready specification, so the local planner expands the raw intent
+		// into the same sections Studio expects even when the model is unhelpful.
+		return buildDeterministicRefinement(intent, catalog, light), nil
 	}
 
 	combined := payload.RefinedIntent + " " + intent
@@ -337,21 +332,350 @@ func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	// mode regardless of what the model guessed (models often mislabel these).
 	// This is the SAME authority the server-side compile route uses, on the SAME
 	// combined text, so the decision can't diverge by entry path.
-	if forced := RecommendAgentMode(combined); forced != "" {
+	// An explicit "build as a fixed workflow (not a ReAct agent)" request is the
+	// user's decision and wins over both the model's guess and the reasoning-fit
+	// inference below — otherwise Generate kept producing a ReAct agent despite
+	// the prompt, because the task mentions loops/polling.
+	if explicitWorkflowRequested(combined) && !explicitReActRequested(combined) {
+		mode = "workflow"
+	} else if forced := RecommendAgentMode(combined); forced != "" {
 		mode = forced
 	} else if mode == "" {
 		mode = inferModeFromIntent(combined)
 	}
 	mode = avoidImplicitReAct(mode, combined)
+	refined := strings.TrimSpace(payload.RefinedIntent)
+	if !light && refinementNeedsLocalExpansion(intent, refined) {
+		local := buildDeterministicRefinement(intent, catalog, false)
+		if strings.TrimSpace(payload.Summary) != "" {
+			local.Summary = strings.TrimSpace(payload.Summary)
+		}
+		local.Assumptions = mergeStrings(local.Assumptions, trimStrings(payload.Assumptions))
+		if len(payload.Questions) > 0 {
+			local.Questions = payload.Questions
+		}
+		local.RecommendedMode = mode
+		if strings.TrimSpace(payload.ModeReason) != "" {
+			local.ModeReason = strings.TrimSpace(payload.ModeReason)
+		}
+		return local, nil
+	}
 	return PromptRefinement{
 		Original:        intent,
-		RefinedIntent:   strings.TrimSpace(payload.RefinedIntent),
+		RefinedIntent:   refined,
 		Summary:         strings.TrimSpace(payload.Summary),
 		Assumptions:     trimStrings(payload.Assumptions),
 		Questions:       payload.Questions,
 		RecommendedMode: mode,
 		ModeReason:      strings.TrimSpace(payload.ModeReason),
 	}, nil
+}
+
+// buildDeterministicRefinement is Refine's local safety net. The model is still
+// allowed to improve wording, but Studio owns the shape: a refined prompt must be
+// a self-contained operating spec with trigger, inputs, steps, outputs, and
+// edge cases. This prevents the prompt editor from showing an unchanged copy of
+// the original when a local/compact model echoes the request.
+func buildDeterministicRefinement(intent string, catalog Catalog, light bool) PromptRefinement {
+	intent = strings.TrimSpace(intent)
+	advice := AdviseStrategy(intent, catalog, "", false)
+	mode := advice.Mode
+	if mode == "" {
+		mode = "workflow"
+	}
+	sections := []string{
+		"Goal\n" + firstSentence(intent),
+		"Recommended architecture\n" + architectureSentence(advice),
+		"Trigger\n" + refinedTrigger(intent),
+		"Inputs and data sources\n" + refinedInputs(intent, catalog),
+		"Processing steps\n" + refinedSteps(intent, catalog, advice),
+		"Outputs and delivery\n" + refinedOutput(intent, catalog),
+		"Edge cases and failure handling\n" + refinedEdgeCases(intent, advice),
+	}
+	spec := strings.Join(sections, "\n\n")
+	if light {
+		spec = strings.TrimSpace(intent)
+	}
+	return PromptRefinement{
+		Original:        intent,
+		RefinedIntent:   spec,
+		Summary:         refinedSummary(intent, advice),
+		Assumptions:     refinedAssumptions(intent, catalog, advice),
+		Questions:       refinedQuestions(intent, catalog),
+		RecommendedMode: mode,
+		ModeReason:      advice.Reason,
+	}
+}
+
+func refinementNeedsLocalExpansion(original, refined string) bool {
+	o := normalizeRefineText(original)
+	r := normalizeRefineText(refined)
+	if r == "" {
+		return true
+	}
+	if o == r {
+		return true
+	}
+	// If most of the original text is returned and the Studio sections are still
+	// missing, treat it as an echo even if the model added a small preface.
+	if len(o) > 80 && strings.Contains(r, o[:minInt(len(o), 80)]) && countSpecSections(refined) < 3 {
+		return true
+	}
+	return false
+}
+
+func normalizeRefineText(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	s = strings.Join(strings.Fields(s), " ")
+	return s
+}
+
+func countSpecSections(s string) int {
+	t := strings.ToLower(s)
+	n := 0
+	for _, marker := range []string{
+		"goal", "recommended architecture", "trigger", "inputs", "data sources",
+		"processing steps", "outputs", "delivery", "edge cases", "failure handling",
+	} {
+		if strings.Contains(t, marker) {
+			n++
+		}
+	}
+	return n
+}
+
+func architectureSentence(advice StrategyAdvice) string {
+	switch advice.Mode {
+	case "workflow":
+		pattern := strings.TrimSpace(advice.DeterministicPattern)
+		if pattern == "" {
+			pattern = "fixed pipeline"
+		}
+		return "Build this as a deterministic Workflow. Soulacy should own the graph and run the same bounded steps each time. Pattern: " + pattern + "."
+	case "plan_execute":
+		return "Build this as a Plan-Execute agent. The agent should make an explicit plan, execute bounded steps, and stop with a useful result."
+	case "react":
+		return "Build this as an explicit ReAct agent only because the user asked for that strategy."
+	default:
+		return "Build this as an Auto agent. The runtime may use native tool calling, but Studio should still provide a clear operating prompt."
+	}
+}
+
+func refinedTrigger(intent string) string {
+	li := strings.ToLower(intent)
+	switch {
+	case containsAny(li, "weekday", "weekdays", "monday", "tuesday", "wednesday", "thursday", "friday"):
+		if strings.Contains(li, "7:00") || strings.Contains(li, "7am") || strings.Contains(li, "7 am") {
+			return "Run automatically every weekday at 7:00 AM local time."
+		}
+		return "Run automatically every weekday at the requested local time."
+	case containsAny(li, "daily", "every morning", "every day"):
+		return "Run automatically once per day at the requested local time."
+	case containsAny(li, "cron", "schedule", "scheduled"):
+		return "Run on the schedule described by the user."
+	case containsAny(li, "incoming message", "telegram", "slack", "discord", "chat"):
+		return "Run when an incoming user/channel message is routed to this agent."
+	case containsAny(li, "webhook", "http"):
+		return "Run when an inbound webhook request is received."
+	default:
+		return "Run manually unless the user adds a schedule or channel trigger."
+	}
+}
+
+func refinedInputs(intent string, catalog Catalog) string {
+	var parts []string
+	if domains := extractDomains(intent); len(domains) > 0 {
+		parts = append(parts, "Use these web sources: "+strings.Join(domains, ", ")+".")
+	}
+	if containsAny(strings.ToLower(intent), "cookie", "cookies.txt", "paywall", "paywalled") {
+		parts = append(parts, "For paywalled pages, read the matching Netscape cookies file from ~/.soulacy/soulspace/<domain>_cookies.txt and fetch with a cookie-aware Custom Python step. Do not use fetch_url for sources that require cookies.")
+	}
+	if containsAny(strings.ToLower(intent), "notebooklm", "notebook lm") {
+		parts = append(parts, "Use the configured NotebookLM MCP tools for notebook creation, source ingestion, studio artifact creation, status polling, and artifact download/link retrieval.")
+	}
+	if containsAny(strings.ToLower(intent), "document", "documents", "file", "url", "urls") {
+		parts = append(parts, "Accept user-provided URLs and uploaded documents as primary artifacts.")
+	}
+	if len(catalog.KnowledgeBases) > 0 && containsAny(strings.ToLower(intent), "knowledge", "kb", "store") {
+		parts = append(parts, "Store searchable artifacts in the matching configured knowledge base.")
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "Use the user's message and only the tools, skills, MCP servers, channels, and knowledge bases exposed in Studio's catalog.")
+	}
+	return strings.Join(parts, "\n")
+}
+
+func refinedSteps(intent string, catalog Catalog, advice StrategyAdvice) string {
+	if deterministicNotebookPodcastWorkflow(intent) {
+		return strings.Join([]string{
+			"1. Search the requested sources for candidate AI articles.",
+			"2. Fetch each candidate with the correct method: cookie-aware Custom Python for paywalled domains, normal web fetch only for public pages.",
+			"3. Validate that each fetched page is a real, recent AI article; discard failed, duplicate, stale, or irrelevant items.",
+			"4. Create a NotebookLM notebook for the briefing and capture the notebook_id.",
+			"5. Add each validated article URL/source to the same notebook_id.",
+			"6. Request a NotebookLM audio overview/podcast artifact.",
+			"7. Poll status until the artifact is complete or the run reaches its timeout.",
+			"8. Deliver the episode title, audio link, and included article list to the selected output channel.",
+		}, "\n")
+	}
+	if knowledgeIngestionWorkflow(intent) {
+		return strings.Join([]string{
+			"1. Parse the incoming URL/document artifact.",
+			"2. Fetch or extract readable text safely without loading unbounded content into memory.",
+			"3. Ask the LLM only to summarize/classify/tag the extracted content.",
+			"4. Write the tagged artifact into the selected knowledge base using the knowledge-store tool, not shell commands.",
+			"5. Return a concise confirmation with title, tags, and storage location.",
+		}, "\n")
+	}
+	if researchDigestWorkflow(intent) || dealDigestWorkflow(intent) || stockDigestWorkflow(intent) {
+		return strings.Join([]string{
+			"1. Collect candidate results from the requested sources.",
+			"2. Filter for relevance, freshness, duplicates, and user constraints.",
+			"3. Summarize the highest-value findings in a concise digest.",
+			"4. Deliver the digest to the selected channel or return it in chat.",
+		}, "\n")
+	}
+	if advice.Mode == "plan_execute" {
+		return "1. Build a short execution plan from the user's request.\n2. Execute each plan step using only approved tools.\n3. Recover from tool errors with bounded retries or a clear partial result.\n4. Stop once the user-facing objective is complete."
+	}
+	if advice.Mode == "auto" {
+		return "1. Interpret the user's request.\n2. Choose the most relevant approved tool or skill.\n3. Call tools only when needed.\n4. Answer concisely with sources, artifacts, or next actions when available."
+	}
+	return "1. Follow the user's requested steps in order.\n2. Validate each intermediate output before passing it downstream.\n3. Produce the final result through the selected output path."
+}
+
+func refinedOutput(intent string, catalog Catalog) string {
+	li := strings.ToLower(intent)
+	var outs []string
+	for _, ch := range catalog.Channels {
+		if strings.Contains(li, strings.ToLower(ch)) {
+			outs = append(outs, ch)
+		}
+	}
+	for _, ch := range []string{"telegram", "slack", "discord", "email", "http"} {
+		if strings.Contains(li, ch) && !containsStringFold(outs, ch) {
+			outs = append(outs, ch)
+		}
+	}
+	if len(outs) == 0 {
+		return "Return the result in chat unless the user selects an output channel before saving."
+	}
+	return "Deliver the final result to: " + strings.Join(outs, ", ") + ". Do not expose raw JSON or chart blocks to chat apps unless that channel supports rendering them."
+}
+
+func refinedEdgeCases(intent string, advice StrategyAdvice) string {
+	var cases []string
+	cases = append(cases, "If no useful data is found, send a short no-results message instead of failing silently.")
+	cases = append(cases, "If a required external service, credential, channel, or MCP server is missing, stop with an actionable setup message.")
+	if containsAny(strings.ToLower(intent), "paywall", "paywalled", "cookie") {
+		cases = append(cases, "If cookie-based fetch fails with 401/403, mark that source as unavailable and continue with other sources.")
+	}
+	if advice.Mode == "workflow" {
+		cases = append(cases, "Keep loops bounded and make every branch converge to a final output or an explicit halt.")
+	}
+	return strings.Join(cases, "\n")
+}
+
+func refinedSummary(intent string, advice StrategyAdvice) string {
+	switch advice.Mode {
+	case "workflow":
+		return "A deterministic workflow will run the requested automation with explicit inputs, bounded steps, and configured delivery."
+	case "plan_execute":
+		return "A Plan-Execute agent will plan and complete the requested multi-step job using approved tools."
+	case "react":
+		return "An explicit ReAct agent will run a think-act-observe loop as requested."
+	default:
+		return "An Auto agent will interpret user requests and use approved tools interactively."
+	}
+}
+
+func refinedAssumptions(intent string, catalog Catalog, advice StrategyAdvice) []string {
+	var out []string
+	if !containsAny(strings.ToLower(intent), "telegram", "slack", "discord", "email", "http") {
+		out = append(out, "Assumed results should be returned in chat until an output channel is selected.")
+	}
+	if advice.Mode == "workflow" && !containsAny(strings.ToLower(intent), "schedule", "daily", "weekday", "manual", "webhook", "incoming") {
+		out = append(out, "Assumed manual trigger because no schedule or inbound channel trigger was specified.")
+	}
+	if len(catalog.Channels) == 0 && containsAny(strings.ToLower(intent), "telegram", "slack", "discord", "email") {
+		out = append(out, "Assumed the named delivery channel will be configured before saving or running live.")
+	}
+	return out
+}
+
+func refinedQuestions(intent string, catalog Catalog) []Question {
+	li := strings.ToLower(intent)
+	if containsAny(li, "telegram", "slack", "discord", "email") && len(catalog.Channels) == 0 {
+		return []Question{{
+			ID:      "delivery_channel",
+			Text:    "Which configured output channel should receive the final result?",
+			Options: []string{"telegram", "slack", "email"},
+		}}
+	}
+	return nil
+}
+
+func firstSentence(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "Build the requested Soulacy agent."
+	}
+	for _, sep := range []string{"\n", ". "} {
+		if i := strings.Index(s, sep); i > 0 {
+			return strings.TrimSpace(s[:i+len(strings.TrimSpace(sep))])
+		}
+	}
+	return s
+}
+
+func extractDomains(s string) []string {
+	re := regexp.MustCompile(`(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}\b`)
+	raw := re.FindAllString(s, -1)
+	seen := map[string]bool{}
+	var out []string
+	for _, d := range raw {
+		d = strings.ToLower(strings.Trim(d, ".,;:()[]{}<>\"'"))
+		if d == "" || seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
+}
+
+func mergeStrings(a, b []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range append(a, b...) {
+		t := strings.TrimSpace(s)
+		if t == "" {
+			continue
+		}
+		key := strings.ToLower(t)
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, t)
+	}
+	return out
+}
+
+func containsStringFold(list []string, want string) bool {
+	for _, s := range list {
+		if strings.EqualFold(s, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // normalizeMode canonicalizes a model-supplied mode to workflow|auto|react|
@@ -381,11 +705,39 @@ func explicitReActRequested(intent string) bool {
 		"force react", "explicit react",
 	}
 	for _, c := range cues {
-		if strings.Contains(t, c) {
+		if mentionsUnnegated(t, c) {
 			return true
 		}
 	}
 	return false
+}
+
+// mentionsUnnegated reports whether phrase appears in t NOT immediately preceded
+// by a negation ("not", "no", "never", "without"). So "use a react loop" counts
+// as a react request while "not a react agent" does not — critical for prompts
+// like "a fixed workflow (not a ReAct or Plan-Execute agent)".
+func mentionsUnnegated(t, phrase string) bool {
+	from := 0
+	for {
+		i := strings.Index(t[from:], phrase)
+		if i < 0 {
+			return false
+		}
+		i += from
+		pre := t[maxInt(0, i-9):i]
+		if !strings.Contains(pre, "not ") && !strings.Contains(pre, "no ") &&
+			!strings.Contains(pre, "never ") && !strings.Contains(pre, "without ") {
+			return true
+		}
+		from = i + len(phrase)
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func avoidImplicitReAct(mode, intent string) string {
@@ -462,16 +814,96 @@ func hasPlanExecuteCues(intent string) bool {
 // automatic classification picks Auto or Plan-Execute unless the user explicitly
 // asks for ReAct.
 func RecommendAgentMode(intent string) string {
-	if explicitReActRequested(intent) {
-		return "react"
+	advice := AdviseStrategy(intent, Catalog{}, "", false)
+	if advice.Mode == "workflow" {
+		return ""
 	}
-	if hasPlanExecuteCues(intent) {
-		return "plan_execute"
+	if advice.RuntimeStrategy != "" {
+		return advice.RuntimeStrategy
 	}
-	if hasStrongReasoningCues(intent) {
-		return "plan_execute"
+	return advice.Mode
+}
+
+// explicitWorkflowRequested reports whether the user explicitly asked for a
+// fixed workflow (and did NOT ask for ReAct, which is handled first). Kept
+// specific so a passing mention of the word "workflow" in a reasoning task
+// doesn't misroute — it looks for a clear "build as a fixed workflow" style cue.
+func explicitWorkflowRequested(intent string) bool {
+	if structuredWorkflowProcedureRequested(intent) {
+		return true
 	}
-	return ""
+	t := strings.ToLower(intent)
+	// Positive "build a fixed workflow" phrasings — must be UNnegated so
+	// "not a fixed workflow" (a react request) doesn't count as a workflow one.
+	for _, c := range []string{
+		"fixed workflow", "fixed flow", "as a workflow", "workflow strategy",
+		"deterministic workflow", "force workflow",
+	} {
+		if mentionsUnnegated(t, c) {
+			return true
+		}
+	}
+	// Explicit "not an agent" phrasings are themselves a positive workflow signal.
+	for _, c := range []string{
+		"not a react", "not a reasoning agent", "not a plan execute", "not a plan-execute",
+		"not a plan_execute", "not an agent",
+	} {
+		if strings.Contains(t, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// structuredWorkflowProcedureRequested detects prompts where the user has
+// already specified the workflow topology as an ordered operating procedure.
+// These prompts may mention loops, polling, or NotebookLM, but the human intent
+// is still a deterministic graph with bounded branches, not an adaptive agent.
+func structuredWorkflowProcedureRequested(intent string) bool {
+	t := strings.ToLower(intent)
+	if strings.TrimSpace(t) == "" {
+		return false
+	}
+
+	numbered := 0
+	for i := 1; i <= 15; i++ {
+		if strings.Contains(t, fmt.Sprintf("%d.", i)) || strings.Contains(t, fmt.Sprintf("%d)", i)) {
+			numbered++
+		}
+	}
+
+	labels := 0
+	for _, label := range []string{
+		"trigger:", "search:", "fetch", "fetch & validate:", "validate:",
+		"aggregate", "aggregate & check:", "check:", "create notebook:",
+		"add sources:", "generate audio:", "poll status:", "deliver output:",
+		"deliver:", "output:",
+	} {
+		if strings.Contains(t, label) {
+			labels++
+		}
+	}
+
+	scheduleCue := containsAny(t,
+		"schedule", "scheduled", "weekday", "daily", "every day", "every morning",
+		"run automatically", "cron", "7:00", "7am", "7 am",
+	)
+	deterministicCue := containsAny(t,
+		"if the list is empty", "halt execution", "discard", "send a telegram",
+		"capture the resulting", "passing the same", "loop through", "for each candidate",
+		"for each url", "single list", "final podcast",
+	)
+
+	if numbered >= 5 {
+		return true
+	}
+	if numbered >= 3 && (labels >= 2 || (scheduleCue && deterministicCue)) {
+		return true
+	}
+	if labels >= 5 && scheduleCue {
+		return true
+	}
+	return false
 }
 
 // inferModeFromIntent is a deterministic backstop: phrases implying loops over
@@ -481,6 +913,9 @@ func inferModeFromIntent(intent string) string {
 	t := strings.ToLower(intent)
 	if explicitReActRequested(intent) {
 		return "react"
+	}
+	if explicitWorkflowRequested(intent) {
+		return "workflow"
 	}
 	planCues := []string{
 		"poll", "until ready", "until complete", "until done", "wait for",

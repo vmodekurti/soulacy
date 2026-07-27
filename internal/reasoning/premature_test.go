@@ -1,6 +1,9 @@
 package reasoning
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIsPrematureFinalAnswer(t *testing.T) {
 	premature := []string{
@@ -30,6 +33,21 @@ func TestIsPrematureFinalAnswer(t *testing.T) {
 	for _, s := range realAnswers {
 		if isPrematureFinalAnswer(s) {
 			t.Fatalf("did NOT expect premature for: %q", s)
+		}
+	}
+
+	// A real multi-paragraph deliverable that merely contains progress-y phrases
+	// ("I will", "let me") in its prose must NOT be flagged premature — doing so
+	// discarded good briefings and degraded the run.
+	realWithProgressWords := []string{
+		"## AI Articles Podcast Briefing\n\nThis week's theme is enterprise AI adoption.\n\n" +
+			"First, HBR reports executives will lean on AI copilots. Let me highlight the key takeaway: measurable ROI.\n\n" +
+			"Second, MIT Technology Review covers what's next for AI regulation.",
+		strings.Repeat("A thorough analysis. ", 45) + "I will note the caveats above are important.",
+	}
+	for _, s := range realWithProgressWords {
+		if isPrematureFinalAnswer(s) {
+			t.Fatalf("multi-paragraph/long deliverable wrongly flagged premature: %q", s)
 		}
 	}
 }

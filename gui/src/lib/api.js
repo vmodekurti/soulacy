@@ -56,11 +56,21 @@ function filenameFromDisposition(disposition) {
 // streamSSE POSTs a body and parses a text/event-stream response, invoking
 // onEvent({event, data}) for each frame. Resolves when the stream closes.
 // Used by the Studio Architect's "Build until it works" so progress shows live.
-export async function streamSSE(path, body, onEvent) {
+/**
+ * streamSSE reads a server-sent-event stream.
+ *
+ * `signal` is an optional AbortSignal. Without one there was no way to stop a
+ * generation: the only control was "Run in background", and closing the panel
+ * left the server working — and billing — for a client that had stopped
+ * listening. Aborting closes the connection, which the server detects on its
+ * next flush and uses to cancel the run.
+ */
+export async function streamSSE(path, body, onEvent, signal) {
   const res = await fetch('/api/v1' + path, {
     method: 'POST',
     headers: authHeaders(),
     body: JSON.stringify(body),
+    signal,
   })
   if (!res.ok || !res.body) {
     const b = await res.json().catch(() => ({}))
@@ -70,8 +80,17 @@ export async function streamSSE(path, body, onEvent) {
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buf = ''
+  // Aborting mid-read rejects reader.read(); that is the expected way to stop,
+  // not a failure, so it must not surface to the caller as an error.
+  if (signal) signal.addEventListener('abort', () => { reader.cancel().catch(() => {}) }, { once: true })
   for (;;) {
-    const { done, value } = await reader.read()
+    let done, value
+    try {
+      ({ done, value } = await reader.read())
+    } catch (e) {
+      if (signal && signal.aborted) return
+      throw e
+    }
     if (done) break
     buf += decoder.decode(value, { stream: true })
     // Frames are separated by a blank line.
@@ -551,21 +570,79 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ intent, catalog, light }),
       }),
-    /** Compile an intent (+ optional clarifying answers) into a draft workflow. */
-    compile: ({ intent, catalog, answers, rawIntent } = {}) =>
+    /** Compile an intent (+ optional clarifying answers) into a draft workflow.
+     *  forceWorkflow=true builds a fixed workflow and skips the server's
+     *  reasoning-fit agent routing (used by the explicit Workflow mode toggle). */
+    compile: ({ intent, catalog, answers, rawIntent, forceWorkflow } = {}) =>
       apiFetch('/studio/compile', {
         method: 'POST',
-        body: JSON.stringify({ intent, catalog, answers, raw_intent: rawIntent }),
+        body: JSON.stringify({ intent, catalog, answers, raw_intent: rawIntent, force_workflow: !!forceWorkflow }),
       }),
-    /** Run an UNSAVED reasoning agent against one sample question (ephemeral). */
-    tryAgent: ({ workflow, question } = {}) =>
-      apiFetch('/studio/try-agent', { method: 'POST', body: JSON.stringify({ workflow, question }) }),
+    /**
+     * Run an UNSAVED draft against one sample input (ephemeral).
+     *
+     * This fires REAL tools, so the server gates it: 422 when the draft still
+     * has execution blockers, and 409 — carrying a preview of the tools,
+     * destinations and data it would touch — until the caller acknowledges the
+     * side effects. Pass `confirm_side_effects` (and optionally the specific
+     * `acknowledged_tools`) on the second attempt. It is deliberately NOT run
+     * unattended: a confirmation the user never saw must not be auto-approved.
+     */
+    tryAgent: ({ workflow, question, confirm_side_effects, acknowledged_tools } = {}) =>
+      apiFetch('/studio/try-agent', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, question, confirm_side_effects, acknowledged_tools }),
+      }),
     /** Propose repairs from the last Run Live node trace (observe real output → adjust). */
     repairLive: ({ workflow, node_trace } = {}) =>
       apiFetch('/studio/repair-live', { method: 'POST', body: JSON.stringify({ workflow, node_trace }) }),
-    /** Apply ONE approved repair proposal to the draft and re-validate. */
-    applyRepair: ({ workflow, proposal } = {}) =>
-      apiFetch('/studio/apply-repair', { method: 'POST', body: JSON.stringify({ workflow, proposal }) }),
+    /**
+     * Apply ONE approved repair proposal to the draft, then PROVE it: the server
+     * replays the original failing input against the repaired draft in the
+     * sandbox and rolls the change back if it does not hold up.
+     *
+     * `failing_input` and `node_trace` are what make that proof real — each
+     * traced node's actual output is fed back as a mock, so the repaired
+     * template re-renders against the shape that broke it rather than a stub.
+     * Omit them and the server can only check the patch structurally: it still
+     * applies the change (refusing would silently discard a fix the user
+     * approved) but reports `attempt.unproven` and `verification.evidence_seeded
+     * === false`, and the UI must say so instead of claiming it was verified.
+     */
+    applyRepair: ({ workflow, proposal, failing_input, node_trace, preview } = {}) =>
+      apiFetch('/studio/apply-repair', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, proposal, failing_input, node_trace, preview }),
+      }),
+    /** Structured build spec from an intent (+ change summary vs a previous intent). */
+    buildSpec: ({ intent, previous_intent } = {}) =>
+      apiFetch('/studio/build-spec', { method: 'POST', body: JSON.stringify({ intent, previous_intent }) }),
+    /** Readable Trigger / Work / Delivery plan projection of a draft. */
+    planView: ({ workflow } = {}) =>
+      apiFetch('/studio/plan-view', { method: 'POST', body: JSON.stringify({ workflow }) }),
+    /** Model capability cards; pass a model id for one, omit for the whole registry. */
+    modelCapabilities: ({ model, provider } = {}) => {
+      const q = new URLSearchParams()
+      if (model) q.set('model', model)
+      if (provider) q.set('provider', provider)
+      const qs = q.toString()
+      return apiFetch(`/studio/model-capabilities${qs ? `?${qs}` : ''}`)
+    },
+    /** What a live run would actually touch — tools, destinations, consent — without running it. */
+    runPreview: ({ workflow } = {}) =>
+      apiFetch('/studio/run-preview', { method: 'POST', body: JSON.stringify({ workflow }) }),
+    /**
+     * One readiness verdict: preflight + generation contract + security review +
+     * consent. Replaces stitching three endpoints together on the client, where
+     * a failed call was silently dropped and `ok` was computed from the rest.
+     * Sections the server could not evaluate come back under `unknown` and force
+     * `ok:false`.
+     */
+    readiness: ({ workflow, catalog, acceptPrivilegedExposure } = {}) =>
+      apiFetch('/studio/readiness', {
+        method: 'POST',
+        body: JSON.stringify({ workflow, catalog, acceptPrivilegedExposure: !!acceptPrivilegedExposure }),
+      }),
     /** Serialize the current draft to SOUL.yaml for the Code view. */
     yaml: ({ workflow } = {}) =>
       apiFetch('/studio/yaml', { method: 'POST', body: JSON.stringify({ workflow }) }),
@@ -648,9 +725,10 @@ export const api = {
         body: JSON.stringify({ workflow }),
       }),
     /**
-     * Deterministic data-flow repair: fill empty required tool args + reconcile
-     * dangling {{ .var }} references to the right upstream output.
-     * @returns {Promise<{workflow, fixed:number}>}
+     * Deterministic Studio repair: fix contract-level structure issues where
+     * possible, then fill empty required tool args and reconcile dangling
+     * {{ .var }} references to the right upstream output.
+     * @returns {Promise<{workflow, fixed:number, preflight?:object}>}
      */
     autowire: ({ workflow } = {}) =>
       apiFetch('/studio/autowire', {
@@ -706,6 +784,7 @@ export const api = {
     generateStream: (
       { intent, answers, light, auto_repair } = {},
       onEvent,
+      signal,
     ) => {
       let final = null
       return streamSSE(
@@ -723,6 +802,7 @@ export const api = {
           if (parsed && parsed.phase === 'heartbeat') return
           if (onEvent) onEvent(parsed)
         },
+        signal,
       ).then(() => final)
     },
     /**
@@ -822,7 +902,7 @@ export const api = {
      *                     assertions:{target,op,value,pass,detail}[], passed,
      *                     mode, warnings?}>}
      */
-    test: ({ workflow, input, mocks, assertions, mode } = {}) =>
+    test: ({ workflow, input, mocks, assertions, mode, variables, environment, startNode } = {}) =>
       apiFetch('/studio/test', {
         method: 'POST',
         body: JSON.stringify({
@@ -831,6 +911,10 @@ export const api = {
           ...(mocks ? { mocks } : {}),
           ...(assertions ? { assertions } : {}),
           ...(mode ? { mode } : {}),
+          // Omitted when empty so a plain run's payload is unchanged.
+          ...(variables && Object.keys(variables).length ? { variables } : {}),
+          ...(environment && Object.keys(environment).length ? { environment } : {}),
+          ...(startNode ? { start_node: startNode } : {}),
         }),
       }),
     /**
@@ -862,13 +946,15 @@ export const api = {
      * when plan reported requiresConsent. On a 409 consent fallback the thrown
      * error carries .body.requiresConsent + .body.consentItems.
      */
-    save: ({ workflow, acceptPrivilegedExposure, grants } = {}) =>
+    save: ({ workflow, acceptPrivilegedExposure, grants, acceptWarningsReason } = {}) =>
       apiFetch('/studio/save', {
         method: 'POST',
         body: JSON.stringify({
           workflow,
           acceptPrivilegedExposure: !!acceptPrivilegedExposure,
           ...(Array.isArray(grants) && grants.length ? { grants } : {}),
+          // Recorded justification when the operator saved past warnings.
+          ...(acceptWarningsReason ? { accept_warnings_reason: acceptWarningsReason } : {}),
         }),
       }),
 

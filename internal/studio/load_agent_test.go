@@ -163,6 +163,36 @@ func TestAgentDefinitionRoundTrip_PreservesLLM(t *testing.T) {
 	}
 }
 
+func TestAgentDefinitionRoundTrip_PreservesGeneratedGuardrails(t *testing.T) {
+	orig := agent.Definition{
+		ID:           "podcast",
+		Name:         "Podcast",
+		ConfirmTools: []string{"channel.send", "mcp__notebooklm__studio_create"},
+		Security:     &agent.SecurityConfig{IntentGate: "deny"},
+		Workflow: &agent.WorkflowSpec{
+			Entry: "send",
+			Nodes: []sdkr.FlowNode{{ID: "send", Kind: sdkr.FlowNodeTool, Tool: "channel.send", Output: "sent"}},
+		},
+	}
+	draft := FromAgentDefinition(orig)
+	if !confirmToolsContain(draft.ConfirmTools, "channel.send") || !confirmToolsContain(draft.ConfirmTools, "mcp__notebooklm__studio_create") {
+		t.Fatalf("FromAgentDefinition dropped confirm_tools: %#v", draft.ConfirmTools)
+	}
+	if draft.Security == nil || draft.Security.IntentGate != "deny" {
+		t.Fatalf("FromAgentDefinition dropped security: %#v", draft.Security)
+	}
+	back, err := ToAgentDefinition(draft, false)
+	if err != nil {
+		t.Fatalf("ToAgentDefinition: %v", err)
+	}
+	if !confirmToolsContain(back.ConfirmTools, "channel.send") || !confirmToolsContain(back.ConfirmTools, "mcp__notebooklm__studio_create") {
+		t.Fatalf("ToAgentDefinition dropped confirm_tools: %#v", back.ConfirmTools)
+	}
+	if back.Security == nil || back.Security.IntentGate != "deny" {
+		t.Fatalf("ToAgentDefinition dropped security: %#v", back.Security)
+	}
+}
+
 // Re-saving a reasoning agent must NOT stack duplicate copies of the ReAct loop
 // guidance: the prompt round-trips through draft.SystemPrompt, so the guidance is
 // already present and must be appended at most once (regression for the
@@ -189,6 +219,32 @@ func TestReactSystemPrompt_IdempotentGuidance(t *testing.T) {
 	healed := reactSystemPrompt(Draft{Name: "X", Strategy: "react", SystemPrompt: dupes})
 	if n := strings.Count(healed, reactLoopGuidance); n != 1 {
 		t.Fatalf("self-heal failed: got %d copies", n)
+	}
+}
+
+func TestReasoningSystemPrompt_UsesStrategySpecificGuidance(t *testing.T) {
+	plan := reactSystemPrompt(Draft{Name: "Podcast", Strategy: "plan_execute", SystemPrompt: "You create podcasts."})
+	if !strings.Contains(plan, planExecuteLoopGuidance) {
+		t.Fatalf("plan-execute prompt missing plan guidance:\n%s", plan)
+	}
+	if strings.Contains(plan, reactLoopGuidance) {
+		t.Fatalf("plan-execute prompt should not carry react guidance:\n%s", plan)
+	}
+
+	auto := reactSystemPrompt(Draft{Name: "Weather", Strategy: "auto", SystemPrompt: "You answer weather."})
+	if !strings.Contains(auto, autoToolCallingGuidance) {
+		t.Fatalf("auto prompt missing native tool guidance:\n%s", auto)
+	}
+	if strings.Contains(auto, "Thought/Action JSON") && !strings.Contains(auto, "Do not emit Thought/Action JSON") {
+		t.Fatalf("auto prompt should reject visible reasoning protocols:\n%s", auto)
+	}
+
+	legacy := reactSystemPrompt(Draft{Name: "Old", Strategy: "react", SystemPrompt: "You are old.\n\n" + legacyReactLoopGuidance})
+	if strings.Contains(legacy, legacyReactLoopGuidance) {
+		t.Fatalf("legacy guidance should be replaced:\n%s", legacy)
+	}
+	if !strings.Contains(legacy, reactLoopGuidance) {
+		t.Fatalf("legacy guidance should be upgraded to new react guidance:\n%s", legacy)
 	}
 }
 

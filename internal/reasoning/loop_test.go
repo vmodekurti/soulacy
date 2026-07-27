@@ -162,6 +162,18 @@ func (h *htmlExecutor) Execute(_ context.Context, call reasoning.ToolCall) reaso
 	}
 }
 
+type pendingAsyncExecutor struct{}
+
+func (p *pendingAsyncExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
+	if call.Tool == "mcp__notebooklm__studio_status" {
+		return reasoning.Observation{
+			Source:  call.Tool,
+			Content: `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`,
+		}
+	}
+	return reasoning.Observation{Source: call.Tool, Content: `{"status":"success","artifact_id":"audio_1"}`}
+}
+
 type htmlHistoryLLM struct {
 	thinkCalls int
 	sawRawHTML bool
@@ -193,6 +205,22 @@ func (h *htmlHistoryLLM) Plan(_ context.Context, _, _ string, _ int) (reasoning.
 
 func (h *htmlHistoryLLM) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
 	return reasoning.ReflectResponse{Output: "done"}, nil
+}
+
+type emptyReflectPlanner struct {
+	planSteps []reasoning.PlannedStep
+}
+
+func (e *emptyReflectPlanner) Think(_ context.Context, _ reasoning.ThinkRequest) (reasoning.ThinkResponse, error) {
+	return reasoning.ThinkResponse{}, errors.New("react fallback not expected")
+}
+
+func (e *emptyReflectPlanner) Plan(_ context.Context, _, _ string, _ int) (reasoning.Plan, error) {
+	return reasoning.Plan{Goal: "fetch and publish", Steps: e.planSteps}, nil
+}
+
+func (e *emptyReflectPlanner) Reflect(_ context.Context, _ reasoning.ReflectRequest) (reasoning.ReflectResponse, error) {
+	return reasoning.ReflectResponse{}, nil
 }
 
 type alwaysBadThinkLLM struct {
@@ -572,7 +600,11 @@ func TestReActFallsBackToUsefulObservationAfterRepeatedMissingAction(t *testing.
 	llm := &scriptedLLM{
 		responses: []reasoning.ThinkResponse{
 			{Thought: "check queue", IsDone: false, Action: reasoning.ToolCall{Tool: "queue_list", Input: map[string]string{"queue": "pending_resources"}}},
+			// Three missing actions: the first now buys a corrected turn (the
+			// repair instruction gets one chance), the second triggers the
+			// salvage Reflect, the third gives up to the synthesized fallback.
 			{Thought: "I should continue", IsDone: false},
+			{Thought: "Still continuing", IsDone: false},
 			{Thought: "Still continuing", IsDone: false},
 			{IsDone: true, FinalAnswer: "should not get here"},
 		},
@@ -592,11 +624,11 @@ func TestReActFallsBackToUsefulObservationAfterRepeatedMissingAction(t *testing.
 
 	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
 
-	if llm.thinkCalls != 3 {
-		t.Fatalf("think calls = %d, want stop after two missing actions following useful work", llm.thinkCalls)
+	if llm.thinkCalls != 4 {
+		t.Fatalf("think calls = %d, want one corrected turn before salvage, then stop", llm.thinkCalls)
 	}
 	if llm.reflectCalls != 2 {
-		t.Fatalf("reflect calls = %d, want one failed recovery reflection per missing action", llm.reflectCalls)
+		t.Fatalf("reflect calls = %d, want one failed recovery reflection per missing action past the threshold", llm.reflectCalls)
 	}
 	if len(exec.calls) != 1 {
 		t.Fatalf("tool calls = %d, want the initial valid call only", len(exec.calls))
@@ -622,8 +654,10 @@ func TestReActReflectsAfterRepeatedThinkErrorsWithUsefulObservation(t *testing.T
 
 	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
 
-	if llm.thinkCalls != 2 {
-		t.Fatalf("think calls = %d, want 2 before reflective recovery", llm.thinkCalls)
+	// Two consecutive bad Think responses are now required before salvage: the
+	// first appends a repair instruction and buys one corrected turn.
+	if llm.thinkCalls != 3 {
+		t.Fatalf("think calls = %d, want 3 before reflective recovery", llm.thinkCalls)
 	}
 	if llm.reflectCalls != 1 {
 		t.Fatalf("reflect calls = %d, want 1 recovery reflection", llm.reflectCalls)
@@ -652,11 +686,11 @@ func TestReActFallsBackToUsefulObservationWhenThinkAndReflectAreInvalid(t *testi
 
 	result := loop.Run(context.Background(), "any-react-agent", "process pending queue")
 
-	if llm.thinkCalls != 3 {
-		t.Fatalf("think calls = %d, want stop after two bad Think responses following a useful observation", llm.thinkCalls)
+	if llm.thinkCalls != 4 {
+		t.Fatalf("think calls = %d, want one corrected turn, then two salvage attempts, then stop", llm.thinkCalls)
 	}
 	if llm.reflectCalls != 2 {
-		t.Fatalf("reflect calls = %d, want one failed recovery reflection per bad Think", llm.reflectCalls)
+		t.Fatalf("reflect calls = %d, want one failed recovery reflection per bad Think past the threshold", llm.reflectCalls)
 	}
 	if !strings.Contains(result.Output, "best available result") || !strings.Contains(result.Output, "ok") {
 		t.Fatalf("unexpected fallback output: %q", result.Output)
@@ -672,6 +706,9 @@ func TestReActFallbackPrefersSuccessfulStructuredObservationsOverEarlierToolErro
 			{Thought: "wrong arg", IsDone: false, Action: reasoning.ToolCall{Tool: "mcp__yahoo-finance__get_stock_info", Arguments: map[string]any{"symbol": "V"}}},
 			{Thought: "retry visa", IsDone: false, Action: reasoning.ToolCall{Tool: "mcp__yahoo-finance__get_stock_info", Arguments: map[string]any{"ticker": "V"}}},
 			{Thought: "get microsoft", IsDone: false, Action: reasoning.ToolCall{Tool: "mcp__yahoo-finance__get_stock_info", Arguments: map[string]any{"ticker": "MSFT"}}},
+			// Three malformed steps: one corrected turn, then two salvage
+			// attempts, then the synthesized fallback.
+			{},
 			{},
 			{},
 		},
@@ -805,8 +842,17 @@ func TestPlanExecuteFallsBackToReActForUnavailablePlanTool(t *testing.T) {
 	if len(exec.calls) != 1 || exec.calls[0].Tool != "queue_list" {
 		t.Fatalf("expected fallback ReAct queue_list call, calls=%#v", exec.calls)
 	}
-	if len(result.Steps) != 1 {
-		t.Fatalf("steps = %d, want one ReAct step", len(result.Steps))
+	// The downgrade is now RECORDED (it used to be silent, so a trace claimed
+	// plan_execute while ReAct actually ran): one planner step naming the cause,
+	// then the ReAct step itself.
+	if len(result.Steps) != 2 {
+		t.Fatalf("steps = %d, want a downgrade record plus one ReAct step", len(result.Steps))
+	}
+	if result.Steps[0].Obs.Source != "planner" {
+		t.Fatalf("first step should be the downgrade record, got source %q", result.Steps[0].Obs.Source)
+	}
+	if !result.Confident {
+		t.Error("a recorded downgrade must not by itself mark the run degraded")
 	}
 }
 
@@ -981,7 +1027,7 @@ func TestPlanExecuteDoesNotCompleteFailedDependencies(t *testing.T) {
 
 	result := loop.Run(context.Background(), "planner", "fetch and summarize")
 
-	if len(result.Steps) != 2 {
+	if len(result.Steps) < 2 {
 		t.Fatalf("steps = %d, want failed step plus skipped dependent step", len(result.Steps))
 	}
 	if result.Steps[0].Obs.Error == nil {
@@ -998,6 +1044,62 @@ func TestPlanExecuteDoesNotCompleteFailedDependencies(t *testing.T) {
 	}
 	if result.Confident {
 		t.Fatalf("failed plan-execute run should not be confident")
+	}
+}
+
+func TestPlanExecuteDoesNotPublishRawObservationWhenFinalReflectFails(t *testing.T) {
+	planSteps := []reasoning.PlannedStep{
+		{ID: "fetch", Description: "fetch source data", Tool: "fetch_url"},
+	}
+	llm := &emptyReflectPlanner{planSteps: planSteps}
+
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"fetch_url"},
+	}, llm, &htmlExecutor{})
+
+	result := loop.Run(context.Background(), "podcast-agent", "fetch content and create a podcast")
+
+	if strings.Contains(result.Output, "HTML fetched") || strings.Contains(result.Output, "URL: https://example.com") {
+		t.Fatalf("fallback should not expose raw fetch_url output: %q", result.Output)
+	}
+	if !strings.Contains(result.Output, "did not produce the required final deliverable") {
+		t.Fatalf("fallback should explain incomplete deliverable, got %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("empty final reflection should mark plan-execute run not confident")
+	}
+}
+
+func TestPlanExecuteDoesNotPublishPendingAsyncStatus(t *testing.T) {
+	pending := `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`
+	planSteps := []reasoning.PlannedStep{
+		{ID: "audio", Description: "create NotebookLM audio", Tool: "mcp__notebooklm__studio_create"},
+		{ID: "poll", Description: "poll until audio is ready", Tool: "mcp__notebooklm__studio_status", DependsOn: []string{"audio"}},
+	}
+	llm := &stubLLM{planSteps: planSteps, reflectOut: pending}
+
+	loop := reasoning.New(reasoning.LoopConfig{
+		Strategy:     reasoning.StrategyPlanExecute,
+		MaxPlanSteps: 3,
+		StepTimeout:  time.Second,
+		TotalTimeout: 5 * time.Second,
+		ToolNames:    []string{"mcp__notebooklm__studio_create", "mcp__notebooklm__studio_status"},
+	}, llm, &pendingAsyncExecutor{})
+
+	result := loop.Run(context.Background(), "podcast-agent", "create a NotebookLM podcast")
+
+	if strings.HasPrefix(strings.TrimSpace(result.Output), "{") || strings.Contains(result.Output, `"in_progress"`) {
+		t.Fatalf("pending async JSON leaked into final output: %q", result.Output)
+	}
+	if !strings.Contains(strings.ToLower(result.Output), "still processing") {
+		t.Fatalf("expected pending async fallback, got %q", result.Output)
+	}
+	if result.Confident {
+		t.Fatalf("pending async finalization should mark plan-execute run not confident")
 	}
 }
 

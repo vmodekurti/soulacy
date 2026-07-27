@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/soulacy/soulacy/internal/agentprompt"
 	"github.com/soulacy/soulacy/pkg/agent"
@@ -109,11 +110,13 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 		StudioRawIntent: strings.TrimSpace(draft.RawIntent),
 		// Disabled by construction: a Studio save stages an agent for the
 		// operator to review and enable.
-		Enabled:    false,
-		MaxTurns:   15,
-		Memory:     agent.MemoryPolicy{MaxTokens: 8000},
-		LLM:        llmConfigFor(draft),
-		RunTimeout: strings.TrimSpace(draft.RunTimeout),
+		Enabled:      false,
+		MaxTurns:     15,
+		Memory:       agent.MemoryPolicy{MaxTokens: 8000},
+		LLM:          llmConfigFor(draft),
+		RunTimeout:   strings.TrimSpace(draft.RunTimeout),
+		ConfirmTools: dedupeNonEmpty(draft.ConfirmTools),
+		Security:     cloneSecurityConfig(draft.Security),
 	}
 
 	// Only attach a workflow block when there's an actual graph. A 0-node draft
@@ -128,6 +131,14 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 			Output:            draft.Flow.Output,
 			MaxNodeExecutions: draft.Flow.MaxNodeExecutions,
 		}
+	}
+
+	// Carry the business-outcome contract onto the saved agent (P0-4). Without
+	// this the draft's assertions die at save and production judges the agent by
+	// node errors alone — the gap that let a workflow deliver an empty brief and
+	// record a successful run.
+	if oc := draft.Outcome.ToAgentContract(); oc != nil {
+		def.Outcome = oc
 	}
 
 	// Project the flow's capability surface onto the Definition so the tier
@@ -181,16 +192,8 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 	if def.Trigger == agent.TriggerCron {
 		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
 			def.Schedule = &agent.Schedule{Cron: cron}
-			if draft.Output != nil {
-				out := &agent.ScheduleOutput{
-					Channel:  strings.TrimSpace(draft.Output.Channel),
-					To:       strings.TrimSpace(draft.Output.To),
-					BotName:  strings.TrimSpace(draft.Output.BotName),
-					Template: strings.TrimSpace(draft.Output.Template),
-				}
-				if out.Channel != "" && out.To != "" {
-					def.Schedule.Output = out
-				}
+			if out := scheduleOutputFromDraft(draft.Output); out != nil {
+				def.Schedule.Output = out
 			}
 		}
 	}
@@ -214,6 +217,8 @@ func ToAgentDefinition(draft Draft, acceptPrivilegedExposure bool) (agent.Defini
 // drives an allowlist of tools/skills/peers dynamically.
 func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure bool) (agent.Definition, error) {
 	strategy := strings.ToLower(strings.TrimSpace(draft.Strategy))
+	reasoningCfg := reasoningConfigFor(draft, strategy)
+	runTimeout := normalizedRunTimeout(draft.RunTimeout, reasoningCfg.TotalTimeout)
 
 	def := agent.Definition{
 		ID:              id,
@@ -229,14 +234,16 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 		MaxTurns:        maxTurnsOr(draft.MaxTurns, 15),
 		Memory:          agent.MemoryPolicy{MaxTokens: 8000},
 		LLM:             llmConfigFor(draft),
-		RunTimeout:      strings.TrimSpace(draft.RunTimeout),
+		RunTimeout:      runTimeout,
 		// The reasoning loop — the whole point. No Workflow block. Studio sets
 		// sensible reasoning timeouts up front (the engine's bare defaults of
 		// 30s/step and 180s total are tuned for fast cloud calls and trip the
 		// validator as "may be too short"); plan_execute runs more steps so it
 		// gets the more generous budget. The user can still override in SOUL.yaml.
-		Reasoning:  reasoningConfigFor(draft, strategy),
-		Unattended: draft.Unattended,
+		Reasoning:    reasoningCfg,
+		Unattended:   draft.Unattended,
+		ConfirmTools: dedupeNonEmpty(draft.ConfirmTools),
+		Security:     cloneSecurityConfig(draft.Security),
 	}
 
 	// Tool allowlist → builtins + MCP tools (split on the mcp__ prefix), so the
@@ -277,6 +284,9 @@ func toReActAgentDefinition(draft Draft, id string, acceptPrivilegedExposure boo
 	if def.Trigger == agent.TriggerCron {
 		if cron, ok := draft.Trigger.Config["cron"].(string); ok && strings.TrimSpace(cron) != "" {
 			def.Schedule = &agent.Schedule{Cron: cron}
+			if out := scheduleOutputFromDraft(draft.Output); out != nil {
+				def.Schedule.Output = out
+			}
 		}
 	}
 	if acceptPrivilegedExposure && len(def.Channels) > 0 {
@@ -307,13 +317,61 @@ func dedupeNonEmpty(in []string) []string {
 	return out
 }
 
+func cloneSecurityConfig(in *agent.SecurityConfig) *agent.SecurityConfig {
+	if in == nil {
+		return nil
+	}
+	cp := *in
+	return &cp
+}
+
 // reactSystemPrompt builds the agent's system prompt: the model-authored prompt
-// (which should already carry the task + ordered approach) plus a short loop
-// directive so the agent uses its tools methodically.
+// (which should already carry the task + ordered approach) plus a strategy
+// contract so the agent uses its tools methodically.
+const legacyReactLoopGuidance = "Work the task by reasoning step by step: decide the next action, call ONE tool, read its result, then decide the next step from what actually happened — never assume a step succeeded. Loop until the goal is met. For lists, act on each item; for asynchronous jobs, poll status until ready before continuing. On a tool error, adapt or stop gracefully with a clear message."
+
 // reactLoopGuidance is the standard ReAct operating instruction appended to a
 // reasoning agent's system prompt. It is a fixed constant so we can detect it
 // already being present (and dedupe stacked copies) on re-save.
-const reactLoopGuidance = "Work the task by reasoning step by step: decide the next action, call ONE tool, read its result, then decide the next step from what actually happened — never assume a step succeeded. Loop until the goal is met. For lists, act on each item; for asynchronous jobs, poll status until ready before continuing. On a tool error, adapt or stop gracefully with a clear message."
+const reactLoopGuidance = `## Reasoning Strategy Contract
+
+Use ReAct only as an internal control loop. Do not reveal hidden chain-of-thought, scratchpad text, or ReAct JSON to the user.
+
+Operating rules:
+1. Observe the user request, available context, and the last tool result.
+2. Decide the smallest useful next action.
+3. Call exactly one tool with schema-valid arguments.
+4. Read the actual result before deciding the next step; never assume a tool succeeded.
+5. If a tool fails because a field is missing or misnamed, repair the obvious alias once, then continue. Do not retry the same failed tool call with identical arguments.
+6. If the same tool/argument shape fails twice, switch approach or stop with a clear blocker and preserve partial results.
+7. For lists, process each item deliberately. For async jobs, poll status until ready or until the configured retry limit is reached.
+8. For channel delivery, use channel.status when the destination is unclear; channel.send uses text for the message body.
+9. Final answers must be clean user-facing results, not raw tool JSON, internal notes, IDs alone, receipts alone, or stack traces.`
+
+const planExecuteLoopGuidance = `## Reasoning Strategy Contract
+
+Use Plan-Execute as an internal project loop. Do not reveal hidden chain-of-thought, scratchpad text, or plan JSON to the user.
+
+Operating rules:
+1. Build a compact numbered plan before acting. Each phase must have observable success criteria.
+2. Execute phases in order and mark a phase complete only when tool output proves the criteria were met.
+3. Keep loops bounded: process known item lists once unless a retry is justified, and set a clear max poll/retry count for async work.
+4. If a phase fails, revise the plan at most once from the actual error. Do not retry the same failed tool call with identical arguments.
+5. Preserve partial results and continue only when downstream phases still make sense.
+6. For creation/delivery jobs, the run is not complete until the requested artifact is created, status is ready, and delivery is confirmed or a clear fallback is returned.
+7. For channel delivery, use channel.status when the destination is unclear; channel.send uses text for the message body.
+8. Final answers must summarize completed phases, skipped items, failed phase if any, and the best usable artifact/result.`
+
+const autoToolCallingGuidance = `## Reasoning Strategy Contract
+
+Use the model's native tool-calling ability. Do not emit Thought/Action JSON, ReAct transcripts, or a visible plan protocol.
+
+Operating rules:
+1. Select tools only when they help complete the user's goal; otherwise answer normally.
+2. Validate required tool arguments before calling. Repair obvious field aliases once, but do not repeat identical failed calls.
+3. Read tool results before acting on them, and preserve partial results if a later step fails.
+4. For ordinary interactive replies, return the answer normally. Use channel.send only for explicit out-of-band delivery.
+5. Final answers must be clean user-facing results, not raw tool JSON, internal notes, IDs alone, receipts alone, or stack traces.`
 
 func reactSystemPrompt(draft Draft) string {
 	var b strings.Builder
@@ -329,13 +387,20 @@ func reactSystemPrompt(draft Draft) string {
 		b.Reset()
 		b.WriteString(agentprompt.EnsureShared(p))
 	}
-	// Append the loop guidance only if the prompt doesn't already carry it. The
-	// prompt round-trips through draft.SystemPrompt (which already includes this
-	// paragraph after a prior save), so appending unconditionally stacked a new
-	// copy on every save.
-	if !strings.Contains(b.String(), reactLoopGuidance) {
+	guidance := reasoningGuidanceForStrategy(draft.Strategy)
+	prompt := stripReasoningGuidance(b.String())
+	b.Reset()
+	b.WriteString(prompt)
+	// Append the strategy guidance only if the prompt doesn't already carry it.
+	// The prompt round-trips through draft.SystemPrompt after a prior save, so
+	// appending unconditionally stacked a new copy on every save.
+	if guidance != "" && !strings.Contains(b.String(), guidance) {
 		b.WriteString("\n\n")
-		b.WriteString(reactLoopGuidance)
+		b.WriteString(guidance)
+	}
+	if contract := completionContractPrompt(draft); contract != "" && !strings.Contains(b.String(), completionContractHeading) {
+		b.WriteString("\n\n")
+		b.WriteString(contract)
 	}
 	if t := strings.TrimSpace(draft.Intent); t != "" {
 		if goal := "Goal: " + t; !strings.Contains(b.String(), goal) {
@@ -345,7 +410,48 @@ func reactSystemPrompt(draft Draft) string {
 	}
 	// Self-heal prompts that already accumulated duplicate guidance paragraphs
 	// from earlier saves: keep the first occurrence, drop the rest, tidy blanks.
-	return dedupeParagraph(b.String(), reactLoopGuidance)
+	out := b.String()
+	for _, para := range []string{reactLoopGuidance, planExecuteLoopGuidance, autoToolCallingGuidance} {
+		out = dedupeParagraph(out, para)
+	}
+	return out
+}
+
+func reasoningGuidanceForStrategy(strategy string) string {
+	switch strings.ToLower(strings.TrimSpace(strategy)) {
+	case "plan_execute":
+		return planExecuteLoopGuidance
+	case "auto":
+		return autoToolCallingGuidance
+	default:
+		return reactLoopGuidance
+	}
+}
+
+func stripReasoningGuidance(text string) string {
+	for _, para := range []string{legacyReactLoopGuidance, reactLoopGuidance, planExecuteLoopGuidance, autoToolCallingGuidance} {
+		text = strings.ReplaceAll(text, para, "")
+	}
+	return strings.TrimSpace(regexp.MustCompile(`\n{3,}`).ReplaceAllString(text, "\n\n"))
+}
+
+func scheduleOutputFromDraft(out *ScheduleOutput) *agent.ScheduleOutput {
+	if out == nil {
+		return nil
+	}
+	res := &agent.ScheduleOutput{
+		Channel:  strings.TrimSpace(out.Channel),
+		To:       strings.TrimSpace(out.To),
+		BotName:  strings.TrimSpace(out.BotName),
+		Template: strings.TrimSpace(out.Template),
+	}
+	if res.Channel == "" {
+		return nil
+	}
+	if res.To == "" {
+		return nil
+	}
+	return res
 }
 
 // dedupeParagraph keeps the first occurrence of para in text and removes every
@@ -370,9 +476,12 @@ func dedupeParagraph(text, para string) string {
 // warnings) and survives slower providers. plan_execute typically runs more
 // steps, so it gets a larger total budget. Values are deliberately generous but
 // bounded; the user can override any of them in SOUL.yaml.
-func defaultReasoningConfig(strategy string) agent.ReasoningConfig {
+func defaultReasoningConfig(draft Draft, strategy string) agent.ReasoningConfig {
+	maxSteps, maxPlanSteps := defaultReasoningBudgets(draft, strategy)
 	cfg := agent.ReasoningConfig{
 		Strategy:     strategy,
+		MaxSteps:     maxSteps,
+		MaxPlanSteps: maxPlanSteps,
 		StepTimeout:  "120s",
 		TotalTimeout: "600s",
 	}
@@ -387,14 +496,92 @@ func defaultReasoningConfig(strategy string) agent.ReasoningConfig {
 // only filling Studio's sensible defaults where the draft left them empty — so a
 // canvas re-save never silently resets hand-set budgets.
 func reasoningConfigFor(draft Draft, strategy string) agent.ReasoningConfig {
-	cfg := defaultReasoningConfig(strategy)
+	cfg := defaultReasoningConfig(draft, strategy)
 	if t := strings.TrimSpace(draft.StepTimeout); t != "" {
 		cfg.StepTimeout = t
 	}
 	if t := strings.TrimSpace(draft.TotalTimeout); t != "" {
 		cfg.TotalTimeout = t
 	}
+	if draft.MaxSteps > 0 {
+		cfg.MaxSteps = draft.MaxSteps
+	}
+	if draft.MaxPlanSteps > 0 {
+		cfg.MaxPlanSteps = draft.MaxPlanSteps
+	}
 	return cfg
+}
+
+func defaultReasoningBudgets(draft Draft, strategy string) (int, int) {
+	if strings.EqualFold(strategy, "plan_execute") {
+		if highComplexityReasoningTask(draft) {
+			return 24, 12
+		}
+		return 16, 8
+	}
+	if highComplexityReasoningTask(draft) {
+		return 18, 8
+	}
+	return 8, 6
+}
+
+func highComplexityReasoningTask(draft Draft) bool {
+	text := strings.ToLower(strings.Join([]string{
+		draft.Intent,
+		draft.RawIntent,
+		draft.SystemPrompt,
+		strings.Join(draft.Tools, " "),
+	}, " "))
+	if strings.Contains(text, "notebooklm") || strings.Contains(text, "notebook lm") ||
+		strings.Contains(text, "podcast") || strings.Contains(text, "audio overview") {
+		return true
+	}
+	hits := 0
+	for _, word := range []string{
+		"search", "find", "fetch", "read", "rank", "filter", "summarize",
+		"create", "generate", "poll", "wait", "store", "ingest", "send", "deliver",
+	} {
+		if strings.Contains(text, word) {
+			hits++
+		}
+	}
+	if hits >= 4 {
+		return true
+	}
+	mcpCount := 0
+	for _, tool := range draft.Tools {
+		if strings.HasPrefix(strings.TrimSpace(tool), "mcp__") {
+			mcpCount++
+		}
+	}
+	return len(draft.Tools) >= 8 || mcpCount >= 4
+}
+
+func normalizedRunTimeout(runTimeout, reasoningTotal string) string {
+	runTimeout = strings.TrimSpace(runTimeout)
+	total := parsePositiveDuration(reasoningTotal)
+	run := parsePositiveDuration(runTimeout)
+	if total <= 0 {
+		if runTimeout == "" {
+			return ""
+		}
+		return runTimeout
+	}
+	if run <= 0 || run < total {
+		return total.String()
+	}
+	return runTimeout
+}
+
+func parsePositiveDuration(s string) time.Duration {
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	d, err := time.ParseDuration(strings.TrimSpace(s))
+	if err != nil || d <= 0 {
+		return 0
+	}
+	return d
 }
 
 // maxTurnsOr returns v when positive, else the fallback — so a user-tuned
@@ -610,6 +797,10 @@ func buildSystemPrompt(draft Draft) string {
 
 	if len(draft.Channels) > 0 {
 		fmt.Fprintf(&b, "Output: deliver results to the following channel(s): %s.\n\n", strings.Join(draft.Channels, ", "))
+	}
+	if contract := completionContractPrompt(draft); contract != "" && !strings.Contains(b.String(), completionContractHeading) {
+		b.WriteString(contract)
+		b.WriteString("\n\n")
 	}
 
 	if flowHasHostExecution(draft.Flow) {

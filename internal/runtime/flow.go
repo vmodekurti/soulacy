@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -86,7 +87,19 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	// Per-block run trace (Story S0.3 Phase 1): record every executed block's
 	// input/output/duration/error and stream it as a flow.node event so the GUI
 	// can render a legible run trace. Independent of the checkpoint store.
+	// Untrimmed node outputs, kept for outcome-contract evaluation (P0-4). The
+	// trace copy is truncated for display; an assertion counting items in a
+	// large result must see the real value, not "[truncated]".
+	//
+	// hookMu guards every piece of run-local state these hooks touch: a
+	// kind=parallel node (and a parallel for_each) calls them from several branch
+	// goroutines at once, so an unguarded append would drop or corrupt records.
+	var hookMu sync.Mutex
+	var outcomeTrace []reasoning.FlowNodeRun
 	hooks.Observe = func(rec reasoning.FlowNodeRun) {
+		hookMu.Lock()
+		outcomeTrace = append(outcomeTrace, rec)
+		hookMu.Unlock()
 		displayRec := trimFlowNodeRun(rec)
 		if nodeObs != nil {
 			nodeObs(displayRec)
@@ -110,6 +123,7 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 				"error":      displayRec.Error,
 				"durationMs": displayRec.DurationMS,
 				"wiredPorts": displayRec.WiredPorts,
+				"adapted":    displayRec.Adapted,
 			},
 		})
 	}
@@ -156,6 +170,48 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 				Status: CheckpointFailed, UpdatedAt: time.Now().UTC(),
 			})
 		}
+	}
+
+	// Runtime healing happens before a malformed template can abort the graph.
+	// The model receives a redacted, bounded view of the actual upstream values
+	// and the target tool schema, then must return concrete JSON. This repair is
+	// visit-local and cannot rewrite the deployed workflow.
+	ctx, markAdapted := reasoning.WithAdaptedTracker(ctx)
+	hooks.RepairInput = func(repairCtx context.Context, node sdkr.FlowNode, inputTemplate string, renderErr error, liveVars map[string]any) (string, bool) {
+		if !(node.Adaptive || w.engine.adaptiveNodes) {
+			return "", false
+		}
+		repaired, ok := w.engine.repairFlowRenderedInput(repairCtx, msg, node, inputTemplate, renderErr, liveVars)
+		if ok {
+			markAdapted(node.ID)
+		}
+		return repaired, ok
+	}
+
+	// Edge predicates address fields into node outputs, so a routing decision
+	// can hit the same shape drift RepairInput heals for node inputs. When a
+	// predicate fails to render on an adaptive flow, the model DECIDES the edge
+	// from the redacted live values instead of the walk aborting. Bounded to one
+	// attempt per edge per run; the compiled workflow is never mutated.
+	predicateAttempted := map[string]bool{}
+	hooks.RepairPredicate = func(repairCtx context.Context, edge sdkr.FlowEdge, renderErr error, liveVars map[string]any) (bool, bool) {
+		from := g.Node(edge.From)
+		if !(from.Adaptive || w.engine.adaptiveNodes) {
+			return false, false
+		}
+		key := edge.From + "→" + edge.To
+		hookMu.Lock()
+		attempted := predicateAttempted[key]
+		predicateAttempted[key] = true
+		hookMu.Unlock()
+		if attempted {
+			return false, false
+		}
+		take, ok := w.engine.repairFlowEdgePredicate(repairCtx, msg, edge, renderErr, liveVars)
+		if ok {
+			markAdapted(edge.From)
+		}
+		return take, ok
 	}
 
 	// lastSentText captures the human-readable content the workflow last handed to
@@ -252,7 +308,9 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		// workflow can still return the message to an interactive caller.
 		if tool == "channel.send" {
 			if t := argStringFirst(tc.Arguments, "text", "message", "body", "content"); t != "" && t != "<no value>" {
+				hookMu.Lock()
 				lastSentText = t
+				hookMu.Unlock()
 			}
 		}
 
@@ -292,13 +350,52 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 	// fails or soft-fails on a shape surprise, the model salvages usable output so
 	// the flow keeps running (bounded to one attempt per node). markAdapted flags
 	// salvaged nodes so the trace can show which ones the runtime rescued.
-	ctx, markAdapted := reasoning.WithAdaptedTracker(ctx)
+	//
+	// adaptBudget makes the one-attempt bound explicit ACROSS cycle visits: a
+	// node that burned its salvage on visit 1 does not get a fresh attempt when
+	// a back edge re-visits it — without this, a bounded cycle would multiply
+	// LLM repair calls against the same defect.
+	adaptBudget := map[string]bool{}
 	runNode := func(ctx context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
 		out, err := execNode(ctx, node, renderedInput)
-		if node.Adaptive || w.engine.adaptiveNodes {
+		adaptive := node.Adaptive || w.engine.adaptiveNodes
+		if adaptive && !adaptBudget[node.ID] && (err != nil || flowSoftError(out) != "") {
+			adaptBudget[node.ID] = true
+			if err != nil && isRepairableToolArgumentFailure(err.Error()) &&
+				(node.Kind == sdkr.FlowNodeTool || node.Kind == sdkr.FlowNodeAgent || node.Tool != "") {
+				if repairedInput, ok := w.engine.repairFlowToolInput(ctx, msg, node, renderedInput, err); ok {
+					retriedOut, retryErr := execNode(ctx, node, repairedInput)
+					if retryErr == nil {
+						markAdapted(node.ID)
+						return retriedOut, nil
+					}
+					out, err = retriedOut, retryErr
+				}
+			}
 			if salvaged, ok := w.engine.adaptFlowNode(ctx, msg, node, renderedInput, out, err); ok {
 				markAdapted(node.ID)
 				return salvaged, nil
+			}
+		}
+		// Producer-side port-type enforcement: when a node SUCCEEDS but a declared
+		// output port's type hint doesn't match the value it produced, that's shape
+		// drift caught where the context is freshest — at the producer — instead of
+		// one node later when a consumer blows up. An adaptive node gets its one
+		// salvage attempt to reshape the output; otherwise (or when the reshape
+		// still mismatches) the run continues with the original output and only a
+		// flow.portdrift event is emitted, preserving today's forgiving behavior.
+		if err == nil {
+			if drift := flowPortTypeMismatch(node, out); drift != "" {
+				w.engine.emitFlowPortDrift(msg, node, drift)
+				if adaptive && !adaptBudget[node.ID] {
+					adaptBudget[node.ID] = true
+					if reshaped, ok := w.engine.adaptFlowNode(ctx, msg, node, renderedInput, out, fmt.Errorf("output shape drift: %s", drift)); ok {
+						if flowPortTypeMismatch(node, reshaped) == "" {
+							markAdapted(node.ID)
+							return reshaped, nil
+						}
+					}
+				}
 			}
 		}
 		return out, err
@@ -332,6 +429,32 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		}
 	}
 
+	// Business-outcome contract (P0-4). Every node may have executed without an
+	// error and the run can still have achieved nothing — zero sources, no
+	// audio, an empty message delivered on schedule. Judge the contract against
+	// the REAL outputs, record the verdict, and — when the agent opted into
+	// enforcement — fail the run so an empty result cannot present as success.
+	if def := w.engine.loaderDefinition(msg.AgentID); def != nil && def.Outcome.HasAssertions() {
+		report := EvaluateOutcome(def.Outcome, final, outcomeTrace)
+		w.engine.emitOutcomeReport(msg, runID, report)
+		// Hand the verdict to the caller building the reply, so an unmet
+		// contract makes the run not-confident (P0-6) and the existing
+		// degraded-delivery marking applies — a scheduled empty brief then
+		// arrives labelled instead of looking finished.
+		if slot := outcomeCollectorFrom(ctx); slot != nil {
+			*slot = report
+		}
+		if !report.Met {
+			w.log.Warn("workflow outcome contract not met",
+				zap.String("run_id", runID),
+				zap.String("outcome", report.Outcome),
+				zap.String("summary", report.Summary))
+			if def.Outcome.EnforcementMode() == agent.EnforceFail {
+				return nil, fmt.Errorf("outcome contract not met (%s): %s", report.Outcome, report.Summary)
+			}
+		}
+	}
+
 	// A workflow that terminates in channel.send yields a delivery RECEIPT, not
 	// content — so an interactive reply would be a cryptic {"ok":true,...}. When
 	// that's the case, surface the message the workflow actually sent instead, so
@@ -342,6 +465,37 @@ func (w *WorkflowExecutor) runFlow(ctx context.Context, msg message.Message, run
 		}
 	}
 	return final, nil
+}
+
+// loaderDefinition returns the agent definition or nil, tolerating a nil loader
+// (tests construct engines without one).
+func (e *Engine) loaderDefinition(agentID string) *agent.Definition {
+	if e.loader == nil {
+		return nil
+	}
+	return e.loader.Get(agentID)
+}
+
+// emitOutcomeReport surfaces the contract verdict as a flow.outcome event, so
+// Activity and the run trace can show WHY a run that looks clean is marked
+// unsuccessful.
+func (e *Engine) emitOutcomeReport(msg message.Message, runID string, report OutcomeReport) {
+	if e.sink == nil {
+		return
+	}
+	e.sink.Emit(message.Event{
+		Type:      "flow.outcome",
+		AgentID:   msg.AgentID,
+		SessionID: msg.SessionID,
+		Timestamp: time.Now().UTC(),
+		Payload: map[string]any{
+			"runId":      runID,
+			"outcome":    report.Outcome,
+			"met":        report.Met,
+			"summary":    report.Summary,
+			"assertions": report.Assertions,
+		},
+	})
 }
 
 // isChannelSendReceipt reports whether b is a bare channel.send delivery receipt

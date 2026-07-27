@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 	"github.com/soulacy/soulacy/sdk/registry"
@@ -77,6 +79,18 @@ func TestCompileFlow_Validation(t *testing.T) {
 		"missing node id": {
 			Nodes: []sdkr.FlowNode{{Tool: "t"}},
 		},
+		"map on structural node": {
+			Nodes: []sdkr.FlowNode{{ID: "a", Kind: sdkr.FlowNodeBranch, ForEach: `[]`}},
+		},
+		"invalid map variable": {
+			Nodes: []sdkr.FlowNode{{ID: "a", Tool: "t", ForEach: `[]`, ItemVar: "bad-name"}},
+		},
+		"excessive map parallelism": {
+			Nodes: []sdkr.FlowNode{{ID: "a", Tool: "t", ForEach: `[]`, MaxParallel: 33}},
+		},
+		"map settings without map": {
+			Nodes: []sdkr.FlowNode{{ID: "a", Tool: "t", MaxParallel: 2}},
+		},
 	}
 	for name, spec := range cases {
 		if _, err := CompileFlow(spec); err == nil {
@@ -98,6 +112,100 @@ func TestCompileFlow_Validation(t *testing.T) {
 	}
 	if g.Node("a").Kind != sdkr.FlowNodeTool || g.Node("b").Kind != sdkr.FlowNodeAgent || g.Node("c").Kind != sdkr.FlowNodeBranch {
 		t.Errorf("kind inference wrong: %+v %+v %+v", g.Node("a"), g.Node("b"), g.Node("c"))
+	}
+}
+
+func TestRunFlow_ForEachRunsConcurrentlyAndPreservesOrder(t *testing.T) {
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{{
+			ID:          "search_sources",
+			Tool:        "web_search",
+			ForEach:     `["hbr.org","technologyreview.com","gartner.com"]`,
+			ItemVar:     "domain",
+			MaxParallel: 3,
+			Input:       `{"query":"site:{{ .domain }}"}`,
+			Output:      "searches",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	started := make(chan string, 3)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	var observed []FlowNodeRun
+	run := func(_ context.Context, _ sdkr.FlowNode, input string) (json.RawMessage, error) {
+		started <- input
+		<-release
+		var args map[string]string
+		if err := json.Unmarshal([]byte(input), &args); err != nil {
+			return nil, err
+		}
+		return json.RawMessage(fmt.Sprintf(`{"query":%q}`, args["query"])), nil
+	}
+
+	type runResult struct {
+		out json.RawMessage
+		err error
+	}
+	done := make(chan runResult, 1)
+	go func() {
+		out, runErr := RunFlow(context.Background(), g, nil, run, FlowHooks{
+			Observe: func(rec FlowNodeRun) {
+				mu.Lock()
+				observed = append(observed, rec)
+				mu.Unlock()
+			},
+		})
+		done <- runResult{out: out, err: runErr}
+	}()
+
+	for i := 0; i < 3; i++ {
+		select {
+		case <-started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("mapped executions did not start concurrently")
+		}
+	}
+	close(release)
+	result := <-done
+	if result.err != nil {
+		t.Fatalf("RunFlow: %v", result.err)
+	}
+	want := `[{"query":"site:hbr.org"},{"query":"site:technologyreview.com"},{"query":"site:gartner.com"}]`
+	if string(result.out) != want {
+		t.Fatalf("ordered aggregate=%s, want %s", result.out, want)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(observed) != 4 {
+		t.Fatalf("observed %d records, want 3 item records plus one aggregate: %+v", len(observed), observed)
+	}
+}
+
+func TestRunFlow_ForEachRejectsUnboundedInput(t *testing.T) {
+	items := make([]int, maxFlowMapItems+1)
+	raw, err := json.Marshal(items)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{{ID: "map", Tool: "t", ForEach: string(raw), MaxParallel: 2}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	called := false
+	_, err = RunFlow(context.Background(), g, nil, func(context.Context, sdkr.FlowNode, string) (json.RawMessage, error) {
+		called = true
+		return nil, nil
+	}, FlowHooks{})
+	if err == nil || !strings.Contains(err.Error(), "exceeding the limit") {
+		t.Fatalf("expected bounded-map error, got %v", err)
+	}
+	if called {
+		t.Fatal("runner must not execute when for_each exceeds its safety bound")
 	}
 }
 
@@ -126,6 +234,90 @@ func TestRunFlow_LinearChain(t *testing.T) {
 	want := []string{`fetch:{"q":"news"}`, `publish:{"count":3}`}
 	if len(r.calls) != 2 || r.calls[0] != want[0] || r.calls[1] != want[1] {
 		t.Errorf("calls = %v, want %v", r.calls, want)
+	}
+}
+
+func TestRunFlow_RepairsTemplateInputAndContinuesSameRun(t *testing.T) {
+	r := &recRunner{results: map[string]string{
+		"produce": `{"items":[{"url":"https://example.com"}]}`,
+		"consume": `"done"`,
+	}}
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "produce", Tool: "search", Output: "source_pack"},
+			{ID: "consume", Tool: "add_source", Input: `{"text":{{toJson .source_pack.text}}}`},
+		},
+		Edges: []sdkr.FlowEdge{{From: "produce", To: "consume"}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	repairCalls := 0
+	var observed FlowNodeRun
+	out, err := RunFlow(context.Background(), g, map[string]any{}, r.run, FlowHooks{
+		RepairInput: func(_ context.Context, node sdkr.FlowNode, inputTemplate string, renderErr error, vars map[string]any) (string, bool) {
+			repairCalls++
+			if node.ID != "consume" || !strings.Contains(inputTemplate, ".source_pack.text") {
+				t.Fatalf("unexpected repair request: node=%s template=%q", node.ID, inputTemplate)
+			}
+			if renderErr == nil || vars["source_pack"] == nil {
+				t.Fatalf("repair request missing live failure context: err=%v vars=%v", renderErr, vars)
+			}
+			return `{"text":"recovered from live items"}`, true
+		},
+		Observe: func(rec FlowNodeRun) {
+			if rec.NodeID == "consume" {
+				observed = rec
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("RunFlow: %v", err)
+	}
+	if string(out) != `"done"` {
+		t.Fatalf("output = %s, want done", out)
+	}
+	if repairCalls != 1 {
+		t.Fatalf("repair calls = %d, want 1", repairCalls)
+	}
+	if len(r.calls) != 2 || r.calls[1] != `consume:{"text":"recovered from live items"}` {
+		t.Fatalf("calls = %#v", r.calls)
+	}
+	if observed.Error != "" || observed.Input != `{"text":"recovered from live items"}` {
+		t.Fatalf("observed repaired run = %+v", observed)
+	}
+}
+
+func TestRunFlow_ObservesTemplateRenderFailure(t *testing.T) {
+	r := &recRunner{results: map[string]string{
+		"produce": `"plain text instead of an object"`,
+	}}
+	g, err := CompileFlow(sdkr.FlowSpec{
+		Nodes: []sdkr.FlowNode{
+			{ID: "produce", Tool: "fetch", Output: "source_pack"},
+			{ID: "consume", Tool: "publish", Input: `{"text":{{ toJson .source_pack.text }}}`},
+		},
+		Edges: []sdkr.FlowEdge{{From: "produce", To: "consume"}},
+	})
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	var observed []FlowNodeRun
+	_, err = RunFlow(context.Background(), g, map[string]any{}, r.run, FlowHooks{
+		Observe: func(rec FlowNodeRun) { observed = append(observed, rec) },
+	})
+	if err == nil {
+		t.Fatal("expected consumer render failure")
+	}
+	if len(observed) != 2 {
+		t.Fatalf("observed %d nodes, want producer and failed consumer: %+v", len(observed), observed)
+	}
+	failed := observed[1]
+	if failed.NodeID != "consume" || !strings.Contains(failed.Error, "can't evaluate field text") {
+		t.Fatalf("failed trace = %+v", failed)
+	}
+	if failed.Input != `{"text":{{ toJson .source_pack.text }}}` {
+		t.Fatalf("failed trace lost original template: %q", failed.Input)
 	}
 }
 
@@ -552,11 +744,14 @@ func TestRunFlow_TypedPortHandoff(t *testing.T) {
 func TestFlowPorts_YAMLRoundTrip(t *testing.T) {
 	in := sdkr.FlowSpec{
 		Nodes: []sdkr.FlowNode{{
-			ID:      "a",
-			Tool:    "t",
-			Inputs:  []sdkr.FlowPort{{Name: "in1", Type: "string", Label: "In"}},
-			Outputs: []sdkr.FlowPort{{Name: "out1"}},
-			Params:  map[string]any{"k": "v"},
+			ID:          "a",
+			Tool:        "t",
+			Inputs:      []sdkr.FlowPort{{Name: "in1", Type: "string", Label: "In"}},
+			Outputs:     []sdkr.FlowPort{{Name: "out1"}},
+			Params:      map[string]any{"k": "v"},
+			ForEach:     `["one","two"]`,
+			ItemVar:     "entry",
+			MaxParallel: 2,
 		}},
 		Edges: []sdkr.FlowEdge{{From: "a", To: "end", FromPort: "out1"}},
 	}
@@ -564,7 +759,7 @@ func TestFlowPorts_YAMLRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	for _, key := range []string{"inputs:", "outputs:", "params:", "from_port:"} {
+	for _, key := range []string{"inputs:", "outputs:", "params:", "for_each:", "item_var:", "max_parallel:", "from_port:"} {
 		if !strings.Contains(string(b), key) {
 			t.Errorf("expected YAML key %q in:\n%s", key, b)
 		}
@@ -582,6 +777,9 @@ func TestFlowPorts_YAMLRoundTrip(t *testing.T) {
 	}
 	if n.Params["k"] != "v" {
 		t.Errorf("params round-trip wrong: %+v", n.Params)
+	}
+	if n.ForEach != `["one","two"]` || n.ItemVar != "entry" || n.MaxParallel != 2 {
+		t.Errorf("map settings round-trip wrong: %+v", n)
 	}
 	if got.Edges[0].FromPort != "out1" {
 		t.Errorf("from_port round-trip wrong: %q", got.Edges[0].FromPort)

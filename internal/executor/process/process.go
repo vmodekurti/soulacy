@@ -94,6 +94,11 @@ func (e *Executor) Run(ctx context.Context, pyFile, funcName, inline string, arg
 	// optional callback; all other lines are accumulated as the tool output.
 	var outputLines []string
 	sc := bufio.NewScanner(stdoutPipe)
+	// Inline Python commonly returns a single JSON line. The Scanner default is
+	// only 64 KiB, which used to discard a perfectly valid large result (for
+	// example a curated article pack) and quietly return an empty string. Keep a
+	// bounded but practical ceiling and surface overflow as an execution error.
+	sc.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for sc.Scan() {
 		line := sc.Text()
 		if ev, ok := executor.ParseProgressLine(line, runID); ok {
@@ -103,6 +108,11 @@ func (e *Executor) Run(ctx context.Context, pyFile, funcName, inline string, arg
 			continue
 		}
 		outputLines = append(outputLines, line)
+	}
+	if scanErr := sc.Err(); scanErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return "", fmt.Errorf("python tool: read stdout: %w", scanErr)
 	}
 
 	if runErr := cmd.Wait(); runErr != nil {

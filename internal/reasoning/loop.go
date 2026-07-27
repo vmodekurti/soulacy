@@ -135,9 +135,26 @@ func (l *Loop) Run(ctx context.Context, agentID, taskInput string) Result {
 		name = detectStrategy(taskInput)
 	}
 
+	// A strategy name that resolves to nothing is a CONFIGURATION ERROR, not a
+	// runtime condition to paper over. This used to silently substitute ReAct on
+	// the reasoning that "degraded output beats no output" — but that trade only
+	// holds for failures discovered mid-run. A misspelled or unregistered
+	// strategy is knowable before any work happens, and substituting silently
+	// meant an operator who wrote `strategy: plan-execute` (hyphen) got ReAct
+	// forever, with the banner still naming their intended strategy and no
+	// event anywhere saying otherwise.
+	//
+	// The loop's contract is that Run ALWAYS returns a Result, so this surfaces
+	// as a failed, not-confident Result carrying the available names — not a
+	// panic and not a silent substitution.
 	strat, ok, err := registry.NewReasoningStrategy(name, nil)
 	if !ok || err != nil || strat == nil {
-		strat = reactStrategy{}
+		return Result{
+			Output:    unknownStrategyMessage(name, err),
+			Steps:     []Step{{ID: "config-error", Thought: "Strategy resolution failed before any step ran.", Obs: Observation{Content: unknownStrategyMessage(name, err), Source: "controller"}}},
+			Confident: false,
+			Duration:  time.Since(start),
+		}
 	}
 
 	env := Env{Config: l.cfg, LLM: l.llm, Tools: l.executor}
@@ -152,6 +169,29 @@ func (l *Loop) Run(ctx context.Context, agentID, taskInput string) Result {
 		Duration:     time.Since(start),
 		UpdatedRules: reflectResp.UpdatedRules,
 	}
+}
+
+// unknownStrategyMessage explains an unresolvable reasoning.strategy and lists
+// what IS registered, so the fix is visible without reading source. Registered
+// names include any custom strategy the host added through the E15 registry,
+// not just the built-ins — which is exactly the case where a typo is hardest to
+// spot unaided.
+func unknownStrategyMessage(name string, err error) string {
+	var b strings.Builder
+	b.WriteString("configuration error: reasoning.strategy ")
+	if strings.TrimSpace(name) == "" {
+		b.WriteString("is empty")
+	} else {
+		b.WriteString(fmt.Sprintf("%q is not registered", name))
+	}
+	if err != nil {
+		b.WriteString(" (" + err.Error() + ")")
+	}
+	if names := registry.ReasoningStrategies(); len(names) > 0 {
+		b.WriteString(". Available strategies: " + strings.Join(names, ", "))
+	}
+	b.WriteString(". Fix the strategy name in the agent's SOUL.yaml — this run did not execute.")
+	return b.String()
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -199,6 +239,11 @@ func boundObservation(obs Observation) Observation {
 	if len(obs.Content) > 8192 {
 		obs.Content = obs.Content[:8192]
 	}
+	// A 200-OK fetch that yielded a paywall teaser instead of an article is a
+	// SUCCESS at the tool layer and a dead end at the task layer. Say so, before
+	// the model burns its remaining steps re-fetching the same domain.
+	// Applied after the cap so the steer is never the part that gets truncated.
+	obs.Content = annotateThinContent(obs.Content)
 	return obs
 }
 
@@ -240,10 +285,7 @@ func containsToolErrors(steps []Step) bool {
 		if s.Obs.Error != nil || strings.HasPrefix(s.Obs.Content, "tool error:") {
 			return true
 		}
-		if s.Obs.Source == "controller" && strings.Contains(strings.ToLower(s.Obs.Content), "think failed") {
-			return true
-		}
-		if s.Obs.Source == "controller" && strings.Contains(strings.ToLower(s.Obs.Content), "invalid reasoning step") {
+		if s.Obs.Source == "controller" {
 			return true
 		}
 	}

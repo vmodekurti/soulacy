@@ -143,12 +143,20 @@ func SecurityPreflight(draft Draft, def *agent.Definition, workspaceIntentGateDe
 		}
 	}
 
-	// Confirmation surface.
+	// Confirmation surface. Prefer the live draft because Studio may be
+	// validating before the agent has ever been saved, or after the user edited
+	// generated guardrails in the canvas.
+	for _, t := range draft.ConfirmTools {
+		sum.ConfirmTools = appendUnique(sum.ConfirmTools, strings.TrimSpace(t))
+	}
+	if draft.Security != nil {
+		sum.IntentGateMode = strings.TrimSpace(draft.Security.IntentGate)
+	}
 	if def != nil {
 		for _, t := range def.ConfirmTools {
 			sum.ConfirmTools = appendUnique(sum.ConfirmTools, strings.TrimSpace(t))
 		}
-		if def.Security != nil {
+		if def.Security != nil && sum.IntentGateMode == "" {
 			sum.IntentGateMode = strings.TrimSpace(def.Security.IntentGate)
 		}
 		if def.HasCapability("system") {
@@ -218,7 +226,7 @@ func SecurityPreflight(draft Draft, def *agent.Definition, workspaceIntentGateDe
 	// the classic injection pipeline. The S3 gate catches it at run
 	// time; the preflight warns at authoring time so the operator sees
 	// the risk shape before shipping.
-	if len(sum.UntrustedContentSources) > 0 && len(sum.PrivilegedTools) > 0 {
+	if len(sum.UntrustedContentSources) > 0 && len(sum.PrivilegedTools) > 0 && !strings.EqualFold(strings.TrimSpace(sum.IntentGateMode), "deny") {
 		rev.Warnings = append(rev.Warnings, SecurityFinding{
 			Severity: "warn",
 			Category: "trust",
@@ -266,14 +274,17 @@ func SecurityPreflight(draft Draft, def *agent.Definition, workspaceIntentGateDe
 func allDraftTools(draft Draft, def *agent.Definition) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, t := range draft.Tools {
-		t = strings.TrimSpace(t)
-		if t == "" || seen[t] {
-			continue
+	push := func(vals []string) {
+		for _, t := range vals {
+			t = strings.TrimSpace(t)
+			if t == "" || seen[t] {
+				continue
+			}
+			seen[t] = true
+			out = append(out, t)
 		}
-		seen[t] = true
-		out = append(out, t)
 	}
+	push(draft.Tools)
 	for _, n := range draft.Flow.Nodes {
 		if n.Kind != "tool" {
 			continue
@@ -286,14 +297,10 @@ func allDraftTools(draft Draft, def *agent.Definition) []string {
 		out = append(out, t)
 	}
 	if def != nil && def.Builtins != nil {
-		for _, t := range *def.Builtins {
-			t = strings.TrimSpace(t)
-			if t == "" || seen[t] {
-				continue
-			}
-			seen[t] = true
-			out = append(out, t)
-		}
+		push(*def.Builtins)
+	}
+	if def != nil && def.MCPTools != nil {
+		push(*def.MCPTools)
 	}
 	return out
 }

@@ -24,6 +24,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -415,5 +416,21 @@ func (e *Engine) handleWithReasoning(ctx context.Context, def *agent.Definition,
 		})
 	}
 
-	return e.finalizeReply(ctx, def, sess, msg, finalContent), nil
+	reply := e.finalizeReply(ctx, def, sess, msg, finalContent)
+
+	// Carry the run's confidence forward on the reply. Until now Confident was
+	// pure telemetry — emitted on reasoning.result and then dropped — so a run
+	// that ended "degraded / not confident" was handed to channel delivery
+	// indistinguishable from a clean one, and a half-finished narration landed
+	// in the user's inbox looking like a finished deliverable. Downstream
+	// delivery (see scheduler.sendScheduledOutput) reads this to decide how to
+	// present the result; interactive callers may ignore it.
+	if !result.Confident {
+		if reply.Metadata == nil {
+			reply.Metadata = map[string]string{}
+		}
+		reply.Metadata[message.MetaReasoningDegraded] = "true"
+		reply.Metadata[message.MetaReasoningSteps] = strconv.Itoa(len(result.Steps))
+	}
+	return reply, nil
 }

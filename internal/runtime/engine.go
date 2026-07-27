@@ -133,6 +133,10 @@ type Engine struct {
 	searchProviderMu sync.RWMutex
 	searchProvider   string
 	searchAPIKey     string
+	// searchTimeout is the operator-level HTTP timeout for the built-in
+	// web_search tool (config.yaml search.timeout). Zero = DefaultSearchTimeout.
+	// Guarded by searchProviderMu. See searchtimeout.go.
+	searchTimeout time.Duration
 
 	// mcpClient routes MCP tool calls to configured external MCP servers.
 	// All tools from connected servers are offered to every agent, namespaced
@@ -1074,6 +1078,10 @@ func (e *Engine) buildBuiltins() []BuiltinTool {
 					"type":        "integer",
 					"description": "Maximum number of results (default 5)",
 				},
+				"timeout_s": map[string]any{
+					"type":        "integer",
+					"description": "Seconds to wait for the search provider before giving up. Omit to use the server's search.timeout (default 30). Raise it for a slow provider or a large fan-out; capped at 600.",
+				},
 			},
 			"required": []string{"query"},
 		},
@@ -1588,7 +1596,7 @@ func (e *Engine) tavilyWebSearch(ctx context.Context, args map[string]any) (stri
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: e.searchTimeoutFor(ctx, args)}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("web_search (tavily): request failed: %w", err)
@@ -1650,7 +1658,7 @@ func (e *Engine) serperWebSearch(ctx context.Context, args map[string]any) (stri
 	req.Header.Set("X-API-KEY", key)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: e.searchTimeoutFor(ctx, args)}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("web_search (serper): request failed: %w", err)
@@ -1710,7 +1718,7 @@ func (e *Engine) ollamaWebSearch(ctx context.Context, args map[string]any) (stri
 	req.Header.Set("Authorization", "Bearer "+key)
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: e.searchTimeoutFor(ctx, args)}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("web_search: request failed: %w", err)
@@ -1891,7 +1899,11 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 	// The executor checkpoints each step and can resume after a crash.
 	if def.Workflow != nil {
 		we := NewWorkflowExecutor(*def.Workflow, e, e.checkpoints, e.log)
-		wfResult, wfErr := we.Run(ctx, msg, "")
+		// Collect the business-outcome verdict so an unmet contract can mark the
+		// reply degraded below (P0-4/P0-6).
+		var outcomeReport OutcomeReport
+		wfCtx := WithOutcomeCollector(ctx, &outcomeReport)
+		wfResult, wfErr := we.Run(wfCtx, msg, "")
 		if wfErr != nil {
 			e.sink.Emit(message.Event{
 				Type: "error", AgentID: msg.AgentID, SessionID: msg.SessionID,
@@ -1919,6 +1931,21 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 			Role:      message.RoleAssistant,
 			Parts:     message.Text(replyText),
 			CreatedAt: time.Now().UTC(),
+		}
+		// A run whose business-outcome contract went unmet is NOT a clean run,
+		// however cleanly its nodes executed. Marking it here means the
+		// scheduler's degraded-delivery path labels it rather than presenting an
+		// empty brief as a finished one (P0-6: confidence incorporates
+		// completion contracts, not merely tool errors).
+		if def.Outcome.HasAssertions() && !outcomeReport.Met {
+			if reply.Metadata == nil {
+				reply.Metadata = map[string]string{}
+			}
+			reply.Metadata[message.MetaReasoningDegraded] = "true"
+			reply.Metadata[message.MetaOutcome] = outcomeReport.Outcome
+			if outcomeReport.Summary != "" {
+				reply.Metadata[message.MetaOutcomeSummary] = outcomeReport.Summary
+			}
 		}
 		e.sink.Emit(message.Event{
 			Type: "message.out", AgentID: msg.AgentID, SessionID: msg.SessionID,
@@ -2443,6 +2470,14 @@ func (e *Engine) Handle(ctx context.Context, msg message.Message) (reply message
 		// The model kept calling tools and never produced a plain-text reply.
 		// Force a tool-free synthesis from everything already gathered.
 		finalContent = e.finalSynthesis(ctx, def, msg.AgentID, msg.SessionID, chatMsgs)
+	} else if def.LLM.OutputSchema == nil && reasoning.IsProgressPreamble(finalContent) {
+		// The model ended on a progress note ("I'll start by loading the cookies…")
+		// instead of the actual deliverable — common when it runs out of turns
+		// mid-plan. Force one tool-free synthesis so the user gets the finished
+		// result built from everything already gathered, not an intent statement.
+		if synth := strings.TrimSpace(e.finalSynthesis(ctx, def, msg.AgentID, msg.SessionID, chatMsgs)); synth != "" && !reasoning.IsProgressPreamble(synth) {
+			finalContent = synth
+		}
 	}
 
 	// Safety net: never surface leaked reasoning control JSON (thought/action/

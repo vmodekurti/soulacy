@@ -51,6 +51,16 @@
     {#if shape === 'decision'}<span class="decision-glyph" aria-hidden="true">◆</span>{/if}
     {#if shape === 'peer'}<span class="peer-glyph" title="peer-agent handoff" aria-hidden="true">⇄</span>{/if}
     {#if data.isEntry}<span class="entry-chip">entry</span>{/if}
+    {#if node.for_each}
+      <span
+        class="map-chip"
+        title={node.max_parallel > 1
+          ? `Runs up to ${node.max_parallel} items concurrently and preserves input order`
+          : 'Runs once for every item and preserves input order'}
+      >
+        {node.max_parallel > 1 ? `parallel ×${node.max_parallel}` : 'for each'}
+      </span>
+    {/if}
     {#if runState !== 'idle'}
       <span class="state-dot {runState}" title={runState === 'ok' ? 'verified by the last build' : runState === 'repaired' ? 'repaired during the last build' : 'unresolved problem'} aria-hidden="true"></span>
     {:else if data.readiness && data.readiness !== 'ready'}
@@ -181,6 +191,15 @@
     border: 1px solid var(--node-accent);
     border-radius: 999px;
     padding: 0 6px;
+  }
+  .map-chip {
+    font-size: 9px;
+    color: #b9f7ee;
+    border: 1px solid color-mix(in srgb, #36d9c4 72%, transparent);
+    background: color-mix(in srgb, #36d9c4 14%, transparent);
+    border-radius: 3px;
+    padding: 1px 5px;
+    white-space: nowrap;
   }
   .node-title {
     font-size: 13px;

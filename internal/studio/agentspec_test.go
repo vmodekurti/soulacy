@@ -77,6 +77,40 @@ func TestBuildAgentPromptIncludesChannelSendContract(t *testing.T) {
 	}
 }
 
+func TestBuildAgentPromptIncludesStrategySpecificContracts(t *testing.T) {
+	react := BuildAgentPrompt("research stocks with tools", Catalog{Tools: []string{"web_search"}}, "react", nil)
+	for _, want := range []string{
+		"observe-decide-act cycle",
+		"call exactly one tool",
+		"never retry the same failed tool call with identical arguments",
+	} {
+		if !strings.Contains(react, want) {
+			t.Fatalf("react prompt missing %q:\n%s", want, react)
+		}
+	}
+
+	plan := BuildAgentPrompt("create notebook podcast and poll until ready", Catalog{Tools: []string{"web_search"}}, "plan_execute", nil)
+	for _, want := range []string{
+		"compact numbered plan",
+		"success criteria",
+		"revise the plan at most once",
+	} {
+		if !strings.Contains(plan, want) {
+			t.Fatalf("plan-execute prompt missing %q:\n%s", want, plan)
+		}
+	}
+
+	auto := BuildAgentPrompt("answer weather questions", Catalog{Tools: []string{"web_search"}}, "auto", nil)
+	for _, want := range []string{
+		"native tool-calling ability",
+		"Do not ask the model to emit Thought/Action JSON",
+	} {
+		if !strings.Contains(auto, want) {
+			t.Fatalf("auto prompt missing %q:\n%s", want, auto)
+		}
+	}
+}
+
 // End-to-end grounding through CompileAgent: a near-miss skill the model named is
 // corrected to the installed one, an installed skill the intent clearly references
 // but the model omitted is injected, and a named-but-uninstalled skill surfaces as
@@ -191,7 +225,7 @@ func TestToAgentDefinition_ReActHasNoWorkflow(t *testing.T) {
 	if def.MCPTools == nil || len(*def.MCPTools) != 1 {
 		t.Errorf("mcp tools: %+v", def.MCPTools)
 	}
-	if !strings.Contains(def.SystemPrompt, "reasoning") && !strings.Contains(def.SystemPrompt, "step by step") {
+	if !strings.Contains(def.SystemPrompt, "Reasoning Strategy Contract") || !strings.Contains(def.SystemPrompt, "Call exactly one tool") {
 		t.Errorf("system prompt should carry a loop directive: %q", def.SystemPrompt)
 	}
 }

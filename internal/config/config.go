@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
@@ -1045,6 +1046,41 @@ func EnsureDirs(cfg *Config) error {
 type SearchConfig struct {
 	Provider string `mapstructure:"provider"`
 	APIKey   string `mapstructure:"api_key"`
+	// Timeout bounds how long the built-in web_search tool waits for the
+	// provider. A Go duration ("45s", "2m") or a bare number of seconds
+	// ("45"). Empty = 30s, the historical hardcoded value. Raise it when a
+	// provider is slow or a fan-out runs several searches at once; a flow node
+	// can override it per call via its own timeout, and capped at 10m.
+	//
+	//	search:
+	//	  provider: ollama
+	//	  timeout: 90s
+	Timeout string `mapstructure:"timeout"`
+}
+
+// DefaultSearchTimeoutLabel is the human-readable default shown in CLI prompts
+// and warnings when search.timeout is unset. Kept beside SearchConfig so the
+// wizard copy and the documented default can't drift apart.
+const DefaultSearchTimeoutLabel = "30s"
+
+// ParseSearchTimeout parses a `search.timeout` value: a Go duration ("90s",
+// "2m") or a bare number of seconds ("90"). ok=false for empty, unparseable,
+// or non-positive input, so a caller can warn rather than silently applying a
+// default the operator did not choose. Bounds are applied by the consumer
+// (runtime.ParseSearchTimeout clamps to the engine's supported range).
+func ParseSearchTimeout(raw string) (time.Duration, bool) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return 0, false
+	}
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d, true
+	}
+	// A bare number means seconds — the spelling operators reach for first.
+	if d, err := time.ParseDuration(s + "s"); err == nil && d > 0 {
+		return d, true
+	}
+	return 0, false
 }
 
 // SchemaVersionStatus is what CheckSchemaVersion returns to the boot path.

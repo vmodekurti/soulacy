@@ -39,6 +39,25 @@ func (pipelineFakeLLM) Complete(ctx context.Context, prompt string) (string, err
 }`, nil
 }
 
+type refineOnlyLLM struct {
+	calls int
+}
+
+func (f *refineOnlyLLM) Complete(ctx context.Context, prompt string) (string, error) {
+	f.calls++
+	if strings.Contains(prompt, "refined_intent") {
+		return `{
+  "refined_intent": "Find the best AI news and send it to Telegram every morning.",
+  "summary": "Daily AI digest to Telegram.",
+  "assumptions": [],
+  "questions": [],
+  "recommended_mode": "workflow",
+  "mode_reason": "The wording describes a fixed digest."
+}`, nil
+	}
+	return `this should not be used as architecture JSON`, nil
+}
+
 // TestRunGeneratePipeline_EmitsAllPhases pins the event stream: every phase
 // emits a start + complete (or skip) event, and no phase is silently dropped.
 // The exact contract.OK verdict depends on preflight state; this test only
@@ -94,5 +113,31 @@ func TestRunGeneratePipeline_SyncModeWorksWithoutEmit(t *testing.T) {
 	}
 	if len(res.PhaseLog) < 5 {
 		t.Errorf("expected at least 5 phase-log entries, got %d: %+v", len(res.PhaseLog), res.PhaseLog)
+	}
+}
+
+func TestRunGeneratePipeline_UsesDeterministicPlannerAfterRefine(t *testing.T) {
+	llm := &refineOnlyLLM{}
+	res, err := RunGeneratePipeline(
+		context.Background(),
+		llm,
+		"daily ai digest to telegram",
+		Catalog{Tools: []string{"web_search", "channel.send", "channel.status"}, Channels: []string{"telegram"}},
+		PipelineOptions{},
+	)
+	if err != nil {
+		t.Fatalf("pipeline returned error: %v", err)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("LLM calls=%d, want exactly one refine call", llm.calls)
+	}
+	if res.Compile.Workflow.IsAgent() {
+		t.Fatalf("expected deterministic workflow, got agent: %#v", res.Compile.Workflow)
+	}
+	if res.Compile.Workflow.Strategy == "react" {
+		t.Fatalf("deterministic planner should not emit implicit ReAct")
+	}
+	if strings.Contains(strings.Join(res.Compile.Notes, "\n"), "deterministic") == false {
+		t.Fatalf("expected deterministic planner note, got %#v", res.Compile.Notes)
 	}
 }

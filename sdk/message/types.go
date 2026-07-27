@@ -49,6 +49,30 @@ type Message struct {
 	CreatedAt time.Time         `json:"created_at"`
 }
 
+// Reserved Message.Metadata keys.
+//
+// A reply carrying MetaReasoningDegraded="true" came out of a reasoning run
+// that ended without confidence — a tool errored, or the controller had to
+// recover from a malformed reasoning step. The text is still the model's best
+// available output, but it may be partial, or a progress note rather than a
+// finished deliverable. Consumers that present a reply as a completed result
+// (scheduled channel delivery above all) should mark or withhold it rather
+// than passing it off as a clean run. Absent = the run was confident.
+const (
+	MetaReasoningDegraded = "reasoning_degraded"
+	MetaReasoningSteps    = "reasoning_steps"
+	// MetaOutcome carries the business-outcome class of a run whose agent
+	// declares an outcome contract: complete | partial | empty | failed. Present
+	// only when the contract went unmet, alongside MetaReasoningDegraded — a run
+	// can execute every node without error and still have achieved nothing, and
+	// that distinction is what this records.
+	MetaOutcome = "outcome"
+	// MetaOutcomeSummary explains the unmet contract in the author's own words
+	// ("three sources were added — 0 items"), for display where the full
+	// assertion list would be too much.
+	MetaOutcomeSummary = "outcome_summary"
+)
+
 // Text is a convenience constructor for a plain-text message.
 func Text(text string) []Part {
 	return []Part{{Type: ContentText, Text: text}}

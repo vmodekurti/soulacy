@@ -123,6 +123,9 @@
   let inputDraft = ''
   let outputDraft = ''
   let timeoutDraft = ''
+  let forEachDraft = ''
+  let itemVarDraft = ''
+  let maxParallelDraft = 0
   let toolDraft = ''
   let agentDraft = ''
   let paramsDraft = ''
@@ -215,6 +218,9 @@
     inputDraft = node.input || ''
     outputDraft = node.output || ''
     timeoutDraft = node.timeout || ''
+    forEachDraft = node.for_each || ''
+    itemVarDraft = node.item_var || ''
+    maxParallelDraft = Number(node.max_parallel || 0)
     toolDraft = node.tool || ''
     agentDraft = node.agent || ''
     paramsDraft = (node.params && Object.keys(node.params).length) ? JSON.stringify(node.params, null, 2) : ''
@@ -618,6 +624,32 @@
     <label class="field-label" for="node-output">output variable</label>
     <input id="node-output" type="text" placeholder="e.g. articles"
       bind:value={outputDraft} on:blur={() => onNodeChange(node.id, { output: outputDraft })} />
+
+    <section class="frame">
+      <h3 class="sub">Fan-out</h3>
+      <label class="field-label" for="node-foreach">items (JSON array template)</label>
+      <textarea id="node-foreach" class="node-input" rows="2" spellcheck="false"
+        placeholder={'{{ toJson .articles }}'}
+        bind:value={forEachDraft}
+        on:blur={() => onNodeChange(node.id, { for_each: forEachDraft.trim() })}></textarea>
+      <p class="insp-hint">When set, this block runs once per array item. Results are collected in the original item order.</p>
+
+      <div class="field-row">
+        <div>
+          <label class="field-label" for="node-item-var">item variable</label>
+          <input id="node-item-var" type="text" placeholder="item"
+            bind:value={itemVarDraft}
+            on:blur={() => onNodeChange(node.id, { item_var: itemVarDraft.trim() })} />
+        </div>
+        <div>
+          <label class="field-label" for="node-max-parallel">max parallel</label>
+          <input id="node-max-parallel" type="number" min="0" max="32" step="1"
+            bind:value={maxParallelDraft}
+            on:change={() => onNodeChange(node.id, { max_parallel: Math.max(0, Math.min(32, Number(maxParallelDraft) || 0)) })} />
+        </div>
+      </div>
+      <p class="insp-hint"><code>0</code> runs items sequentially; <code>2–32</code> enables bounded concurrency. Reference the current item as <code>{'{{ .item }}'}</code>, or use your chosen variable name.</p>
+    </section>
 
     <label class="field-label" for="node-onerror">on error</label>
     <select id="node-onerror" value={node.on_error || 'abort'}
@@ -1073,6 +1105,13 @@
     border-radius: 8px; color: var(--text); padding: 7px 9px; resize: vertical;
   }
   .node-input:focus { outline: none; border-color: var(--accent); }
+  .field-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(96px, 0.65fr);
+    gap: 8px;
+  }
+  .field-row > div { min-width: 0; }
+  .field-row input { width: 100%; box-sizing: border-box; }
 
   /* MCP tool: allowed-parameter chips + custom-param adder. */
   .param-schema {

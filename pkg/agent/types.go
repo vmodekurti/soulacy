@@ -45,6 +45,12 @@ type ReasoningConfig struct {
 	MaxSteps int `yaml:"max_steps,omitempty" json:"max_steps,omitempty"`
 	// MaxPlanSteps caps plan decomposition depth for plan_execute (default 6).
 	MaxPlanSteps int `yaml:"max_plan_steps,omitempty" json:"max_plan_steps,omitempty"`
+	// MaxParallelSteps caps how many planned steps plan_execute runs at once
+	// within a dependency level (default 4). Independent steps — three
+	// site-scoped searches, say — otherwise execute one at a time for no
+	// reason. Set to 1 to force the strictly-serial walk, which is the escape
+	// hatch for a custom tool executor that is not concurrency-safe.
+	MaxParallelSteps int `yaml:"max_parallel_steps,omitempty" json:"max_parallel_steps,omitempty"`
 	// StepTimeout is the per-step context deadline (e.g. "30s").
 	StepTimeout string `yaml:"step_timeout,omitempty" json:"step_timeout,omitempty"`
 	// TotalTimeout is the whole-task deadline (e.g. "180s").
@@ -577,6 +583,30 @@ type Definition struct {
 	// of the free-form LLM loop.
 	Workflow *WorkflowSpec `yaml:"workflow,omitempty" json:"workflow,omitempty"`
 
+	// Outcome is the agent's BUSINESS-OUTCOME CONTRACT (P0-4): what a run must
+	// actually achieve, as opposed to merely completing without a tool error.
+	//
+	// Assertions used to be Studio build-time only — they lived in a test run,
+	// judged a draft, and were discarded at save. So an agent that passed every
+	// assertion in Studio was, in production, judged by exactly one thing: did a
+	// node return an error. A workflow that fetched zero articles, generated no
+	// audio, and delivered an empty message was a "successful" run.
+	//
+	// Persisting the contract here lets the runtime re-evaluate it against real
+	// runs, so "delivered the brief" and "returned without crashing" stop being
+	// the same result. Optional: an agent with no contract behaves exactly as
+	// before.
+	Outcome *OutcomeContract `yaml:"outcome,omitempty" json:"outcome,omitempty"`
+
+	// ToolSchemas records the tool contracts this agent was BUILT AGAINST
+	// (P0-3). MCP schemas are discovered live, but nothing recorded which
+	// version a workflow was generated from — so a server renaming an argument
+	// broke the agent at its next scheduled run with an error that looked
+	// identical to "this was always wrong". Comparing this snapshot against
+	// live schemas detects drift, names the affected node, and marks the agent
+	// as needing recertification. Optional and purely additive.
+	ToolSchemas *ToolSchemaSnapshot `yaml:"tool_schemas,omitempty" json:"tool_schemas,omitempty"`
+
 	// StudioIntent is the natural-language prompt that generated this agent's
 	// workflow in Studio. Persisted so the Studio editor can show the original
 	// prompt and let the user edit it and re-generate. Studio-only metadata; the
@@ -759,6 +789,25 @@ func (d *Definition) Clone() *Definition {
 		cp.NotifyOnFailure = &nof
 	}
 
+	// Outcome contract — deep copy so a clone's assertions can't be mutated
+	// through the original (the loader hands clones to concurrent runs).
+	if d.Outcome != nil {
+		oc := *d.Outcome
+		oc.Assertions = append([]OutcomeAssertion(nil), d.Outcome.Assertions...)
+		cp.Outcome = &oc
+	}
+
+	// Tool-schema snapshot — deep copy, including each record's node list.
+	if d.ToolSchemas != nil {
+		ts := *d.ToolSchemas
+		ts.Tools = make([]ToolSchemaRecord, len(d.ToolSchemas.Tools))
+		for i, r := range d.ToolSchemas.Tools {
+			r.Nodes = append([]string(nil), r.Nodes...)
+			ts.Tools[i] = r
+		}
+		cp.ToolSchemas = &ts
+	}
+
 	// Workflow — shallow pointer copy. Steps/Nodes/Edges elements are
 	// read-only after unmarshal so element-shallow copies are safe.
 	if d.Workflow != nil {
@@ -811,14 +860,19 @@ func cloneMapAny(m map[string]any) map[string]any {
 // by the gateway and scheduler so per-agent caps apply consistently across
 // manual triggers, HTTP chat, and cron-driven runs.
 func (d *Definition) ResolvedRunTimeout(fallback time.Duration) time.Duration {
+	resolved := fallback
 	if d == nil || d.RunTimeout == "" {
-		return fallback
+		resolved = fallback
+	} else if t, err := time.ParseDuration(d.RunTimeout); err == nil && t > 0 {
+		resolved = t
 	}
-	t, err := time.ParseDuration(d.RunTimeout)
-	if err != nil || t <= 0 {
-		return fallback
+
+	if d != nil && d.Reasoning.TotalTimeout != "" {
+		if rt, err := time.ParseDuration(d.Reasoning.TotalTimeout); err == nil && rt > resolved {
+			return rt
+		}
 	}
-	return t
+	return resolved
 }
 
 // HasCapability reports whether the agent has been granted the named

@@ -2,6 +2,7 @@ package studio
 
 import (
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -176,18 +177,6 @@ func writePatternGrounding(sb *strings.Builder, intent string, cat Catalog) {
 	sb.WriteString("\n")
 }
 
-// itoa is a tiny local int→string to avoid pulling strconv just for step
-// numbers in prompt text.
 func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	return string(b[i:])
+	return strconv.Itoa(n)
 }

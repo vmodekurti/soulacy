@@ -6,16 +6,15 @@ import (
 )
 
 func TestRefinePrompt_StrongCuesOverrideModelWorkflow(t *testing.T) {
-	// Model insists "workflow" but the task is a NotebookLM audio job →
-	// plan_execute. ReAct is now an explicit/manual strategy, not Studio's
-	// automatic escape hatch.
+	// Model says "workflow" and the task matches Soulacy's deterministic
+	// NotebookLM podcast macro-workflow, so Studio should keep it as Workflow.
 	out := `{"refined_intent":"Daily at 7am, authenticate with NotebookLM, create a notebook, add each source, generate the audio overview and poll status until ready, then deliver.","summary":"daily audio briefing","recommended_mode":"workflow","mode_reason":"fixed daily sequence"}`
 	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "daily ai audio news briefing with notebooklm", Catalog{})
 	if err != nil {
 		t.Fatalf("RefinePrompt: %v", err)
 	}
-	if r.RecommendedMode != "plan_execute" {
-		t.Errorf("strong async/notebooklm cues must override to plan_execute, got %q", r.RecommendedMode)
+	if r.RecommendedMode != "workflow" {
+		t.Errorf("NotebookLM podcast cues should route to deterministic workflow, got %q", r.RecommendedMode)
 	}
 }
 

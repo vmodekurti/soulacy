@@ -24,8 +24,14 @@ import (
 )
 
 // DryRunVerifier executes a draft via the mock TestRun. It is the safe default
-// verifier (no side effects). The zero value is ready to use.
+// verifier (no side effects). The zero value is ready to use — and it is what
+// VerifierFor hands back for the zero SideEffectPolicy, so "the caller forgot to
+// choose" and "the caller chose mocked" are the same thing.
 type DryRunVerifier struct{}
+
+// RealSideEffects implements SideEffecting: a mock walk touches nothing, so the
+// build loop may always run it, whatever the policy.
+func (DryRunVerifier) RealSideEffects() bool { return false }
 
 // Verify compiles + mock-runs the draft and evaluates the case's assertions.
 func (DryRunVerifier) Verify(ctx context.Context, draft Draft, tc TestCase) VerifyOutcome {
@@ -69,9 +75,19 @@ type RealRunner struct {
 // RealRunVerifier executes a workflow draft for real via injected engine
 // primitives. It walks the same compiled flow production uses, so a failure here
 // is a failure the user would have hit at run time.
+//
+// Because it is genuinely dangerous — a build attempt can post to a channel,
+// write to a system of record, spend money, and the loop may do so once per
+// attempt on a draft not yet known to be correct — it must be selected through
+// VerifierFor(SideEffectsReal, …) / BuildOptions.SideEffects. Handing it to the
+// build loop without that explicit opt-in gets it downgraded to DryRunVerifier.
 type RealRunVerifier struct {
 	Runner RealRunner
 }
+
+// RealSideEffects implements SideEffecting, marking this verifier as one the
+// build loop may only run under an explicit SideEffectsReal policy.
+func (RealRunVerifier) RealSideEffects() bool { return true }
 
 // Verify compiles the draft's flow and runs it, dispatching each node to the
 // real engine. A reasoning agent (no flow) cannot be walked this way; it is

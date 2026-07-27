@@ -58,7 +58,7 @@ func TestSendScheduledOutputRoutesToConfiguredAdapter(t *testing.T) {
 	}
 	source := message.Message{SessionID: "sched-daily-1"}
 
-	s.sendScheduledOutput(context.Background(), def, source, "brief text", "cron")
+	s.sendScheduledOutput(context.Background(), def, source, "brief text", "cron", nil)
 
 	if len(adapter.sent) != 1 {
 		t.Fatalf("sent count = %d, want 1", len(adapter.sent))
@@ -131,7 +131,7 @@ func TestSendScheduledOutputNoopsWhenIncomplete(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			adapter.sent = nil
-			s.sendScheduledOutput(context.Background(), tc.def, message.Message{}, tc.replyText, "cron")
+			s.sendScheduledOutput(context.Background(), tc.def, message.Message{}, tc.replyText, "cron", nil)
 			if len(adapter.sent) != 0 {
 				t.Fatalf("sent count = %d, want 0", len(adapter.sent))
 			}
@@ -159,7 +159,7 @@ func TestSendScheduledOutputUsesDefaultChannelDestination(t *testing.T) {
 		Channels: []string{"telegram"},
 	}
 
-	s.sendScheduledOutput(context.Background(), def, message.Message{SessionID: "s1"}, "deal found", "cron")
+	s.sendScheduledOutput(context.Background(), def, message.Message{SessionID: "s1"}, "deal found", "cron", nil)
 
 	if len(adapter.sent) != 1 {
 		t.Fatalf("sent count = %d, want 1", len(adapter.sent))

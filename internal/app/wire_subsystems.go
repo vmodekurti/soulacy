@@ -943,6 +943,18 @@ func (a *App) wireEngine(d engineDeps) *runtime.Engine {
 		cfg.Runtime.AllowSystemAgents, d.vectorStore, d.pluginProvider,
 	)
 	engine.SetSearchConfig(d.searchProvider, d.searchAPIKey)
+	// web_search HTTP ceiling. Unset (or unparseable) keeps the historical 30s.
+	// An unparseable value warns rather than silently applying the default, so
+	// an operator who wrote `timeout: 90 seconds` learns why it had no effect.
+	if raw := strings.TrimSpace(cfg.Search.Timeout); raw != "" {
+		if d, ok := runtime.ParseSearchTimeout(raw); ok {
+			engine.SetSearchTimeout(d)
+			log.Info("web_search timeout configured", zap.Duration("timeout", d))
+		} else {
+			log.Warn("search.timeout is not a valid duration — using the default",
+				zap.String("value", raw), zap.Duration("default", runtime.DefaultSearchTimeout))
+		}
+	}
 	// F-Bridge — install the workspace-scoped default intent-gate mode. The
 	// runtime resolver in Engine.evaluateIntent prefers per-agent
 	// security.intent_gate, falling back to this workspace default when the
