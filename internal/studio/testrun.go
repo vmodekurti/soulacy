@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	reasoning "github.com/soulacy/soulacy/internal/reasoning"
 	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
@@ -65,6 +66,13 @@ type AssertionResult struct {
 	Value  string `json:"value"`
 	Pass   bool   `json:"pass"`
 	Detail string `json:"detail"`
+	// Outcome classifies WHY this assertion landed the way it did (P0-4):
+	// complete | partial | empty | failed. Pass is the boolean the old callers
+	// need; Outcome carries the distinction they couldn't express — above all
+	// "ran cleanly and produced nothing", which is empty, not success. Left
+	// blank by the legacy contains/equals/exists ops, where it is derived from
+	// Pass.
+	Outcome Outcome `json:"outcome,omitempty"`
 }
 
 // TestOptions carries the editable extras a caller may attach to a test run.
@@ -82,6 +90,26 @@ type TestOptions struct {
 	// returns a result with a clear note that live execution of an unsaved
 	// draft is unsupported and runs nothing real.
 	Mode string
+
+	// ── ST-10 inputs ─────────────────────────────────────────────────────────
+
+	// Variables are named values seeded into the template namespace alongside
+	// "trigger", so a flow can be exercised against a specific topic/date/id
+	// without editing the draft to hard-code one.
+	//
+	// They cannot overwrite "trigger": a variable that silently replaced the
+	// trigger would make a test that passes prove nothing about the real run.
+	Variables map[string]string
+	// Environment is exposed to templates as ".env". Test-run scope only — it is
+	// never persisted onto the saved agent, so a sandbox value cannot leak into
+	// production behaviour.
+	Environment map[string]string
+	// StartNode begins execution at a specific node instead of the flow's entry,
+	// so a long pipeline can be iterated from the step that is actually broken.
+	// Steps before it never run, so anything they would have produced must be
+	// supplied via Mocks or Variables — the caller is told this in a warning
+	// rather than being left to infer it from empty output.
+	StartNode string
 }
 
 // TestResult is the response of a Studio test run: the per-node trace, the
@@ -127,7 +155,6 @@ func (t triggerInput) String() string {
 	return ""
 }
 
-
 func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) (TestResult, error) {
 	if opts == nil {
 		opts = &TestOptions{}
@@ -170,13 +197,20 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 		}
 	}
 
+	// traceMu guards the trace and the mocked-node set: the runner and the Observe
+	// hook are both invoked from branch goroutines when the draft contains a
+	// kind=parallel node (or a parallel for_each), so an unguarded append would
+	// lose entries or trip the race detector.
+	var traceMu sync.Mutex
 	var trace []TraceEntry
 	mockedByNode := map[string]bool{}
 	run := func(_ context.Context, node sdkr.FlowNode, renderedInput string) (json.RawMessage, error) {
 		out := mockNodeOutput(node, renderedInput)
 		if raw, ok := opts.Mocks[node.ID]; ok && len(raw) > 0 {
 			out = append(json.RawMessage(nil), raw...) // copy to decouple from caller's map
+			traceMu.Lock()
 			mockedByNode[node.ID] = true
+			traceMu.Unlock()
 		}
 		return out, nil
 	}
@@ -186,6 +220,8 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 	// trace shape across dry and production.
 	hooks := reasoning.FlowHooks{
 		Observe: func(rec reasoning.FlowNodeRun) {
+			traceMu.Lock()
+			defer traceMu.Unlock()
 			trace = append(trace, TraceEntry{
 				NodeID:     rec.NodeID,
 				Kind:       rec.Kind,
@@ -208,7 +244,50 @@ func TestRun(ctx context.Context, draft Draft, input string, opts *TestOptions) 
 			"input":   input,
 		},
 	}
-	result, err := reasoning.RunFlow(ctx, g, vars, run, hooks)
+	// Seed test variables. "trigger" is reserved: a variable that quietly
+	// replaced it would make a passing test prove nothing about the real run,
+	// so the collision is reported rather than resolved.
+	for k, v := range opts.Variables {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		if key == "trigger" || key == "env" {
+			warnings = append(warnings, fmt.Sprintf("variable %q is reserved and was ignored", key))
+			continue
+		}
+		vars[key] = v
+	}
+	if len(opts.Environment) > 0 {
+		env := make(map[string]any, len(opts.Environment))
+		for k, v := range opts.Environment {
+			if key := strings.TrimSpace(k); key != "" {
+				env[key] = v
+			}
+		}
+		vars["env"] = env
+	}
+
+	entry := g.Entry()
+	if want := strings.TrimSpace(opts.StartNode); want != "" {
+		found := false
+		for _, n := range draft.Flow.Nodes {
+			if n.ID == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			// A stale start node must NOT silently fall back to the entry: the
+			// user would be told the run passed while it tested something else.
+			return TestResult{}, fmt.Errorf("studio: test run: start node %q is not in this workflow", want)
+		}
+		entry = want
+		warnings = append(warnings, fmt.Sprintf(
+			"started at %q — earlier steps did not run, so any value they produce must come from a mock or variable", want))
+	}
+
+	result, err := reasoning.RunFlowFrom(ctx, g, entry, vars, run, hooks)
 	if err != nil {
 		return TestResult{}, fmt.Errorf("studio: test run: %w", err)
 	}
@@ -276,7 +355,16 @@ func evalAssertion(a Assertion, trace []TraceEntry, result json.RawMessage) Asse
 
 	if !found {
 		res.Pass = false
+		res.Outcome = OutcomeFailed
 		res.Detail = fmt.Sprintf("target %q did not execute (no trace entry)", a.Target)
+		return res
+	}
+
+	// P0-4 structural operators (counts, fields, delivery, destination,
+	// artifacts) resolve against DECODED JSON rather than a stringified blob,
+	// so "3 items" is a number instead of the accident of a substring.
+	if pass, outcome, detail, handled := evalStructuralAssertion(a, raw); handled {
+		res.Pass, res.Outcome, res.Detail = pass, outcome, detail
 		return res
 	}
 
@@ -303,13 +391,34 @@ func evalAssertion(a Assertion, trace []TraceEntry, result json.RawMessage) Asse
 		if res.Pass {
 			res.Detail = fmt.Sprintf("target %q executed with non-empty output", a.Target)
 		} else {
+			// An `exists` failure is specifically the empty case, which is what
+			// makes it distinguishable from a wrong-value failure.
+			res.Outcome = OutcomeEmpty
 			res.Detail = fmt.Sprintf("target %q produced no output", a.Target)
 		}
 	default:
 		res.Pass = false
-		res.Detail = fmt.Sprintf("unknown assertion op %q (want contains|equals|exists)", a.Op)
+		res.Outcome = OutcomeFailed
+		res.Detail = fmt.Sprintf("unknown assertion op %q (want %s)", a.Op, strings.Join(KnownAssertionOps(), "|"))
+	}
+	if res.Outcome == "" {
+		if res.Pass {
+			res.Outcome = OutcomeComplete
+		} else {
+			res.Outcome = OutcomeFailed
+		}
 	}
 	return res
+}
+
+// KnownAssertionOps lists every supported operator, for error messages and for
+// the Studio assertion editor's dropdown.
+func KnownAssertionOps() []string {
+	return []string{
+		OpExists, OpNotEmpty, OpContains, OpEquals,
+		OpCountGTE, OpCountEQ, OpHasField, OpFieldEquals,
+		OpDelivered, OpDestination, OpArtifact,
+	}
 }
 
 // stringifyOutput renders a node/flow output deterministically for assertion

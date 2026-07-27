@@ -205,7 +205,8 @@ func TestWorkflow_StudioAgentCompanionTools(t *testing.T) {
 			t.Fatalf("missing tool %q in builtins %v", want, *def.Builtins)
 		}
 	}
-	if !strings.Contains(def.SystemPrompt, "never assume a step succeeded") {
+	if !strings.Contains(def.SystemPrompt, "Reasoning Strategy Contract") ||
+		!strings.Contains(def.SystemPrompt, "Do not retry the same failed tool call with identical arguments") {
 		t.Fatalf("reasoning guardrail missing from system prompt: %q", def.SystemPrompt)
 	}
 }

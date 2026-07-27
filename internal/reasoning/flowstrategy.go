@@ -382,3 +382,19 @@ func renderTemplate(tmplStr string, vars map[string]any) (string, error) {
 	}
 	return buf.String(), nil
 }
+
+// renderNodeInputTemplate is strict because a missing value in tool arguments
+// must not silently turn into JSON null. Branch predicates intentionally keep
+// renderTemplate's forgiving missingkey=zero behavior: an absent optional value
+// there simply means the branch is not taken.
+func renderNodeInputTemplate(tmplStr string, vars map[string]any) (string, error) {
+	tmpl, err := template.New("").Funcs(flowTemplateFuncs).Option("missingkey=error").Parse(tmplStr)
+	if err != nil {
+		return "", fmt.Errorf("parse template: %w", err)
+	}
+	var buf bytes.Buffer
+	if err := tmpl.Execute(&buf, vars); err != nil {
+		return "", fmt.Errorf("execute template: %w", err)
+	}
+	return buf.String(), nil
+}

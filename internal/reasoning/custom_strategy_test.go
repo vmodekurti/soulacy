@@ -7,6 +7,7 @@ package reasoning_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/soulacy/soulacy/internal/reasoning"
@@ -83,17 +84,41 @@ func TestCustomStrategyNameFromDefinition(t *testing.T) {
 	}
 }
 
-// Unknown strategy names fall back to ReAct — degraded output beats no
-// output, and a typo'd SOUL.yaml never bricks an agent.
-func TestUnknownStrategyFallsBackToReAct(t *testing.T) {
+// An unknown strategy name is a CONFIGURATION ERROR, not a runtime condition to
+// paper over (P0-6). It used to substitute ReAct silently, which meant an
+// operator who wrote `strategy: plan-execute` (hyphen) got ReAct forever while
+// the banner still named their intended strategy.
+func TestUnknownStrategyIsAConfigurationError(t *testing.T) {
 	llm := &stubLLM{doneOnStep: 1, reflectOut: "react answer"}
 	loop := reasoning.New(reasoning.LoopConfig{Strategy: "no_such_strategy"}, llm, &stubExecutor{})
 	res := loop.Run(context.Background(), "a", "simple question")
-	if res.Output == "" {
-		t.Fatal("fallback must still produce output")
+
+	// Nothing may execute — the misconfiguration is knowable before any work.
+	if llm.thinkCalls != 0 {
+		t.Errorf("an unregistered strategy must not silently run ReAct (Think called %d times)", llm.thinkCalls)
 	}
-	if llm.thinkCalls == 0 {
-		t.Fatal("fallback should have run the ReAct loop (Think not called)")
+	if res.Confident {
+		t.Error("a configuration error must not report a confident run")
+	}
+	// The message has to be actionable: name the bad value AND what is valid.
+	for _, want := range []string{"configuration error", "no_such_strategy", "react", "plan_execute"} {
+		if !strings.Contains(res.Output, want) {
+			t.Errorf("output should mention %q: %q", want, res.Output)
+		}
+	}
+	// It must be visible as a step too, so the trace shows why nothing ran.
+	if len(res.Steps) == 0 || res.Steps[0].Obs.Source != "controller" {
+		t.Errorf("the config error should appear as a controller step: %+v", res.Steps)
+	}
+}
+
+// An EMPTY strategy is not an error: it means "auto", resolved by detectStrategy.
+func TestEmptyStrategyStillResolves(t *testing.T) {
+	llm := &stubLLM{doneOnStep: 1, reflectOut: "answer"}
+	loop := reasoning.New(reasoning.LoopConfig{Strategy: ""}, llm, &stubExecutor{})
+	res := loop.Run(context.Background(), "a", "simple question")
+	if strings.Contains(res.Output, "configuration error") {
+		t.Fatalf("an empty strategy must resolve via auto-detection, not error: %q", res.Output)
 	}
 }
 

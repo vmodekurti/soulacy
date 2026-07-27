@@ -70,3 +70,55 @@ describe('explainPythonError', () => {
     expect(explainPythonError('').summary).toMatch(/without an error/)
   })
 })
+
+// ── Platform (engine) errors ────────────────────────────────────────────────
+// These used to fall through to "Check the code around the reported line",
+// which is actively wrong for a consent refusal: the code is fine, it just
+// needs approval.
+describe('explainPythonError — platform errors', () => {
+  const CONSENT = 'engine: workflow: flow: node "curate_source_pack": consent: node "curate_source_pack" runs beyond guardrails ([network dynamic]) but has no consent grant'
+
+  it('explains a consent refusal in plain language and offers a grant action', () => {
+    const r = explainPythonError(CONSENT)
+    expect(r.summary).toMatch(/curate_source_pack/)
+    expect(r.summary).toMatch(/network calls/)
+    expect(r.summary).toMatch(/dynamic code/)
+    // It must NOT imply the code is broken.
+    expect(r.summary).toMatch(/Nothing is wrong with the code/)
+    expect(r.action).toEqual({ kind: 'consent', nodeId: 'curate_source_pack' })
+  })
+
+  it('never returns the useless code-line advice for a consent error', () => {
+    expect(explainPythonError(CONSENT).fix).not.toMatch(/around the reported line/)
+  })
+
+  it('routes a stale consent stamp to the grant dialog too', () => {
+    const r = explainPythonError('consent: node "parse" code changed since it was consented — re-consent required')
+    expect(r.action).toEqual({ kind: 'consent', nodeId: 'parse' })
+  })
+
+  it('explains a web_search timeout as a provider problem and points at the timeout', () => {
+    const r = explainPythonError('flow: node "search_article_sources": item 4: web_search: request failed: Post "https://ollama.com/api/web_search": context deadline exceeded (Client.Timeout exceeded while awaiting headers)')
+    expect(r.summary).toMatch(/didn’t answer in time/)
+    expect(r.fix).toMatch(/timeout_s|search\.timeout/)
+    expect(r.action).toEqual({ kind: 'timeout', nodeId: 'search_article_sources' })
+  })
+
+  it('does not offer a Studio action for the server-side system ceiling', () => {
+    const r = explainPythonError("flow: node \"x\": shell_exec requires the 'system' capability")
+    expect(r.summary).toMatch(/host machine/)
+    expect(r.action).toBeUndefined()
+  })
+
+  it('routes missing tools, bad credentials and channel failures to the right place', () => {
+    expect(explainPythonError('flow: node "x": no such tool: mcp__foo__bar').action).toEqual({ kind: 'tools' })
+    expect(explainPythonError('web_search: no Ollama API key. Create one at https://ollama.com/settings/keys').action).toEqual({ kind: 'providers' })
+    expect(explainPythonError('channel.send: send failed through channel "telegram": chat not found').action).toEqual({ kind: 'channels' })
+  })
+
+  it('still handles Python tracebacks, with no action', () => {
+    const r = explainPythonError('KeyError: "price"')
+    expect(r.summary).toMatch(/price/)
+    expect(r.action).toBeUndefined()
+  })
+})

@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -42,6 +43,56 @@ func TestStudioCompile_RoutesReasoningTaskToAgent(t *testing.T) {
 	}
 	if wf["strategy"] != "plan_execute" {
 		t.Errorf("expected /compile to return a plan_execute agent, got strategy=%v", wf["strategy"])
+	}
+}
+
+// Explicit Workflow mode is still protected for curated macro-workflow shapes:
+// NotebookLM podcast generation should not fall through to LLM-authored graph
+// JSON, which previously produced a useless one-node web_search workflow.
+func TestStudioCompile_ForceWorkflowUsesDeterministicPodcastTemplate(t *testing.T) {
+	s, fake := studioFake(t)
+	fake.content = `not json`
+
+	body := `{
+	  "intent":"Every weekday at 7:00am, build an AI articles podcast as a fixed workflow. Sources: hbr.org, technologyreview.com, gartner.com. Deliver on telegram.",
+	  "force_workflow":true,
+	  "catalog":{
+	    "tools":["web_search","channel.send"],
+	    "channels":["telegram"],
+	    "mcp":[{"server":"notebooklm","tools":[
+	      {"name":"mcp__notebooklm__notebook_create","description":"Create notebook","params":"title*:string"},
+	      {"name":"mcp__notebooklm__source_add","description":"Add source","params":"notebook_id*:string,source_type*:string,text:string,url:string,wait:boolean"},
+	      {"name":"mcp__notebooklm__studio_create","description":"Create audio","params":"notebook_id*:string,artifact_type*:string,confirm:boolean"},
+	      {"name":"mcp__notebooklm__studio_status","description":"Check status","params":"notebook_id*:string"}
+	    ]}]
+	  }
+	}`
+	status, out := gatewayJSON(t, s, http.MethodPost, "/api/v1/studio/compile", "k", body)
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%v", status, out)
+	}
+	if got := fake.lastPrompt(); got != "" {
+		t.Fatalf("deterministic workflow should not call the LLM compiler, got prompt %.120q", got)
+	}
+	wf, _ := out["workflow"].(map[string]any)
+	if wf == nil {
+		t.Fatalf("no workflow in response: %v", out)
+	}
+	flow, _ := wf["flow"].(map[string]any)
+	nodes, _ := flow["nodes"].([]any)
+	if len(nodes) < 6 {
+		t.Fatalf("expected NotebookLM macro-flow, got %d nodes: %v", len(nodes), out)
+	}
+	raw, _ := json.Marshal(out)
+	for _, want := range []string{"search_article_sources", "create_notebook", "add_article_sources", "generate_audio", "poll_audio_status"} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("compiled workflow missing %s:\n%s", want, string(raw))
+		}
+	}
+	if !strings.Contains(string(raw), `"max_parallel":3`) ||
+		!strings.Contains(string(raw), `"item_var":"source_domain"`) ||
+		!strings.Contains(string(raw), `"item_var":"article"`) {
+		t.Fatalf("compiled workflow missing mapped search/source contracts:\n%s", string(raw))
 	}
 }
 

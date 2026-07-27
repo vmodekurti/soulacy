@@ -45,6 +45,25 @@ func TestAssessContract_FlagsOversizedMacroWorkflow(t *testing.T) {
 	}
 }
 
+func TestAssessContract_WarnsForKnownDeterministicMacroWorkflow(t *testing.T) {
+	cat := notebookPodcastCatalog()
+	res, ok := CompileDeterministicWorkflow(`Every weekday at 7:00am, build an AI articles podcast from hbr.org, technologyreview.com, and gartner.com, then send it to Telegram.`, cat, nil)
+	if !ok {
+		t.Fatal("deterministic podcast workflow did not compile")
+	}
+	r := AssessContract(res.Workflow, cat, PreflightInput{
+		Catalog:            cat,
+		ConnectedMCP:       map[string]bool{"notebooklm": true},
+		ChannelsConfigured: map[string]bool{"telegram": true},
+	})
+	if hasContractCheck(r, "architecture.size", "block") {
+		t.Fatalf("known deterministic macro-workflow should not be hard-blocked for size: %+v", r.Checks)
+	}
+	if !hasContractCheck(r, "architecture.size", "warn") {
+		t.Fatalf("expected architecture.size warning, got %+v", r.Checks)
+	}
+}
+
 func TestAssessContract_WarnsOnFreeformHandoffToStructuredTool(t *testing.T) {
 	d := Draft{Trigger: Trigger{Type: "manual"}, Flow: Flow{
 		Nodes: []sdkr.FlowNode{

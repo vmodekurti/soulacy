@@ -77,6 +77,15 @@ type Scheduler struct {
 	// and auto-disable decisions so scheduled work is visible in Activity and
 	// never silently vanishes. Wired to the gateway EventHub.
 	sink EventSink
+
+	// gateMu guards gate and blocks. gate, when set, is consulted before every
+	// fire and can refuse to run an agent that is not certified for scheduled
+	// execution (ST-16); blocks retains the most recent refusal per agent so the
+	// GUI can explain why a schedule didn't fire. A nil gate preserves the
+	// ungated behaviour exactly — see readiness.go.
+	gateMu sync.RWMutex
+	gate   ReadinessGate
+	blocks map[string]ScheduleBlock
 }
 
 // EventSink is the minimal event surface the scheduler needs to record delivery
@@ -142,6 +151,7 @@ func New(engine *runtime.Engine, loader *runtime.Loader, log *zap.Logger, appCtx
 		failCounts:           make(map[string]int),
 		defaultOutputs:       make(map[string]agent.ScheduleOutput),
 		lastBackfills:        make(map[string]MissedBackfill),
+		blocks:               make(map[string]ScheduleBlock),
 		consecutiveFailLimit: 10, // default; override with SetConsecutiveFailLimit
 	}
 }
@@ -426,6 +436,15 @@ func (s *Scheduler) fire(agentID, triggerType string) {
 
 // fire synthesises a trigger message and dispatches it to the engine.
 func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
+	// Readiness gate (ST-16). Checked FIRST — before the run lock, before the
+	// definition lookup, before any provider is dialled — because an agent that
+	// must not run must not consume anything either. A nil gate is a no-op, so
+	// non-Studio agents behave exactly as before. Re-checked on every tick, so
+	// fixing the blocker unblocks the schedule without a restart.
+	if s.blockedByReadiness(agentID, triggerType) {
+		return
+	}
+
 	// Prevent overlapping runs: if a manual or previous scheduled run is still
 	// executing, skip this fire rather than running the agent twice concurrently.
 	if !s.TryStartRun(agentID) {
@@ -510,7 +529,7 @@ func (s *Scheduler) fireAt(agentID, triggerType string, scheduledAt time.Time) {
 			break
 		}
 	}
-	s.sendScheduledOutput(ctx, def, msg, replyText, triggerType)
+	s.sendScheduledOutput(ctx, def, msg, replyText, triggerType, reply.Metadata)
 	s.log.Info("scheduled agent completed",
 		zap.String("agent", agentID),
 		zap.String("trigger", triggerType),
@@ -806,6 +825,62 @@ type deliveryOutcome struct {
 	to        string
 	reason    string
 	detail    string
+	// degraded records that the reasoning run behind this reply ended without
+	// confidence (see message.MetaReasoningDegraded). Reported on the
+	// schedule.output event so Activity can distinguish "delivered a result"
+	// from "delivered whatever the run had left".
+	degraded bool
+}
+
+// degradedNotice is prepended to a scheduled reply whose run ended degraded.
+// Scheduled output is read out of context — hours later, on a phone, with no
+// trace in view — so an unmarked degraded reply reads exactly like a finished
+// deliverable. Marking beats withholding: the partial text is usually still
+// useful, and silently dropping a scheduled result is its own failure mode.
+const degradedNotice = "⚠️ This run did not complete cleanly — a tool failed or the reasoning loop had to recover, so the result below may be partial or may be the agent's working notes rather than a finished answer."
+
+// MarkDegradedReply prepends the degraded notice to replyText when the reply's
+// metadata says its reasoning run ended without confidence. Returns replyText
+// unchanged for confident runs (and for replies carrying no such metadata, so
+// non-reasoning agents are untouched).
+func MarkDegradedReply(replyText string, meta map[string]string) (string, bool) {
+	if meta == nil || meta[message.MetaReasoningDegraded] != "true" {
+		return replyText, false
+	}
+	if strings.TrimSpace(replyText) == "" {
+		return replyText, true
+	}
+	// A run that failed its BUSINESS-OUTCOME contract gets a specific notice
+	// naming what went unmet, rather than the generic "didn't complete cleanly".
+	// The distinction matters: every node may have executed fine, so a message
+	// about tool failures would send the reader looking in the wrong place.
+	if outcome := strings.TrimSpace(meta[message.MetaOutcome]); outcome != "" {
+		notice := outcomeNotice(outcome)
+		if summary := strings.TrimSpace(meta[message.MetaOutcomeSummary]); summary != "" {
+			notice += " " + summary + "."
+		}
+		return notice + "\n\n" + replyText, true
+	}
+	notice := degradedNotice
+	if steps := strings.TrimSpace(meta[message.MetaReasoningSteps]); steps != "" {
+		notice = strings.TrimSuffix(notice, ".") + " (" + steps + " step(s) recorded)."
+	}
+	return notice + "\n\n" + replyText, true
+}
+
+// outcomeNotice renders the lead line for a run whose outcome contract went
+// unmet, phrased for whoever reads the message on their phone hours later.
+func outcomeNotice(outcome string) string {
+	switch outcome {
+	case "empty":
+		return "⚠️ This run completed without errors but produced nothing:"
+	case "partial":
+		return "⚠️ This run only partly achieved what it was set up to do:"
+	case "failed":
+		return "⚠️ This run did not achieve what it was set up to do:"
+	default:
+		return "⚠️ This run did not meet its expected outcome:"
+	}
 }
 
 // DeliverScheduledOutput publicly runs the same delivery + reporting path a cron
@@ -813,7 +888,15 @@ type deliveryOutcome struct {
 // channel too — not just in the GUI. It is a safe no-op (with an "undelivered"
 // event) for agents that have no resolvable output target.
 func (s *Scheduler) DeliverScheduledOutput(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string) {
-	s.sendScheduledOutput(ctx, def, source, replyText, triggerType)
+	s.DeliverScheduledReply(ctx, def, source, replyText, triggerType, nil)
+}
+
+// DeliverScheduledReply is DeliverScheduledOutput plus the reply's metadata, so
+// a degraded reasoning run is marked as such before it reaches a channel.
+// replyMeta is the reply Message's Metadata (nil is fine — treated as
+// confident, preserving the older call's behaviour exactly).
+func (s *Scheduler) DeliverScheduledReply(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string, replyMeta map[string]string) {
+	s.sendScheduledOutput(ctx, def, source, replyText, triggerType, replyMeta)
 }
 
 // HasScheduledOutputTarget reports whether the agent has a delivery target the
@@ -824,11 +907,13 @@ func (s *Scheduler) HasScheduledOutputTarget(def *agent.Definition) bool {
 	return ok
 }
 
-func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string) {
+func (s *Scheduler) sendScheduledOutput(ctx context.Context, def *agent.Definition, source message.Message, replyText, triggerType string, replyMeta map[string]string) {
 	if def == nil || strings.TrimSpace(replyText) == "" {
 		return
 	}
+	replyText, degraded := MarkDegradedReply(replyText, replyMeta)
 	outcome := s.deliverScheduled(ctx, def, source, replyText, triggerType)
+	outcome.degraded = degraded
 	s.reportDelivery(def, source, replyText, triggerType, outcome)
 }
 
@@ -986,6 +1071,7 @@ func (s *Scheduler) reportDelivery(def *agent.Definition, source message.Message
 			"detail":        o.detail,
 			"trigger":       triggerType,
 			"reply_preview": preview,
+			"degraded":      o.degraded,
 		},
 	})
 }
@@ -1152,6 +1238,7 @@ func RenderScheduledOutput(tpl string, def *agent.Definition, replyText, trigger
 
 // Entries returns a snapshot of all active cron schedules.
 func (s *Scheduler) Entries() []ScheduleEntry {
+	blocked := s.BlocksSnapshot()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var entries []ScheduleEntry
@@ -1161,6 +1248,13 @@ func (s *Scheduler) Entries() []ScheduleEntry {
 			AgentID: agentID,
 			Next:    e.Next,
 			Prev:    e.Prev,
+		}
+		// A schedule with a future Next time reads as healthy; without this the
+		// GUI would show "next run 03:00" for an agent the gate refuses to fire.
+		if b, ok := blocked[agentID]; ok {
+			se.Blocked = true
+			se.BlockedReason = b.Summary
+			se.BlockedRequirements = requirementIDs(b.Failed)
 		}
 		// Surface missed-run catch-up settings (Story 12) so the Schedule
 		// GUI can explain restart behaviour per agent.
@@ -1196,4 +1290,12 @@ type ScheduleEntry struct {
 	// which agents recover missed fires after a restart.
 	CatchUp       bool   `json:"catch_up,omitempty"`
 	CatchUpWindow string `json:"catch_up_window,omitempty"`
+
+	// Blocked reports that the readiness gate refused the most recent fire, with
+	// the one-line reason and the ids of the unmet requirements (ST-16). Zero
+	// values mean "not blocked", so an entry built before this existed reads
+	// exactly as it did before.
+	Blocked             bool     `json:"blocked,omitempty"`
+	BlockedReason       string   `json:"blocked_reason,omitempty"`
+	BlockedRequirements []string `json:"blocked_requirements,omitempty"`
 }

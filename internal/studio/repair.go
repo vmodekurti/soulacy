@@ -21,6 +21,59 @@ func residualDependencyIssues(draft Draft) []PreflightIssue {
 	return issues
 }
 
+// RepairContractStructure performs deterministic, platform-owned structural
+// repair. It is intentionally broader than RepairWiring: when the contract says
+// the architecture itself is bad, Soulacy replaces the graph/strategy with the
+// deterministic planner for the original intent instead of asking an LLM to
+// redesign the workflow.
+func RepairContractStructure(draft *Draft, intent string, cat Catalog, answers map[string]string, contract ContractResult) bool {
+	if draft == nil {
+		return false
+	}
+	intent = strings.TrimSpace(nonEmpty(intent, draft.Intent))
+	if intent == "" {
+		return false
+	}
+	needsReplace := len(draft.Flow.Nodes) == 0 && !draft.IsAgent()
+	for _, check := range contract.Checks {
+		if check.Status != "block" {
+			continue
+		}
+		switch check.ID {
+		case "architecture.empty", "architecture.size", "graph.integrity":
+			needsReplace = true
+		default:
+			if strings.Contains(strings.ToLower(check.Message), "not valid json") ||
+				strings.Contains(strings.ToLower(check.Message), "unknown tool") ||
+				strings.Contains(strings.ToLower(check.Message), "no runnable steps") {
+				needsReplace = true
+			}
+		}
+	}
+	if draft.IsAgent() && draft.Strategy == "react" && !explicitReActRequested(intent) {
+		if res, ok := CompileDeterministicAgent(intent, cat, AdviseStrategy(intent, cat, "", false).RuntimeStrategy, answers); ok {
+			*draft = res.Workflow
+			return true
+		}
+	}
+	if !needsReplace {
+		return false
+	}
+	advice := AdviseStrategy(intent, cat, "", false)
+	var res Result
+	var ok bool
+	if advice.Mode == "workflow" {
+		res, ok = CompileDeterministicWorkflow(intent, cat, answers)
+	} else {
+		res, ok = CompileDeterministicAgent(intent, cat, advice.RuntimeStrategy, answers)
+	}
+	if !ok {
+		return false
+	}
+	*draft = res.Workflow
+	return true
+}
+
 // RepairWithProblems is the general LLM repair: given a draft and a list of
 // concrete problems (preflight blockers, validation messages, or a runtime
 // error), it asks the model to return the CORRECTED full draft — fixing only

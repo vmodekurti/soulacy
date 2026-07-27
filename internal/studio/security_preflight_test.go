@@ -135,6 +135,26 @@ func TestSecurityPreflight_WarnsWhenIngestionMeetsPrivilegedTools(t *testing.T) 
 	}
 }
 
+func TestSecurityPreflight_UsesDraftGeneratedGuardrails(t *testing.T) {
+	rev := SecurityPreflight(Draft{
+		Tools:        []string{"web_search", "channel.send"},
+		Channels:     []string{"telegram"},
+		ConfirmTools: []string{"channel.send"},
+		Security:     &agent.SecurityConfig{IntentGate: "deny"},
+	}, nil, "")
+	if !containsStrSlice(rev.Summary.ConfirmTools, "channel.send") {
+		t.Fatalf("draft confirm_tools not reflected in preflight summary: %#v", rev.Summary.ConfirmTools)
+	}
+	if rev.Summary.IntentGateMode != "deny" {
+		t.Fatalf("draft security.intent_gate not reflected: %q", rev.Summary.IntentGateMode)
+	}
+	for _, w := range rev.Warnings {
+		if w.Category == "trust" {
+			t.Fatalf("deny intent gate should suppress 'consider deny' trust warning: %+v", rev.Warnings)
+		}
+	}
+}
+
 // TestSecurityPreflight_RecommendsScopedAlternatives verifies that
 // safer alternatives are surfaced separately from warnings so
 // operators can pick them without treating them as errors.

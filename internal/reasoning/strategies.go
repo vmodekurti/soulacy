@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	sdkreasoning "github.com/soulacy/soulacy/sdk/reasoning"
@@ -35,6 +36,13 @@ type reactStrategy struct{}
 const (
 	maxConsecutiveThinkErrors = 4
 	maxTotalThinkErrors       = 8
+	// minThinkErrorsBeforeSalvage is how many CONSECUTIVE malformed reasoning
+	// steps must occur before the loop abandons the run and reflects on what it
+	// has. Every malformed step already appends a targeted format-repair
+	// instruction to the trace; salvaging at 1 meant that instruction was never
+	// once acted on, and a transient parse slip cost the whole remaining step
+	// budget. At 2, the model gets exactly one corrected turn.
+	minThinkErrorsBeforeSalvage = 2
 )
 
 func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step, ReflectResponse) {
@@ -71,11 +79,15 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 				Duration: time.Since(stepStart),
 			})
 			cancel()
-			if consecutiveThinkErrors >= 1 && lastUsefulObservation(steps) != "" {
+			// Salvage only after the format-repair instruction just appended has
+			// had a turn to work. Bailing to Reflect on the FIRST malformed step
+			// threw away the remaining step budget (23 of 30 on the run that
+			// motivated this) and shipped a half-finished narration as the answer.
+			if consecutiveThinkErrors >= minThinkErrorsBeforeSalvage && lastUsefulObservation(steps) != "" {
 				if resp, ok := reflectAfterRepeatedThinkErrors(ctx, env, taskInput, steps); ok {
 					return steps, resp
 				}
-				if consecutiveThinkErrors >= 2 {
+				if consecutiveThinkErrors >= minThinkErrorsBeforeSalvage+1 {
 					return steps, ReflectResponse{Output: synthesizeAfterThinkErrors(steps)}
 				}
 			}
@@ -163,11 +175,13 @@ func (reactStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step
 				Duration: time.Since(stepStart),
 			})
 			cancel()
-			if consecutiveThinkErrors >= 1 && lastUsefulObservation(steps) != "" {
+			// Same rule as the Think-error path above: give the repair
+			// instruction a turn before spending the run on a salvage Reflect.
+			if consecutiveThinkErrors >= minThinkErrorsBeforeSalvage && lastUsefulObservation(steps) != "" {
 				if resp, ok := reflectAfterRepeatedThinkErrors(ctx, env, taskInput, steps); ok {
 					return steps, resp
 				}
-				if consecutiveThinkErrors >= 2 {
+				if consecutiveThinkErrors >= minThinkErrorsBeforeSalvage+1 {
 					return steps, ReflectResponse{Output: synthesizeAfterInvalidActions(steps)}
 				}
 			}
@@ -449,7 +463,32 @@ func looksPresentable(content string) bool {
 	if looksLikeMalformedControlPayload(t) {
 		return false
 	}
+	if looksLikeSensitiveFile(t) {
+		return false
+	}
 	return true
+}
+
+// looksLikeSensitiveFile flags raw file contents that must NEVER be surfaced as
+// a reply — most importantly credential/cookie files a tool read as part of the
+// run. Dumping the last observation as a degraded fallback once leaked a whole
+// cookies.txt to the delivery channel; this stops that class of leak.
+func looksLikeSensitiveFile(s string) bool {
+	low := strings.ToLower(s)
+	for _, marker := range []string{
+		"netscape http cookie file",
+		"cookie_spec.html",
+		"-----begin ", // PEM private keys / certs
+		"aws_secret_access_key",
+		"api_key=", "apikey=", "secret=", "password=", "token=",
+	} {
+		if strings.Contains(low, marker) {
+			return true
+		}
+	}
+	// A cookies.txt is tab-separated lines with a domain and a session value; the
+	// leading comment banner above already catches the common generated form.
+	return false
 }
 
 type observationDisplay struct {
@@ -1236,9 +1275,33 @@ func canonicalToolAlias(name string) string {
 	}
 }
 
+// IsProgressPreamble reports whether text is a "I'll start by…" / "let me…"
+// progress note rather than a completed answer. Exported so the classic tool
+// loop (internal/runtime) can reject such a preamble as a final reply and force
+// a real synthesis, the same way the reasoning loop already does.
+func IsProgressPreamble(text string) bool { return isPrematureFinalAnswer(text) }
+
 func isPrematureFinalAnswer(text string) bool {
 	s := strings.ToLower(strings.TrimSpace(text))
 	if s == "" {
+		return false
+	}
+	// A long progress note is still a progress note. The length/paragraph
+	// exemption below exists to protect real reports, but a model narrating the
+	// RUN ("Looking at the trace, I need to continue from where the pipeline
+	// broke — fetch the article, then proceed…") can trivially exceed 800 chars
+	// and sail through it, landing meta-commentary in the user's inbox as if it
+	// were the deliverable. Judge the OPENING sentence, which a real report and
+	// a narration never share, before applying any length exemption.
+	if hasMetaNarrationOpener(firstSentence(s)) {
+		return true
+	}
+	// A substantial, multi-paragraph answer is a real deliverable — a progress
+	// note ("I'll read the file, then search…") is a short single block. Don't
+	// misflag a real report (e.g. a podcast briefing) just because its prose
+	// happens to contain "I will" or "let me" somewhere, which would wrongly
+	// discard it and degrade the run.
+	if strings.Contains(s, "\n\n") || len(s) > 800 {
 		return false
 	}
 	// Explicit progress phrases — flagged anywhere in the text.
@@ -1285,6 +1348,73 @@ func isPrematureFinalAnswer(text string) bool {
 	return false
 }
 
+// firstSentence returns the lower-cased opening sentence of s, bounded so a
+// wall of prose without punctuation can't turn the opener check into a
+// whole-document scan. Terminated by sentence punctuation, a newline, or the
+// bound — whichever comes first.
+func firstSentence(s string) string {
+	const maxFirstSentence = 240
+	s = strings.ToLower(strings.TrimSpace(s))
+	if len(s) > maxFirstSentence {
+		s = s[:maxFirstSentence]
+	}
+	if i := strings.IndexAny(s, ".!?\n"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
+}
+
+// hasMetaNarrationOpener reports whether an opening sentence is the model
+// narrating the run rather than answering the task. Two shapes qualify:
+//
+//   - Trace/run narration ("Looking at the trace…", "Picking up where…") —
+//     always meta, because a finished deliverable never opens by describing
+//     the machinery that produced it.
+//   - A first-person intent opener ("I need to…", "Let me…") that ALSO
+//     announces work still to come ("continue", "then", "fetch"). The second
+//     clause is required so a real answer opening "I'll note one caveat…"
+//     stays safe.
+//
+// Deliberately narrow: this runs BEFORE the length exemption, so a false
+// positive here discards a genuine report.
+func hasMetaNarrationOpener(first string) bool {
+	if first == "" {
+		return false
+	}
+	for _, opener := range []string{
+		"looking at the trace", "looking at the run", "looking at the log",
+		"reviewing the trace", "based on the trace", "from the trace",
+		"continuing from", "picking up where", "picking up from", "resuming from",
+		"as shown in the trace", "the trace shows",
+	} {
+		if strings.HasPrefix(first, opener) {
+			return true
+		}
+	}
+	intent := false
+	for _, opener := range []string{
+		"i need to ", "i'll ", "i will ", "let me ", "i'm going to ",
+		"i am going to ", "we'll ", "we need to ", "next i ", "now i ",
+	} {
+		if strings.HasPrefix(first, opener) {
+			intent = true
+			break
+		}
+	}
+	if !intent {
+		return false
+	}
+	for _, pending := range []string{
+		"continue", "proceed", "resume", "next", "then ", "fetch", "search",
+		"start", "gather", "retrieve", "pick up", "finish the", "complete the",
+	} {
+		if strings.Contains(first, pending) {
+			return true
+		}
+	}
+	return false
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if strings.TrimSpace(v) != "" {
@@ -1305,59 +1435,133 @@ var planStepPlaceholderRe = regexp.MustCompile(`\{\{\s*([A-Za-z0-9_.:-]+)\.(?:ou
 
 func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) ([]Step, ReflectResponse) {
 	plan, err := env.LLM.Plan(ctx, planSystemPrompt(env.Config.SystemPrompt, env.Config.ToolNames), taskInput, env.Config.MaxPlanSteps)
-	if err != nil || planHasUnavailableTool(plan, env.Config.ToolNames) {
-		// Planning failed — fall back to ReAct.
-		return reactStrategy{}.Run(ctx, env, taskInput)
+	badTool, hasBadTool := planUnavailableTool(plan, env.Config.ToolNames)
+	if err != nil || hasBadTool {
+		// Planning failed — fall back to ReAct. This downgrade used to be
+		// completely silent: the run banner still said "plan_execute" while the
+		// loop was actually running ReAct, so every guarantee plan_execute is
+		// chosen FOR (an upfront plan, dependency gating, parallel levels) was
+		// quietly absent with nothing in the trace to say so. Lead the trace with
+		// a step naming the cause instead.
+		reason := planDowngradeReason(err, badTool)
+		reactSteps, resp := reactStrategy{}.Run(ctx, env, taskInput)
+		downgrade := Step{
+			ID:      "plan-downgrade",
+			Thought: "Plan-Execute downgraded to ReAct before any step ran.",
+			Obs: Observation{
+				Content: "planner: " + reason + " — this run executed with the ReAct strategy, not plan_execute.",
+				// Source is "planner", NOT "controller": this is a visibility
+				// record, and controller-sourced steps flip the run's Confident
+				// flag. A ReAct fallback still routinely produces a good answer,
+				// so it must not on its own mark the whole run degraded.
+				Source: "planner",
+			},
+		}
+		return append([]Step{downgrade}, reactSteps...), resp
 	}
 	plan = normalizePlanToolAliases(plan)
 
 	completedIDs := map[string]bool{}
 	var steps []Step
 
-	for _, ps := range plan.Steps {
+	// Independent steps run concurrently. The plan already carries the
+	// dependency DAG (PlannedStep.DependsOn, plus any {{id.output}} placeholder
+	// references), and it was previously used ONLY as a skip gate while the
+	// walk stayed strictly single-file — so three provably independent searches
+	// executed one at a time for no reason. Grouping into dependency levels
+	// keeps ordering deterministic (results are appended in plan order) while
+	// letting each level's steps overlap.
+	for _, level := range planDependencyLevels(plan) {
 		if ctx.Err() != nil {
 			break
 		}
+		// Snapshot the steps completed by EARLIER levels. Same-level steps are
+		// independent by construction, so none of them can reference another's
+		// output — this is the exact input the serial walk would have supplied.
+		prior := append([]Step(nil), steps...)
 
-		// Dependency ordering: skip steps whose dependencies haven't completed.
-		// Because the plan is already ordered, an unmet dependency means an
-		// upstream step failed — we skip the dependent step gracefully.
-		depsOK := true
-		for _, dep := range ps.DependsOn {
-			if !completedIDs[dep] {
-				depsOK = false
-				break
+		runnable := make([]PlannedStep, 0, len(level))
+		for _, ps := range level {
+			// Dependency ordering: skip steps whose dependencies haven't
+			// completed. An unmet dependency means an upstream step failed —
+			// we skip the dependent step gracefully.
+			if dep, ok := firstUnmetDependency(ps, completedIDs); !ok {
+				steps = append(steps, Step{
+					ID:      ps.ID,
+					Thought: ps.Description,
+					Obs: Observation{
+						Content: fmt.Sprintf("skipped: dependency %v not completed (%q)", ps.DependsOn, dep),
+					},
+				})
+				continue
 			}
+			runnable = append(runnable, ps)
 		}
-		if !depsOK {
-			steps = append(steps, Step{
-				ID:      ps.ID,
-				Thought: ps.Description,
-				Obs: Observation{
-					Content: fmt.Sprintf("skipped: dependency %v not completed", ps.DependsOn),
-				},
-			})
+		if len(runnable) == 0 {
 			continue
 		}
 
-		stepCtx, cancel := context.WithTimeout(ctx, env.Config.StepTimeout)
-		stepStart := time.Now()
-
-		call := plannedStepToolCall(ps, steps)
-		obs := env.Tools.Execute(stepCtx, call)
-		obs = boundObservation(obs)
-
-		steps = append(steps, Step{
-			ID:       ps.ID,
-			Thought:  ps.Description,
-			Action:   call,
-			Obs:      obs,
-			Duration: time.Since(stepStart),
-		})
-		if !isToolFailure(obs) {
-			completedIDs[ps.ID] = true
+		results := make([]Step, len(runnable))
+		execute := func(i int, ps PlannedStep) {
+			stepCtx, cancel := context.WithTimeout(ctx, env.Config.StepTimeout)
+			defer cancel()
+			stepStart := time.Now()
+			call := plannedStepToolCall(ps, prior)
+			obs := boundObservation(env.Tools.Execute(stepCtx, call))
+			results[i] = Step{
+				ID:       ps.ID,
+				Thought:  ps.Description,
+				Action:   call,
+				Obs:      obs,
+				Duration: time.Since(stepStart),
+			}
 		}
-		cancel()
+
+		if parallelism := planParallelism(env.Config); len(runnable) == 1 || parallelism <= 1 {
+			// Preserve the serial path exactly for a single-step level, and for
+			// an operator who pinned max_parallel_steps: 1 because their tool
+			// executor is not safe for concurrent calls.
+			for i, ps := range runnable {
+				execute(i, ps)
+			}
+		} else {
+			var wg sync.WaitGroup
+			slots := make(chan struct{}, parallelism)
+			for i, ps := range runnable {
+				wg.Add(1)
+				go func(i int, ps PlannedStep) {
+					defer wg.Done()
+					slots <- struct{}{}
+					defer func() { <-slots }()
+					// A panicking tool must not take down the whole run — the
+					// serial loop was protected by the caller's recover, and a
+					// goroutine is not.
+					defer func() {
+						if r := recover(); r != nil {
+							results[i] = Step{
+								ID:      ps.ID,
+								Thought: ps.Description,
+								Obs: Observation{
+									Content: fmt.Sprintf("tool error: planned step panicked: %v", r),
+									Error:   fmt.Errorf("planned step %q panicked: %v", ps.ID, r),
+								},
+							}
+						}
+					}()
+					execute(i, ps)
+				}(i, ps)
+			}
+			wg.Wait()
+		}
+
+		// Append in plan order regardless of completion order, so the trace and
+		// any downstream placeholder resolution stay deterministic.
+		for _, st := range results {
+			steps = append(steps, st)
+			if !isToolFailure(st.Obs) {
+				completedIDs[st.ID] = true
+			}
+		}
 	}
 
 	resp, _ := env.LLM.Reflect(ctx, ReflectRequest{
@@ -1367,20 +1571,35 @@ func (planExecuteStrategy) Run(ctx context.Context, env Env, taskInput string) (
 		OutputFormat: env.Config.OutputFormat,
 	})
 	if isPrematureFinalAnswer(resp.Output) && planExecutionHadIssue(steps) {
+		steps = append(steps, planExecuteControllerStep("reflect output was a progress note after a failed or skipped plan step"))
 		resp.Output = planExecuteFallbackOutput(steps)
+	} else if looksLikePendingAsyncPayload(stripJSONFence(strings.TrimSpace(resp.Output))) {
+		steps = append(steps, planExecuteControllerStep("reflect output was an async status payload, not a completed final deliverable"))
+		resp.Output = planExecuteAsyncPendingOutput(steps)
 	} else if strings.TrimSpace(resp.Output) == "" || isPrematureFinalAnswer(resp.Output) {
-		if obs := lastUsefulObservation(steps); obs != "" {
-			resp.Output = obs
-		} else {
-			resp.Output = planExecuteFallbackOutput(steps)
-		}
+		steps = append(steps, planExecuteControllerStep("reflect did not produce a completed user-facing answer"))
+		resp.Output = planExecuteFallbackOutput(steps)
 	}
 	return steps, resp
+}
+
+func planExecuteControllerStep(reason string) Step {
+	return Step{
+		ID:      "controller-finalization",
+		Thought: "Plan-Execute could not produce a reliable final deliverable.",
+		Obs: Observation{
+			Content: "controller: " + reason,
+			Source:  "controller",
+		},
+	}
 }
 
 func planExecuteFallbackOutput(steps []Step) string {
 	if len(steps) == 0 {
 		return "The run could not produce a plan to execute. Retry with a clearer request or choose a ReAct agent for open-ended tool use."
+	}
+	if planExecutionHasPendingAsyncPayload(steps) {
+		return planExecuteAsyncPendingOutput(steps)
 	}
 	failed := 0
 	skipped := 0
@@ -1396,7 +1615,30 @@ func planExecuteFallbackOutput(steps []Step) string {
 	if failed > 0 || skipped > 0 {
 		return fmt.Sprintf("The plan could not fully complete: %d step(s) failed and %d dependent step(s) were skipped. Open the run trace to inspect the failed step, then fix the tool input, credential, or workflow dependency.", failed, skipped)
 	}
+	completed := 0
+	for _, step := range steps {
+		if step.Obs.Source == "controller" || strings.TrimSpace(step.Action.Tool) == "" {
+			continue
+		}
+		completed++
+	}
+	if completed > 0 {
+		return fmt.Sprintf("The workflow made progress (%d tool step(s) completed), but it did not produce the required final deliverable. I did not publish raw tool output as the final answer. Open the run trace to inspect the completed steps, then rerun after fixing the model/step output.", completed)
+	}
 	return "The plan executed but the model did not produce a final answer. Open the run trace to inspect the completed steps."
+}
+
+func planExecuteAsyncPendingOutput(steps []Step) string {
+	return asyncIncompleteFallback(steps)
+}
+
+func planExecutionHasPendingAsyncPayload(steps []Step) bool {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if looksLikePendingAsyncPayload(steps[i].Obs.Content) {
+			return true
+		}
+	}
+	return false
 }
 
 func planSystemPrompt(systemPrompt string, toolNames []string) string {
@@ -1517,19 +1759,183 @@ func planExecutionHadIssue(steps []Step) bool {
 	return false
 }
 
-func planHasUnavailableTool(plan Plan, toolNames []string) bool {
+// planUnavailableTool reports whether the plan is unusable, and NAMES the
+// reason. It replaces a bare bool that discarded exactly the detail needed to
+// diagnose a downgrade: an operator seeing "fell back to ReAct" had no way to
+// learn that the planner had asked for, say, read_file on an agent whose
+// builtins allowlist omits it.
+func planUnavailableTool(plan Plan, toolNames []string) (string, bool) {
 	if len(plan.Steps) == 0 {
-		return true
+		return "", true
 	}
 	if len(toolNames) == 0 {
-		return false
+		return "", false
 	}
 	for _, step := range plan.Steps {
-		if strings.TrimSpace(step.Tool) == "" || !toolAllowed(step.Tool, toolNames) {
-			return true
+		if strings.TrimSpace(step.Tool) == "" {
+			return fmt.Sprintf("step %q names no tool", step.ID), true
+		}
+		if !toolAllowed(step.Tool, toolNames) {
+			return fmt.Sprintf("step %q requires tool %q, which this agent cannot call", step.ID, step.Tool), true
 		}
 	}
-	return false
+	return "", false
+}
+
+// planDowngradeReason renders the human-readable cause of a plan_execute →
+// ReAct downgrade for the trace.
+func planDowngradeReason(planErr error, badTool string) string {
+	switch {
+	case planErr != nil:
+		return "planning failed: " + planErr.Error()
+	case badTool != "":
+		return "the plan was unusable: " + badTool
+	default:
+		return "the planner returned no steps"
+	}
+}
+
+// firstUnmetDependency reports whether every declared dependency of ps has
+// completed. When one has not, it returns that dependency's id so the skip
+// record can name it. ok=true means all dependencies are satisfied.
+func firstUnmetDependency(ps PlannedStep, completed map[string]bool) (string, bool) {
+	for _, dep := range ps.DependsOn {
+		if !completed[strings.TrimSpace(dep)] {
+			return dep, false
+		}
+	}
+	return "", true
+}
+
+// DefaultMaxParallelSteps bounds how many planned steps execute concurrently
+// within one dependency level when the agent sets no explicit
+// reasoning.max_parallel_steps. Kept small on purpose: the point is to stop
+// serializing provably independent calls, not to let a six-step plan open six
+// simultaneous connections to the same host and trip its rate limiter.
+const DefaultMaxParallelSteps = 4
+
+// planParallelism resolves the concurrency bound for one run, clamping to at
+// least 1 so a zero-valued Config (a directly-constructed Env in a test or an
+// embedding host) stays serial rather than deadlocking on a zero-capacity
+// semaphore.
+func planParallelism(cfg LoopConfig) int {
+	if cfg.MaxParallelSteps <= 0 {
+		return DefaultMaxParallelSteps
+	}
+	return cfg.MaxParallelSteps
+}
+
+// planDependencyLevels groups a plan's steps into dependency levels: every
+// step in level N depends only on steps in levels < N, so a level's members
+// are mutually independent and safe to run concurrently. Plan order is
+// preserved within each level.
+//
+// Dependencies come from two sources, and BOTH matter: the declared
+// DependsOn list, and any {{other_step.output}} placeholder a step's arguments
+// reference. Honouring only the declared list would let a step that reads an
+// undeclared placeholder run alongside its producer and silently resolve to an
+// empty value — trading a slow-but-correct walk for a fast wrong one.
+//
+// Conservative by construction: a dependency that is unknown or appears LATER
+// in the plan (a forward reference the plan order does not support) pushes the
+// step into its own level after everything before it, reproducing the old
+// strictly-serial behaviour for that step rather than guessing.
+func planDependencyLevels(plan Plan) [][]PlannedStep {
+	n := len(plan.Steps)
+	if n == 0 {
+		return nil
+	}
+	index := make(map[string]int, n)
+	for i, ps := range plan.Steps {
+		if id := strings.TrimSpace(ps.ID); id != "" {
+			if _, dup := index[id]; !dup {
+				index[id] = i
+			}
+		}
+	}
+
+	levels := make([]int, n)
+	maxSoFar := -1
+	for i, ps := range plan.Steps {
+		level := 0
+		serialize := false
+		for _, dep := range planStepDependencies(ps) {
+			j, known := index[dep]
+			if !known || j >= i {
+				serialize = true
+				break
+			}
+			if levels[j]+1 > level {
+				level = levels[j] + 1
+			}
+		}
+		if serialize {
+			level = maxSoFar + 1
+		}
+		levels[i] = level
+		if level > maxSoFar {
+			maxSoFar = level
+		}
+	}
+
+	grouped := make([][]PlannedStep, maxSoFar+1)
+	for i, ps := range plan.Steps {
+		grouped[levels[i]] = append(grouped[levels[i]], ps)
+	}
+	out := grouped[:0]
+	for _, g := range grouped {
+		if len(g) > 0 {
+			out = append(out, g)
+		}
+	}
+	return out
+}
+
+// planStepDependencies returns every step id this step depends on: the
+// declared DependsOn entries plus the ids referenced by {{id.output}}-style
+// placeholders in its arguments.
+func planStepDependencies(ps PlannedStep) []string {
+	seen := map[string]bool{}
+	var deps []string
+	add := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		deps = append(deps, id)
+	}
+	for _, dep := range ps.DependsOn {
+		add(dep)
+	}
+	for _, raw := range planStepArgumentStrings(ps) {
+		for _, m := range planStepPlaceholderRe.FindAllStringSubmatch(raw, -1) {
+			if len(m) > 1 {
+				add(m[1])
+			}
+		}
+	}
+	return deps
+}
+
+// planStepArgumentStrings renders a planned step's argument values as strings
+// so placeholder references can be scanned out of them.
+func planStepArgumentStrings(ps PlannedStep) []string {
+	var out []string
+	for _, v := range ps.Arguments {
+		switch t := v.(type) {
+		case string:
+			out = append(out, t)
+		default:
+			if b, err := json.Marshal(v); err == nil {
+				out = append(out, string(b))
+			}
+		}
+	}
+	for _, v := range ps.Input {
+		out = append(out, v)
+	}
+	return out
 }
 
 func normalizePlanToolAliases(plan Plan) Plan {

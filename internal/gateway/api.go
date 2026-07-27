@@ -2370,7 +2370,7 @@ func (s *Server) handleManualTrigger(c *fiber.Ctx) error {
 	delivered := false
 	if s.scheduler != nil && strings.TrimSpace(replyText) != "" &&
 		(def.AppearsOn(agent.SurfaceSchedule) || s.scheduler.HasScheduledOutputTarget(def)) {
-		s.scheduler.DeliverScheduledOutput(ctx, def, msg, replyText, "manual")
+		s.scheduler.DeliverScheduledReply(ctx, def, msg, replyText, "manual", reply.Metadata)
 		delivered = s.scheduler.HasScheduledOutputTarget(def)
 	}
 	return c.JSON(fiber.Map{"result": replyText, "delivered": delivered})

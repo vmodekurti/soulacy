@@ -828,6 +828,19 @@ func (s *Server) buildApp() *fiber.App {
 	// Studio plugin backend: generate a ReAct/Plan-Execute AGENT (no fixed flow)
 	// for intents that need a reasoning loop (local-first pivot).
 	api.Post("/studio/compile-agent", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioCompileAgent)
+	// ST-01: Studio's structured reading of an intent ("Studio understood…"),
+	// with the blocking questions and — when previous_intent is supplied — the
+	// visible change summary that proves a refine changed the BUILD and not just
+	// the wording. Deterministic, no model call: read-only.
+	api.Post("/studio/build-spec", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioBuildSpec)
+	// ST-03 / ST-06: the plain-language plan — when it starts, what work happens
+	// (including parallel groups and their DECLARED join policy), where the result
+	// goes — so a user who cannot read a graph can still approve one. Read-only
+	// projection of the posted draft; nothing is persisted.
+	api.Post("/studio/plan-view", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioPlanView)
+	// ST-09: the model capability registry the Strategy Advisor decides from, so
+	// "Soulacy selected Workflow" can be checked rather than trusted.
+	api.Get("/studio/model-capabilities", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioModelCapabilities)
 	// Studio plugin backend: consolidated pre-save validation (missing tools/MCP/
 	// channels/secrets, empty required args, invalid schedules).
 	api.Post("/studio/preflight", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioPreflight)
@@ -869,6 +882,17 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/test", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTest)
 	// Try an UNSAVED reasoning agent against one sample question (ephemeral run).
 	api.Post("/studio/try-agent", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioTryAgent)
+	// What a Run Live of this draft would actually be allowed to do — the same
+	// preview /studio/try-agent refuses with (409), WITHOUT running anything, so
+	// the GUI can show the confirmation dialog before the operator commits.
+	// Read-only: gated on ActionRead.
+	api.Post("/studio/run-preview", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRunPreview)
+	// ST-07: ONE readiness verdict — preflight + generation contract + security
+	// review + consent — replacing the client-side stitch of three endpoints.
+	// A section the server could not evaluate is reported Unknown and forces
+	// ok=false, so readiness can no longer come back green because a call failed
+	// and the GUI quietly dropped it.
+	api.Post("/studio/readiness", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioReadiness)
 	// Studio plugin backend (M2): capability-tier consent plan + gated save.
 	api.Post("/studio/plan", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioPlan)
 	api.Post("/studio/save", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSave)
@@ -1423,7 +1447,6 @@ func (s *Server) Listen(ctx context.Context) error {
 
 	// Start release updates checker
 	s.startUpdatesChecker()
-
 
 	// Start TLS if configured
 	if s.cfg.Server.TLSCert != "" && s.cfg.Server.TLSKey != "" {

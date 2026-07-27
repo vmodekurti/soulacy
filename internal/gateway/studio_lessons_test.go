@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -22,7 +23,9 @@ func (p *fakeLLMProvider) lastPrompt() string {
 }
 
 // End-to-end learning loop: accepting a repair via /studio/apply-repair records
-// a lesson, and a subsequent /studio/compile injects it into the builder prompt.
+// a lesson, and a subsequent /studio/compile injects it into the generated
+// agent prompt. Studio's default compiler is deterministic now, so the lesson
+// no longer needs to pass through an architecture-builder LLM prompt.
 func TestStudioLearningLoop_AcceptThenInject(t *testing.T) {
 	// Point the lesson store at a temp file for this test.
 	t.Setenv("SOULACY_STUDIO_LESSONS", filepath.Join(t.TempDir(), "lessons.json"))
@@ -53,8 +56,9 @@ func TestStudioLearningLoop_AcceptThenInject(t *testing.T) {
 	if status != http.StatusOK {
 		t.Fatalf("compile status=%d body=%v", status, out)
 	}
-	if !strings.Contains(fake.lastPrompt(), "LESSONS FROM PAST RUNS") ||
-		!strings.Contains(fake.lastPrompt(), "items") {
-		t.Fatalf("compile prompt did not include the learned lesson:\n%s", fake.lastPrompt())
+	raw, _ := json.Marshal(out)
+	if !strings.Contains(string(raw), "LESSONS FROM PAST RUNS") ||
+		!strings.Contains(string(raw), "items") {
+		t.Fatalf("compiled agent did not include the learned lesson:\n%s", string(raw))
 	}
 }

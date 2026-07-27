@@ -16,7 +16,34 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 )
+
+// emitNodes announces each node of a freshly built draft, in declaration order,
+// so a client can render the graph as it arrives. Structural endpoint blocks
+// (trigger/exit) are included because the canvas draws them too — omitting them
+// would make the streamed graph differ from the finished one.
+func emitNodes(emit func(PipelineEvent), d Draft) {
+	total := len(d.Flow.Nodes)
+	for i, n := range d.Flow.Nodes {
+		label := n.Description
+		if strings.TrimSpace(label) == "" {
+			label = n.Tool
+		}
+		if strings.TrimSpace(label) == "" {
+			label = n.Agent
+		}
+		emit(PipelineEvent{
+			Phase:   PhaseBuildGraph,
+			Status:  StatusNode,
+			Message: n.ID,
+			Payload: map[string]any{
+				"id": n.ID, "kind": n.Kind, "label": label,
+				"index": i + 1, "total": total,
+			},
+		})
+	}
+}
 
 // PipelineEventKind is the discrete phase identifier used on the wire.
 type PipelineEventKind string
@@ -37,6 +64,24 @@ const (
 	StatusComplete PipelineStatus = "complete"
 	StatusSkip     PipelineStatus = "skip"
 	StatusError    PipelineStatus = "error"
+	// StatusNode reports ONE constructed node inside build_graph, so the canvas
+	// fills in progressively instead of appearing whole at the end. See the note
+	// on emitNodes about what this does and does not claim.
+	StatusNode PipelineStatus = "node"
+	// StatusCancelled is the operator stopping the run. Distinct from an error:
+	// nothing went wrong, and the partial draft is still worth keeping.
+	StatusCancelled PipelineStatus = "cancelled"
+)
+
+// PipelineSource attributes an event to whoever actually did the work. ST-04
+// requires the transcript to distinguish deterministic planner actions from LLM
+// prompt refinement — without it a user cannot tell which parts of their
+// workflow a model chose and which were decided by rules.
+type PipelineSource string
+
+const (
+	SourcePlanner PipelineSource = "planner"
+	SourceLLM     PipelineSource = "llm"
 )
 
 // PipelineEvent is the on-wire shape emitted between phases so the GUI can
@@ -50,6 +95,14 @@ type PipelineEvent struct {
 	Status  PipelineStatus    `json:"status"`
 	Message string            `json:"message,omitempty"`
 	Payload map[string]any    `json:"payload,omitempty"`
+	// Source says WHO produced this step: the deterministic planner or the
+	// model. The transcript previously rendered both identically, so a user
+	// could not tell which decisions were rule-based and which were a model's.
+	Source PipelineSource `json:"source,omitempty"`
+	// ElapsedMS is milliseconds since the pipeline started. Without it the UI
+	// had no way to show progress or spot a phase that had stalled, which is
+	// what made a slow generate indistinguishable from a frozen one.
+	ElapsedMS int64 `json:"elapsed_ms"`
 }
 
 // PipelineOptions bundles the knobs a caller can pass. Emit is the SSE
@@ -80,34 +133,59 @@ type PipelineResult struct {
 }
 
 // RunGeneratePipeline orchestrates the 5 phases and emits one PipelineEvent
-// at each start/complete/skip boundary. It reuses the existing single-shot
-// primitives (RefinePrompt, RecommendAgentMode, Compile / CompileAgent,
-// Preflight, AssessContract, RepairWiring) rather than rewriting any of
-// them, so behaviour matches the classic sequential entry points.
+// at each start/complete/skip boundary. The LLM is allowed to clarify/refine
+// wording, but Soulacy owns strategy selection and graph construction.
 func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Catalog, opts PipelineOptions) (PipelineResult, error) {
 	res := PipelineResult{}
+	started := time.Now()
 	emit := func(ev PipelineEvent) {
+		ev.ElapsedMS = time.Since(started).Milliseconds()
+		if ev.Source == "" {
+			// Everything except prompt refinement is rule-based, so planner is the
+			// correct default and an unlabelled event cannot silently imply a model
+			// made the decision.
+			ev.Source = SourcePlanner
+		}
 		res.PhaseLog = append(res.PhaseLog, ev)
 		if opts.Emit != nil {
 			opts.Emit(ev)
 		}
 	}
 
-	// Phase 1 — clarify_intent (RefinePrompt).
-	emit(PipelineEvent{Phase: PhaseClarifyIntent, Status: StatusStart, Message: "Clarifying intent"})
+	// cancelled reports operator cancellation and records it in the transcript.
+	// Checked between phases: the phases themselves are single synchronous calls,
+	// so this bounds cancellation latency to one phase rather than pretending to
+	// interrupt work mid-flight.
+	cancelled := func(phase PipelineEventKind) bool {
+		if ctx.Err() == nil {
+			return false
+		}
+		emit(PipelineEvent{
+			Phase: phase, Status: StatusCancelled,
+			Message: "Cancelled — the partial draft is kept so nothing you had is lost.",
+		})
+		return true
+	}
+
+	// Phase 1 — clarify_intent (RefinePrompt). The ONLY phase a model touches.
+	emit(PipelineEvent{Phase: PhaseClarifyIntent, Status: StatusStart, Message: "Clarifying intent", Source: SourceLLM})
 	refineFn := RefinePrompt
 	if opts.Light {
 		refineFn = LightRefinePrompt
 	}
 	refinement, err := refineFn(ctx, llm, intent, catalog)
 	if err != nil {
-		emit(PipelineEvent{Phase: PhaseClarifyIntent, Status: StatusError, Message: err.Error()})
+		emit(PipelineEvent{Phase: PhaseClarifyIntent, Status: StatusError, Message: err.Error(), Source: SourceLLM})
 		return res, fmt.Errorf("clarify_intent: %w", err)
 	}
 	res.Refinement = refinement
+	if cancelled(PhaseClarifyIntent) {
+		return res, ctx.Err()
+	}
 	emit(PipelineEvent{
 		Phase:   PhaseClarifyIntent,
 		Status:  StatusComplete,
+		Source:  SourceLLM,
 		Message: refinementSummary(refinement),
 		Payload: map[string]any{
 			"refined_intent": refinement.RefinedIntent,
@@ -117,28 +195,24 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 		},
 	})
 
-	// Phase 2 — choose_strategy (RecommendAgentMode over the refined text).
+	// Phase 2 — choose_strategy (deterministic Strategy Advisor over the refined text).
 	emit(PipelineEvent{Phase: PhaseChooseStrategy, Status: StatusStart, Message: "Choosing execution strategy"})
 	combined := strings.TrimSpace(refinement.RefinedIntent + " " + intent)
-	strategy := refinement.RecommendedMode
-	if strings.TrimSpace(strategy) == "" {
-		if s := RecommendAgentMode(combined); s != "" {
-			strategy = s
-		}
-	}
+	advice := AdviseStrategy(combined, catalog, refinement.RecommendedMode, false)
+	strategy := advice.RuntimeStrategy
 	res.Strategy = strategy
 	strategyMsg := "workflow (fixed graph)"
-	if strategy != "" {
-		strategyMsg = strategy + " (reasoning agent)"
+	if advice.Mode != "workflow" {
+		strategyMsg = advice.Mode + " (reasoning agent)"
 	}
 	emit(PipelineEvent{
 		Phase:   PhaseChooseStrategy,
 		Status:  StatusComplete,
 		Message: "Strategy: " + strategyMsg,
-		Payload: map[string]any{"strategy": strategy, "reason": refinement.ModeReason},
+		Payload: map[string]any{"strategy": strategy, "mode": advice.Mode, "reason": advice.Reason, "pattern": advice.DeterministicPattern},
 	})
 
-	// Phase 3 — build_graph (Compile / CompileAgent).
+	// Phase 3 — build_graph (deterministic planner only).
 	emit(PipelineEvent{Phase: PhaseBuildGraph, Status: StatusStart, Message: "Building the draft"})
 	// Prefer the refined intent for the compile step so the model sees the
 	// operator-visible version.
@@ -146,28 +220,53 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 	if strings.TrimSpace(refinement.RefinedIntent) != "" {
 		compileIntent = refinement.RefinedIntent
 	}
-	var (
-		compileRes Result
-		compileErr error
-	)
-	if isAgentStrategy(strategy) {
-		compileRes, compileErr = CompileAgent(ctx, llm, compileIntent, catalog, strategy, opts.Answers)
+	var compileRes Result
+	var ok bool
+	if advice.Mode == "workflow" {
+		compileRes, ok = CompileDeterministicWorkflow(compileIntent, catalog, opts.Answers)
 	} else {
-		compileRes, compileErr = Compile(ctx, llm, compileIntent, catalog, opts.Answers)
+		compileRes, ok = CompileDeterministicAgent(compileIntent, catalog, strategy, opts.Answers)
 	}
-	if compileErr != nil {
-		emit(PipelineEvent{Phase: PhaseBuildGraph, Status: StatusError, Message: compileErr.Error()})
-		return res, fmt.Errorf("build_graph: %w", compileErr)
+	if !ok {
+		err := fmt.Errorf("deterministic planner could not build a %s draft for this intent", advice.Mode)
+		emit(PipelineEvent{Phase: PhaseBuildGraph, Status: StatusError, Message: err.Error()})
+		return res, fmt.Errorf("build_graph: %w", err)
+	}
+	if compileRes.Generation != nil {
+		compileRes.Generation.PlanMatched = len(compileRes.Plan) > 0
+		compileRes.Generation.PatternMatched = advice.DeterministicPattern != "" || len(MatchPatterns(compileIntent, catalog, 1)) > 0
 	}
 	res.Compile = compileRes
+
+	// Announce each constructed node so the canvas fills in progressively rather
+	// than appearing whole at the end.
+	//
+	// Honest about the mechanism: the deterministic planner is ONE synchronous
+	// pass, so these are emitted after it returns, not from inside it. That is
+	// still strictly more information than the old aggregate count — the user
+	// sees which steps exist, in order, and what each one is — and it is emitted
+	// at full speed with no artificial pacing. Faking a delay to look like
+	// incremental construction would be theatre, and would make a fast generate
+	// slower for no reason. Emitting from inside the planner needs a callback
+	// threaded through CompileDeterministicWorkflow/Agent; that is the real fix
+	// and is noted in the handoff.
+	emitNodes(emit, compileRes.Workflow)
+
+	if cancelled(PhaseBuildGraph) {
+		// The draft is already on res.Compile, so a cancel here keeps the graph
+		// that was built instead of discarding the work.
+		return res, ctx.Err()
+	}
 	emit(PipelineEvent{
 		Phase:   PhaseBuildGraph,
 		Status:  StatusComplete,
 		Message: buildGraphSummary(compileRes.Workflow),
 		Payload: map[string]any{
-			"nodes":     len(compileRes.Workflow.Flow.Nodes),
-			"edges":     len(compileRes.Workflow.Flow.Edges),
-			"questions": compileRes.Questions,
+			"nodes":              len(compileRes.Workflow.Flow.Nodes),
+			"edges":              len(compileRes.Workflow.Flow.Edges),
+			"tools":              len(compileRes.Workflow.Tools),
+			"questions":          compileRes.Questions,
+			"deterministic_plan": len(compileRes.Notes) > 0 && strings.Contains(strings.Join(compileRes.Notes, "\n"), "deterministic planner"),
 		},
 	})
 
@@ -197,6 +296,7 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 		emit(PipelineEvent{Phase: PhaseRepair, Status: StatusSkip, Message: "No repair needed"})
 	} else if opts.AutoRepair {
 		before := countIssues(pf, contract)
+		RepairContractStructure(&compileRes.Workflow, compileIntent, catalog, opts.Answers, contract)
 		RepairWiring(&compileRes.Workflow, catalog)
 		pf2 := Preflight(compileRes.Workflow, opts.In)
 		contract2 := AssessContract(compileRes.Workflow, catalog, opts.In)
@@ -241,7 +341,7 @@ func refinementSummary(r PromptRefinement) string {
 
 func buildGraphSummary(d Draft) string {
 	if d.IsAgent() {
-		return fmt.Sprintf("Reasoning agent draft (%d tools, %d peers)", len(d.Tools), len(d.NewAgents))
+		return fmt.Sprintf("%s agent draft (%d tools, %d peers)", strings.TrimSpace(d.Strategy), len(d.Tools), len(d.NewAgents))
 	}
 	return fmt.Sprintf("Workflow draft (%d nodes, %d edges)", len(d.Flow.Nodes), len(d.Flow.Edges))
 }

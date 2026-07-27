@@ -63,21 +63,73 @@ type PreflightInput struct {
 	// mapped false) is a blocker — the agent cannot run.
 	ConnectedMCP map[string]bool
 	// SecretsSet maps a secret/credential name to whether a value is stored.
+	// A nil map means "the caller did not supply credential state" and NOTHING
+	// is judged against it — the alternative (treating nil as "nothing is set")
+	// would manufacture a blocker for every caller that never had a vault.
 	SecretsSet map[string]bool
 	// ChannelsConfigured maps a channel id to whether it is configured + enabled.
 	ChannelsConfigured map[string]bool
+
+	// ── Append-only fields (ST-07/ST-08). Every one of these is zero-value
+	// compatible: nil/empty means "the caller didn't supply this", and Preflight
+	// must then stay silent about it. A caller that upgrades without passing new
+	// state must never start seeing blockers it cannot act on. ────────────────
+
+	// RequiredSecrets are the exact credentials this draft needs, supplied by
+	// the caller who alone knows how a provider/channel maps onto a vault key
+	// (same reasoning as CertificationInput.RequiredSecrets). When nil,
+	// Preflight falls back to DeriveSecretRequirements(draft) so readiness stops
+	// reporting green with every API key missing — the bug this field fixes.
+	RequiredSecrets []SecretRequirement
+	// ProvidersAvailable maps an LLM provider id to whether it is configured and
+	// usable for a RUN. This is the agent's runtime provider, not the Studio
+	// builder model that handleStudioModelAdvice judges — an agent can be built
+	// by a healthy builder model and then be unrunnable because its own provider
+	// has no key. nil = unknown, no provider verdict is emitted.
+	ProvidersAvailable map[string]bool
+	// ModelsAvailable maps a model id (bare "gpt-4o", or "provider/model" when
+	// the caller wants provider-scoped identity) to whether that model is
+	// currently servable. nil = unknown, no model verdict is emitted.
+	ModelsAvailable map[string]bool
 }
 
-// PreflightIssue is one problem found while validating a draft. Severity is
-// "block" (saving should be refused or loudly gated) or "warn" (saving is fine
-// but the agent may not run until the user fixes setup). Fix is a short,
+// SecretRequirement names one credential the draft needs and what needs it.
+// Kind mirrors the preflight issue vocabulary ("provider" | "channel" | "tool" |
+// "mcp") so the client can group the fix, and Owner is the concrete thing that
+// requires it (the provider id, channel id, MCP server, or tool name).
+type SecretRequirement struct {
+	// Name is the EXACT credential name as stored — it is echoed verbatim into
+	// the Fix, because "add the missing credential" without the key name is an
+	// instruction nobody can follow.
+	Name  string `json:"name"`
+	Kind  string `json:"kind,omitempty"`
+	Owner string `json:"owner,omitempty"`
+}
+
+// PreflightIssue is one finding from validating a draft. Severity is "block"
+// (saving should be refused or loudly gated), "warn" (saving is fine but the
+// agent may not run until the user fixes setup), or "pass" (the check ran and
+// succeeded — kept so a client can render the full Ready/Warning/Blocker
+// triage instead of a list that only ever shows what is wrong). Fix is a short,
 // plain-language remediation step (Story #12).
 type PreflightIssue struct {
-	Severity string `json:"severity"` // block | warn
-	Kind     string `json:"kind"`     // tool|agent|mcp|schedule|secret|channel|field|dependency
+	Severity string `json:"severity"` // block | warn | pass
+	Kind     string `json:"kind"`     // tool|agent|mcp|schedule|secret|channel|field|dependency|provider|model
 	NodeID   string `json:"nodeId,omitempty"`
 	Message  string `json:"message"`
 	Fix      string `json:"fix,omitempty"`
+	// Action is a machine-readable remediation token from certify.go's
+	// vocabulary ("open_providers", "open_mcp", "open_delivery",
+	// "choose_model", "open_studio", …). A prose Fix can only be read; an
+	// Action can be rendered as a button that lands the user on the exact
+	// screen. Deliberately the SAME vocabulary as CertRequirement.Action —
+	// two competing token sets would guarantee the GUI handles one of them
+	// wrong. Every blocker carries one.
+	Action string `json:"action,omitempty"`
+	// ActionParams carries the operands the button needs ("secret", "server",
+	// "channel", "provider", "model"), so the client does not have to
+	// re-parse the human message to find out WHICH thing to open.
+	ActionParams map[string]string `json:"actionParams,omitempty"`
 }
 
 // PreflightResult is the consolidated validation report (Stories #11 + #12):
@@ -87,6 +139,12 @@ type PreflightResult struct {
 	OK       bool             `json:"ok"`
 	Blockers []PreflightIssue `json:"blockers"`
 	Warnings []PreflightIssue `json:"warnings"`
+	// Passes are the checks that RAN and succeeded. Preflight used to compute a
+	// pass/warn/block tier and then throw the pass tier away, so a client could
+	// only ever render "what is broken" — leaving "was this even checked?"
+	// indistinguishable from "this is fine". Appended field: existing callers
+	// that only read Blockers/Warnings are unaffected.
+	Passes []PreflightIssue `json:"passes,omitempty"`
 }
 
 // Preflight validates a draft against the live environment and returns a single
@@ -98,13 +156,28 @@ type PreflightResult struct {
 // depends on are present.
 func Preflight(draft Draft, in PreflightInput) PreflightResult {
 	var res PreflightResult
-	add := func(sev, kind, node, msg, fix string) {
-		issue := PreflightIssue{Severity: sev, Kind: kind, NodeID: node, Message: msg, Fix: fix}
-		if sev == "block" {
+	// record is the one place an issue is filed, so the Action token can never
+	// be forgotten: it is derived from Kind when the caller doesn't pass a more
+	// specific one. That makes "every blocker is actionable" a structural
+	// property instead of a convention each check site has to remember.
+	record := func(issue PreflightIssue) {
+		if issue.Action == "" {
+			issue.Action = actionForKind(issue.Kind)
+		}
+		switch issue.Severity {
+		case "block":
 			res.Blockers = append(res.Blockers, issue)
-		} else {
+		case "pass":
+			res.Passes = append(res.Passes, issue)
+		default:
 			res.Warnings = append(res.Warnings, issue)
 		}
+	}
+	add := func(sev, kind, node, msg, fix string) {
+		record(PreflightIssue{Severity: sev, Kind: kind, NodeID: node, Message: msg, Fix: fix})
+	}
+	pass := func(kind, msg string) {
+		record(PreflightIssue{Severity: "pass", Kind: kind, Message: msg})
 	}
 
 	toolSet := lowerSet(in.Catalog.Tools)
@@ -218,20 +291,53 @@ func Preflight(draft Draft, in PreflightInput) PreflightResult {
 	if strings.EqualFold(strings.TrimSpace(draft.Trigger.Type), "schedule") {
 		if !validCron(cronOf(draft.Trigger)) {
 			add("block", "schedule", "", "This is a scheduled agent but its schedule is missing or invalid.", "Set a valid cron expression (e.g. \"0 7 * * *\" for 7am daily).")
+		} else {
+			pass("schedule", "The schedule \""+cronOf(draft.Trigger)+"\" is a valid cron expression.")
 		}
 	}
 
 	// Channel availability (Stories #11/#12): every channel the workflow
 	// delivers to must be configured + enabled, else the agent can't deliver.
+	channelsOK := true
 	for _, ch := range draft.Channels {
 		ch = strings.TrimSpace(ch)
 		if ch == "" {
 			continue
 		}
 		if in.ChannelsConfigured != nil && !in.ChannelsConfigured[strings.ToLower(ch)] {
-			add("block", "channel", "", "Delivers to the \""+ch+"\" channel, which is not configured.", "Configure and enable \""+ch+"\" (add its token) in Channels settings.")
+			channelsOK = false
+			record(PreflightIssue{
+				Severity: "block", Kind: "channel",
+				Message:      "Delivers to the \"" + ch + "\" channel, which is not configured.",
+				Fix:          "Configure and enable \"" + ch + "\" (add its token) in Channels settings.",
+				Action:       "open_delivery",
+				ActionParams: map[string]string{"channel": ch},
+			})
 		}
 	}
+	if channelsOK && in.ChannelsConfigured != nil && len(draft.Channels) > 0 {
+		pass("channel", "Every delivery channel this agent uses ("+strings.Join(nonEmptyStrings(draft.Channels), ", ")+") is configured and enabled.")
+	}
+
+	// MCP connectivity verdict — the blockers are raised per node above; this
+	// records the Ready tier so a client can show "MCP: connected" instead of
+	// silence, which reads identically to "never checked".
+	if servers := draftMCPServers(draft); len(servers) > 0 && in.ConnectedMCP != nil {
+		if allMCPConnected(in.ConnectedMCP, servers) {
+			pass("mcp", "Every MCP server this agent calls ("+strings.Join(servers, ", ")+") is connected.")
+		}
+	}
+
+	// Credentials (ST-07): PreflightInput.SecretsSet was collected and never
+	// read, so readiness reported green with every API key missing — the agent
+	// then failed on its first real run, unattended. Evaluate it here.
+	checkCredentials(draft, in, record, pass)
+
+	// Runtime provider/model (ST-08): nothing verified that the AGENT's own
+	// provider/model is configured and servable. (handleStudioModelAdvice judges
+	// the BUILDER model — a different question with the same shape, which is
+	// exactly why the gap went unnoticed.)
+	checkRuntimeModel(draft, in, record, pass)
 
 	// Template syntax: catch malformed {{ … }} expressions (e.g. {{ ..x }}) at
 	// save time instead of at run time.

@@ -34,8 +34,10 @@ func FromAgentDefinition(def agent.Definition) Draft {
 		// Preserve the agent's LLM config (provider/model/temperature/...) and the
 		// whole-run timeout so a Studio round-trip is lossless. Applies to BOTH the
 		// ReAct and workflow branches below since they share this construction.
-		LLM:        def.LLM,
-		RunTimeout: def.RunTimeout,
+		LLM:          def.LLM,
+		RunTimeout:   def.RunTimeout,
+		ConfirmTools: append([]string(nil), def.ConfirmTools...),
+		Security:     cloneSecurityConfig(def.Security),
 	}
 	if d.Name == "" {
 		d.Name = def.ID
@@ -69,6 +71,8 @@ func FromAgentDefinition(def agent.Definition) Draft {
 		// user tuned in SOUL.yaml back to Studio defaults.
 		d.StepTimeout = def.Reasoning.StepTimeout
 		d.TotalTimeout = def.Reasoning.TotalTimeout
+		d.MaxSteps = def.Reasoning.MaxSteps
+		d.MaxPlanSteps = def.Reasoning.MaxPlanSteps
 		d.MaxTurns = def.MaxTurns
 		for _, id := range def.Agents {
 			if id = strings.TrimSpace(id); id != "" {

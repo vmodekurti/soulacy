@@ -22,9 +22,68 @@ package studio
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/soulacy/soulacy/internal/costs"
 )
+
+// SideEffectPolicy decides whether a build is allowed to touch the real world.
+//
+// This exists because "verify by running it" is the one part of the loop that
+// can do something IRREVERSIBLE on the user's behalf — post to a channel, file a
+// ticket, send an email — while the draft is still, by definition, not known to
+// be correct. The failure mode we are preventing is a half-built agent spamming
+// production during its own repair loop, potentially several times (once per
+// attempt). So the policy is opt-IN, never opt-out.
+type SideEffectPolicy string
+
+const (
+	// SideEffectsMocked runs verification against the mock walk (DryRunVerifier):
+	// full structural + assertion confidence, zero side effects. This is the
+	// DEFAULT and it is deliberately the ZERO VALUE of SideEffectPolicy, so a
+	// caller that forgets to set BuildOptions.SideEffects cannot fire production
+	// tools by accident. Adding a field must never make a system less safe.
+	SideEffectsMocked SideEffectPolicy = "mocked"
+	// SideEffectsReal executes the draft against real tools/Python. It must be
+	// requested explicitly and consciously by the caller (in the gateway: an
+	// operator ticking "run it for real").
+	SideEffectsReal SideEffectPolicy = "real"
+)
+
+// StopReason names WHY the loop stopped, so the caller can tell "it works" apart
+// from "we ran out of budget" apart from "we gave up". Before this existed, a
+// budget exhaustion looked identical to a failed build in the report, which made
+// it impossible for the GUI to offer the only useful next action ("give it more
+// time / more attempts").
+type StopReason string
+
+const (
+	// StoppedConverged — the draft passed (verified, or validated when no
+	// verifier was requested). The only success value.
+	StoppedConverged StopReason = "converged"
+	// StoppedMaxAttempts — the attempt budget ran out.
+	StoppedMaxAttempts StopReason = "max_attempts"
+	// StoppedTimeBudget — BuildOptions.MaxElapsed was reached.
+	StoppedTimeBudget StopReason = "time_budget"
+	// StoppedTokenBudget — BuildOptions.MaxTokens was reached.
+	StoppedTokenBudget StopReason = "token_budget"
+	// StoppedCostBudget — BuildOptions.MaxCostUSD was reached.
+	StoppedCostBudget StopReason = "cost_budget"
+	// StoppedNoProgress — the loop detected it was repairing the same thing over
+	// and over (or had no fix at all) and stopped rather than burn the budget.
+	StoppedNoProgress StopReason = "no_progress"
+)
+
+// DefaultMaxElapsed is the wall-clock budget a build gets when
+// BuildOptions.MaxElapsed is zero. Ten minutes is chosen to be comfortably
+// longer than a legitimate slow build (a handful of attempts, each running real
+// tools that may take tens of seconds) while still bounding the worst case: an
+// unattended loop that keeps "making progress" forever holds an LLM budget, a
+// gateway request and — under SideEffectsReal — a live tool connection open.
+const DefaultMaxElapsed = 10 * time.Minute
 
 // VerifyOutcome is the result of executing a draft once. OK reports success;
 // when false, Error is the runtime failure to repair against. Trace is a short
@@ -81,6 +140,120 @@ type BuildOptions struct {
 	// to add findings that need host access preflight can't do purely — e.g.
 	// syntax-checking a python node with the interpreter. Nil-safe.
 	ExtraProblems func(Draft) []string
+
+	// SideEffects decides whether verification may touch the real world. The
+	// ZERO VALUE ("") means SideEffectsMocked — deliberately, so a caller that
+	// forgets this field gets the safe behaviour, never a production side effect.
+	// Set it to SideEffectsReal to opt in to real execution.
+	//
+	// It also GOVERNS the Verifier field: a verifier that reports real side
+	// effects (RealRunVerifier) is downgraded to the dry-run verifier unless the
+	// policy is SideEffectsReal. That way the polarity can't be inverted again by
+	// a call site that just hands the loop a real verifier and forgets the flag.
+	SideEffects SideEffectPolicy
+	// Runner, when set, lets the loop build the real verifier itself from the
+	// engine primitives (see VerifierFor). It is only consulted when SideEffects
+	// is SideEffectsReal and Verifier is nil, so supplying a Runner without the
+	// policy still cannot cause a real run.
+	Runner *RealRunner
+
+	// MaxElapsed is the wall-clock budget for the whole build. Zero means
+	// DefaultMaxElapsed (10 minutes). It is enforced BETWEEN attempts and is also
+	// installed as a deadline on the context every attempt's LLM/verify calls
+	// use, so a single wedged call can't outlive the budget either. Hitting it is
+	// a clean stop reported as StoppedTimeBudget — not an error, not a crash.
+	MaxElapsed time.Duration
+	// MaxTokens caps total tokens consumed across all attempts. Zero = unlimited.
+	// Requires a usage source (Usage, or an LLM implementing UsageReporter);
+	// without one nothing is counted and the budget never trips.
+	MaxTokens int
+	// MaxCostUSD caps total estimated spend across all attempts. Zero = unlimited.
+	// Same usage-source requirement as MaxTokens.
+	MaxCostUSD float64
+	// Usage, when set, reports CUMULATIVE token/cost consumption to date. The
+	// loop samples it before and after each attempt and charges the difference to
+	// that attempt. It reuses costs.UsageRecord — the repo's single accounting
+	// type (internal/costs) — so a Studio budget is denominated in exactly the
+	// units the cost store already persists, rather than a parallel counter that
+	// would inevitably drift from the bill. When nil, an LLM implementing
+	// UsageReporter is used instead; when neither is available, consumption
+	// reports as zero and token/cost budgets are inert.
+	Usage func() costs.UsageRecord
+
+	// RegressionTests are self-tests carried over from EARLIER builds of this
+	// draft. They are run on EVERY attempt in addition to the freshly synthesized
+	// Tests, which is what makes a build a regression gate rather than a fresh
+	// opinion each time: SynthesizeTests invents new cases per build, so without
+	// this a repair could silently break something a previous build had proven.
+	RegressionTests []TestCase
+}
+
+// UsageReporter is the optional accounting seam an LLM can implement so the
+// build loop can meter it. Implementations return CUMULATIVE usage since the
+// client was created; the loop only ever looks at differences. Reuses
+// costs.UsageRecord rather than a Studio-local token struct so budgets and the
+// persisted cost ledger can never disagree about what a token is.
+type UsageReporter interface {
+	Usage() costs.UsageRecord
+}
+
+// SideEffecting is implemented by verifiers that can cause REAL, irreversible
+// side effects (RealRunVerifier). The loop uses it to refuse to run such a
+// verifier unless the caller explicitly asked for SideEffectsReal. Verifiers
+// that don't implement it are assumed side-effect-free, which is safe: the only
+// thing that assumption grants is "you may run", and a mock running is harmless.
+type SideEffecting interface {
+	RealSideEffects() bool
+}
+
+// VerifierFor picks the verifier for a side-effect policy. This is the ONLY
+// place the mocked/real choice is made, so there is exactly one line of code to
+// audit for "can a build touch production?".
+//
+// The default path is unambiguous: an empty/unknown policy — including the zero
+// value of SideEffectPolicy — yields the mocked DryRunVerifier. Real execution
+// requires BOTH the explicit SideEffectsReal policy AND an injected RealRunner;
+// asking for "real" without a runner falls back to mocked rather than silently
+// producing a verifier that skips every step.
+func VerifierFor(policy SideEffectPolicy, realRunner ...RealRunner) Verifier {
+	if policy == SideEffectsReal && len(realRunner) > 0 {
+		return RealRunVerifier{Runner: realRunner[0]}
+	}
+	return DryRunVerifier{}
+}
+
+// effectiveVerifier resolves which verifier this build actually runs with, and
+// reports whether the caller's choice was downgraded for safety.
+//
+// Rules, in order:
+//  1. No verifier and no runner → nil (validation-only build; unchanged
+//     behaviour for callers that never asked for a run).
+//  2. Policy is not "real" and the supplied verifier reports real side effects →
+//     replaced by DryRunVerifier. THIS is the inverted-polarity fix: forgetting
+//     the field downgrades you, it does not upgrade you.
+//  3. Policy is "real" → the supplied verifier, or one built from Runner.
+func (o BuildOptions) effectiveVerifier() (Verifier, SideEffectPolicy, bool) {
+	policy := o.SideEffects
+	if policy != SideEffectsReal {
+		policy = SideEffectsMocked
+	}
+	if o.Verifier == nil && o.Runner == nil {
+		return nil, policy, false
+	}
+	if policy == SideEffectsReal {
+		if o.Verifier != nil {
+			return o.Verifier, policy, false
+		}
+		return VerifierFor(SideEffectsReal, *o.Runner), policy, false
+	}
+	// Mocked policy. A runner alone never becomes a real verifier.
+	if o.Verifier == nil {
+		return DryRunVerifier{}, policy, false
+	}
+	if se, ok := o.Verifier.(SideEffecting); ok && se.RealSideEffects() {
+		return DryRunVerifier{}, policy, true
+	}
+	return o.Verifier, policy, false
 }
 
 // BuildEvent is one live progress update emitted during BuildUntilWorks. Kind is
@@ -101,6 +274,17 @@ type BuildAttempt struct {
 	Action   string   `json:"action"`   // what the loop did about it
 	Changed  bool     `json:"changed"`  // whether the draft was modified
 	OK       bool     `json:"ok"`       // whether this attempt left the draft passing
+	// StartedAt / Elapsed let the UI show progress while a build is running and,
+	// afterwards, show WHERE the time went — a build that spends 8 of its 10
+	// minutes in one verify is a slow tool, not a slow loop, and the operator
+	// can only tell those apart with per-attempt timings.
+	StartedAt time.Time     `json:"started_at,omitempty"`
+	Elapsed   time.Duration `json:"elapsed_ns,omitempty"`
+	// Tokens / CostUSD are this attempt's share of the budget (the difference
+	// between the usage snapshots taken around it). Zero when no usage source is
+	// wired.
+	Tokens  int     `json:"tokens,omitempty"`
+	CostUSD float64 `json:"cost_usd,omitempty"`
 }
 
 // BuildReport is the full result of an autonomous build: the final draft, a
@@ -135,6 +319,27 @@ type BuildReport struct {
 	// believes this task should be authored as an agent in that mode, so it can
 	// offer a one-click switch. Embodies "Studio figures it out, not the user."
 	SuggestMode string `json:"suggest_mode,omitempty"`
+
+	// StoppedReason says WHY the loop ended: StoppedConverged on success, or one
+	// of the budget/no-progress reasons. Without it, "we ran out of time" and "we
+	// couldn't fix it" are indistinguishable in the report, and the GUI can't
+	// offer the right next step.
+	StoppedReason StopReason `json:"stopped_reason,omitempty"`
+	// SideEffects records the policy the build actually ran under, so the report
+	// itself answers "did this touch production?" — including when the loop
+	// downgraded a real verifier because the caller didn't opt in.
+	SideEffects SideEffectPolicy `json:"side_effects,omitempty"`
+	// Elapsed / TokensUsed / CostUSD are what the build consumed in total.
+	Elapsed    time.Duration `json:"elapsed_ns,omitempty"`
+	TokensUsed int           `json:"tokens_used,omitempty"`
+	CostUSD    float64       `json:"cost_usd,omitempty"`
+	// RegressionTests is the test set that was green at the end of a converged
+	// build (carried-over regressions + this build's synthesized tests, deduped).
+	// The caller persists it onto the draft and feeds it back as
+	// BuildOptions.RegressionTests next time, which is what turns each build into
+	// a gate over everything previous builds proved. Empty unless the build
+	// converged — an unproven set must never be promoted to a regression suite.
+	RegressionTests []TestCase `json:"regression_tests,omitempty"`
 }
 
 // BuildUntilWorks drives the autonomous build-verify-repair loop over an
@@ -146,7 +351,17 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 	if max <= 0 {
 		max = 6
 	}
-	rep := BuildReport{Workflow: draft}
+	maxElapsed := opts.MaxElapsed
+	if maxElapsed <= 0 {
+		maxElapsed = DefaultMaxElapsed
+	}
+	// The verifier is chosen from the side-effect POLICY, never from a bare flag
+	// on the call site. A real verifier handed in without SideEffectsReal is
+	// downgraded here (see effectiveVerifier) so a forgotten field can't fire
+	// production tools.
+	verifier, policy, downgraded := opts.effectiveVerifier()
+
+	rep := BuildReport{Workflow: draft, SideEffects: policy}
 	tr := opts.Trace // nil-safe throughout
 	emit := func(ev BuildEvent) {
 		tr.Event(ev) // durably record every user-facing progress line
@@ -154,8 +369,50 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			opts.OnEvent(ev)
 		}
 	}
-	tr.Logd("phase", "loop", 0, "build-verify-repair loop starting",
-		map[string]any{"max_attempts": max, "verify": opts.Verifier != nil, "tests": len(opts.Tests)})
+
+	// Budget bookkeeping. The deadline is ABSOLUTE, so the single context below
+	// gives every attempt exactly the budget that is still left — an attempt
+	// started with two minutes remaining gets two minutes, not a fresh ten.
+	start := time.Now()
+	deadline := start.Add(maxElapsed)
+	budgetCtx, cancelBudget := context.WithDeadline(ctx, deadline)
+	defer cancelBudget()
+	usageNow := usageSampler(opts, llm)
+	baseUsage := usageNow()
+
+	// tests is the plan run on EVERY attempt: carried-over regressions first (a
+	// repair must not break what an earlier build already proved), then this
+	// build's synthesized cases.
+	tests := mergeTestPlan(opts.RegressionTests, opts.Tests)
+
+	tr.Logd("phase", "loop", 0, "build-verify-repair loop starting", map[string]any{
+		"max_attempts": max, "verify": verifier != nil, "tests": len(tests),
+		"regression_tests": len(opts.RegressionTests),
+		"side_effects":     string(policy), "max_elapsed": maxElapsed.String(),
+		"max_tokens": opts.MaxTokens, "max_cost_usd": opts.MaxCostUSD,
+	})
+	if downgraded {
+		// Loud, durable, and in the user-facing transcript: silently neutering a
+		// verifier would otherwise look like "the build passed for real".
+		msg := "Verification will run MOCKED (no side effects) — real execution was not explicitly requested."
+		emit(BuildEvent{Kind: "verify", Phase: "verify", Message: msg})
+		tr.Logd("phase", "verify", 0, msg, map[string]any{"side_effects": string(policy)})
+	}
+
+	// stopped is the loop's verdict. It stays empty until something decides;
+	// falling out of the for-loop without one means the attempt budget ran out.
+	var stopped StopReason
+	// Per-attempt accounting, stamped onto every attempt by record().
+	attemptStart := start
+	tok0, cost0 := baseUsage.TotalTokens, baseUsage.CostUSD
+	record := func(att BuildAttempt) {
+		u := usageNow()
+		att.StartedAt = attemptStart
+		att.Elapsed = time.Since(attemptStart)
+		att.Tokens = u.TotalTokens - tok0
+		att.CostUSD = u.CostUSD - cost0
+		rep.Attempts = append(rep.Attempts, att)
+	}
 
 	verified := false
 	preflightClean := false
@@ -175,6 +432,22 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 	seenProblemSets := map[string]bool{}
 
 	for n := 1; n <= max; n++ {
+		// Budgets are checked BEFORE committing to another attempt: an attempt is
+		// the expensive unit (an LLM repair plus a full verify run), so the only
+		// useful place to stop is at its boundary. Stopping here is a clean,
+		// reported outcome — the report keeps the best draft reached so far.
+		if reason := budgetExceeded(opts, start, maxElapsed, usageNow(), baseUsage); reason != "" {
+			stopped = reason
+			emit(BuildEvent{Kind: "result", Attempt: n, Phase: "budget", Message: budgetMessage(reason)})
+			tr.Logd("result", "budget", n, budgetMessage(reason), map[string]any{
+				"reason": string(reason), "elapsed": time.Since(start).String(),
+			})
+			break
+		}
+		attemptStart = time.Now()
+		u0 := usageNow()
+		tok0, cost0 = u0.TotalTokens, u0.CostUSD
+
 		emit(BuildEvent{Kind: "attempt", Attempt: n, Message: fmt.Sprintf("Attempt %d — checking the draft against your setup…", n)})
 		tr.Snapshot("attempt-start", n, rep.Workflow)
 
@@ -206,7 +479,8 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			if seenProblemSets[problemSig] {
 				att.Action = "same problems recurred after repair — stopping (not converging)"
 				att.Changed = false
-				rep.Attempts = append(rep.Attempts, att)
+				record(att)
+				stopped = StoppedNoProgress
 				rep.Residual = problems
 				if problemsAreReasoningFit(problems) {
 					rep.Diagnosis, rep.SuggestMode = reasoningFitDiagnosis()
@@ -222,7 +496,7 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			// (3) Repair the exact problems. Try the general full-draft LLM repair
 			// first; fall back to a deterministic focused repair if the model
 			// can't help. If neither makes progress, stop — looping is pointless.
-			repaired, changed := RepairWithProblems(ctx, llm, rep.Workflow, problems, cat)
+			repaired, changed := RepairWithProblems(budgetCtx, llm, rep.Workflow, problems, cat)
 			if changed {
 				RepairWiring(&repaired, cat)
 				// S6 (Cohort F): the LLM repair MUST NOT sneak in a
@@ -234,7 +508,8 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 				if blocked, reason := detectPrivilegedRegression(rep.Workflow, repaired); blocked {
 					att.Action = "LLM repair blocked: " + reason
 					att.Changed = false
-					rep.Attempts = append(rep.Attempts, att)
+					record(att)
+					stopped = StoppedNoProgress
 					rep.Residual = problems
 					emit(BuildEvent{Kind: "result", Attempt: n, Phase: "repair", Message: att.Action})
 					tr.Logd("repair", "security", n, att.Action, map[string]any{"reason": reason})
@@ -243,13 +518,14 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 				rep.Workflow = repaired
 				att.Action = "LLM repair of " + plural(len(problems), "problem")
 				att.Changed = true
-			} else if focusedRepair(ctx, llm, &rep.Workflow) {
+			} else if focusedRepair(budgetCtx, llm, &rep.Workflow) {
 				att.Action = "focused repair of broken steps"
 				att.Changed = true
 			} else {
 				att.Action = "no automated fix available — stopping"
 				att.Changed = false
-				rep.Attempts = append(rep.Attempts, att)
+				record(att)
+				stopped = StoppedNoProgress
 				rep.Residual = problems
 				// If the unfixable blockers are reasoning-fit, this flow can't be
 				// repaired in workflow mode — point the user at an agent mode.
@@ -264,7 +540,7 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			}
 			emit(BuildEvent{Kind: "repair", Attempt: n, Phase: "repair", Message: "✓ " + att.Action})
 			tr.Logd("repair", "repair", n, att.Action, map[string]any{"problems": problems, "changed": att.Changed})
-			rep.Attempts = append(rep.Attempts, att)
+			record(att)
 			continue
 		}
 
@@ -272,17 +548,21 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 		preflightClean = true
 
 		// (4) No verifier → validation-only build is done.
-		if opts.Verifier == nil {
-			rep.Attempts = append(rep.Attempts, BuildAttempt{
+		if verifier == nil {
+			record(BuildAttempt{
 				N: n, Phase: "verify", Action: "validation passed (no execution requested)", OK: true,
 			})
+			stopped = StoppedConverged
 			break
 		}
 
-		// (4) Verify by actually running it.
+		// (4) Verify by actually running it. Every attempt runs the FULL plan —
+		// carried-over regression tests included — so a repair that fixes today's
+		// failure by breaking something a previous build proved is caught here
+		// rather than by the user in production.
 		emit(BuildEvent{Kind: "verify", Attempt: n, Phase: "verify", Message: "Validation passed — running it to verify…"})
 		doneV := tr.Step("verify", "verify", n, "running the agent to verify it works")
-		out := verifyAll(ctx, opts.Verifier, rep.Workflow, opts.Tests)
+		out := verifyAll(budgetCtx, verifier, rep.Workflow, tests)
 		doneV(errOrNil(out.Error), map[string]any{
 			"ok": out.OK, "real": out.Real, "error": out.Error, "run_trace": out.Trace,
 		})
@@ -291,8 +571,12 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			att.Action = runWord(out.Real) + " succeeded"
 			att.OK = true
 			emit(BuildEvent{Kind: "result", Attempt: n, Phase: "verify", Message: "✓ " + att.Action})
-			rep.Attempts = append(rep.Attempts, att)
+			record(att)
 			verified = true
+			stopped = StoppedConverged
+			// The plan just went green end to end, so it is a legitimate
+			// regression suite for the NEXT build of this draft.
+			rep.RegressionTests = tests
 			break
 		}
 
@@ -308,7 +592,8 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			rep.Diagnosis, rep.SuggestMode = nonConvergenceDiagnosis(out.Error)
 			emit(BuildEvent{Kind: "result", Attempt: n, Phase: "verify", Message: rep.Diagnosis})
 			tr.Logd("repair", "verify", n, att.Action, map[string]any{"runtime_error": out.Error, "signature": sig, "suggest_mode": rep.SuggestMode})
-			rep.Attempts = append(rep.Attempts, att)
+			record(att)
+			stopped = StoppedNoProgress
 			break
 		}
 		seenExact[out.Error] = true
@@ -316,7 +601,7 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 
 		emit(BuildEvent{Kind: "verify", Attempt: n, Phase: "verify", Message: "Run failed: " + out.Error + " — repairing…"})
 		att.Problems = []string{out.Error}
-		repaired, changed := RepairWithProblems(ctx, llm, rep.Workflow,
+		repaired, changed := RepairWithProblems(budgetCtx, llm, rep.Workflow,
 			[]string{"At RUN TIME the agent failed with this error — change it so this cannot happen again: " + out.Error}, cat)
 		if changed {
 			RepairWiring(&repaired, cat)
@@ -324,12 +609,13 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 			att.Action = "repaired against runtime error"
 			att.Changed = true
 			tr.Logd("repair", "verify", n, att.Action, map[string]any{"runtime_error": out.Error, "changed": true})
-			rep.Attempts = append(rep.Attempts, att)
+			record(att)
 			continue
 		}
 		att.Action = "runtime error persists — no automated fix available"
 		tr.Logd("repair", "verify", n, att.Action, map[string]any{"runtime_error": out.Error, "changed": false})
-		rep.Attempts = append(rep.Attempts, att)
+		record(att)
+		stopped = StoppedNoProgress
 		rep.Residual = []string{out.Error}
 		// Even on the first try, a handoff/parse error is a flow-vs-reasoning
 		// mismatch the loop can't fix by editing the flow — recommend agent mode.
@@ -340,18 +626,107 @@ func BuildUntilWorks(ctx context.Context, llm LLM, draft Draft, cat Catalog, opt
 		break
 	}
 
+	// Falling out of the for-loop with no verdict means every attempt was spent.
+	if stopped == "" {
+		stopped = StoppedMaxAttempts
+	}
+	rep.StoppedReason = stopped
 	rep.Verified = verified
-	rep.OK = preflightClean && (opts.Verifier == nil || verified)
+	rep.OK = preflightClean && (verifier == nil || verified)
+	final := usageNow()
+	rep.Elapsed = time.Since(start)
+	rep.TokensUsed = final.TotalTokens - baseUsage.TotalTokens
+	rep.CostUSD = final.CostUSD - baseUsage.CostUSD
 	rep.Contract = AssessContract(rep.Workflow, cat, opts.In)
 	rep.Changes = summarizeBuildChanges(rep.Attempts)
 	rep.NeedsExternal = extractExternalBlockers(rep.Residual)
 	rep.Summary = buildSummary(rep)
 	tr.Snapshot("final", 0, rep.Workflow)
 	tr.Logd("result", "done", 0, rep.Summary, map[string]any{
-		"ok": rep.OK, "verified": rep.Verified,
+		"ok": rep.OK, "verified": rep.Verified, "stopped_reason": string(rep.StoppedReason),
 		"attempts": len(rep.Attempts), "residual": rep.Residual,
+		"elapsed": rep.Elapsed.String(), "tokens_used": rep.TokensUsed, "cost_usd": rep.CostUSD,
+		"side_effects": string(rep.SideEffects),
 	})
 	return rep
+}
+
+// usageSampler returns a function reporting CUMULATIVE token/cost consumption.
+// It prefers the caller's explicit hook (the gateway's LLM is wrapped in
+// routers/decorators, so the concrete client is often not reachable), then the
+// LLM itself if it implements UsageReporter, and finally a zero source. A zero
+// source is not an error: it just means token/cost budgets are inert, which is
+// the honest behaviour — refusing to build because we can't meter would be worse
+// than building without a meter.
+func usageSampler(opts BuildOptions, llm LLM) func() costs.UsageRecord {
+	if opts.Usage != nil {
+		return opts.Usage
+	}
+	if r, ok := llm.(UsageReporter); ok && r != nil {
+		return r.Usage
+	}
+	return func() costs.UsageRecord { return costs.UsageRecord{} }
+}
+
+// budgetExceeded reports which budget (if any) is spent. Returns "" when the
+// loop may continue. Zero MaxTokens/MaxCostUSD mean unlimited; MaxElapsed has
+// already been defaulted by the caller.
+func budgetExceeded(opts BuildOptions, start time.Time, maxElapsed time.Duration, now, base costs.UsageRecord) StopReason {
+	if time.Since(start) >= maxElapsed {
+		return StoppedTimeBudget
+	}
+	if opts.MaxTokens > 0 && now.TotalTokens-base.TotalTokens >= opts.MaxTokens {
+		return StoppedTokenBudget
+	}
+	if opts.MaxCostUSD > 0 && now.CostUSD-base.CostUSD >= opts.MaxCostUSD {
+		return StoppedCostBudget
+	}
+	return ""
+}
+
+// budgetMessage is the plain-language line shown when a budget stops the build.
+// It names the budget explicitly because the only useful operator action —
+// raise that budget and re-run — depends on knowing which one ran out.
+func budgetMessage(reason StopReason) string {
+	switch reason {
+	case StoppedTimeBudget:
+		return "Stopped — the build reached its time budget. The best draft so far is kept; raise the time budget to keep going."
+	case StoppedTokenBudget:
+		return "Stopped — the build reached its token budget. The best draft so far is kept; raise the token budget to keep going."
+	case StoppedCostBudget:
+		return "Stopped — the build reached its cost budget. The best draft so far is kept; raise the cost budget to keep going."
+	}
+	return "Stopped — the build reached a budget limit."
+}
+
+// mergeTestPlan builds the per-attempt test plan: carried-over regression tests
+// FIRST (they encode what already worked, so a regression surfaces before the
+// new behaviour is even exercised), then this build's synthesized tests, with
+// exact duplicates removed so a case isn't paid for twice every attempt.
+func mergeTestPlan(regression, synthesized []TestCase) []TestCase {
+	if len(regression) == 0 && len(synthesized) == 0 {
+		return nil
+	}
+	seen := make(map[string]bool, len(regression)+len(synthesized))
+	out := make([]TestCase, 0, len(regression)+len(synthesized))
+	add := func(cases []TestCase) {
+		for _, tc := range cases {
+			key, err := json.Marshal(tc)
+			if err != nil {
+				// Unmarshalable case: keep it rather than drop a test.
+				out = append(out, tc)
+				continue
+			}
+			if seen[string(key)] {
+				continue
+			}
+			seen[string(key)] = true
+			out = append(out, tc)
+		}
+	}
+	add(regression)
+	add(synthesized)
+	return out
 }
 
 // errSignature reduces a runtime error to a stable class so the loop can tell
@@ -527,6 +902,12 @@ func buildSummary(rep BuildReport) string {
 		return fmt.Sprintf("Built and verified by running it — %s.", attemptsPhrase(rep))
 	case rep.OK:
 		return fmt.Sprintf("Validated clean against your setup — %s. Run it to verify end-to-end.", attemptsPhrase(rep))
+	case rep.StoppedReason == StoppedTimeBudget,
+		rep.StoppedReason == StoppedTokenBudget,
+		rep.StoppedReason == StoppedCostBudget:
+		// A budget stop is NOT a failed build — surfacing it as one would send
+		// the operator hunting for a defect that isn't there.
+		return budgetMessage(rep.StoppedReason)
 	case rep.Diagnosis != "":
 		return rep.Diagnosis
 	case len(rep.NeedsExternal) > 0:

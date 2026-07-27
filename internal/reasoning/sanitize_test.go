@@ -108,6 +108,19 @@ func TestSanitize_BarePlaceholderOutputFallsBack(t *testing.T) {
 	}
 }
 
+// A credential/cookie file that a tool read must NEVER be surfaced as the reply
+// (it once leaked a whole cookies.txt to the delivery channel).
+func TestSanitize_LeakedStep_SkipsCookieFile(t *testing.T) {
+	steps := []Step{
+		{Thought: "read cookies", Obs: Observation{Content: "# Netscape HTTP Cookie File\n.hbr.org\tTRUE\t/\tTRUE\t0\tsession\tSECRETVALUE"}},
+	}
+	in := `{"thought":"continuing","is_done":false,"action":{"tool":"read_file"}}`
+	got := SanitizeFinalOutput(in, steps)
+	if strings.Contains(got, "SECRETVALUE") || strings.Contains(got, "Netscape") {
+		t.Fatalf("cookie file leaked into the reply: %q", got)
+	}
+}
+
 func TestSanitize_FencedControlJSON(t *testing.T) {
 	in := "```json\n{\"thought\":\"x\",\"is_done\":false,\"action\":{\"tool\":\"t\"}}\n```"
 	got := SanitizeFinalOutput(in, nil)
@@ -127,6 +140,29 @@ func TestSanitize_LegitJSONAnswerPreserved(t *testing.T) {
 	in := `{"name":"Alice","score":42}`
 	if got := SanitizeFinalOutput(in, nil); got != in {
 		t.Fatalf("legit JSON answer was altered: %q", got)
+	}
+}
+
+func TestSanitize_PendingAsyncStatusFallsBack(t *testing.T) {
+	in := `{"status":"success","notebook_id":"nb_123","summary":{"total":1,"completed":0,"in_progress":1},"artifacts":[{"artifact_id":"audio_1","status":"in_progress","audio_url":null}]}`
+	steps := []Step{
+		{ID: "audio", Action: ToolCall{Tool: "mcp__notebooklm__studio_create"}, Obs: Observation{Source: "mcp__notebooklm__studio_create", Content: `{"status":"success","artifact_id":"audio_1"}`}},
+		{ID: "poll", Action: ToolCall{Tool: "mcp__notebooklm__studio_status"}, Obs: Observation{Source: "mcp__notebooklm__studio_status", Content: in}},
+	}
+	got := SanitizeFinalOutput(in, steps)
+	low := strings.ToLower(got)
+	if strings.HasPrefix(strings.TrimSpace(got), "{") || strings.Contains(got, `"in_progress"`) {
+		t.Fatalf("pending async status leaked into output: %q", got)
+	}
+	if !strings.Contains(low, "still processing") || !strings.Contains(low, "raw status payload") {
+		t.Fatalf("expected async incomplete fallback, got %q", got)
+	}
+}
+
+func TestSanitize_CompletedAsyncJSONPreserved(t *testing.T) {
+	in := `{"status":"success","summary":{"total":1,"completed":1,"in_progress":0},"artifacts":[{"artifact_id":"audio_1","status":"completed","audio_url":"https://example.com/audio.mp3"}]}`
+	if got := SanitizeFinalOutput(in, nil); got != in {
+		t.Fatalf("completed structured payload was altered: %q", got)
 	}
 }
 

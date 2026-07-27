@@ -27,6 +27,7 @@ import (
 	"github.com/soulacy/soulacy/internal/mcp"
 	"github.com/soulacy/soulacy/internal/runtime"
 	"github.com/soulacy/soulacy/internal/scheduler"
+	"github.com/soulacy/soulacy/internal/studio"
 	"github.com/soulacy/soulacy/pkg/message"
 )
 
@@ -262,6 +263,11 @@ func (a *App) Run(parent context.Context) error {
 	sched := scheduler.New(engine, loader, log, ctx)
 	sched.SetStatePath(filepath.Join(cfg.Memory.Dir, "scheduler-state.json"))
 	sched.SetEventSink(hub) // record scheduled-delivery outcomes in Activity
+	// Readiness gate (ST-16): a Studio-deployed agent may only fire on a
+	// schedule once its deployment carries passing certification. The store is
+	// re-read on every tick, so re-certifying unblocks the schedule without a
+	// restart; agents with no deployment record are unaffected.
+	sched.SetReadinessGate(deploymentReadinessGate(studio.NewDeploymentStore(studio.DeploymentsDir(ws.Root))))
 	for _, def := range loader.All() {
 		if err := sched.RegisterAgent(def); err != nil {
 			log.Warn("scheduler register failed", zap.String("agent", def.ID), zap.Error(err))

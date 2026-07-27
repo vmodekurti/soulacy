@@ -117,6 +117,7 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 	if draft.IsAgent() {
 		pass("architecture.fit", "Architecture fit", "This draft is a reasoning agent, so Studio will not force it into a brittle fixed workflow graph.")
 		assessReasoningAgentRules(draft, opts, add, pass)
+		assessCompletionContractRules(draft, add, pass)
 		return
 	}
 
@@ -128,6 +129,8 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 		pass("architecture.size", "Macro-workflow size", fmt.Sprintf("The workflow has %d node(s), which fits the simple high-level Macro-Workflow guideline.", nodeCount))
 	case nodeCount <= 8:
 		add("architecture.size", "Macro-workflow size", "warn", "", fmt.Sprintf("This workflow has %d nodes. Studio workflows should usually stay at 3-5 high-level steps.", nodeCount), "Combine extraction/formatting/filtering into one Python or LLM Extract block, or switch to an agent if runtime tool choice is needed.")
+	case knownDeterministicMacroWorkflow(draft):
+		add("architecture.size", "Macro-workflow size", "warn", "", fmt.Sprintf("This deterministic macro-workflow has %d high-level service steps. It is larger than the ideal visual graph, but it matches a known Soulacy pattern with explicit tool order and completion checks.", nodeCount), "Keep this as a workflow only when the ordering must be deterministic; otherwise convert it to an Auto/Plan-Execute agent.")
 	default:
 		add("architecture.size", "Macro-workflow size", "block", "", fmt.Sprintf("This workflow has %d nodes and is likely too brittle for a visual Macro-Workflow.", nodeCount), "Collapse low-level steps or switch to a ReAct/Auto agent that can choose tools dynamically.")
 	}
@@ -146,6 +149,45 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 		for _, a := range bad {
 			add("agents.prompts", "Helper-agent prompts", "warn", a, "Helper agent \""+a+"\" has a very short or missing system prompt.", "Give each helper agent a self-contained role, constraints, available inputs, and expected output format.")
 		}
+	}
+	assessCompletionContractRules(draft, add, pass)
+}
+
+func knownDeterministicMacroWorkflow(draft Draft) bool {
+	if draft.IsAgent() || len(draft.Flow.Nodes) == 0 {
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(draft.Intent + " " + draft.Name))
+	if deterministicNotebookPodcastWorkflow(text) || knowledgeIngestionWorkflow(text) {
+		return true
+	}
+	notebookOps := 0
+	channelOps := 0
+	for _, n := range draft.Flow.Nodes {
+		tool := strings.ToLower(strings.TrimSpace(n.Tool))
+		switch {
+		case strings.Contains(tool, "notebooklm"):
+			notebookOps++
+		case tool == "channel.send":
+			channelOps++
+		}
+	}
+	return notebookOps >= 3 && channelOps <= 1
+}
+
+func assessCompletionContractRules(draft Draft, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {
+	errs, warns := completionContractValidateIssues(draft)
+	if len(errs) == 0 && len(warns) == 0 {
+		if requiresCompletionContract(draft) {
+			pass("completion.contract", "Completion contract", "The draft has an explicit done-condition contract for multi-step work.")
+		}
+		return
+	}
+	for _, e := range errs {
+		add("completion.contract", "Completion contract", "block", e.NodeID, e.Message, "Add the missing operation(s), set a real output route, or switch to an Auto reasoning agent for adaptive multi-step work.")
+	}
+	for _, w := range warns {
+		add("completion.contract", "Completion contract", "warn", w.NodeID, w.Message, "Add a completion contract and/or configure the missing output/storage route.")
 	}
 }
 

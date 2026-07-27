@@ -32,6 +32,14 @@ type Part = sdkmsg.Part
 // Message is the canonical message envelope.
 type Message = sdkmsg.Message
 
+// Reserved Message.Metadata keys (see sdk/message).
+const (
+	MetaReasoningDegraded = sdkmsg.MetaReasoningDegraded
+	MetaReasoningSteps    = sdkmsg.MetaReasoningSteps
+	MetaOutcome           = sdkmsg.MetaOutcome
+	MetaOutcomeSummary    = sdkmsg.MetaOutcomeSummary
+)
+
 // Text builds a single-text-part content slice.
 var Text = sdkmsg.Text
 

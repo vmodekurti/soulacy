@@ -16,6 +16,7 @@ func TestClassify(t *testing.T) {
 	}{
 		{"", RepairNone},
 		{`template: t:1: function "fromJson" not defined`, RepairTemplateError},
+		{`template: t:1: executing "t" at <.source_pack.text>: can't evaluate field text in type interface {}`, RepairShapeDrift},
 		{`can't evaluate field results in type string`, RepairShapeDrift},
 		{`Traceback ... KeyError: 'results'`, RepairShapeDrift},
 		{`range can't iterate over abc`, RepairShapeDrift},

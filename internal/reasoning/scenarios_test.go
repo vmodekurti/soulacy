@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,11 +36,18 @@ import (
 type cannedExecutor struct {
 	results map[string]string // tool name → observation content
 	fail    map[string]error  // tool name → injected failure
-	calls   []reasoning.ToolCall
+
+	// plan_execute runs independent steps concurrently, and the ToolExecutor
+	// contract requires Execute to be safe for concurrent use — so the call
+	// recorder needs a lock, exactly like a real executor's would.
+	mu    sync.Mutex
+	calls []reasoning.ToolCall
 }
 
 func (c *cannedExecutor) Execute(_ context.Context, call reasoning.ToolCall) reasoning.Observation {
+	c.mu.Lock()
 	c.calls = append(c.calls, call)
+	c.mu.Unlock()
 	if err, bad := c.fail[call.Tool]; bad {
 		return reasoning.Observation{Error: err, Source: call.Tool}
 	}
@@ -332,19 +340,24 @@ func TestScenario_PlanExecuteDecomposesAndExecutes(t *testing.T) {
 	}
 }
 
-// An unknown strategy name must fall back to a working loop rather than
-// producing an agent that silently does nothing.
-func TestScenario_UnknownStrategyFallsBackAndStillRuns(t *testing.T) {
+// An unknown strategy name must FAIL LOUDLY rather than silently running a
+// different strategy than the one configured (P0-6). Executing tools under a
+// substituted strategy is worse than not running: the operator believes their
+// configured strategy is in force and every guarantee it implies is absent.
+func TestScenario_UnknownStrategyIsRefused(t *testing.T) {
 	exec := &cannedExecutor{results: map[string]string{"web_search": "ok"}}
 	res := runScenario(t, "not_a_real_strategy", []reasoning.ThinkResponse{
 		act("web_search", map[string]any{"query": "q"}),
 		finish("Answered."),
 	}, exec, "Answered.")
 
-	if len(exec.calls) == 0 {
-		t.Fatal("an unknown strategy must fall back to ReAct and still execute tools")
+	if len(exec.calls) != 0 {
+		t.Errorf("no tool may run under an unresolvable strategy, got %d calls", len(exec.calls))
 	}
-	if strings.TrimSpace(res.Output) == "" {
-		t.Error("fallback strategy produced no output")
+	if res.Confident {
+		t.Error("a configuration error must not be reported as a confident run")
+	}
+	if !strings.Contains(res.Output, "configuration error") {
+		t.Errorf("output should name the misconfiguration: %q", res.Output)
 	}
 }

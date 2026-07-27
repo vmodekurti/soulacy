@@ -233,6 +233,8 @@
     'reasoning.start':  { label: 'LOOP', color: '#5bc0de', icon: '▶' },
     'reasoning.step':   { label: 'LOOP', color: '#5bc0de', icon: '∴' },
     'reasoning.result': { label: 'LOOP', color: '#5bc0de', icon: '■' },
+    'flow.node.started': { label: 'FLOW', color: '#40c4ff', icon: '▶' },
+    'flow.node':         { label: 'FLOW', color: '#40c4ff', icon: '•' },
     'message.out': { label: 'REPLY',  color: '#4caf82', icon: '✓' },
     'error':       { label: 'ERROR',  color: '#f06060', icon: '✖' },
     'connected':   { label: 'SYS',    color: '#555a7a', icon: '•' },
@@ -243,6 +245,66 @@
   function meta(t) { return TYPE_META[t] || { label: (t || 'evt').toUpperCase().slice(0, 5), color: '#6b7294', icon: '•' } }
 
   function snippet(s, n = 120) { s = String(s ?? ''); return s.length > n ? s.slice(0, n) + '…' : s }
+
+  function safeParseJSON(v) {
+    if (v == null) return null
+    if (typeof v === 'object') return v
+    const s = String(v).trim()
+    if (!s) return null
+    try { return JSON.parse(s) } catch (_) { return null }
+  }
+
+  function flowPayload(ev) {
+    if (!ev?.type?.startsWith('flow.')) return null
+    const p = ev.payload || {}
+    if (typeof p === 'string') return safeParseJSON(p) || { raw: p }
+    return p
+  }
+
+  function shortValue(v, n = 160) {
+    if (v == null || v === '') return ''
+    const parsed = safeParseJSON(v)
+    if (parsed && typeof parsed === 'object') {
+      const pairs = []
+      for (const [k, val] of Object.entries(parsed)) {
+        if (val == null || val === '') continue
+        if (typeof val === 'string') pairs.push(`${k}=${JSON.stringify(snippet(val, 80))}`)
+        else if (typeof val === 'number' || typeof val === 'boolean') pairs.push(`${k}=${val}`)
+        else if (Array.isArray(val)) pairs.push(`${k}=[${val.length} item${val.length === 1 ? '' : 's'}]`)
+        else pairs.push(`${k}={...}`)
+        if (pairs.length >= 4) break
+      }
+      return snippet(pairs.join(', ') || JSON.stringify(parsed), n)
+    }
+    return snippet(String(v), n)
+  }
+
+  function flowSummary(ev) {
+    const p = flowPayload(ev)
+    if (!p) return ''
+    const node = p.nodeId || p.node_id || p.visitKey || 'node'
+    const kind = p.kind ? `${p.kind} ` : ''
+    if (ev.type === 'flow.node.started' || p.status === 'running') {
+      return `${node} · ${kind}started`
+    }
+    const dur = p.durationMs != null ? ` in ${p.durationMs}ms` : ''
+    if (p.error) return `${node} · ${kind}failed${dur} — ${String(p.error)}`
+    const out = shortValue(p.output, 220)
+    const inp = shortValue(p.input, 180)
+    if (out) return `${node} · ${kind}completed${dur} · output: ${out}`
+    if (inp) return `${node} · ${kind}completed${dur} · input: ${inp}`
+    return `${node} · ${kind}completed${dur}`
+  }
+
+  function flowDetail(ev) {
+    const p = flowPayload(ev)
+    if (!p) return ''
+    try { return JSON.stringify(p, null, 2) } catch (_) { return String(ev.payload || '') }
+  }
+
+  function canExpandFlow(ev) {
+    return !!flowPayload(ev)
+  }
 
   function normalizeRunHistory(rows) {
     return (rows || []).map(r => ({
@@ -379,6 +441,9 @@
       case 'reasoning.start':  return `reasoning loop started — ${p.strategy || '?'} · max ${p.max_steps ?? '?'} steps · ${p.tools ?? 0} tools`
       case 'reasoning.step':   return `${p.recovery ? 'recovery ' : ''}step ${p.index ?? '?'}: ${snippet(p.thought, 90)}${p.tool ? ` → ${p.tool}` : ''}`
       case 'reasoning.result': return `loop finished — ${p.steps ?? 0} step(s) · ${p.confident ? 'confident' : 'degraded / not confident'} · ${p.duration_ms ?? 0}ms`
+      case 'flow.node.started':
+      case 'flow.node':
+        return flowSummary(ev)
       case 'message.out': return `reply — ${snippet(partsText(p), 120)}`
       case 'error':       return `[${p.stage || 'error'}] ${snippet(p.error, 160)}`
       case 'connected':   return String(ev.payload || 'stream connected')
@@ -428,6 +493,7 @@
     // regardless of source. Keeps the axis symmetrical with the other tabs
     // while the securityOnly toggle offers cross-type filtering.
     security: (t, ev) => t === 'injection.finding' || t === 'intent.decision' || hasSecuritySignal(ev),
+    flow:     (t) => t.startsWith('flow.'),
   }
   $: filtered = events.filter(ev =>
     (FILTERS[typeFilter] || FILTERS.all)(ev.type || '', ev) &&
@@ -631,6 +697,11 @@
               Debug in Studio
             </button>
           {/if}
+          {#if canExpandFlow(ev)}
+            <button class="row-action flow-detail-btn" on:click={() => toggleExpanded(rk)}>
+              {expanded ? 'Hide details' : 'Details'}
+            </button>
+          {/if}
           {#if isBrowserEvent(ev)}
             <button class="row-action browser" on:click={() => openBrowserTrace(ev)}>
               Browser trace
@@ -675,6 +746,13 @@
                 </div>
               {/if}
             </div>
+          </div>
+        {/if}
+        {#if expanded && canExpandFlow(ev)}
+          <div class="row flow-detail">
+            <span class="t"></span>
+            <span class="badge flow-sum">Σ flow</span>
+            <pre class="flow-body">{flowDetail(ev)}</pre>
           </div>
         {/if}
         {#if (ev.type === 'message.out' || ev.type === 'error') && ev.session_id}
@@ -804,6 +882,7 @@
   .row-action.debug { background: rgba(76,175,130,.10); border-color: rgba(76,175,130,.35); color: #76d6a0; }
   .row-action.browser { background: rgba(64,196,255,.10); border-color: rgba(64,196,255,.35); color: #8bdcff; }
   .row-action.learn { background: rgba(245,167,66,.10); border-color: rgba(245,167,66,.35); color: #f5bd67; }
+  .row-action.flow-detail-btn { background: rgba(64,196,255,.10); border-color: rgba(64,196,255,.32); color: #8bdcff; }
   .row-action:disabled { opacity: .55; cursor: wait; }
   .agent-pill {
     justify-self: end; align-self: center; max-width: 180px; overflow: hidden; text-overflow: ellipsis;
@@ -862,5 +941,25 @@
     color: #7b82a8; font-family: 'JetBrains Mono', 'Fira Code', monospace;
     font-size: .68rem; white-space: pre-wrap; word-break: break-word;
     margin-top: .1rem;
+  }
+
+  .flow-detail { background: rgba(64,196,255,.035); }
+  .flow-sum { color: #8bdcff; }
+  .flow-body {
+    grid-column: 3 / -1;
+    margin: 0;
+    max-height: 360px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+    background: #0a0c17;
+    border: 1px solid #1a1e36;
+    border-radius: 7px;
+    color: #9da3c0;
+    padding: .65rem .75rem;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: .72rem;
+    line-height: 1.5;
   }
 </style>

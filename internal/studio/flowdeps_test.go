@@ -51,6 +51,61 @@ func TestCheckDataFlow_StillBlocksUnknownVar(t *testing.T) {
 	}
 }
 
+func TestCheckDataFlow_AllowsMappedNodeLocals(t *testing.T) {
+	d := Draft{Flow: Flow{
+		Nodes: []sdkr.FlowNode{
+			{ID: "make", Kind: "tool", Tool: "x", Output: "items"},
+			{
+				ID:          "map",
+				Kind:        "tool",
+				Tool:        "y",
+				ForEach:     `{{ toJson .items }}`,
+				ItemVar:     "article",
+				MaxParallel: 3,
+				Input:       `{"text":{{ toJson .article.text }},"position":{{ .article_index }}}`,
+				Output:      "mapped",
+			},
+		},
+		Edges: []sdkr.FlowEdge{{From: "make", To: "map"}},
+		Entry: "make",
+	}}
+	var blockers []string
+	checkDataFlow(d, func(sev, kind, node, msg, fix string) {
+		if sev == "block" {
+			blockers = append(blockers, msg)
+		}
+	})
+	if len(blockers) != 0 {
+		t.Fatalf("expected mapped item locals to be satisfied, got: %v", blockers)
+	}
+}
+
+func TestCheckDataFlow_BlocksMissingMappedCollection(t *testing.T) {
+	d := Draft{Flow: Flow{
+		Nodes: []sdkr.FlowNode{
+			{
+				ID:      "map",
+				Kind:    "tool",
+				Tool:    "y",
+				ForEach: `{{ toJson .missing_items }}`,
+				ItemVar: "article",
+				Input:   `{"text":{{ toJson .article.text }}}`,
+				Output:  "mapped",
+			},
+		},
+		Entry: "map",
+	}}
+	var blockers []string
+	checkDataFlow(d, func(sev, kind, node, msg, fix string) {
+		if sev == "block" {
+			blockers = append(blockers, msg)
+		}
+	})
+	if len(blockers) != 1 || !strings.Contains(blockers[0], "missing_items") {
+		t.Fatalf("expected missing mapped collection blocker, got: %v", blockers)
+	}
+}
+
 func TestCheckDataFlow_BlocksMissingPythonInput(t *testing.T) {
 	d := Draft{Flow: Flow{
 		Nodes: []sdkr.FlowNode{

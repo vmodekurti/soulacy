@@ -2,6 +2,7 @@ package studio
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -72,14 +73,15 @@ func TestRefinePrompt_TolerantOfFences(t *testing.T) {
 }
 
 func TestRefinePrompt_DegradesGracefullyOnGarbage(t *testing.T) {
-	// A model that returns prose with no JSON must NOT block generation: we fall
-	// back to the original intent rather than erroring.
+	// A model that returns prose with no JSON must NOT block generation: Studio
+	// falls back to its local refiner, not a verbatim echo that leaves the next
+	// build step guessing.
 	r, err := RefinePrompt(context.Background(), fakeLLM{out: "sorry, I can't help"}, "my original intent", Catalog{})
 	if err != nil {
 		t.Fatalf("RefinePrompt should not error on garbage: %v", err)
 	}
-	if r.RefinedIntent != "my original intent" {
-		t.Errorf("want fallback to original, got %q", r.RefinedIntent)
+	if !strings.Contains(r.RefinedIntent, "Recommended architecture") || !strings.Contains(r.RefinedIntent, "Goal") {
+		t.Errorf("want deterministic expanded fallback, got %q", r.RefinedIntent)
 	}
 }
 
@@ -88,8 +90,29 @@ func TestRefinePrompt_EmptyRefinedFallsBackToOriginal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RefinePrompt: %v", err)
 	}
-	if r.RefinedIntent != "orig" {
-		t.Errorf("want fallback to original on blank refined, got %q", r.RefinedIntent)
+	if !strings.Contains(r.RefinedIntent, "Goal") || !strings.Contains(r.RefinedIntent, "orig") {
+		t.Errorf("want deterministic fallback containing original intent, got %q", r.RefinedIntent)
+	}
+}
+
+func TestRefinePrompt_ExpandsEchoedModelOutput(t *testing.T) {
+	intent := `Every weekday at 7:00am, build an "AI articles podcast" as a fixed workflow. Sources: hbr.org, technologyreview.com, gartner.com. Some are paywalled. Send the finished audio link to Telegram.`
+	b, _ := json.Marshal(intent)
+	out := `{"refined_intent":` + string(b) + `,"summary":"same"}`
+	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, intent, Catalog{Channels: []string{"telegram"}})
+	if err != nil {
+		t.Fatalf("RefinePrompt: %v", err)
+	}
+	if strings.TrimSpace(r.RefinedIntent) == strings.TrimSpace(intent) {
+		t.Fatalf("refine returned the original prompt unchanged")
+	}
+	for _, want := range []string{"Recommended architecture", "Trigger", "Processing steps", "Outputs and delivery", "Edge cases"} {
+		if !strings.Contains(r.RefinedIntent, want) {
+			t.Fatalf("refined prompt missing %q:\n%s", want, r.RefinedIntent)
+		}
+	}
+	if r.RecommendedMode != "workflow" {
+		t.Fatalf("recommended mode = %q, want workflow", r.RecommendedMode)
 	}
 }
 

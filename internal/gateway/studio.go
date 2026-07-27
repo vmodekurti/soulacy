@@ -137,20 +137,112 @@ func (s *Server) defaultAgentLLM() (provider, model string) {
 	return provider, model
 }
 
-// stampDefaultLLM fills a generated draft's empty llm.provider/model with the
-// runtime default so the choice is explicit and visible in the saved SOUL.yaml
-// (rather than blank fields that silently inherit the default at run time).
+// studioDraftWithRuntimeLLM resolves the provider/model exactly as the runtime
+// does before readiness checks or a throwaway Run Live definition is built.
+// Drafts are allowed to omit either value and inherit workspace defaults; the
+// preflight inventory is intentionally stricter, so passing the unresolved
+// draft to it produced a false "choose a model" blocker even though the runtime
+// had a usable default.
+func (s *Server) studioDraftWithRuntimeLLM(draft studio.Draft) studio.Draft {
+	if strings.TrimSpace(draft.LLM.Provider) == "" {
+		draft.LLM.Provider = strings.TrimSpace(s.cfg.LLM.DefaultProvider)
+	}
+	if strings.TrimSpace(draft.LLM.Model) == "" {
+		if pc, ok := s.cfg.LLM.Providers[draft.LLM.Provider]; ok {
+			draft.LLM.Model = strings.TrimSpace(pc.Model)
+		}
+	}
+	return draft
+}
+
+// providerRegistered reports whether the LLM router actually has this provider.
+//
+// Presence in cfg.LLM.Providers is NOT the same thing. A provider block with a
+// missing API key, an unreachable base URL, or a failed init is configured but
+// never registers with the router — so config says it exists and the runtime
+// cannot serve a single request through it.
+//
+// ok=false means "we asked and it is not there". ok is only meaningful when a
+// router exists to ask; callers use canCheckProviders for that.
+func (s *Server) providerRegistered(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" || s.llmRouter == nil {
+		return false
+	}
+	for _, p := range s.llmRouter.ProviderIDs() {
+		if p == id {
+			return true
+		}
+	}
+	return false
+}
+
+// canCheckProviders reports whether provider registration can be verified at
+// all. With no router (tests, degraded boot) an unverified provider must not be
+// treated as a missing one — refusing to stamp anything would be a worse
+// failure than stamping the configured default.
+func (s *Server) canCheckProviders() bool { return s.llmRouter != nil }
+
+// stampDefaultLLM makes a generated draft run on the workspace's configured
+// default provider, and REPLACES anything that cannot actually serve a request.
+//
+// Filling only blank fields was not enough. Nothing in internal/studio sets
+// llm.provider during generation — so a provider that appears there came from
+// the builder model's own JSON, which happily invents plausible-looking names
+// ("openai", "gpt-4") that were never configured here. Because the field was
+// non-empty, the old stamp skipped it and the invention was saved into the
+// agent's SOUL.yaml, where it fails every run while looking like a deliberate
+// choice the user made.
+//
+// The rule is therefore:
+//   - empty            → use the configured default
+//   - set, unregistered → REPLACE with the configured default (a hallucination
+//     or a stale pin; either way it cannot run)
+//   - set, registered   → keep it. Someone deliberately pinned a working
+//     provider and Studio must not overrule that.
+//
+// The model is replaced together with the provider: a model name only means
+// something relative to its provider, so keeping one across a provider swap
+// produces a pairing that exists nowhere.
 func (s *Server) stampDefaultLLM(d *studio.Draft) {
 	if d == nil {
 		return
 	}
 	p, m := s.defaultAgentLLM()
-	if strings.TrimSpace(d.LLM.Provider) == "" {
+	cur := strings.TrimSpace(d.LLM.Provider)
+
+	// With no router we cannot verify anything; fall back to filling blanks only,
+	// which is the pre-existing behaviour and cannot make things worse.
+	if !s.canCheckProviders() {
+		if cur == "" {
+			d.LLM.Provider = p
+		}
+		if strings.TrimSpace(d.LLM.Model) == "" {
+			d.LLM.Model = m
+		}
+		return
+	}
+
+	// Keep a provider that is genuinely usable, whoever chose it.
+	if cur != "" && s.providerRegistered(cur) {
+		if strings.TrimSpace(d.LLM.Model) == "" && strings.EqualFold(cur, p) {
+			d.LLM.Model = m
+		}
+		return
+	}
+
+	// Either blank or unusable. Prefer the configured default — but only if it
+	// is itself registered, otherwise we would be swapping one dead reference
+	// for another. When it is not, clear the field: blank resolves against
+	// whatever the runtime actually has, whereas a dead name fails every run.
+	// The preflight provider check reports the underlying misconfiguration.
+	if s.providerRegistered(p) {
 		d.LLM.Provider = p
-	}
-	if strings.TrimSpace(d.LLM.Model) == "" {
 		d.LLM.Model = m
+		return
 	}
+	d.LLM.Provider = ""
+	d.LLM.Model = ""
 }
 
 // handleStudioModelAdvice implements GET /api/v1/studio/model-advice. Local-first
@@ -160,16 +252,7 @@ func (s *Server) stampDefaultLLM(d *studio.Draft) {
 // model is configured and can be OFFERED as optional assistance (hybrid use).
 func (s *Server) handleStudioModelAdvice(c *fiber.Ctx) error {
 	provider, model := s.studioProviderModel()
-	registered := false
-	if s.llmRouter != nil {
-		for _, id := range s.llmRouter.ProviderIDs() {
-			if id == provider {
-				registered = true
-				break
-			}
-		}
-	}
-	if !registered {
+	if !s.providerRegistered(provider) {
 		// Provider not actually usable → advise as unconfigured (block).
 		return c.JSON(studio.AssessModel("", "", ""))
 	}
@@ -453,6 +536,32 @@ func (s *Server) preflightInput(c *fiber.Ctx, cat studio.Catalog) studio.Preflig
 		}
 		in.SecretsSet = set
 	}
+	// Provider/model availability, judged by REGISTRATION rather than by config
+	// presence. Preflight already knew how to report an unusable provider; it was
+	// simply never given the data, so an agent could be reported ready while its
+	// runtime provider had never registered and could not serve a request.
+	//
+	// Left nil when there is no router to ask: nil means "unknown" and emits no
+	// verdict, which is right — claiming every provider is missing because we
+	// could not check would be a confident lie.
+	if s.canCheckProviders() {
+		providers := map[string]bool{}
+		models := map[string]bool{}
+		// Everything the config names starts as unavailable, so a configured but
+		// unregistered provider is reported rather than simply absent from the map.
+		for id := range s.cfg.LLM.Providers {
+			providers[id] = false
+		}
+		for _, id := range s.llmRouter.ProviderIDs() {
+			providers[id] = true
+			if pc, ok := s.cfg.LLM.Providers[id]; ok && strings.TrimSpace(pc.Model) != "" {
+				models[pc.Model] = true
+				models[id+"/"+pc.Model] = true
+			}
+		}
+		in.ProvidersAvailable = providers
+		in.ModelsAvailable = models
+	}
 	return in
 }
 
@@ -526,11 +635,21 @@ func (s *Server) handleStudioAutowire(c *fiber.Ctx) error {
 	in := s.preflightInput(c, cat)
 	model := s.studioLLM()
 
-	// 1) Deterministic repair (auto-wire empty args, reconcile dangling vars,
-	//    collapse template typos).
+	// 1) Contract-driven structural repair. Pre-save "Fix automatically" must
+	//    be able to fix architecture blockers (empty graph, invalid graph,
+	//    oversized brittle graph), not only small wiring mistakes.
 	fixed := studio.RepairWiring(&req.Workflow, cat)
+	contract := studio.AssessContract(req.Workflow, cat, in)
+	if studio.RepairContractStructure(&req.Workflow, studioAutowireIntent(req.Workflow), cat, nil, contract) {
+		studio.RepairWiring(&req.Workflow, cat)
+		fixed++
+	}
 
-	// 2) Iterative LLM repair over the FULL preflight report: validate, hand the
+	// 2) Deterministic repair (auto-wire empty args, reconcile dangling vars,
+	//    collapse template typos).
+	fixed += studio.RepairWiring(&req.Workflow, cat)
+
+	// 3) Iterative LLM repair over the FULL preflight report: validate, hand the
 	//    model EVERY remaining blocker (template/wiring/MCP/python/etc.), apply
 	//    its corrected draft, re-run deterministic passes, and re-validate. Up to
 	//    a few rounds so it converges instead of fixing one thing at a time.
@@ -556,6 +675,16 @@ func (s *Server) handleStudioAutowire(c *fiber.Ctx) error {
 
 	final := studio.Preflight(req.Workflow, in)
 	return c.JSON(fiber.Map{"workflow": req.Workflow, "fixed": fixed, "preflight": final})
+}
+
+func studioAutowireIntent(d studio.Draft) string {
+	if s := strings.TrimSpace(d.Intent); s != "" {
+		return s
+	}
+	if s := strings.TrimSpace(d.RawIntent); s != "" {
+		return s
+	}
+	return strings.TrimSpace(d.Name)
 }
 
 // studioProblemLine renders a preflight issue as a single repair instruction
@@ -658,9 +787,52 @@ func (s *Server) handleStudioBuildTraces(c *fiber.Ctx) error {
 type studioBuildRequest struct {
 	Workflow studio.Draft `json:"workflow"`
 	Intent   string       `json:"intent,omitempty"`
-	// Verify, when false, runs the loop in validation-only mode (no real
-	// execution). Defaults to true: the Architect actually runs the agent.
+	// Verify is the LEGACY flag, kept so existing clients keep working. It no
+	// longer defaults to true: `verify:true` now means "opt in to real side
+	// effects", anything else (including absent) means mocked. See
+	// sideEffectPolicy for why the default flipped.
 	Verify *bool `json:"verify,omitempty"`
+	// SideEffects states the intent explicitly on the wire ("mocked" | "real")
+	// and WINS over Verify. A build loop repairs a draft that is, by definition,
+	// not yet known to be correct — running it for real can post to a channel,
+	// write a file or file a ticket once PER ATTEMPT. So the wire protocol should
+	// say out loud which world the build is allowed to touch instead of encoding
+	// it in a boolean whose name ("verify") does not mention side effects at all.
+	SideEffects string `json:"side_effects,omitempty"`
+}
+
+// sideEffectPolicy resolves the build's side-effect policy from the request.
+//
+// The failure mode this prevents: a client that omits both fields used to get
+// REAL execution — a half-built agent could spam production during its own
+// repair loop. The default is now mocked, and real execution requires an
+// explicit, named opt-in. Precedence: side_effects (explicit) > verify (legacy)
+// > mocked (safe default).
+func (r studioBuildRequest) sideEffectPolicy() studio.SideEffectPolicy {
+	switch strings.ToLower(strings.TrimSpace(r.SideEffects)) {
+	case string(studio.SideEffectsReal):
+		return studio.SideEffectsReal
+	case string(studio.SideEffectsMocked):
+		return studio.SideEffectsMocked
+	}
+	if r.Verify != nil && *r.Verify {
+		return studio.SideEffectsReal
+	}
+	return studio.SideEffectsMocked
+}
+
+// studioBuildBudget returns the report fields the GUI needs to explain HOW a
+// build ended — "we ran out of time" reads identically to "we couldn't fix it"
+// without StoppedReason, and an operator can't judge a build's cost without the
+// elapsed/token/spend totals.
+func studioBuildBudget(rep studio.BuildReport) fiber.Map {
+	return fiber.Map{
+		"stopped_reason": rep.StoppedReason,
+		"side_effects":   rep.SideEffects,
+		"elapsed_ms":     rep.Elapsed.Milliseconds(),
+		"tokens_used":    rep.TokensUsed,
+		"cost_usd":       rep.CostUSD,
+	}
 }
 
 // handleStudioBuild implements POST /api/v1/studio/build — the Architect's
@@ -706,25 +878,34 @@ func (s *Server) handleStudioBuild(c *fiber.Ctx) error {
 	tests := studio.SynthesizeTests(c.Context(), model, intent, req.Workflow, cat)
 	doneTests(nil, map[string]any{"count": len(tests)})
 
-	// (3) Choose the verifier. Default: REAL execution via the engine.
-	verify := true
-	if req.Verify != nil {
-		verify = *req.Verify
-	}
-	opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr, ExtraProblems: s.pythonBuildProblems}
-	if verify {
-		opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
+	// (3) Choose the verifier from the side-effect POLICY, never from a bare
+	// boolean at this call site. Default is MOCKED: a build that was never asked
+	// to touch the real world must not, and studio.VerifierFor is the single
+	// place that decision is made.
+	policy := req.sideEffectPolicy()
+	opts := studio.BuildOptions{
+		In: in, Tests: tests, Trace: tr, ExtraProblems: s.pythonBuildProblems,
+		SideEffects: policy,
+		Verifier:    studio.VerifierFor(policy, s.studioRealRunner()),
+		// Bound the whole loop explicitly. Under SideEffectsReal an unbounded
+		// "still making progress" loop would hold a live tool connection and an
+		// LLM budget open indefinitely.
+		MaxElapsed: studio.DefaultMaxElapsed,
 	}
 
 	rep := studio.BuildUntilWorks(c.Context(), model, req.Workflow, cat, opts)
 
 	final := studio.Preflight(rep.Workflow, in)
-	return c.JSON(fiber.Map{
+	out := fiber.Map{
 		"report":    rep,
 		"preflight": final,
 		"glue":      glueNotes,
 		"traceId":   tr.ID,
-	})
+	}
+	for k, v := range studioBuildBudget(rep) {
+		out[k] = v
+	}
+	return c.JSON(out)
 }
 
 // handleStudioBuildStream is the streaming variant of /studio/build. It runs the
@@ -818,13 +999,16 @@ func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
 		tests := studio.SynthesizeTests(ctx, model, intent, req.Workflow, cat)
 		doneTests(nil, map[string]any{"count": len(tests)})
 
-		verify := true
-		if req.Verify != nil {
-			verify = *req.Verify
-		}
-		opts := studio.BuildOptions{In: in, Tests: tests, Trace: tr, ExtraProblems: s.pythonBuildProblems}
-		if verify {
-			opts.Verifier = studio.RealRunVerifier{Runner: s.studioRealRunner()}
+		// Same side-effect policy as the sync path (see sideEffectPolicy): mocked
+		// unless the caller explicitly asked for real execution. Keeping the two
+		// entry points on one helper is what stops the streamed variant from
+		// quietly having a different (more dangerous) default than /studio/build.
+		policy := req.sideEffectPolicy()
+		opts := studio.BuildOptions{
+			In: in, Tests: tests, Trace: tr, ExtraProblems: s.pythonBuildProblems,
+			SideEffects: policy,
+			Verifier:    studio.VerifierFor(policy, s.studioRealRunner()),
+			MaxElapsed:  studio.DefaultMaxElapsed,
 		}
 		opts.OnEvent = func(ev studio.BuildEvent) {
 			b, _ := json.Marshal(ev)
@@ -833,7 +1017,11 @@ func (s *Server) handleStudioBuildStream(c *fiber.Ctx) error {
 
 		rep := studio.BuildUntilWorks(ctx, model, req.Workflow, cat, opts)
 		final := studio.Preflight(rep.Workflow, in)
-		done, _ := json.Marshal(fiber.Map{"report": rep, "preflight": final, "traceId": tr.ID})
+		payload := fiber.Map{"report": rep, "preflight": final, "traceId": tr.ID}
+		for k, v := range studioBuildBudget(rep) {
+			payload[k] = v
+		}
+		done, _ := json.Marshal(payload)
 		emit("done", string(done))
 	}()
 
@@ -892,7 +1080,14 @@ func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
 	cat := s.studioCatalogSnapshot()
 	s.groundCatalog(&cat)
 	in := s.preflightInput(c, cat)
-	ctx := context.WithoutCancel(c.Context())
+	// Detached from the request context — Fiber hands the connection to a stream
+	// writer, so c.Context() is done before the pipeline finishes — but STILL
+	// cancellable. Previously this was a bare WithoutCancel, which meant a user
+	// who closed the tab or hit Cancel could not stop the run: it kept burning
+	// model tokens with nobody listening. The writer cancels this when the client
+	// goes away (ST-04).
+	ctx, cancelRun := context.WithCancel(context.WithoutCancel(c.Context()))
+	defer cancelRun()
 
 	type sse struct{ event, data string }
 	events := make(chan sse, 32)
@@ -941,12 +1136,43 @@ func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
 			},
 		}
 		res, err := studio.RunGeneratePipeline(ctx, model, req.Intent, cat, opts)
-		if err != nil {
-			done, _ := json.Marshal(fiber.Map{"error": err.Error(), "result": res})
-			emit("done", string(done))
-			return
+
+		// Route the streamed result through the SAME finalization the synchronous
+		// compile path uses. Without this, res.Compile.Contract stayed nil on the
+		// streamed path while the sync path populated it — and the GUI's
+		// post-generation blocker gate keys off exactly that field
+		// (gui/src/pages/Studio.svelte applyCompile → `data.contract`). The failure
+		// mode: a draft with execution blockers landed on the canvas presented as a
+		// clean success, and the first the user heard of it was a 422 at Save (or a
+		// broken agent at run time). Finalization runs even on the error path so a
+		// partial draft still carries an honest verdict rather than no verdict.
+		s.finalizeStudioResult(&res.Compile, cat, in)
+
+		// `blocked` is the unambiguous "do not treat this as a good draft" signal.
+		// The partial draft is preserved in `result` either way (the story requires
+		// partial drafts survive failure), so a client can render what was built —
+		// it just can't mistake it for a success.
+		contract := res.Contract
+		if res.Compile.Contract != nil {
+			contract = *res.Compile.Contract
 		}
-		done, _ := json.Marshal(fiber.Map{"result": res})
+		blocked := err != nil || contract.Blockers > 0
+		payload := fiber.Map{
+			"result":   res,
+			"contract": contract,
+			"blocked":  blocked,
+		}
+		if err != nil {
+			payload["error"] = err.Error()
+		}
+		if blocked {
+			// Deliberately NOT folded into `error`: the draft must still reach the
+			// canvas so the user can see and fix it. `error` means "the pipeline
+			// failed"; `blocked` means "there IS a draft, but it must not be
+			// presented as ready".
+			payload["blocked_reason"] = studioBlockedReason(err, contract)
+		}
+		done, _ := json.Marshal(payload)
 		emit("done", string(done))
 	}()
 
@@ -955,15 +1181,39 @@ func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
 	c.Set("Connection", "keep-alive")
 	c.Set("X-Accel-Buffering", "no")
 	c.Context().SetBodyStreamWriter(fasthttp.StreamWriter(func(w *bufio.Writer) {
+		// A failed flush is the ONLY signal that the client went away once the
+		// connection is handed to the stream writer. Cancelling the run then stops
+		// work nobody is waiting for — previously the pipeline ran to completion
+		// burning model tokens for a closed tab.
+		defer cancelRun()
 		for ev := range events {
 			if ev.event != "" {
 				fmt.Fprintf(w, "event: %s\n", ev.event) //nolint:errcheck
 			}
 			fmt.Fprintf(w, "data: %s\n\n", ev.data) //nolint:errcheck
-			w.Flush()                               //nolint:errcheck
+			if err := w.Flush(); err != nil {
+				cancelRun()
+				// Keep draining: the producer's buffered sends must not block on a
+				// channel nobody is reading, or its goroutine leaks.
+				for range events {
+				}
+				return
+			}
 		}
 	}))
 	return nil
+}
+
+// studioBlockedReason renders the one-line explanation that accompanies
+// `blocked:true` on the generate stream's done frame.
+func studioBlockedReason(err error, contract studio.ContractResult) string {
+	if err != nil {
+		return err.Error()
+	}
+	if s := strings.TrimSpace(contract.Summary); s != "" {
+		return s
+	}
+	return fmt.Sprintf("this draft has %d execution blocker(s) and is not ready to run", contract.Blockers)
 }
 
 // studioRealRunner wires the studio RealRunVerifier to the engine's execution
@@ -994,18 +1244,180 @@ func truncate(s string, n int) string {
 }
 
 // studioTryAgentRequest runs an UNSAVED reasoning agent against one question.
+//
+// ConfirmSideEffects / AcknowledgedTools are the Run Live consent surface. Run
+// Live fires REAL tools, so it can send a message, write a file or run a
+// privileged command on the operator's behalf. Previously it did that silently
+// (and force-enabled Unattended so nothing could even pause to ask). The request
+// must now carry an explicit acknowledgement of exactly what it is about to
+// cause; without one the handler returns 409 + a preview instead of running.
 type studioTryAgentRequest struct {
 	Workflow studio.Draft `json:"workflow"`
 	Question string       `json:"question"`
+	// ConfirmSideEffects is the blanket acknowledgement: "I have seen the
+	// preview and I accept every side effect in it." It is also what grants
+	// privileged exposure to ToAgentDefinition.
+	ConfirmSideEffects bool `json:"confirm_side_effects,omitempty"`
+	// AcknowledgedTools is the per-tool form, for a GUI that lists each tool with
+	// its own checkbox. The run proceeds only when it covers EVERY tool in the
+	// preview; anything left over comes back in the 409 as unacknowledged_tools.
+	AcknowledgedTools []string `json:"acknowledged_tools,omitempty"`
+}
+
+// studioRunPreview is the structured "what would this actually do?" payload,
+// shared by POST /studio/run-preview and the 409 body of /studio/try-agent so
+// the confirmation dialog and the refusal can never describe different runs.
+type studioRunPreview struct {
+	// SideEffectTools is the union the operator must acknowledge before Run Live
+	// starts: privileged (S3 high-risk) tools, tools the author marked
+	// confirm-required, and channel tools. Read-only surfaces (a web fetch, a
+	// directory listing) are deliberately excluded — they are visible in Summary
+	// but they do not escape the throwaway run, so gating on them would train the
+	// operator to click through the dialog without reading it.
+	SideEffectTools []string `json:"side_effect_tools"`
+	// RequiresConfirmation is true when SideEffectTools is non-empty or the draft
+	// needs privileged-exposure consent.
+	RequiresConfirmation bool `json:"requires_confirmation"`
+	// RequiresPrivilegedExposure mirrors the Save-path consent gate
+	// (studio.Plan): a privileged-tier agent bound to a channel.
+	RequiresPrivilegedExposure bool                 `json:"requires_privileged_exposure"`
+	ConsentItems               []studio.ConsentItem `json:"consent_items,omitempty"`
+	// Summary is the full studio.SecuritySummary — NetworkTools, FileTools,
+	// ChannelTools, PrivilegedTools, ConfirmTools, UntrustedContentSources,
+	// intent-gate mode — so the GUI can render the complete picture.
+	Summary   studio.SecuritySummary   `json:"summary"`
+	Blockers  []studio.SecurityFinding `json:"security_blockers,omitempty"`
+	Warnings  []studio.SecurityFinding `json:"security_warnings,omitempty"`
+	Contract  studio.ContractResult    `json:"contract"`
+	Runnable  bool                     `json:"runnable"` // contract has no blockers
+	Preflight studio.PreflightResult   `json:"preflight"`
+}
+
+// studioRunPreviewFor computes the Run Live preview for a draft. Pure over the
+// live catalog + preflight state: it never runs anything.
+func (s *Server) studioRunPreviewFor(c *fiber.Ctx, draft studio.Draft) studioRunPreview {
+	draft = s.studioDraftWithRuntimeLLM(draft)
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+
+	var def *agent.Definition
+	if id := strings.TrimSpace(draft.ID); id != "" && s.loader != nil {
+		def = s.loader.Get(id)
+	}
+	rev := studio.SecurityPreflight(draft, def, s.workspaceIntentGateDefault())
+	contract := studio.AssessContract(draft, cat, in)
+
+	out := studioRunPreview{
+		SideEffectTools: studioSideEffectTools(rev.Summary),
+		Summary:         rev.Summary,
+		Blockers:        rev.Blockers,
+		Warnings:        rev.Warnings,
+		Contract:        contract,
+		Runnable:        contract.Blockers == 0,
+		Preflight:       studio.Preflight(draft, in),
+	}
+	// Same consent decision Save uses (studio.Plan), so Run Live and Save can't
+	// disagree about whether a draft needs privileged-exposure consent.
+	if plan, err := studio.Plan(draft); err == nil && plan.RequiresConsent {
+		out.RequiresPrivilegedExposure = true
+		out.ConsentItems = plan.ConsentItems
+	}
+	out.RequiresConfirmation = len(out.SideEffectTools) > 0 || out.RequiresPrivilegedExposure
+	return out
+}
+
+// studioSideEffectTools is the acknowledgement set derived from a security
+// summary. Kept in ONE place so the preview endpoint, the 409 body and the gate
+// itself can never drift apart — a gate that lists different tools than the
+// dialog is a gate that can be walked past.
+func studioSideEffectTools(sum studio.SecuritySummary) []string {
+	var out []string
+	for _, group := range [][]string{sum.PrivilegedTools, sum.ConfirmTools, sum.ChannelTools} {
+		for _, t := range group {
+			if t = strings.TrimSpace(t); t != "" && !studioContainsTool(out, t) {
+				out = append(out, t)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func studioContainsTool(list []string, want string) bool {
+	for _, v := range list {
+		if v == want {
+			return true
+		}
+	}
+	return false
+}
+
+// unacknowledged returns the tools in `need` that the request has not covered.
+// A blanket ConfirmSideEffects covers everything; otherwise every tool must be
+// named individually.
+func (r studioTryAgentRequest) unacknowledged(need []string) []string {
+	if r.ConfirmSideEffects {
+		return nil
+	}
+	ack := make(map[string]bool, len(r.AcknowledgedTools))
+	for _, t := range r.AcknowledgedTools {
+		ack[strings.TrimSpace(t)] = true
+	}
+	var missing []string
+	for _, t := range need {
+		if !ack[t] {
+			missing = append(missing, t)
+		}
+	}
+	return missing
+}
+
+// studioRunPreviewRequest is the POST /api/v1/studio/run-preview body.
+type studioRunPreviewRequest struct {
+	Workflow studio.Draft `json:"workflow"`
+}
+
+// handleStudioRunPreview implements POST /api/v1/studio/run-preview. It returns
+// exactly what a Run Live of this draft would be allowed to do — the same
+// payload /studio/try-agent refuses with — WITHOUT running anything, so the GUI
+// can render the confirmation dialog before the operator commits. Read-only and
+// deterministic: no engine, no tools, no LLM.
+func (s *Server) handleStudioRunPreview(c *fiber.Ctx) error {
+	var req studioRunPreviewRequest
+	if err := c.BodyParser(&req); err != nil {
+		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+	return c.JSON(s.studioRunPreviewFor(c, req.Workflow))
 }
 
 // handleStudioTryAgent implements POST /api/v1/studio/try-agent. It runs an
 // UNSAVED ReAct/Plan-Execute agent against a single sample question so the author
 // can see real behaviour before saving. The agent is registered in memory ONLY
-// (never written to disk), runs unattended so a guardrail confirmation can't hang
-// the try, and is removed immediately after. Real tools/skills DO fire (that's
-// the point of a real try), but the reply is returned to the caller and is NOT
-// delivered to any channel — calling Handle directly never routes the reply out.
+// (never written to disk) and is removed immediately after. Real tools/skills DO
+// fire (that's the point of a real try), but the reply is returned to the caller
+// and is NOT delivered to any channel — calling Handle directly never routes the
+// reply out.
+//
+// Because the tools are real, the run is gated exactly like Save:
+//
+//   - 422 when the draft has contract BLOCKERS. Run Live must not start a
+//     workflow that is already known not to execute; previously it started
+//     anyway and the failure surfaced as an opaque runtime error.
+//   - 409 + a studioRunPreview when the draft has side-effecting / privileged /
+//     confirm-required tools the request has not acknowledged. A second request
+//     carrying confirm_side_effects (or acknowledged_tools covering the list)
+//     proceeds.
+//   - privileged exposure is passed to ToAgentDefinition ONLY when acknowledged;
+//     it used to be hardcoded true, which silently granted the "system"
+//     capability to a throwaway run.
+//
+// Deadlock safety (the original reason Unattended was force-enabled here): the
+// run stays bounded by the 120s timeout below, and the engine FAILS FAST rather
+// than hanging when a confirmation cannot be satisfied — with no confirm channel
+// in this context, maybeConfirm/dynamicConfirm deny with a clear error instead of
+// blocking on a channel nobody will ever answer. So we get the non-hanging
+// property without auto-approving guardrails the operator never saw.
 func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 	var req studioTryAgentRequest
 	if err := c.BodyParser(&req); err != nil {
@@ -1024,15 +1436,53 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusBadRequest, "question is required")
 	}
 
-	defVal, err := studio.ToAgentDefinition(req.Workflow, true)
+	// (1) Contract gate — the same authoritative assessment /studio/save runs.
+	// A workflow with execution blockers cannot produce a meaningful try; running
+	// it just converts a precise, fixable blocker list into a runtime error.
+	req.Workflow = s.studioDraftWithRuntimeLLM(req.Workflow)
+	preview := s.studioRunPreviewFor(c, req.Workflow)
+	if preview.Contract.Blockers > 0 {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"error":     preview.Contract.Summary,
+			"contract":  preview.Contract,
+			"preflight": preview.Preflight,
+			"preview":   preview,
+		})
+	}
+
+	// (2) Side-effect gate — refuse to cause real, possibly irreversible effects
+	// the caller has not explicitly acknowledged. The 409 body IS the preview, so
+	// the GUI can render a dialog listing exactly what would happen and retry with
+	// the acknowledgement.
+	missing := req.unacknowledged(preview.SideEffectTools)
+	needsExposureAck := preview.RequiresPrivilegedExposure && !req.ConfirmSideEffects
+	if len(missing) > 0 || needsExposureAck {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+			"error":                 "Run Live would cause real side effects; explicit acknowledgement required",
+			"requires_confirmation": true,
+			"unacknowledged_tools":  missing,
+			"preview":               preview,
+		})
+	}
+
+	// (3) Privileged exposure is granted only by the acknowledgement above —
+	// never implicitly. Passing `true` unconditionally (the old behaviour) stamped
+	// the "system" capability onto the throwaway definition, so a Run Live could
+	// reach privileged tools the operator had not agreed to expose.
+	acceptPrivileged := req.ConfirmSideEffects
+	defVal, err := studio.ToAgentDefinition(req.Workflow, acceptPrivileged)
 	if err != nil {
 		return s.errJSON(c, fiber.StatusBadRequest, err)
 	}
 	def := &defVal
 	def.ID = "studio-try-" + uuid.NewString()
 	def.Enabled = true
-	def.Unattended = true // auto-approve confirmations so the throwaway run can't hang
-	def.SourcePath = ""   // never persisted
+	// Unattended is deliberately NOT forced on. See the deadlock-safety note in
+	// the doc comment: the bounded timeout plus the engine's fail-fast denial when
+	// no confirmer is present give us the "can't hang" property without silently
+	// auto-approving every guardrail. Whatever the draft itself declares is
+	// carried through by ToAgentDefinition and left alone.
+	def.SourcePath = "" // never persisted
 
 	s.loader.Register(def)
 	defer s.loader.Unregister(def.ID)
@@ -1056,7 +1506,18 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 	var (
 		traceMu sync.Mutex
 		trace   = []fiber.Map{}
+		// executed records the side-effecting calls that actually reached the
+		// outside world, in order, so a cancelled or failed run can answer
+		// "what did it already do?" (ST-11).
+		executed = []fiber.Map{}
 	)
+	// The preview already classified which of this draft's tools have side
+	// effects; reuse that set rather than re-deriving it, so the run reports
+	// against exactly what the operator was shown and acknowledged.
+	sideEffectTool := make(map[string]bool, len(preview.SideEffectTools))
+	for _, t := range preview.SideEffectTools {
+		sideEffectTool[t] = true
+	}
 	ctx = runtime.WithToolObserver(ctx, func(call message.ToolCall, result string, isErr bool) {
 		detail := ""
 		if call.Name == "read_skill" {
@@ -1064,10 +1525,11 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 				detail = sk
 			}
 		}
-		args := ""
+		args, argsFull := "", ""
 		if len(call.Arguments) > 0 {
 			if b, err := json.Marshal(call.Arguments); err == nil {
 				args = truncate(string(b), 240)
+				argsFull = truncate(string(b), 100000)
 			}
 		}
 		traceMu.Lock()
@@ -1077,7 +1539,23 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 			"args":   args,
 			"result": truncate(strings.TrimSpace(result), 400),
 			"error":  isErr,
+			// Full argument/result payloads alongside the truncated summary, so a
+			// structured event can be expanded rather than being a clipped string
+			// the author has to guess the rest of.
+			"args_full":   argsFull,
+			"result_full": truncate(strings.TrimSpace(result), 100000),
 		})
+		// Record side-effecting calls that ACTUALLY happened. If a run is
+		// cancelled or fails halfway, "what did it already do to the outside
+		// world?" is the first question, and previously nothing answered it —
+		// the trace listed every call without saying which ones touched anything
+		// real.
+		if sideEffectTool[call.Name] {
+			executed = append(executed, fiber.Map{
+				"tool": call.Name, "at": time.Now().UTC().Format(time.RFC3339),
+				"failed": isErr,
+			})
+		}
 		traceMu.Unlock()
 	})
 
@@ -1132,11 +1610,26 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 	traceMu.Lock()
 	usedTrace := trace
 	usedNodeTrace := nodeTrace
+	usedExecuted := executed
 	traceMu.Unlock()
 	if usedNodeTrace == nil {
 		usedNodeTrace = []fiber.Map{}
 	}
-	resp := fiber.Map{"reply": replyText, "parts": reply.Parts, "trace": usedTrace, "node_trace": usedNodeTrace}
+	resp := fiber.Map{
+		"reply": replyText, "parts": reply.Parts,
+		"trace": usedTrace, "node_trace": usedNodeTrace,
+		// What this run actually did to the outside world. Present even on the
+		// error path — especially on the error path, since a half-completed run
+		// is exactly when it matters whether the message was already sent.
+		"executed_side_effects": usedExecuted,
+		// Report the posture the run ACTUALLY had, so "it worked in Run Live" is
+		// an honest claim: unattended=false means guardrail confirmations were
+		// enforced (and denied, not auto-approved), and acknowledged_tools records
+		// what the operator signed off on.
+		"unattended":         def.Unattended,
+		"acknowledged_tools": preview.SideEffectTools,
+		"preview":            preview,
+	}
 	if runErr != nil {
 		resp["error"] = runErr.Error()
 	}
@@ -1187,9 +1680,14 @@ func (s *Server) registerEphemeralPeers(def *agent.Definition, newAgents []studi
 			Description:  na.Description,
 			SystemPrompt: na.SystemPrompt,
 			Enabled:      true,
-			Unattended:   true, // throwaway run must not hang on a confirmation
-			MaxTurns:     15,
-			Memory:       agent.MemoryPolicy{MaxTokens: 8000},
+			// Inherit the PARENT's attendance rather than forcing true. Forcing it
+			// here reopened the exact hole the Run Live consent gate closes: an
+			// attended parent could still reach a confirmation-requiring tool
+			// THROUGH a synthesized peer and have it auto-approved, because the
+			// stub — not the parent — is what the runtime consults for that call.
+			Unattended: def.Unattended,
+			MaxTurns:   15,
+			Memory:     agent.MemoryPolicy{MaxTokens: 8000},
 			LLM: agent.LLMConfig{
 				Provider:    s.cfg.LLM.DefaultProvider,
 				Temperature: 0.7,
@@ -1774,27 +2272,54 @@ func (s *Server) handleStudioDiagnoseRun(c *fiber.Ctx) error {
 	s.groundCatalog(&cat)
 	in := s.preflightInput(c, cat)
 
-	// (1) Repair directly against the real runtime error.
+	// (1) Repair from the concrete per-node trace first. This gives the bounded
+	// repair model the failing node's original template/code and the real
+	// producer output shape, instead of asking it to guess from a final error.
+	var traceRepairs []studio.RepairProposal
+	traceRunID := ""
+	if s.engine != nil {
+		if tr, ok := s.engine.LatestFlowTrace(entry.Queue); ok && len(tr.Entries) > 0 {
+			draft, traceRepairs = studioRepairDraftFromTrace(c.Context(), model, draft, tr.Entries)
+			traceRunID = tr.RunID
+			studio.RepairWiring(&draft, cat)
+		}
+	}
+
+	// (2) Repair any remaining cross-node or structural problem against the real
+	// runtime error. The trace repair above is intentionally node-local.
 	problem := "At RUN TIME this agent failed with: " + strings.TrimSpace(entry.ErrorMsg) +
 		" — change the agent so this cannot happen again."
 	healed, changed := studio.RepairWithProblems(c.Context(), model, draft, []string{problem}, cat)
+	changed = changed || len(traceRepairs) > 0
 	studio.RepairWiring(&healed, cat)
 
-	// (2) Validate (and, for workflows, re-run) to confirm the fix holds.
+	// (3) Validate (and, for workflows, re-run) to confirm the fix holds.
+	//
+	// SideEffectsReal is set DELIBERATELY here (it is now required — a real
+	// verifier without the policy is downgraded to the mock). Self-heal repairs a
+	// failure that actually happened at run time, taken from the dead-letter
+	// queue: a mocked walk cannot reproduce a real tool's error, so verifying
+	// against mocks would report "fixed" on the exact evidence that proves it
+	// isn't. The operator explicitly asked to heal THIS failed run, which is the
+	// same consent shape as re-running the agent, and MaxElapsed bounds it.
 	rep := studio.BuildUntilWorks(c.Context(), model, healed, cat, studio.BuildOptions{
 		In:            in,
-		Verifier:      studio.RealRunVerifier{Runner: s.studioRealRunner()},
+		SideEffects:   studio.SideEffectsReal,
+		Verifier:      studio.VerifierFor(studio.SideEffectsReal, s.studioRealRunner()),
 		ExtraProblems: s.pythonBuildProblems,
+		MaxElapsed:    studio.DefaultMaxElapsed,
 	})
 
 	return c.JSON(fiber.Map{
-		"agentId":   entry.Queue,
-		"agentName": def.Name,
-		"error":     entry.ErrorMsg,
-		"changed":   changed,
-		"workflow":  rep.Workflow,
-		"report":    rep,
-		"preflight": studio.Preflight(rep.Workflow, in),
+		"agentId":      entry.Queue,
+		"agentName":    def.Name,
+		"error":        entry.ErrorMsg,
+		"changed":      changed,
+		"traceRunId":   traceRunID,
+		"traceRepairs": traceRepairs,
+		"workflow":     rep.Workflow,
+		"report":       rep,
+		"preflight":    studio.Preflight(rep.Workflow, in),
 	})
 }
 
@@ -1840,18 +2365,39 @@ func (s *Server) handleStudioDiagnoseSession(c *fiber.Ctx) error {
 	s.groundCatalog(&cat)
 	in := s.preflightInput(c, cat)
 
+	var traceRepairs []studio.RepairProposal
+	traceRunID := ""
+	if s.engine != nil {
+		tr, ok := s.engine.FlowTraceFor(req.AgentID, req.SessionID)
+		if !ok {
+			tr, ok = s.engine.LatestFlowTrace(req.AgentID)
+		}
+		if ok && len(tr.Entries) > 0 {
+			draft, traceRepairs = studioRepairDraftFromTrace(c.Context(), model, draft, tr.Entries)
+			traceRunID = tr.RunID
+			studio.RepairWiring(&draft, cat)
+		}
+	}
+
 	problem := "A REAL execution of this agent failed or needs debugging.\n" +
 		"Agent: " + req.AgentID + "\nSession: " + req.SessionID + "\n" +
 		"Error: " + strings.TrimSpace(errText) + "\n" +
 		"Recent action-log evidence:\n" + evidence + "\n" +
 		"Change the agent workflow/tools/prompts so this failure is prevented. Preserve the user's intent and only make targeted fixes."
 	healed, changed := studio.RepairWithProblems(c.Context(), model, draft, []string{problem}, cat)
+	changed = changed || len(traceRepairs) > 0
 	studio.RepairWiring(&healed, cat)
 
+	// SideEffectsReal, deliberately — same reasoning as handleStudioDiagnoseRun:
+	// the defect being repaired is a REAL execution failure reconstructed from the
+	// action log, and a mocked verifier would declare it fixed without ever
+	// touching the thing that broke. Bounded by MaxElapsed.
 	rep := studio.BuildUntilWorks(c.Context(), model, healed, cat, studio.BuildOptions{
 		In:            in,
-		Verifier:      studio.RealRunVerifier{Runner: s.studioRealRunner()},
+		SideEffects:   studio.SideEffectsReal,
+		Verifier:      studio.VerifierFor(studio.SideEffectsReal, s.studioRealRunner()),
 		ExtraProblems: s.pythonBuildProblems,
+		MaxElapsed:    studio.DefaultMaxElapsed,
 	})
 
 	failingInput := studioSessionFailingInput(events, req.AgentID, req.SessionID)
@@ -1863,6 +2409,8 @@ func (s *Server) handleStudioDiagnoseSession(c *fiber.Ctx) error {
 		"error":         errText,
 		"evidence":      evidence,
 		"changed":       changed,
+		"traceRunId":    traceRunID,
+		"traceRepairs":  traceRepairs,
 		"workflow":      rep.Workflow,
 		"report":        rep,
 		"preflight":     studio.Preflight(rep.Workflow, in),
@@ -2007,30 +2555,63 @@ func (s *Server) handleStudioCompileAgent(c *fiber.Ctx) error {
 	if strings.TrimSpace(req.Intent) == "" {
 		return s.errMsg(c, fiber.StatusBadRequest, "intent is required")
 	}
-	model := s.studioLLM()
-	if model == nil {
-		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
-	}
 	s.groundCatalog(&req.Catalog)
 	s.groundGenerationProfile(&req.Catalog, req.Intent)
-	res, err := studio.CompileAgent(c.Context(), model, req.Intent, req.Catalog, req.Strategy, req.Answers)
-	if err != nil {
-		return s.errMsg(c, fiber.StatusUnprocessableEntity, s.studioGenerationHint(err))
+	advice := studio.AdviseStrategy(req.Intent, req.Catalog, req.Strategy, false)
+	strategy := advice.RuntimeStrategy
+	if strategy == "" {
+		strategy = "auto"
+	}
+	res, ok := studio.CompileDeterministicAgent(req.Intent, req.Catalog, strategy, req.Answers)
+	if !ok {
+		return s.errMsg(c, fiber.StatusUnprocessableEntity, "deterministic agent planner could not build this agent; add at least one tool or choose a fixed workflow")
 	}
 	s.stampDefaultLLM(&res.Workflow)         // make the runtime provider/model explicit in the YAML
 	studio.ApplyTemplateFixes(&res.Workflow) // deterministic self-heal (no-op when there's no flow graph)
-	if res.Explanation != nil {
-		pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog))
-		var needs []string
-		for _, b := range pf.Blockers {
-			needs = append(needs, preflightLine(b))
-		}
-		for _, w := range pf.Warnings {
-			needs = append(needs, preflightLine(w))
-		}
-		res.Explanation.NeedsConfig = needs
+	s.finalizeStudioCompileResult(c, &res, req.Catalog)
+	return c.JSON(studioCompileResponseFor(res, advice))
+}
+
+// studioCompileResponse carries the parts of the Strategy Advisor's verdict that
+// Draft.Recommendation{Mode, Rationale} cannot express.
+//
+// AdviseStrategy computes a capability warning, a confidence, and the resolved
+// model profile, and the compile path then flattened all three away — so an
+// operator who forced ReAct onto a model that demonstrably cannot emit
+// well-formed tool arguments got a clean-looking draft and no warning, even
+// though the backend had already written one. That is ST-02's "informed
+// override": the override is honoured, but it stops being uninformed.
+//
+// The advisory is deliberately additive and never blocking.
+type studioCompileResponse struct {
+	studio.Result
+	// CapabilityWarning is set when the chosen mode exceeds what the selected
+	// model can do. Advisory: the operator may know something the registry
+	// doesn't, but they should not learn it from a 3am failure.
+	CapabilityWarning string `json:"capability_warning,omitempty"`
+	// Confidence is how sure the advisor is of the mode it picked
+	// (high | medium | low). A forced-but-unsupported mode reads "low".
+	Confidence string `json:"confidence,omitempty"`
+	// Capabilities is the profile the decision was based on, so the UI can show
+	// WHY a mode was recommended instead of asserting it.
+	Capabilities *studio.Capabilities `json:"capabilities,omitempty"`
+	// StrategyMode / StrategyReason echo the advisor's own verdict. They are
+	// separate from Draft.Recommendation because the recommendation records what
+	// the PLANNER built, while these record what the ADVISOR decided — and when
+	// those two disagree, the operator needs to see both.
+	StrategyMode   string `json:"strategy_mode,omitempty"`
+	StrategyReason string `json:"strategy_reason,omitempty"`
+}
+
+func studioCompileResponseFor(res studio.Result, advice studio.StrategyAdvice) studioCompileResponse {
+	return studioCompileResponse{
+		Result:            res,
+		CapabilityWarning: advice.CapabilityWarning,
+		Confidence:        advice.Confidence,
+		Capabilities:      advice.Capabilities,
+		StrategyMode:      advice.Mode,
+		StrategyReason:    advice.Reason,
 	}
-	return c.JSON(res)
 }
 
 // handleStudioCompile implements POST /api/v1/studio/compile.
@@ -2041,11 +2622,6 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	}
 	if req.Intent == "" {
 		return s.errMsg(c, fiber.StatusBadRequest, "intent is required")
-	}
-
-	model := s.studioLLM()
-	if model == nil {
-		return s.errMsg(c, fiber.StatusServiceUnavailable, "LLM router unavailable")
 	}
 
 	// Ground the compiler in the REAL installed skills + connected MCP tools
@@ -2062,62 +2638,59 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	// workflow, don't build one": even if the client calls /compile, the server
 	// returns the agent, so the user never gets a workflow carrying a "use ReAct"
 	// sticker (or a brittle multi-agent flow with invented peers).
-	if mode := studio.RecommendAgentMode(req.Intent + " " + req.RawIntent); mode != "" {
-		ares, aerr := studio.CompileAgent(c.Context(), model, req.Intent, req.Catalog, mode, req.Answers)
-		if aerr != nil {
-			// Do NOT silently fall through to the workflow compiler — that would
-			// produce exactly the brittle workflow this guard exists to prevent,
-			// with no signal. Surface the failure so the user (or a retry) knows
-			// the intended agent build didn't happen.
-			return s.errJSON(c, fiber.StatusInternalServerError, aerr)
+	// The user can force a fixed workflow (explicit Workflow-mode toggle). An
+	// explicit human choice overrides the reasoning-fit heuristic below —
+	// without this, RecommendAgentMode kept reverting their pick to an agent.
+	advice := studio.AdviseStrategy(req.Intent+" "+req.RawIntent, req.Catalog, "", req.ForceWorkflow)
+	if advice.Mode != "workflow" {
+		ares, ok := studio.CompileDeterministicAgent(req.Intent, req.Catalog, advice.RuntimeStrategy, req.Answers)
+		if !ok {
+			return s.errMsg(c, fiber.StatusUnprocessableEntity, "deterministic agent planner could not build this agent; add capabilities or switch to Workflow")
 		}
 		s.stampDefaultLLM(&ares.Workflow) // make the runtime provider/model explicit in the YAML
-		return c.JSON(ares)
+		s.finalizeStudioCompileResult(c, &ares, req.Catalog)
+		return c.JSON(studioCompileResponseFor(ares, advice))
 	}
 
-	res, err := studio.Compile(c.Context(), model, req.Intent, req.Catalog, req.Answers)
-	if err != nil {
-		// Surface a plain-language, actionable failure (which builder model, and
-		// how to fix it) rather than a raw JSON-parser error.
-		return s.errMsg(c, fiber.StatusUnprocessableEntity, s.studioGenerationHint(err))
+	// Workflow mode is deterministic. Studio no longer asks the builder model to
+	// invent graph JSON; it uses curated/common planners and blocks before save
+	// if the resulting contract is not runnable.
+	if res, ok := studio.CompileDeterministicWorkflow(req.Intent, req.Catalog, req.Answers); ok {
+		s.stampDefaultLLM(&res.Workflow)
+		s.finalizeStudioCompileResult(c, &res, req.Catalog)
+		return c.JSON(studioCompileResponseFor(res, advice))
 	}
-	s.stampDefaultLLM(&res.Workflow) // make the runtime provider/model explicit in the YAML
+	return s.errMsg(c, fiber.StatusUnprocessableEntity, "deterministic workflow planner could not build this workflow; describe the source, transform, and delivery steps more explicitly")
+}
 
-	// Deterministic self-heal at generation, regardless of model quality:
-	//  1) RepairWiring — reconcile dangling {{ .var }} refs to the right upstream
-	//     output and fill empty required tool args.
-	//  2) ApplyTemplateFixes — scalarize any whole-object / wrong-nested refs
-	//     (including ones step 1 may have wired to an object).
-	studio.RepairWiring(&res.Workflow, req.Catalog)
-	studio.ApplyTemplateFixes(&res.Workflow)
-
-	// Auto-repair: if deterministic passes didn't clear every blocker (e.g. a
-	// dangling {{ .id }} that should be {{ .notebook.id }}, an unsupported
-	// template function, a malformed predicate), spend ONE LLM pass to fix the
-	// residue — then deterministically heal its output so the model can only
-	// improve correctness. This replaces the manual Validate→AI-review→Fix loop
-	// with a single automatic pass and a clean flow on the canvas.
-	if model != nil {
-		if pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog)); len(pf.Blockers) > 0 {
-			s.autoRepairWorkflow(c.Context(), &res.Workflow, pf.Blockers, req.Catalog)
-		}
+// finalizeStudioCompileResult attaches the same deterministic contract used by
+// Save to every generated Studio draft. This makes generation a gated authoring
+// step: the UI can show blockers immediately, and save-time enforcement cannot
+// disagree with what the user already saw on the canvas.
+func (s *Server) finalizeStudioCompileResult(c *fiber.Ctx, res *studio.Result, cat studio.Catalog) {
+	if res == nil {
+		return
 	}
+	s.finalizeStudioResult(res, cat, s.preflightInput(c, cat))
+}
 
-	// Surface setup gaps right at generation time (Story #12): run preflight on
-	// the fresh draft and fold the fixes into the explanation's NeedsConfig so
-	// the user sees what they still have to configure before this can run.
+// finalizeStudioResult is the ctx-free core of finalizeStudioCompileResult. It
+// exists so the STREAMED generate path can run the identical finalization from
+// inside its producer goroutine, where the fiber ctx is no longer safe to touch
+// (the handler has already returned to take over the connection as a stream
+// writer). Any field the sync path attaches to a Result must be attached here —
+// that is the whole point: streamed and sync drafts must not disagree about
+// whether a draft is runnable.
+func (s *Server) finalizeStudioResult(res *studio.Result, cat studio.Catalog, in studio.PreflightInput) {
+	if res == nil {
+		return
+	}
+	pf := studio.Preflight(res.Workflow, in)
 	if res.Explanation != nil {
-		pf := studio.Preflight(res.Workflow, s.preflightInput(c, req.Catalog))
-		var needs []string
-		for _, b := range pf.Blockers {
-			needs = append(needs, preflightLine(b))
-		}
-		for _, w := range pf.Warnings {
-			needs = append(needs, preflightLine(w))
-		}
-		res.Explanation.NeedsConfig = needs
+		res.Explanation.NeedsConfig = preflightLines(pf)
 	}
-	return c.JSON(res)
+	contract := studio.AssessContract(res.Workflow, cat, in)
+	res.Contract = &contract
 }
 
 // applyLocalPreset fills patient timeout/turn defaults on an agent that will run
@@ -2192,6 +2765,17 @@ func preflightLine(i studio.PreflightIssue) string {
 	return i.Message
 }
 
+func preflightLines(pf studio.PreflightResult) []string {
+	var needs []string
+	for _, b := range pf.Blockers {
+		needs = append(needs, preflightLine(b))
+	}
+	for _, w := range pf.Warnings {
+		needs = append(needs, preflightLine(w))
+	}
+	return needs
+}
+
 // studioTestRequest is the POST /api/v1/studio/test body. Mocks, Assertions,
 // and Mode are optional (M5, Stories S5.2/S5.3): existing {workflow,input}
 // callers keep working unchanged.
@@ -2206,6 +2790,12 @@ type studioTestRequest struct {
 	Mocks      map[string]json.RawMessage `json:"mocks,omitempty"`
 	Assertions []studio.Assertion         `json:"assertions,omitempty"`
 	Mode       string                     `json:"mode,omitempty"`
+	// ST-10 test inputs: named values seeded alongside the trigger, a test-run
+	// environment exposed as .env, and an optional entry point so a long
+	// pipeline can be iterated from the step that is actually broken.
+	Variables   map[string]string `json:"variables,omitempty"`
+	Environment map[string]string `json:"environment,omitempty"`
+	StartNode   string            `json:"start_node,omitempty"`
 }
 
 // handleStudioTest implements POST /api/v1/studio/test. It dry-runs the
@@ -2220,9 +2810,12 @@ func (s *Server) handleStudioTest(c *fiber.Ctx) error {
 	}
 
 	opts := &studio.TestOptions{
-		Mocks:      req.Mocks,
-		Assertions: req.Assertions,
-		Mode:       req.Mode,
+		Mocks:       req.Mocks,
+		Assertions:  req.Assertions,
+		Mode:        req.Mode,
+		Variables:   req.Variables,
+		Environment: req.Environment,
+		StartNode:   req.StartNode,
 	}
 	res, err := studio.TestRun(c.Context(), req.Workflow, req.Input, opts)
 	if err != nil {
@@ -2640,61 +3233,6 @@ func (s *Server) handleStudioFixYAML(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"yaml": fixed, "changed": fixed != req.YAML})
 }
 
-// autoRepairWorkflow runs ONE bounded LLM repair pass on a generated flow that
-// still has blockers after deterministic repair, then deterministically heals
-// the model's output before keeping it. It only replaces the flow GRAPH of the
-// draft (nodes/edges/entry/output), preserving everything else (new_agents,
-// knowledge, …). Best-effort: any failure leaves the draft unchanged.
-func (s *Server) autoRepairWorkflow(ctx context.Context, draft *studio.Draft, blockers []studio.PreflightIssue, cat studio.Catalog) {
-	model := s.studioLLM()
-	if model == nil || draft == nil || len(draft.Flow.Nodes) == 0 {
-		return
-	}
-	def, err := studio.ToAgentDefinition(*draft, true)
-	if err != nil {
-		return
-	}
-	yamlBytes, err := yaml.Marshal(&def)
-	if err != nil {
-		return
-	}
-	issues := make([]string, 0, len(blockers))
-	for _, b := range blockers {
-		if line := issueLine("ERROR", b.NodeID, b.Message); line != "" {
-			issues = append(issues, line)
-		}
-	}
-	if len(issues) == 0 {
-		return
-	}
-	prompt := studio.BuildYAMLFixInstruction(string(yamlBytes), issues, s.soulRules())
-	raw, err := model.Complete(ctx, prompt)
-	if err != nil {
-		return
-	}
-	fixed := studio.CleanYAMLOutput(raw)
-	if strings.TrimSpace(fixed) == "" {
-		return
-	}
-	var def2 agent.Definition
-	if err := yaml.Unmarshal([]byte(fixed), &def2); err != nil || def2.Workflow == nil || len(def2.Workflow.Nodes) == 0 {
-		return
-	}
-	// Deterministically heal the model's output before trusting it.
-	d := studio.Draft{Flow: studio.Flow{
-		Nodes:  def2.Workflow.Nodes,
-		Edges:  def2.Workflow.Edges,
-		Entry:  def2.Workflow.Entry,
-		Output: def2.Workflow.Output,
-	}}
-	studio.RepairWiring(&d, cat)
-	studio.ApplyTemplateFixes(&d)
-	draft.Flow.Nodes = d.Flow.Nodes
-	draft.Flow.Edges = d.Flow.Edges
-	draft.Flow.Entry = d.Flow.Entry
-	draft.Flow.Output = d.Flow.Output
-}
-
 // handleStudioReviewYAML implements POST /api/v1/studio/review-yaml — the
 // rules-grounded LLM review. It complements the deterministic validator: the
 // model checks the YAML against the (editable) rulebook and reports judgment-call
@@ -2742,6 +3280,12 @@ type studioSaveRequest struct {
 	// Grants carries the per-node code consent collected by the Studio consent
 	// dialog (§13). One entry per beyond-guardrail Custom Python node.
 	Grants []studioGrant `json:"grants,omitempty"`
+	// AcceptWarningsReason is the operator's justification for saving past a
+	// warnings-only readiness report (ST-16). Recorded in the audit log, because
+	// a one-click bypass leaves "why was this deployed with a known warning?"
+	// unanswerable — usually at the moment someone most needs the answer.
+	// Blockers are never bypassable, so this only ever explains warnings.
+	AcceptWarningsReason string `json:"accept_warnings_reason,omitempty"`
 }
 
 // studioGrant is one per-node code-consent grant from the save request.
@@ -2761,6 +3305,22 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	var req studioSaveRequest
 	if err := c.BodyParser(&req); err != nil {
 		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
+	}
+
+	// Authoritative pre-create gate: never persist a Studio draft that fails the
+	// same generation contract shown on the canvas. The GUI runs this before
+	// Save, but enforcing it here protects imports, stale tabs, and alternate API
+	// clients from creating an agent that is born broken and only fails later.
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+	in := s.preflightInput(c, cat)
+	contract := studio.AssessContract(req.Workflow, cat, in)
+	if contract.Blockers > 0 {
+		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
+			"error":     contract.Summary,
+			"contract":  contract,
+			"preflight": studio.Preflight(req.Workflow, in),
+		})
 	}
 
 	// Consent gate: classify the draft and refuse to persist a Privileged
@@ -2784,6 +3344,18 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	}
 	if isProtectedSystemAgent(def.ID) {
 		return protectedSystemAgentResponse(c)
+	}
+
+	// Record the tool contracts this workflow was built against (P0-3). Captured
+	// HERE rather than in ToAgentDefinition because the live catalog is the
+	// gateway's to know — the pure Draft→Definition mapping has no business
+	// reaching for connected-server state. A later schema change then reads as
+	// drift with a named node, instead of a validation error indistinguishable
+	// from a workflow that was always wrong.
+	saveCatalog := s.studioCatalogSnapshot()
+	s.groundCatalog(&saveCatalog)
+	if snap := studio.CaptureToolSchemas(req.Workflow.Flow, saveCatalog, time.Now()); snap != nil {
+		def.ToolSchemas = snap
 	}
 
 	// Default LLM to the configured provider, mirroring handleCreateAgent.
@@ -2881,6 +3453,21 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 			}
 		}
 	}
+
+	// Record the save, and specifically record an ACCEPTED-WARNINGS save with the
+	// operator's stated reason. Without this the audit trail cannot distinguish a
+	// clean save from one that knowingly shipped past a warning, which is exactly
+	// the distinction an incident review needs.
+	auditDetails := map[string]any{"name": def.Name}
+	status := "ok"
+	if reason := strings.TrimSpace(req.AcceptWarningsReason); reason != "" {
+		status = "accepted_warnings"
+		auditDetails["accept_warnings_reason"] = reason
+	}
+	if req.AcceptPrivilegedExposure {
+		auditDetails["accepted_privileged_exposure"] = true
+	}
+	s.recordAdminAudit(c, "studio.save", "agent", def.ID, status, auditDetails)
 
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"agentId": def.ID,

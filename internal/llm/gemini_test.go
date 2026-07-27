@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/soulacy/soulacy/pkg/message"
@@ -272,5 +273,53 @@ func TestSanitizeSchemaForGeminiPreservesPropertyNamesAndFiltersRequired(t *test
 	}
 	if _, ok := got["additionalProperties"]; ok {
 		t.Fatalf("top-level unsupported keyword not stripped: %#v", got)
+	}
+}
+
+func TestGeminiSafeToolName(t *testing.T) {
+	tests := []struct {
+		in   string
+		want string
+	}{
+		{"", "tool"},
+		{"   ", "tool"},
+		{"valid_name", "valid_name"},
+		{"valid_Name_123", "valid_Name_123"},
+		{"123_invalid_start", "_123_invalid_start"}, // Starts with number -> replaced with _
+		{"-invalid-start", "ainvalid_start"},       // Starts with non-alphanum non-underscore -> replaced with a
+		{"mcp__yahoo-finance__get_stock", "mcp__yahoo_finance__get_stock"}, // Hyphen replaced with _
+		{"name.with.dots!", "name_with_dots_"}, // Special chars replaced with _
+		{strings.Repeat("a", 100), strings.Repeat("a", 64)}, // Truncated to 64
+	}
+
+	for _, tt := range tests {
+		got := geminiSafeToolName(tt.in)
+		if got != tt.want {
+			t.Errorf("geminiSafeToolName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestBuildGeminiToolMaps(t *testing.T) {
+	tools := []ToolSchema{
+		{Name: "mcp__yahoo-finance__get"},
+		{Name: "mcp__yahoo.finance__get"}, // would clash with above after sanitization
+	}
+
+	origToWire, wireToOrig := buildGeminiToolMaps(tools)
+
+	if len(origToWire) != 2 {
+		t.Fatalf("expected 2 mapped tools, got %d", len(origToWire))
+	}
+
+	wire1 := origToWire["mcp__yahoo-finance__get"]
+	wire2 := origToWire["mcp__yahoo.finance__get"]
+
+	if wire1 == wire2 {
+		t.Errorf("expected distinct wire names, got both as %q", wire1)
+	}
+
+	if orig := wireToOrig[wire1]; orig != "mcp__yahoo-finance__get" {
+		t.Errorf("expected wire1 to map back to original, got %q", orig)
 	}
 }

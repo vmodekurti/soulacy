@@ -77,7 +77,7 @@ func TestScheduledDelivery_EmitsDeliveredEvent(t *testing.T) {
 
 	def := &agent.Definition{ID: "brief", Trigger: agent.TriggerCron,
 		Schedule: &agent.Schedule{Output: &agent.ScheduleOutput{Channel: "telegram", To: "123"}}}
-	s.sendScheduledOutput(context.Background(), def, message.Message{}, "the result", "cron")
+	s.sendScheduledOutput(context.Background(), def, message.Message{}, "the result", "cron", nil)
 
 	ev := lastSchedEvent(t, sink)
 	if ev["delivered"] != true || ev["reason"] != deliveryDelivered {
@@ -98,7 +98,7 @@ func TestScheduledDelivery_UndeliveredEmitsEvent(t *testing.T) {
 
 	// Cron agent, no schedule.output, no default channel → nowhere to deliver.
 	def := &agent.Definition{ID: "orphan", Trigger: agent.TriggerCron}
-	s.sendScheduledOutput(context.Background(), def, message.Message{}, "important result", "cron")
+	s.sendScheduledOutput(context.Background(), def, message.Message{}, "important result", "cron", nil)
 
 	ev := lastSchedEvent(t, sink)
 	if ev["delivered"] != false || ev["reason"] != deliveryNoOutput {
@@ -126,7 +126,7 @@ func TestScheduledDelivery_FallbackToSingleDefault(t *testing.T) {
 
 	// Agent lists no channels and no output → primary resolve fails → fallback.
 	def := &agent.Definition{ID: "orphan", Trigger: agent.TriggerCron}
-	s.sendScheduledOutput(context.Background(), def, message.Message{}, "brief body", "cron")
+	s.sendScheduledOutput(context.Background(), def, message.Message{}, "brief body", "cron", nil)
 
 	if len(adapter.sent) != 1 {
 		t.Fatalf("expected 1 fallback delivery, got %d", len(adapter.sent))

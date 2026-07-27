@@ -189,6 +189,11 @@ type Config struct {
 	MaxSteps int
 	// MaxPlanSteps caps plan decomposition depth (default 6).
 	MaxPlanSteps int
+	// MaxParallelSteps caps how many planned steps plan_execute may execute
+	// CONCURRENTLY within one dependency level (default 4). Set to 1 to force
+	// the historical strictly-serial walk — the escape hatch for a custom
+	// ToolExecutor that is not safe for concurrent calls (see ToolExecutor).
+	MaxParallelSteps int
 	// StepTimeout is the context deadline for each individual step (default 30s).
 	StepTimeout time.Duration
 	// TotalTimeout is the whole-task deadline (default 180s).
@@ -346,6 +351,12 @@ type LLMBackend interface {
 
 // ToolExecutor dispatches a ToolCall to the correct handler.
 // Implementations must respect ctx.Done() and must not spawn subprocesses.
+//
+// Execute MUST be safe for concurrent use. plan_execute runs the steps within
+// one dependency level in parallel (bounded by Config.MaxParallelSteps), so an
+// executor that mutates unguarded shared state across calls will race. An
+// executor that cannot meet this is accommodated by setting
+// Config.MaxParallelSteps to 1, which restores the strictly-serial walk.
 type ToolExecutor interface {
 	Execute(ctx context.Context, call ToolCall) Observation
 }

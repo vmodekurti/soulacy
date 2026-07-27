@@ -24,13 +24,44 @@ const (
 	// execution engine.
 	FlowNodeTrigger = "trigger"
 	FlowNodeExit    = "exit"
+	// FlowNodeParallel is a FAN-OUT block: every eligible outgoing edge is taken
+	// CONCURRENTLY, instead of the walker's normal "first truthy edge wins".
+	// It exists because a graph that forks on the canvas used to execute exactly
+	// one of its forks — the other branch was silently dropped, which looked like
+	// a flaky agent rather than a routing rule. Declaring the fork point makes the
+	// intent explicit: the node performs no work itself (it is structural), it
+	// only decides that its successors run together. See Join / JoinQuorum /
+	// JoinNode for how the branches are waited on and where they converge.
+	FlowNodeParallel = "parallel"
+)
+
+// Join policies for a kind=parallel node — how many branches must finish, and
+// what happens to the rest. Empty = JoinAll.
+const (
+	// JoinAll waits for every branch and fails the group if ANY branch fails.
+	// The conservative default: partial results are usually worse than an honest
+	// error, because a downstream node cannot tell "no data" from "not yet".
+	JoinAll = "all"
+	// JoinAny finishes as soon as the FIRST branch succeeds and cancels the rest.
+	// For racing redundant providers (three search APIs, one answer) — the group
+	// only fails when every branch has failed.
+	JoinAny = "any"
+	// JoinQuorum finishes as soon as JoinQuorum branches have succeeded and
+	// cancels the rest; it fails once too many branches have failed for the
+	// quorum to still be reachable. For "any 2 of 3 sources agree" fan-outs.
+	JoinQuorum = "quorum"
+	// JoinBestEffort waits for every branch and NEVER fails the group: failed
+	// branches contribute a null entry to the aggregate. For enrichment fan-outs
+	// where a missing optional source must not take the whole run down.
+	JoinBestEffort = "best_effort"
 )
 
 // IsStructuralKind reports whether a node kind performs NO runtime action and
-// exists only to route/anchor the graph (branch, trigger, exit). The flow engine
-// skips execution for these and only follows their edges.
+// exists only to route/anchor the graph (branch, trigger, exit, parallel). The
+// flow engine skips execution for these and only follows their edges.
 func IsStructuralKind(kind string) bool {
-	return kind == FlowNodeBranch || kind == FlowNodeTrigger || kind == FlowNodeExit
+	return kind == FlowNodeBranch || kind == FlowNodeTrigger ||
+		kind == FlowNodeExit || kind == FlowNodeParallel
 }
 
 // FlowPort is a declared, named connection point on a node (Story S0.3).
@@ -52,7 +83,48 @@ type FlowPort struct {
 	// Name. Empty = use Name (the common case: port name == result field == arg
 	// key). Purely declarative; the runtime reads it when assembling wired inputs.
 	Field string `yaml:"field,omitempty" json:"field,omitempty"`
+
+	// ── Port contracts (P0-2) ────────────────────────────────────────────────
+	// These make a port's shape CHECKABLE instead of merely descriptive. All are
+	// optional and zero-value compatible: a port declaring none of them behaves
+	// exactly as before, so existing workflows keep validating unchanged.
+
+	// Required marks an INPUT port that must be wired (or supplied by the node's
+	// static Input) before the flow can run. Ignored on output ports. A required
+	// input with nothing feeding it becomes a compile error instead of a null at
+	// run time — which is the failure mode this replaces: the value rendered as
+	// "<no value>" and a tool rejected it two nodes downstream.
+	Required bool `yaml:"required,omitempty" json:"required,omitempty"`
+
+	// Cardinality declares whether this port carries ONE value or MANY:
+	// "" (unset — treated as one) | "one" | "many". It is what makes the
+	// fan-out/aggregation contract checkable: a for_each node consumes a "many"
+	// port and hands each item to the body as "one". Wiring a "many" producer
+	// into a "one" consumer with no aggregating step is exactly the bug class
+	// that silently stringifies a list into "[map[...] map[...]]".
+	Cardinality string `yaml:"cardinality,omitempty" json:"cardinality,omitempty"`
+
+	// Nullable allows this port's value to be absent/null. A non-nullable input
+	// refuses a nullable producer unless an adapter supplies a default, so "the
+	// API returned null for that field" surfaces at author time rather than as a
+	// downstream template failure.
+	Nullable bool `yaml:"nullable,omitempty" json:"nullable,omitempty"`
+
+	// Adapter marks this port's node as an explicit, author-acknowledged
+	// CONVERSION point. Type/cardinality/nullability mismatches are refused
+	// between ordinary nodes; routing the wire through a node whose consuming
+	// port sets Adapter:true permits the conversion, because someone has taken
+	// responsibility for reshaping the data. This is the "conversions require
+	// explicit adapter nodes" rule: the graph must SHOW the reshape instead of
+	// hiding it inside a template.
+	Adapter bool `yaml:"adapter,omitempty" json:"adapter,omitempty"`
 }
+
+// Port cardinality tokens.
+const (
+	CardinalityOne  = "one"
+	CardinalityMany = "many"
+)
 
 // FlowNode is one vertex of the graph.
 type FlowNode struct {
@@ -97,7 +169,44 @@ type FlowNode struct {
 	Input string `yaml:"input,omitempty" json:"input,omitempty"`
 	// Output names the flow var that stores this node's result.
 	Output string `yaml:"output,omitempty" json:"output,omitempty"`
-	// OnError is retry | skip | abort (default abort).
+	// ForEach optionally turns this node into a bounded map operation. It is a
+	// Go template that must render a JSON array. The node executes once per item
+	// and stores an ordered JSON array under Output. Empty preserves the normal
+	// single-execution behavior.
+	ForEach string `yaml:"for_each,omitempty" json:"for_each,omitempty"`
+	// ItemVar is the template variable bound to the current ForEach item
+	// (default "item"). The zero-based item index is also available as
+	// "<item_var>_index".
+	ItemVar string `yaml:"item_var,omitempty" json:"item_var,omitempty"`
+	// MaxParallel bounds concurrent ForEach item execution. Zero/one is
+	// sequential; values above one opt into real parallel fan-out while result
+	// ordering remains deterministic.
+	MaxParallel int `yaml:"max_parallel,omitempty" json:"max_parallel,omitempty"`
+	// Join is the wait policy for a kind=parallel node: all | any | quorum |
+	// best_effort (empty = all). It answers the question a fan-out cannot leave
+	// implicit — "when is this group DONE?" — because without it a single slow or
+	// broken branch decides the fate of the whole run by accident: either it
+	// blocks a result that three healthy branches already produced, or its
+	// failure quietly disappears. Ignored on every other node kind.
+	Join string `yaml:"join,omitempty" json:"join,omitempty"`
+	// JoinQuorum is how many branches must SUCCEED when Join=="quorum". It must be
+	// between 1 and the number of outgoing edges; a quorum larger than the fan-out
+	// can never be met, so it is rejected at compile time rather than hanging the
+	// group until every branch has failed. Ignored for other join policies.
+	JoinQuorum int `yaml:"join_quorum,omitempty" json:"join_quorum,omitempty"`
+	// JoinNode is the id of the BARRIER node where this parallel node's branches
+	// converge: each branch walks until it reaches that node and stops WITHOUT
+	// executing it, then the join runs it exactly once with every branch's results
+	// merged. Empty = no barrier; branches simply run to their natural
+	// termination. Naming the barrier is what prevents the classic fan-in bug of
+	// the merge step running once per branch (three emails instead of one summary)
+	// — which is invisible on the canvas because the graph looks identical either
+	// way. It must exist and be reachable from every branch.
+	JoinNode string `yaml:"join_node,omitempty" json:"join_node,omitempty"`
+	// OnError is retry | skip | escalate | abort (default abort). "escalate"
+	// routes a failed visit to the flow's declared Escalation node (the failure
+	// is exposed to it under the "failure" flow var) instead of aborting; it
+	// requires FlowSpec.Escalation to name a node.
 	OnError string `yaml:"on_error,omitempty" json:"on_error,omitempty"`
 	// Adaptive opts this node into runtime LLM salvage: when it fails or produces
 	// a soft error (its output reports an error) because a real tool/API returned
@@ -178,4 +287,11 @@ type FlowSpec struct {
 	// MaxNodeExecutions is the global safety budget across the whole run
 	// (default 100). Exceeding it aborts the flow.
 	MaxNodeExecutions int `yaml:"max_node_executions,omitempty" json:"max_node_executions,omitempty"`
+	// Escalation is the id of the node that handles failures for nodes declaring
+	// on_error: escalate. When such a node fails, the walker records the failure
+	// under the "failure" flow var ({node, kind, error, visit}) and continues the
+	// run from this node instead of aborting — so "the LLM couldn't fix it"
+	// becomes an ordinary, declared path (notify a human, park the run) rather
+	// than a stack trace. Empty = no escalation path; escalate is then invalid.
+	Escalation string `yaml:"escalation,omitempty" json:"escalation,omitempty"`
 }

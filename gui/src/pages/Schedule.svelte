@@ -35,6 +35,7 @@
   let recentLimit = 25
   let recentLoading = false
   let recentError = ''
+  let recentRunsExpanded = true
 
   // Modals
   let editing  = null
@@ -628,8 +629,18 @@
 
   <section class="section">
     <div class="section-hdr">
-      <span>Recent runs</span>
-      <span class="pill">{recentRuns.length}</span>
+      <button
+        class="section-toggle"
+        type="button"
+        aria-expanded={recentRunsExpanded}
+        aria-controls="recent-runs-content"
+        on:click={() => recentRunsExpanded = !recentRunsExpanded}
+        title={recentRunsExpanded ? 'Collapse recent runs' : 'Expand recent runs'}
+      >
+        <span class="section-chevron" aria-hidden="true">{recentRunsExpanded ? '▾' : '▸'}</span>
+        <span>Recent runs</span>
+        <span class="pill">{recentRuns.length}</span>
+      </button>
       <label class="history-depth" title="How many unified runs to show. Includes manual, chat/channel, cron, and scheduled-output runs when durable history is available.">
         <span>Show</span>
         <select bind:value={recentLimit} on:change={loadRecentRuns} disabled={recentLoading}
@@ -642,50 +653,54 @@
       </label>
       <button class="btn-secondary xs hdr-action" on:click={loadRecentRuns} disabled={recentLoading}>↺ Refresh</button>
     </div>
-    {#if recentLoading}
-      <div class="empty">Loading run history…</div>
-    {:else if recentError}
-      <div class="empty err">{recentError}</div>
-    {:else if recentRuns.length === 0}
-      <div class="empty">No recent runs recorded in durable history yet.</div>
-    {:else}
-      <table class="tbl">
-        <thead>
-          <tr><th>Agent</th><th>Started</th><th>Trigger</th><th>Status</th><th>Delivery</th><th>Source</th><th class="td-action">Actions</th></tr>
-        </thead>
-        <tbody>
-          {#each recentRuns as run (run.id)}
-            <tr class:row-failed={run.status === 'failed'} class:row-degraded={run.status === 'degraded'}>
-              <td class="td-name">{recentAgentName(run) || 'Unknown agent'}</td>
-              <td class="td-hint">{run.startTime ? new Date(run.startTime).toLocaleString() : '—'}</td>
-              <td class="td-hint">{run.channel || '—'}</td>
-              <td>
-                <span class="run-badge inline" class:badge-ok={run.status === 'success'} class:badge-fail={run.status === 'failed'} class:badge-warn={run.status === 'degraded'} class:badge-unk={run.status === 'unknown'}>
-                  {run.status === 'success' ? 'success' : run.status === 'failed' ? 'failed' : run.status === 'degraded' ? 'degraded' : 'unknown'}
-                </span>
-              </td>
-              <td class="td-hint">
-                {#if run.deliveryStatus}
-                  <span class="delivery-mini" class:delivery-fail={run.deliveryStatus === 'failed'} title={run.deliveryError || ''}>
-                    {run.deliveryStatus === 'delivered' ? 'delivered' : 'failed'}
-                    {#if run.deliveryChannel} · {run.deliveryChannel}{/if}
-                  </span>
-                {:else}
-                  —
-                {/if}
-              </td>
-              <td class="td-hint">{run.source}</td>
-              <td class="td-action">
-                {#if run.agentId}
-                  <button class="btn-secondary xs" on:click={() => watchAgent(run.agentId, run.sessionId)}>Open Activity</button>
-                {:else}
-                  <button class="btn-secondary xs" on:click={() => location.hash = 'activity'}>Open Activity</button>
-                {/if}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+    {#if recentRunsExpanded}
+      <div id="recent-runs-content">
+        {#if recentLoading}
+          <div class="empty">Loading run history…</div>
+        {:else if recentError}
+          <div class="empty err">{recentError}</div>
+        {:else if recentRuns.length === 0}
+          <div class="empty">No recent runs recorded in durable history yet.</div>
+        {:else}
+          <table class="tbl">
+            <thead>
+              <tr><th>Agent</th><th>Started</th><th>Trigger</th><th>Status</th><th>Delivery</th><th>Source</th><th class="td-action">Actions</th></tr>
+            </thead>
+            <tbody>
+              {#each recentRuns as run (run.id)}
+                <tr class:row-failed={run.status === 'failed'} class:row-degraded={run.status === 'degraded'}>
+                  <td class="td-name">{recentAgentName(run) || 'Unknown agent'}</td>
+                  <td class="td-hint">{run.startTime ? new Date(run.startTime).toLocaleString() : '—'}</td>
+                  <td class="td-hint">{run.channel || '—'}</td>
+                  <td>
+                    <span class="run-badge inline" class:badge-ok={run.status === 'success'} class:badge-fail={run.status === 'failed'} class:badge-warn={run.status === 'degraded'} class:badge-unk={run.status === 'unknown'}>
+                      {run.status === 'success' ? 'success' : run.status === 'failed' ? 'failed' : run.status === 'degraded' ? 'degraded' : 'unknown'}
+                    </span>
+                  </td>
+                  <td class="td-hint">
+                    {#if run.deliveryStatus}
+                      <span class="delivery-mini" class:delivery-fail={run.deliveryStatus === 'failed'} title={run.deliveryError || ''}>
+                        {run.deliveryStatus === 'delivered' ? 'delivered' : 'failed'}
+                        {#if run.deliveryChannel} · {run.deliveryChannel}{/if}
+                      </span>
+                    {:else}
+                      —
+                    {/if}
+                  </td>
+                  <td class="td-hint">{run.source}</td>
+                  <td class="td-action">
+                    {#if run.agentId}
+                      <button class="btn-secondary xs" on:click={() => watchAgent(run.agentId, run.sessionId)}>Open Activity</button>
+                    {:else}
+                      <button class="btn-secondary xs" on:click={() => location.hash = 'activity'}>Open Activity</button>
+                    {/if}
+                  </td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        {/if}
+      </div>
     {/if}
   </section>
 
@@ -978,6 +993,19 @@ schedule:
     display: flex; align-items: center; gap: .7rem;
     padding: .8rem 1.25rem; border-bottom: 1px solid #1a1e36;
     font-size: .875rem; font-weight: 600;
+  }
+  .section-toggle {
+    display: inline-flex; align-items: center; gap: .55rem;
+    min-width: 0; padding: .2rem .25rem .2rem 0;
+    background: none; border: none; color: inherit; font: inherit;
+    cursor: pointer; text-align: left;
+  }
+  .section-toggle:hover { color: #e0e1f0; }
+  .section-toggle:focus-visible {
+    outline: 2px solid #6c63ff; outline-offset: 3px; border-radius: 4px;
+  }
+  .section-chevron {
+    width: .75rem; color: #7b82a8; font-size: .8rem; text-align: center;
   }
   .hdr-action { margin-left: auto; }
   .history-depth {
