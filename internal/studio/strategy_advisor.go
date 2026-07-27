@@ -69,8 +69,15 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 		}
 		return advice
 	}
+	if req == "auto" || (req == "" && explicitAutoRequested(intent)) {
+		advice.Mode = "auto"
+		advice.RuntimeStrategy = "auto"
+		advice.Confidence = "high"
+		advice.Reason = "Soulacy selected Auto because the intent or operator requested an interactive tool-calling agent."
+		return advice
+	}
 	pattern := deterministicWorkflowPattern(intent)
-	if forceWorkflow || req == "workflow" || explicitWorkflowRequested(intent) || pattern != "" {
+	if forceWorkflow || req == "workflow" || explicitWorkflowRequested(intent) || (req == "" && pattern != "" && !interactiveAssistantIntent(strings.ToLower(intent))) {
 		advice.Mode = "workflow"
 		advice.RuntimeStrategy = ""
 		advice.Confidence = "high"
@@ -184,7 +191,21 @@ func deterministicWorkflowPattern(intent string) string {
 func interactiveAssistantIntent(li string) bool {
 	return anyContains(li,
 		"chat", "answer", "interactive", "assistant", "ask", "question",
-		"weather", "stock advisor", "options", "explain", "help me")
+		"weather", "stock advisor", "options", "explain", "help me", "travel agent", "travel assistant")
+}
+
+func explicitAutoRequested(intent string) bool {
+	t := strings.ToLower(intent)
+	cues := []string{
+		"auto mode", "in auto", "auto strategy", "native tool calling", "native tool-calling",
+		"conversational assistant", "conversational agent", "tool-calling loop",
+	}
+	for _, c := range cues {
+		if mentionsUnnegated(t, c) {
+			return true
+		}
+	}
+	return false
 }
 
 func dynamicSkillRoutingIntent(intent string) bool {

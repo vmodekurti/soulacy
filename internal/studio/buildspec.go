@@ -395,14 +395,28 @@ func extractDelivery(low string) []string {
 
 func extractIntegrations(low string) []string {
 	var out []string
+	seen := map[string]bool{}
+	add := func(label string) {
+		if !seen[label] {
+			seen[label] = true
+			out = append(out, label)
+		}
+	}
 	for phrase, label := range map[string]string{
 		"notebooklm": "NotebookLM", "google drive": "Google Drive",
 		"github": "GitHub", "notion": "Notion", "jira": "Jira",
 		"spotify": "Spotify", "youtube": "YouTube",
+		"travel-flight": "travel-flight (MCP)", "travel-hotel": "travel-hotel (MCP)",
+		"travel-weather": "travel-weather (MCP)", "travel-event": "travel-event (MCP)",
+		"travel-geocoder": "travel-geocoder (MCP)", "travel-finance": "travel-finance (MCP)",
+		"mcp server": "MCP Servers", "mcp tool": "MCP Tools",
 	} {
 		if strings.Contains(low, phrase) {
-			out = append(out, label)
+			add(label)
 		}
+	}
+	if len(out) == 0 && strings.Contains(low, "mcp") {
+		add("MCP Tools")
 	}
 	sort.Strings(out)
 	return out
