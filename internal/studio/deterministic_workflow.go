@@ -51,6 +51,31 @@ func researchDigestWorkflow(intent string) bool {
 		anyContains(li, "daily", "weekly", "schedule", "every morning", "send", "notify", "telegram", "slack", "email", "web search", "search for")
 }
 
+// ConversationalIntent reports that the user described an ON-DEMAND, interactive
+// agent rather than a scheduled pipeline.
+//
+// This exists because the digest patterns match on topic keywords alone. "the
+// agent uses the travel MCP tool to SEARCH for DEALS" contains both "deals" and
+// "search", so dealDigestWorkflow claimed it and Studio emitted a fixed
+// two-node graph — for a prompt that explicitly said the agent responds to user
+// queries on demand and asks clarifying questions before searching.
+//
+// A fixed graph cannot do that. It cannot ask a question, wait, and branch on
+// the answer; that is the definition of the reasoning strategies. So an intent
+// carrying interactive cues must not be claimed by a pipeline pattern, however
+// many topic words it happens to share with one.
+func ConversationalIntent(intent string) bool {
+	li := strings.ToLower(intent)
+	return anyContains(li,
+		"conversational", "on demand", "on-demand", "on request",
+		"when a user", "when the user", "user asks", "responds to user",
+		"respond to user", "user's request", "users request",
+		"clarifying question", "clarifying questions", "ask the user",
+		"follow-up", "follow up question", "back and forth", "chat with",
+		"answers questions", "answer questions",
+	)
+}
+
 func dealDigestWorkflow(intent string) bool {
 	li := strings.ToLower(intent)
 	return anyContains(li, "deal", "deals", "discount", "coupon", "sale", "price drop", "bargain") &&

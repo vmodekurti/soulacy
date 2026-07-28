@@ -97,6 +97,16 @@ func trimMCPTools(servers []CatalogMCPServer, terms map[string]bool, li string) 
 			if serverNamed {
 				score += 100
 			}
+			// Also protect a tool the intent names DIRECTLY.
+			//
+			// Matching only the server id misses the common case where the id is an
+			// abbreviation: a server registered as "trvl" exposing "travel" is
+			// invisible to a prompt that says "the travel tool", so the one tool the
+			// user explicitly asked for could be trimmed out of the prompt while
+			// thirty-nine tools they never mentioned survived.
+			if bare := bareToolName(t.Name); bare != "" && nameMentioned(li, bare) {
+				score += 100
+			}
 			all = append(all, ref{si, ti, score})
 		}
 	}
@@ -120,6 +130,20 @@ func trimMCPTools(servers []CatalogMCPServer, terms map[string]bool, li string) 
 		}
 	}
 	return out
+}
+
+// bareToolName strips the mcp__server__ prefix, leaving the word a user would
+// actually write ("travel", not "mcp__trvl__travel"). Returns "" for names too
+// short to match safely.
+func bareToolName(name string) string {
+	n := strings.ToLower(strings.TrimSpace(name))
+	if i := strings.LastIndex(n, "__"); i >= 0 {
+		n = n[i+2:]
+	}
+	if len(n) < 3 {
+		return ""
+	}
+	return n
 }
 
 func countMCPTools(servers []CatalogMCPServer) int {

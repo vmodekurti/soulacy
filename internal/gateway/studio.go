@@ -3475,9 +3475,19 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	})
 }
 
-// handleStudioListAgents implements GET /api/v1/studio/agents. It returns the
-// agents that carry a workflow graph (Studio-editable) as lightweight summaries
-// for the "My Workflows" list. Agents without a workflow are skipped.
+// handleStudioListAgents implements GET /api/v1/studio/agents. It returns every
+// agent Studio can RE-OPEN, as lightweight summaries for the "My Workflows" list
+// and the Describe step's "continue existing work".
+//
+// The filter used to be HasWorkflow alone, which silently excluded every
+// REASONING agent Studio itself had built: an Auto/ReAct/Plan-Execute agent has
+// no workflow graph by definition, so a user who generated one could not find it
+// anywhere in Studio afterwards — it existed, ran, and was invisible to the tool
+// that made it.
+//
+// So an agent qualifies if Studio can edit it: it has a workflow graph, OR it
+// carries a reasoning strategy, OR it was authored here (StudioIntent). The last
+// clause is what catches a Studio agent whose strategy was later cleared by hand.
 func (s *Server) handleStudioListAgents(c *fiber.Ctx) error {
 	type agentSummary struct {
 		ID          string `json:"id"`
@@ -3486,11 +3496,27 @@ func (s *Server) handleStudioListAgents(c *fiber.Ctx) error {
 		Enabled     bool   `json:"enabled"`
 		Trigger     string `json:"trigger"`
 		Nodes       int    `json:"nodes"`
+		// Strategy distinguishes a fixed workflow from a reasoning agent in the
+		// list, so the two are not presented as interchangeable.
+		Strategy string `json:"strategy,omitempty"`
 	}
 	out := []agentSummary{}
 	for _, d := range s.loader.All() {
-		if d == nil || !studio.HasWorkflow(*d) {
+		if d == nil {
 			continue
+		}
+		hasFlow := studio.HasWorkflow(*d)
+		// The loop strategy lives on the Reasoning block, not on Definition
+		// itself — Definition.Strategy does not exist.
+		strategy := strings.TrimSpace(d.Reasoning.Strategy)
+		reasoning := strategy != ""
+		authored := strings.TrimSpace(d.StudioIntent) != ""
+		if !hasFlow && !reasoning && !authored {
+			continue
+		}
+		nodes := 0
+		if hasFlow {
+			nodes = len(d.Workflow.Nodes)
 		}
 		out = append(out, agentSummary{
 			ID:          d.ID,
@@ -3498,7 +3524,8 @@ func (s *Server) handleStudioListAgents(c *fiber.Ctx) error {
 			Description: d.Description,
 			Enabled:     d.Enabled,
 			Trigger:     string(d.Trigger),
-			Nodes:       len(d.Workflow.Nodes),
+			Nodes:       nodes,
+			Strategy:    strategy,
 		})
 	}
 	return c.JSON(fiber.Map{"agents": out})
