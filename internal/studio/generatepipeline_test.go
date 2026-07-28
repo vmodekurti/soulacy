@@ -123,7 +123,7 @@ func TestRunGeneratePipeline_UsesDeterministicPlannerAfterRefine(t *testing.T) {
 		llm,
 		"daily ai digest to telegram",
 		Catalog{Tools: []string{"web_search", "channel.send", "channel.status"}, Channels: []string{"telegram"}},
-		PipelineOptions{},
+		PipelineOptions{PreferDeterministic: true},
 	)
 	if err != nil {
 		t.Fatalf("pipeline returned error: %v", err)
@@ -139,5 +139,21 @@ func TestRunGeneratePipeline_UsesDeterministicPlannerAfterRefine(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(res.Compile.Notes, "\n"), "deterministic") == false {
 		t.Fatalf("expected deterministic planner note, got %#v", res.Compile.Notes)
+	}
+}
+
+func TestRunGeneratePipeline_UsesBuilderModelByDefault(t *testing.T) {
+	res, err := RunGeneratePipeline(
+		context.Background(),
+		pipelineFakeLLM{},
+		"send hn top story to slack every morning",
+		Catalog{Tools: []string{"channel.send"}},
+		PipelineOptions{},
+	)
+	if err != nil {
+		t.Fatalf("pipeline returned error: %v", err)
+	}
+	if !strings.Contains(strings.Join(res.Compile.Notes, "\n"), "builder model designed") {
+		t.Fatalf("expected model-designed graph note, got %#v", res.Compile.Notes)
 	}
 }

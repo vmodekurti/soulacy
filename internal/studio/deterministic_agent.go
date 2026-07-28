@@ -242,6 +242,12 @@ func deterministicTools(intent string, cat Catalog) []string {
 		addMCP("browser", "chrome", "playwright", "navigate", "screenshot")
 	}
 
+	// Tools the user named outright always win a place. This runs AFTER the topic
+	// switch so an explicit mention is never lost to a domain case that happened
+	// not to cover it — naming a tool in the prompt is the least ambiguous signal
+	// available, and ignoring it was the bug this closes.
+	out = append(out, namedMCPTools(intent, cat)...)
+
 	if len(out) == 0 {
 		addBuiltin("web_search")
 		addBuiltin("fetch_url")
@@ -263,6 +269,53 @@ func hasCatalogBuiltin(cat Catalog, name string) bool {
 		}
 	}
 	return false
+}
+
+// namedMCPTools returns the MCP tools the intent EXPLICITLY names, matched
+// against the catalogue rather than against a hardcoded topic list.
+//
+// deterministicTools routes MCP selection through a switch over known domains —
+// notebooklm, weather, finance, browser. Anything else got nothing, so a prompt
+// saying in plain words "the agent uses the travel MCP tool" produced an agent
+// with no travel tool: the server was installed, the catalogue had it, and the
+// planner had no case for it. Adding a "travel" case would fix that one prompt
+// and fail for the next server someone installs.
+//
+// So this matches on what is actually there: a server id or a tool name that
+// appears in the intent. It is deliberately conservative — a bare word must
+// match a real catalogue entry, so it can only ever surface tools this
+// workspace has.
+func namedMCPTools(intent string, cat Catalog) []string {
+	li := strings.ToLower(intent)
+	var out []string
+	for _, srv := range cat.MCP {
+		server := strings.ToLower(strings.TrimSpace(srv.Server))
+		// A server named in the intent contributes all of its tools: the user
+		// referred to the capability, not to one specific entry point.
+		serverNamed := server != "" && len(server) >= 3 && strings.Contains(li, server)
+		for _, tool := range srv.Tools {
+			name := strings.TrimSpace(tool.Name)
+			if name == "" {
+				continue
+			}
+			if serverNamed {
+				out = append(out, name)
+				continue
+			}
+			// Otherwise the tool itself has to be named. Compare on the bare tool
+			// word too, since a user writes "the travel tool", not
+			// "mcp__trvl__travel".
+			bare := strings.ToLower(name)
+			if i := strings.LastIndex(bare, "__"); i >= 0 {
+				bare = bare[i+2:]
+			}
+			if len(bare) >= 3 && strings.Contains(li, bare) {
+				out = append(out, name)
+			}
+		}
+	}
+	sort.Strings(out)
+	return uniqueStrings(out)
 }
 
 func matchingMCPTools(cat Catalog, hints ...string) []string {

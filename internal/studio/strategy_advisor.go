@@ -70,7 +70,22 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 		return advice
 	}
 	pattern := deterministicWorkflowPattern(intent)
-	if forceWorkflow || req == "workflow" || explicitWorkflowRequested(intent) || pattern != "" {
+	// An interactive intent must not be captured by a pipeline pattern.
+	//
+	// The digest patterns match on topic keywords, so "the agent SEARCHES for
+	// travel DEALS when a user asks" satisfied deal_digest and Studio built a
+	// fixed two-node graph with HIGH confidence — for a prompt that said, in as
+	// many words, that the agent responds on demand and asks clarifying questions
+	// first. A fixed graph cannot ask a question and branch on the reply.
+	//
+	// An EXPLICIT request for a workflow still wins: the user is allowed to want
+	// a pipeline. This only stops keyword matching from making that choice for
+	// them.
+	explicitlyWorkflow := forceWorkflow || req == "workflow" || explicitWorkflowRequested(intent)
+	if pattern != "" && !explicitlyWorkflow && ConversationalIntent(intent) {
+		pattern = ""
+	}
+	if explicitlyWorkflow || pattern != "" {
 		advice.Mode = "workflow"
 		advice.RuntimeStrategy = ""
 		advice.Confidence = "high"

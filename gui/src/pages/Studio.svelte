@@ -3461,6 +3461,8 @@ Use null for fields that are not present.`
   $: libDrafts = filterLibrary(libParts.drafts, libQuery)
   $: libFiltered = hasActiveFilters(libQuery)
   $: libMatchCount = libDeployed.length + libSaved.length + libDrafts.length
+  // Everything openable, for the rail's "Open…" badge.
+  $: libCount = libParts.deployed.length + libParts.saved.length + libParts.drafts.length
   function clearLibFilters() { libQuery = emptyQuery() }
 
   // Clone: open a copy on the canvas under a new name, leaving the original
@@ -4293,6 +4295,14 @@ Use null for fields that are not present.`
       {#if step === STEP_SAVE && saveBlocked}
         <span class="steprail-block" title={saveBlocked}>⚠ {saveBlocked}</span>
       {/if}
+      <!-- Reachable from EVERY step, not just Describe. Once you are in Build or
+           Test there was no way back to your other agents without abandoning the
+           draft to step 1. Lives on the rail rather than the toolbar so it is one
+           control in one place instead of the two that were removed. -->
+      <button class="btn btn-sm" type="button" on:click={openLibrary}
+        data-tooltip="Open another agent, workflow or draft">
+        Open… {#if libCount}<span class="steprail-count">{libCount}</span>{/if}
+      </button>
       <button class="btn btn-sm" type="button" on:click={openModelPicker}
         data-tooltip="Which model Studio uses to generate">Model: {studioModelLabel}</button>
     </div>
@@ -4368,7 +4378,14 @@ Use null for fields that are not present.`
                             {a.name || a.id}
                             <span class="agent-badge {a.enabled ? 'on' : 'off'}">{a.enabled ? 'deployed' : 'saved'}</span>
                           </span>
-                          <span class="d-existing-sub">{a.description || `${a.trigger || 'manual'} · ${a.nodes || 0} steps`}</span>
+                          <!-- A reasoning agent has no steps to count, so
+                               reporting "0 steps" would read as broken rather
+                               than as a different kind of thing. -->
+                          <span class="d-existing-sub">
+                            {a.description || (a.strategy
+                              ? `${recoLabel(a.strategy)} agent · ${a.trigger || 'manual'}`
+                              : `${a.trigger || 'manual'} · ${a.nodes || 0} steps`)}
+                          </span>
                         </button>
                       </li>
                     {/each}
@@ -6243,7 +6260,9 @@ Use null for fields that are not present.`
                       {a.name || a.id}
                       <span class="agent-badge on">deployed</span>
                     </span>
-                    <span class="picker-desc">{a.description || (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's'))}</span>
+                    <span class="picker-desc">{a.description || (a.strategy
+                      ? recoLabel(a.strategy) + ' agent · ' + (a.trigger || 'manual')
+                      : (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's')))}</span>
                   </button>
                   <div class="lib-actions">
                     <button class="btn btn-sm" type="button" on:click={() => loadAgentForEdit(a)} disabled={!!library.busyId}>
@@ -6271,7 +6290,9 @@ Use null for fields that are not present.`
                       {a.name || a.id}
                       <span class="agent-badge off">not deployed</span>
                     </span>
-                    <span class="picker-desc">{a.description || (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's'))}</span>
+                    <span class="picker-desc">{a.description || (a.strategy
+                      ? recoLabel(a.strategy) + ' agent · ' + (a.trigger || 'manual')
+                      : (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's')))}</span>
                   </button>
                   <div class="lib-actions">
                     <button class="btn btn-sm" type="button" on:click={() => loadAgentForEdit(a)} disabled={!!library.busyId}>
@@ -8392,6 +8413,10 @@ Use null for fields that are not present.`
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .steprail-sep { color: var(--text-dim, #6b7294); }
+  .steprail-count {
+    margin-left: 4px; padding: 0 5px; border-radius: 999px; font-size: .68rem;
+    background: color-mix(in srgb, var(--accent, #6d5efc) 22%, transparent);
+  }
   .steprail-right { display: flex; align-items: center; gap: 8px; }
   .steprail-block {
     font-size: .78rem; max-width: 46ch;

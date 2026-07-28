@@ -115,6 +115,16 @@ type PipelineOptions struct {
 	Emit       func(PipelineEvent)
 	SkipRepair bool
 	AutoRepair bool // when true, apply deterministic repairs; false = report only
+	// PreferDeterministic pins graph design to the deterministic planner and
+	// keeps the model out of the loop entirely.
+	//
+	// The default is model-first, because the deterministic planner cannot see
+	// most of a workspace's capabilities and so cannot be relied on for accuracy.
+	// This flag exists for the case where reproducibility genuinely matters more
+	// — a regression suite, an air-gapped build, an audit that must show no model
+	// touched the design. It is opt-in rather than the default so that choosing
+	// reproducibility over correctness is a deliberate act.
+	PreferDeterministic bool
 }
 
 // PipelineResult mirrors compile.Result but is enriched with the phase
@@ -212,25 +222,96 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 		Payload: map[string]any{"strategy": strategy, "mode": advice.Mode, "reason": advice.Reason, "pattern": advice.DeterministicPattern},
 	})
 
-	// Phase 3 — build_graph (deterministic planner only).
-	emit(PipelineEvent{Phase: PhaseBuildGraph, Status: StatusStart, Message: "Building the draft"})
+	// Phase 3 — build_graph.
+	//
+	// The MODEL designs the graph, grounded in the whole catalogue, and the
+	// deterministic planner is the safety net rather than the default.
+	//
+	// It used to be the other way round: a keyword pattern match won outright and
+	// the model never saw the intent. That is reproducible but blind — the
+	// workflow skeletons are hardcoded to web_search and never reference MCP, and
+	// neither deterministic path selects skills at all. So a prompt naming an
+	// installed MCP tool produced a graph that used none of it. Reproducibly
+	// wrong is still wrong.
+	//
+	// Ordering the two this way keeps what the deterministic planner is actually
+	// good for: it still catches the case where the model errors, and — because
+	// the model's graph is CONTRACT-CHECKED before it is accepted — the case
+	// where a weak builder model produces something that does not hold together.
+	// Accuracy first, with a floor under it.
+	emit(PipelineEvent{Phase: PhaseBuildGraph, Status: StatusStart, Message: "Designing the graph"})
 	// Prefer the refined intent for the compile step so the model sees the
 	// operator-visible version.
 	compileIntent := combined
 	if strings.TrimSpace(refinement.RefinedIntent) != "" {
 		compileIntent = refinement.RefinedIntent
 	}
+
+	deterministic := func() (Result, bool) {
+		if advice.Mode == "workflow" {
+			return CompileDeterministicWorkflow(compileIntent, catalog, opts.Answers)
+		}
+		return CompileDeterministicAgent(compileIntent, catalog, strategy, opts.Answers)
+	}
+
 	var compileRes Result
 	var ok bool
-	if advice.Mode == "workflow" {
-		compileRes, ok = CompileDeterministicWorkflow(compileIntent, catalog, opts.Answers)
-	} else {
-		compileRes, ok = CompileDeterministicAgent(compileIntent, catalog, strategy, opts.Answers)
+	designedBy := SourceLLM
+
+	if llm != nil && !opts.PreferDeterministic {
+		emit(PipelineEvent{
+			Phase: PhaseBuildGraph, Status: StatusStart, Source: SourceLLM,
+			Message: "The builder model is choosing tools, skills and MCP servers from what is installed.",
+		})
+		var lerr error
+		if advice.Mode == "workflow" {
+			compileRes, lerr = Compile(ctx, llm, compileIntent, catalog, opts.Answers)
+		} else {
+			compileRes, lerr = CompileAgent(ctx, llm, compileIntent, catalog, strategy, opts.Answers)
+		}
+		ok = lerr == nil
+		if ok {
+			// Only accept the model's graph if it actually holds together. This is
+			// what makes model-first safe on a small local builder: a graph that
+			// fails its contract is not silently preferred over a working
+			// deterministic one.
+			if c := AssessContract(compileRes.Workflow, catalog, opts.In); c.Blockers > 0 {
+				ok = false
+				lerr = fmt.Errorf("the model's graph did not pass its contract (%d blocker(s))", c.Blockers)
+			}
+		}
+		if !ok {
+			emit(PipelineEvent{
+				Phase: PhaseBuildGraph, Status: StatusSkip, Source: SourceLLM,
+				Message: "Falling back to the deterministic planner: " + lerr.Error(),
+			})
+		}
 	}
+
 	if !ok {
-		err := fmt.Errorf("deterministic planner could not build a %s draft for this intent", advice.Mode)
+		designedBy = SourcePlanner
+		compileRes, ok = deterministic()
+	}
+
+	if !ok {
+		err := fmt.Errorf("neither the builder model nor the deterministic planner could build a %s draft for this intent", advice.Mode)
 		emit(PipelineEvent{Phase: PhaseBuildGraph, Status: StatusError, Message: err.Error()})
 		return res, fmt.Errorf("build_graph: %w", err)
+	}
+
+	// Say WHO designed the graph. The deterministic path advertises "no LLM
+	// designed the graph"; when that stops being true the user has to be told, or
+	// the guarantee silently becomes a lie.
+	if designedBy == SourceLLM {
+		compileRes.Notes = append(compileRes.Notes,
+			"The builder model designed this graph from the installed tools, skills and MCP servers.")
+	} else {
+		// A deterministic graph can still miss what the user asked for; say so
+		// rather than presenting it as a complete answer.
+		if short := DeterministicShortfall(compileIntent, catalog, compileRes); short != "" {
+			compileRes.Notes = append(compileRes.Notes,
+				"Heads up: this graph was built by the deterministic planner and "+short+". Review the steps before saving.")
+		}
 	}
 	if compileRes.Generation != nil {
 		compileRes.Generation.PlanMatched = len(compileRes.Plan) > 0
