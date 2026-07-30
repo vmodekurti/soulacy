@@ -557,6 +557,33 @@
   :global(button) { cursor: pointer; border: none; font-size: 14px; transition: background 0.15s, opacity 0.15s; }
   :global(button:disabled) { opacity: 0.5; cursor: not-allowed; }
 
+  /* `.btn` is used across pages AND their child components, so it has to be
+     global. Svelte scopes styles per component, so a `.btn` defined inside
+     Studio.svelte does not reach a panel Studio renders — the child's buttons
+     fall back to bare `:global(button)` and render as plain text with a hairline
+     box. That is how "Refine prompt" and "Generate workflow" — the primary
+     action on the Describe step — ended up looking like table cells.
+     Scoped definitions still win on specificity, so pages that already style
+     .btn themselves are unaffected. */
+  :global(.btn) {
+    flex: 0 0 auto;
+    padding: 9px 16px;
+    background: var(--bg-elev-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+  }
+  :global(.btn:hover:not(:disabled)) { border-color: var(--accent); }
+  :global(.btn.primary) { background: var(--accent); border-color: var(--accent); color: #fff; }
+  :global(.btn.primary:hover:not(:disabled)) { filter: brightness(1.08); }
+  :global(.btn:disabled) { opacity: 0.5; cursor: not-allowed; }
+  /* Compact variant used in dense panels (library rows, readiness items). */
+  :global(.btn-sm) { padding: 4px 10px; font-size: 12px; font-weight: 600; }
+
   :global(.btn-primary) {
     background: #6c63ff; color: #fff;
     padding: 0.45rem 1.1rem; border-radius: 6px; font-weight: 500;

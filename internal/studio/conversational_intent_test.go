@@ -247,3 +247,38 @@ func TestCompileDeterministicAgent_IncludesTheNamedMCPTool(t *testing.T) {
 		t.Errorf("web_search was also named and should be present: %v", res.Workflow.Tools)
 	}
 }
+
+func TestDeterministicAgentName_DoesNotConfuseFlightOptionsWithStockOptions(t *testing.T) {
+	// The reported bug: a travel advisor was named "Stock Advisor" because the
+	// spec said "flight/hotel options" and the matcher looked for "option".
+	if got := deterministicAgentName(refinedTravelSpec); got != "Travel Advisor" {
+		t.Fatalf("deterministicAgentName = %q, want Travel Advisor", got)
+	}
+}
+
+func TestDeterministicAgentName_StillNamesRealFinanceAgents(t *testing.T) {
+	for _, s := range []string{
+		"an agent that tracks my stock portfolio",
+		"summarise earnings calls for tickers I follow",
+		"screen options by strike and expiry for trading ideas",
+	} {
+		if got := deterministicAgentName(s); got != "Stock Advisor" {
+			t.Errorf("deterministicAgentName(%q) = %q, want Stock Advisor", s, got)
+		}
+	}
+}
+
+func TestContainsWord_RespectsBoundaries(t *testing.T) {
+	if containsWord("flight/hotel options", "option") {
+		t.Error(`"option" must not match inside "options"`)
+	}
+	if !containsWord("flight/hotel options", "options") {
+		t.Error(`"options" should match, delimited by a slash and end-of-string`)
+	}
+	if containsWord("an exceptional trip", "option") {
+		t.Error(`"option" must not match inside "exceptional"`)
+	}
+	if !containsWord("book a hotel", "hotel") {
+		t.Error("a plain word should match")
+	}
+}
