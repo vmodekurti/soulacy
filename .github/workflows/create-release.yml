@@ -83,4 +83,9 @@ jobs:
           git push origin "refs/tags/${version}"
 
           echo "Created ${version} at ${{ steps.release.outputs.short_commit }}."
-          echo "The tag push will trigger .github/workflows/release.yml."
+          echo "::warning::Tag pushed, but this will NOT start the Release workflow."
+          echo "GitHub suppresses workflow triggers for refs pushed with the default"
+          echo "GITHUB_TOKEN, so .github/workflows/release.yml does not run from this push."
+          echo "Go to Actions -> Release -> Run workflow, and set 'Use workflow from'"
+          echo "to the tag ${version}. Without that step the release has no binaries"
+          echo "and no release-manifest.json, and 'sy update' cannot see it."
