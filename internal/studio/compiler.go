@@ -59,6 +59,22 @@ type Catalog struct {
 	// report how much scaffolding was used, without relying on the GUI to infer
 	// model quality or locality.
 	Generation *GenerationProfile `json:"generation,omitempty"`
+	// ReferenceGraph is a known-good graph for this KIND of job, offered to the
+	// model as a worked example rather than used verbatim.
+	//
+	// It exists because the two ways of building a graph each fail differently.
+	// The curated planners encode ordering knowledge a builder model does not
+	// have — the NotebookLM podcast flow wires create → add sources → generate →
+	// poll in the one sequence that works, and asking a model to invent it
+	// produced a useless single-node web_search graph. But those same planners
+	// are blind to the rest of an installation: they never reference a skill and
+	// only reference the MCP servers someone hard-coded a case for.
+	//
+	// Showing the curated graph to the model gets both: the model still designs,
+	// still reads the whole catalogue, and still adapts to what the user actually
+	// asked for — but it starts from a demonstrated-correct shape instead of
+	// guessing one. Empty for intents no curated pattern covers.
+	ReferenceGraph string `json:"reference_graph,omitempty"`
 }
 
 // CatalogKB is one knowledge base the workflow's agents could use as a source.
@@ -424,6 +440,16 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- SKILLS: when the intent references a capability/data source by a loose name (e.g. \"yahoo finance\", \"stock data\", \"web research\"), do NOT invent a skill name. Look in the \"Available skills\" list below and MATCH the reference to the closest installed skill by its name, then add it to the `skills` array.\n")
 	sb.WriteString("- PREFER TYPED CAPABILITIES OVER GUESSED CODE: the tools, skills, and MCP tools listed below come with their REAL argument names. When a step's operation is covered by one of them, ALWAYS emit a `tool` node that calls it with those EXACT named arguments — a typed contract that always works — one operation per node. NEVER re-implement a typed tool inside a `python` node, and NEVER shell out to a CLI (subprocess) for something an MCP/tool already exposes: the model would have to guess CLI flags, which is exactly what breaks. For a multi-step MCP job, emit the discrete tool nodes IN SEQUENCE and wire each step's output into the next via typed ports (or {{ toJson .var }}). Reach for a `python` node ONLY for glue no tool covers. Do NOT invent tool/MCP names; if truly nothing fits, then a python node.\n")
 	sb.WriteString("- EXECUTION MODE: judge which execution model best fits the intent and include a top-level \"recommendation\": {\"mode\":\"workflow|auto|react|plan_execute\", \"rationale\":\"<1-2 sentences>\"}. Pick \"workflow\" when the task is a clear FIXED sequence of tool/MCP/agent nodes (python only for glue). Pick \"auto\" — the recommended default for a CONVERSATIONAL, TOOL-USING, or SCHEDULED DIGEST agent that decides which tools to call as it goes (e.g. a flight finder, a research assistant, a morning news/weather digest): the engine runs it as a reliable native tool-calling loop, no fixed graph. Pick \"plan_execute\" for open-ended or long-horizon work that must plan and adapt over many steps. Do NOT auto-pick \"react\"; use it only when the user explicitly asks for ReAct, a think-act-observe loop, or a manual ReAct experiment.\n\n")
+
+	// A demonstrated-correct graph for this kind of job, when one exists. Placed
+	// before the rulebook so the model reads the shape first, and framed as a
+	// STARTING POINT — copying it verbatim would throw away the reason the model
+	// is designing at all.
+	if ref := strings.TrimSpace(catalog.ReferenceGraph); ref != "" {
+		sb.WriteString("\nREFERENCE GRAPH — a known-good workflow for this KIND of job, built by Soulacy's curated planner:\n")
+		sb.WriteString(ref)
+		sb.WriteString("\nTreat it as a worked example, NOT a template to copy. Its step ORDER and its tool/MCP wiring are known to work — keep them where they apply. But you can see the whole installed catalogue and it cannot: if the user asked for a capability this reference does not use (an MCP server, a skill, a channel), wire that in, add or drop steps, and adapt the shape to what was actually asked for. Where the two disagree, the user's intent wins.\n\n")
+	}
 
 	// User-editable authoring rulebook (same rules the validator + AI fixer use),
 	// so generation follows them up front instead of being corrected after.

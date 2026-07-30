@@ -66,14 +66,28 @@ func researchDigestWorkflow(intent string) bool {
 // many topic words it happens to share with one.
 func ConversationalIntent(intent string) bool {
 	li := strings.ToLower(intent)
-	return anyContains(li,
+
+	// Unambiguous phrases: any one of these settles it.
+	if anyContains(li,
 		"conversational", "on demand", "on-demand", "on request",
 		"when a user", "when the user", "user asks", "responds to user",
 		"respond to user", "user's request", "users request",
 		"clarifying question", "clarifying questions", "ask the user",
 		"follow-up", "follow up question", "back and forth", "chat with",
-		"answers questions", "answer questions",
-	)
+	) {
+		return true
+	}
+
+	// Co-occurrence, not adjacency.
+	//
+	// Requiring exact bigrams like "answers questions" made this as brittle as the
+	// keyword patterns it exists to override: "answers all travel related
+	// questions" is plainly conversational and did not match, because two words
+	// were wedged between the pair. Asking only that both ideas appear SOMEWHERE
+	// survives ordinary English.
+	askish := anyContains(li, "question", "queries", "query", "asks", "asked", "ask ")
+	replyish := anyContains(li, "answer", "respond", "reply", "advise", "advisor", "adviser", "assist", "help")
+	return askish && replyish
 }
 
 func dealDigestWorkflow(intent string) bool {

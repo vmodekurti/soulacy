@@ -81,10 +81,27 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 	// An EXPLICIT request for a workflow still wins: the user is allowed to want
 	// a pipeline. This only stops keyword matching from making that choice for
 	// them.
-	explicitlyWorkflow := forceWorkflow || req == "workflow" || explicitWorkflowRequested(intent)
-	if pattern != "" && !explicitlyWorkflow && ConversationalIntent(intent) {
+	// STRONG: the user said so, or the UI forced it. This always wins.
+	strongWorkflow := forceWorkflow || req == "workflow" || explicitWorkflowPhrase(intent)
+	// WEAK: inferred from shape — a numbered, labelled procedure.
+	weakWorkflow := structuredWorkflowProcedureRequested(intent)
+
+	// A conversational intent overrides the WEAK signals only.
+	//
+	// This is the loop that produced a market_digest graph for a travel advisor:
+	// the user wrote "an interactive, conversational travel advisor"; Studio's own
+	// refiner expanded it into "1. TRIGGER: … 2. INPUTS: … 3. PROCESSING STEPS";
+	// that numbering read as an explicit workflow request, which bypassed the
+	// conversational guard; and a keyword pattern then matched on "options" (from
+	// "flight/hotel options") plus "sends" (from "user sends a message").
+	//
+	// Studio's own reformatting of the user's words must not outvote the words.
+	// An explicit phrase still does.
+	if ConversationalIntent(intent) && !strongWorkflow {
 		pattern = ""
+		weakWorkflow = false
 	}
+	explicitlyWorkflow := strongWorkflow || weakWorkflow
 	if explicitlyWorkflow || pattern != "" {
 		advice.Mode = "workflow"
 		advice.RuntimeStrategy = ""
