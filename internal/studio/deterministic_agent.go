@@ -105,24 +105,77 @@ func deterministicMaxSteps(intent string) int {
 	return 18
 }
 
+// deterministicAgentName picks a display name from the intent.
+//
+// Matching is on WHOLE WORDS, and the finance case needs corroboration.
+// Substring matching named a travel advisor "Stock Advisor", because
+// "flight/hotel options" contains "option" — the same collision that let a
+// keyword pattern claim the same prompt for a market digest. One ambiguous
+// word should not outweigh a paragraph about travel.
+//
+// Ordered most-specific first: a prompt can mention several domains, and the
+// one it is actually ABOUT is usually the one named earliest and most often.
 func deterministicAgentName(intent string) string {
 	li := strings.ToLower(intent)
+	word := func(words ...string) bool {
+		for _, w := range words {
+			if containsWord(li, w) {
+				return true
+			}
+		}
+		return false
+	}
 	switch {
-	case strings.Contains(li, "weather"):
+	case word("weather", "forecast"):
 		return "Weather Expert"
-	case strings.Contains(li, "notebook") || strings.Contains(li, "podcast"):
+	case word("notebook", "notebooklm", "podcast"):
 		return "Notebook Podcast Agent"
-	case strings.Contains(li, "knowledge") || strings.Contains(li, "kb") || strings.Contains(li, "document") || strings.Contains(li, "url"):
+	case word("travel", "flight", "flights", "hotel", "hotels", "itinerary", "itineraries", "trip", "destination", "destinations"):
+		return "Travel Advisor"
+	case word("knowledge", "kb", "document", "documents", "url", "urls"):
 		return "Knowledge Ingestion Agent"
-	case strings.Contains(li, "stock") || strings.Contains(li, "option") || strings.Contains(li, "finance"):
+	// "options" alone is ambiguous — it is as likely to be flight options as
+	// stock options — so it only counts alongside an unambiguous finance word.
+	case word("stock", "stocks", "ticker", "equity", "equities", "portfolio", "earnings", "finance", "financial"),
+		word("option", "options") && word("strike", "expiry", "call", "put", "trading", "market"):
 		return "Stock Advisor"
-	case strings.Contains(li, "deal") || strings.Contains(li, "discount"):
+	case word("deal", "deals", "discount", "discounts", "coupon", "coupons"):
 		return "Deal Finder"
-	case strings.Contains(li, "research"):
+	case word("research"):
 		return "Research Agent"
 	default:
 		return "Soulacy Agent"
 	}
+}
+
+// containsWord reports a WHOLE-word match, so "option" does not fire inside
+// "options", "optional" or "exception".
+func containsWord(text, word string) bool {
+	if word == "" {
+		return false
+	}
+	for i := 0; i <= len(text)-len(word); {
+		j := strings.Index(text[i:], word)
+		if j < 0 {
+			return false
+		}
+		j += i
+		startOK := j == 0 || !isWordByte(text[j-1])
+		end := j + len(word)
+		endOK := end == len(text) || !isWordByte(text[end])
+		if startOK && endOK {
+			return true
+		}
+		i = j + 1
+	}
+	return false
+}
+
+func isWordByte(b byte) bool {
+	return b == '_' ||
+		(b >= '0' && b <= '9') ||
+		(b >= 'a' && b <= 'z') ||
+		(b >= 'A' && b <= 'Z')
 }
 
 func deterministicChannels(intent string, cat Catalog) []string {
