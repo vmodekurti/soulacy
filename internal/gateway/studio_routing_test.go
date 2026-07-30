@@ -46,9 +46,18 @@ func TestStudioCompile_RoutesReasoningTaskToAgent(t *testing.T) {
 	}
 }
 
-// Explicit Workflow mode is still protected for curated macro-workflow shapes:
-// NotebookLM podcast generation should not fall through to LLM-authored graph
-// JSON, which previously produced a useless one-node web_search workflow.
+// Curated macro-workflow shapes survive, whoever ends up authoring the graph.
+//
+// This used to assert the MECHANISM — that the LLM compiler was never called —
+// because letting a model invent this graph produced a useless one-node
+// web_search workflow. Graph design is now outsourced to the model by default,
+// so that assertion is deliberately obsolete: the model IS called, and it is
+// handed the curated graph as a worked example (Catalog.ReferenceGraph).
+//
+// What matters is unchanged and still asserted: the resulting workflow is the
+// NotebookLM macro-flow, not a degenerate search-and-summarise. Here the fake
+// model returns junk, which exercises the floor under the new policy — a model
+// that cannot produce a usable graph must not cost the user the curated one.
 func TestStudioCompile_ForceWorkflowUsesDeterministicPodcastTemplate(t *testing.T) {
 	s, fake := studioFake(t)
 	fake.content = `not json`
@@ -71,8 +80,9 @@ func TestStudioCompile_ForceWorkflowUsesDeterministicPodcastTemplate(t *testing.
 	if status != http.StatusOK {
 		t.Fatalf("status=%d body=%v", status, out)
 	}
-	if got := fake.lastPrompt(); got != "" {
-		t.Fatalf("deterministic workflow should not call the LLM compiler, got prompt %.120q", got)
+	// The model is now asked, and must be shown the curated graph to work from.
+	if got := fake.lastPrompt(); got != "" && !strings.Contains(got, "REFERENCE GRAPH") {
+		t.Errorf("the builder model should receive the curated graph as a worked example; prompt was %.200q", got)
 	}
 	wf, _ := out["workflow"].(map[string]any)
 	if wf == nil {

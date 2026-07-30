@@ -832,6 +832,19 @@ func explicitWorkflowRequested(intent string) bool {
 	if structuredWorkflowProcedureRequested(intent) {
 		return true
 	}
+	return explicitWorkflowPhrase(intent)
+}
+
+// explicitWorkflowPhrase is the STRONG half of explicitWorkflowRequested: the
+// user said, in words, that they want a fixed workflow.
+//
+// Split out from the structural inference because the two carry very different
+// weight. "Build this as a fixed workflow" is a decision. A numbered spec is
+// only formatting — and Studio's own refiner PRODUCES numbered specs, rewriting
+// "a conversational travel agent" into "1. TRIGGER: … 2. INPUTS: …". Reading
+// that back as an explicit request meant Studio's formatting of the user's words
+// outvoted the words themselves.
+func explicitWorkflowPhrase(intent string) bool {
 	t := strings.ToLower(intent)
 	// Positive "build a fixed workflow" phrasings — must be UNnegated so
 	// "not a fixed workflow" (a react request) doesn't count as a workflow one.

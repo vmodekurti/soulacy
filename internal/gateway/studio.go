@@ -2642,25 +2642,113 @@ func (s *Server) handleStudioCompile(c *fiber.Ctx) error {
 	// explicit human choice overrides the reasoning-fit heuristic below —
 	// without this, RecommendAgentMode kept reverting their pick to an agent.
 	advice := studio.AdviseStrategy(req.Intent+" "+req.RawIntent, req.Catalog, "", req.ForceWorkflow)
-	if advice.Mode != "workflow" {
-		ares, ok := studio.CompileDeterministicAgent(req.Intent, req.Catalog, advice.RuntimeStrategy, req.Answers)
-		if !ok {
-			return s.errMsg(c, fiber.StatusUnprocessableEntity, "deterministic agent planner could not build this agent; add capabilities or switch to Workflow")
+
+	// The MODEL designs, grounded in the whole catalogue; the deterministic
+	// planner is the fallback.
+	//
+	// This path used to be deterministic-only ("Studio no longer asks the builder
+	// model to invent graph JSON"), while the streamed pipeline had already been
+	// inverted to model-first. Two entry points, two policies — so whether the
+	// builder model was consulted at all depended on which button was pressed,
+	// and pressing Generate produced a graph built from keyword patterns that
+	// cannot see MCP servers or skills.
+	res, designedByModel, err := s.studioDesignGraph(c, req.Intent, req.Catalog, advice, req.Answers)
+	if err != nil {
+		return s.errMsg(c, fiber.StatusUnprocessableEntity, err.Error())
+	}
+	s.stampDefaultLLM(&res.Workflow)
+	studio.ApplyTemplateFixes(&res.Workflow)
+	if !designedByModel {
+		if short := studio.CoverageShortfall(req.Intent, req.Catalog, res); short != "" {
+			res.Notes = append(res.Notes,
+				"Heads up: the deterministic planner built this graph and "+short+
+					". It will run, but it is not using a capability you asked for — review the steps before saving.")
 		}
-		s.stampDefaultLLM(&ares.Workflow) // make the runtime provider/model explicit in the YAML
-		s.finalizeStudioCompileResult(c, &ares, req.Catalog)
-		return c.JSON(studioCompileResponseFor(ares, advice))
+	}
+	s.finalizeStudioCompileResult(c, &res, req.Catalog)
+	return c.JSON(studioCompileResponseFor(res, advice))
+}
+
+// studioDesignGraph is the ONE graph-design policy, shared by the synchronous
+// compile handler and anything else that needs a draft outside the streamed
+// pipeline. Keeping it in one place is the point: the two entry points had
+// drifted to opposite defaults, and a user could not tell which they had hit.
+//
+// Model first, contract-checked, deterministic planner as the floor.
+func (s *Server) studioDesignGraph(
+	c *fiber.Ctx,
+	intent string,
+	cat studio.Catalog,
+	advice studio.StrategyAdvice,
+	answers map[string]string,
+) (studio.Result, bool, error) {
+	strategy := advice.RuntimeStrategy
+	if strategy == "" && advice.Mode != "workflow" {
+		strategy = "auto"
+	}
+	deterministic := func() (studio.Result, bool) {
+		if advice.Mode == "workflow" {
+			return studio.CompileDeterministicWorkflow(intent, cat, answers)
+		}
+		return studio.CompileDeterministicAgent(intent, cat, strategy, answers)
 	}
 
-	// Workflow mode is deterministic. Studio no longer asks the builder model to
-	// invent graph JSON; it uses curated/common planners and blocks before save
-	// if the resulting contract is not runnable.
-	if res, ok := studio.CompileDeterministicWorkflow(req.Intent, req.Catalog, req.Answers); ok {
-		s.stampDefaultLLM(&res.Workflow)
-		s.finalizeStudioCompileResult(c, &res, req.Catalog)
-		return c.JSON(studioCompileResponseFor(res, advice))
+	// Compute the curated graph FIRST. It costs nothing (no model call) and it
+	// serves two purposes: it is the fallback, and — when it encodes a real
+	// multi-step procedure rather than a generic skeleton — it is handed to the
+	// model as a worked example so the model designs from a shape known to work.
+	detRes, detOK := deterministic()
+
+	if model := s.studioLLM(); model != nil {
+		designCat := cat
+		if detOK && studio.EncodesProcedure(detRes) {
+			if ref, mErr := json.MarshalIndent(detRes.Workflow, "", "  "); mErr == nil {
+				designCat.ReferenceGraph = string(ref)
+			}
+		}
+		var res studio.Result
+		var lerr error
+		if advice.Mode == "workflow" {
+			res, lerr = studio.Compile(c.Context(), model, intent, designCat, answers)
+		} else {
+			res, lerr = studio.CompileAgent(c.Context(), model, intent, designCat, strategy, answers)
+		}
+		if lerr == nil {
+			in := s.preflightInput(c, cat)
+			if contract := studio.AssessContract(res.Workflow, cat, in); contract.Blockers > 0 {
+				// Repair before discarding: most of what a weak builder model gets
+				// wrong is structural, not a bad choice of capabilities.
+				studio.RepairContractStructure(&res.Workflow, intent, cat, answers, contract)
+				studio.RepairWiring(&res.Workflow, cat)
+				contract = studio.AssessContract(res.Workflow, cat, in)
+				if contract.Blockers > 0 {
+					// Keep the model's graph anyway when falling back would COST a
+					// capability the user named. Visible blockers beat a clean graph
+					// that quietly does the wrong thing.
+					if detOK &&
+						studio.CoverageShortfall(intent, cat, detRes) != "" &&
+						studio.CoverageShortfall(intent, cat, res) == "" {
+						res.Notes = append(res.Notes,
+							"This graph still has unresolved blockers, kept because the deterministic "+
+								"alternative would drop a capability you asked for. Fix the blockers rather than regenerating.")
+						return res, true, nil
+					}
+				} else {
+					return res, true, nil
+				}
+			} else {
+				return res, true, nil
+			}
+		}
 	}
-	return s.errMsg(c, fiber.StatusUnprocessableEntity, "deterministic workflow planner could not build this workflow; describe the source, transform, and delivery steps more explicitly")
+
+	if detOK {
+		return detRes, false, nil
+	}
+	if advice.Mode == "workflow" {
+		return studio.Result{}, false, fmt.Errorf("could not build this workflow; describe the source, transform, and delivery steps more explicitly")
+	}
+	return studio.Result{}, false, fmt.Errorf("could not build this agent; add at least one tool or choose a fixed workflow")
 }
 
 // finalizeStudioCompileResult attaches the same deterministic contract used by

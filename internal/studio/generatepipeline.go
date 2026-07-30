@@ -14,6 +14,7 @@ package studio
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -258,33 +259,95 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 	var ok bool
 	designedBy := SourceLLM
 
+	// Curated graph up front: free (no model call), used both as the fallback and
+	// — when it encodes a real procedure — as a worked example for the model.
+	detRes, detOK := deterministic()
+
 	if llm != nil && !opts.PreferDeterministic {
+		designCat := catalog
+		if detOK && EncodesProcedure(detRes) {
+			if ref, mErr := json.MarshalIndent(detRes.Workflow, "", "  "); mErr == nil {
+				designCat.ReferenceGraph = string(ref)
+			}
+		}
+		msg := "The builder model is choosing tools, skills and MCP servers from what is installed."
+		if designCat.ReferenceGraph != "" {
+			msg += " It is starting from Soulacy's curated graph for this kind of job."
+		}
 		emit(PipelineEvent{
-			Phase: PhaseBuildGraph, Status: StatusStart, Source: SourceLLM,
-			Message: "The builder model is choosing tools, skills and MCP servers from what is installed.",
+			Phase: PhaseBuildGraph, Status: StatusStart, Source: SourceLLM, Message: msg,
 		})
 		var lerr error
 		if advice.Mode == "workflow" {
-			compileRes, lerr = Compile(ctx, llm, compileIntent, catalog, opts.Answers)
+			compileRes, lerr = Compile(ctx, llm, compileIntent, designCat, opts.Answers)
 		} else {
-			compileRes, lerr = CompileAgent(ctx, llm, compileIntent, catalog, strategy, opts.Answers)
+			compileRes, lerr = CompileAgent(ctx, llm, compileIntent, designCat, strategy, opts.Answers)
 		}
 		ok = lerr == nil
 		if ok {
-			// Only accept the model's graph if it actually holds together. This is
-			// what makes model-first safe on a small local builder: a graph that
-			// fails its contract is not silently preferred over a working
-			// deterministic one.
 			if c := AssessContract(compileRes.Workflow, catalog, opts.In); c.Blockers > 0 {
-				ok = false
-				lerr = fmt.Errorf("the model's graph did not pass its contract (%d blocker(s))", c.Blockers)
+				// Repair BEFORE giving up on it. These are the same deterministic
+				// wiring/contract fixes phase 5 runs, and most of what a weak builder
+				// model gets wrong is structural — a dangling reference, an unwired
+				// port — not a bad choice of tools. Throwing the graph away for that
+				// discards a correct plan over a fixable defect.
+				emit(PipelineEvent{
+					Phase: PhaseBuildGraph, Status: StatusStart,
+					Message: fmt.Sprintf("Repairing %d structural issue(s) in the model's graph.", c.Blockers),
+				})
+				RepairContractStructure(&compileRes.Workflow, compileIntent, catalog, opts.Answers, c)
+				RepairWiring(&compileRes.Workflow, catalog)
+				if c2 := AssessContract(compileRes.Workflow, catalog, opts.In); c2.Blockers > 0 {
+					ok = false
+					lerr = fmt.Errorf("the model's graph did not pass its contract (%d blocker(s)) and could not be repaired", c2.Blockers)
+				}
 			}
 		}
-		if !ok {
-			emit(PipelineEvent{
-				Phase: PhaseBuildGraph, Status: StatusSkip, Source: SourceLLM,
-				Message: "Falling back to the deterministic planner: " + lerr.Error(),
-			})
+
+		if !ok && lerr != nil {
+			// Before falling back, check what the fallback would COST.
+			//
+			// The deterministic skeletons are hardcoded to web_search and reference
+			// no MCP at all, so falling back can silently swap a graph that used the
+			// right capability for one that does not — and the replacement looks
+			// cleaner, because its only virtue is passing a structural check.
+			//
+			// A graph with visible blockers beats a graph that is quietly wrong: the
+			// blockers are on screen with a Fix button, whereas "it used web_search
+			// instead of your travel MCP" is invisible until someone reads the nodes.
+			// So when the model captured a named capability and the fallback would
+			// drop it, keep the model's graph and report the blockers.
+			modelShort := CoverageShortfall(compileIntent, catalog, compileRes)
+			if detRes, detOK := deterministic(); detOK {
+				detShort := CoverageShortfall(compileIntent, catalog, detRes)
+				if detShort != "" && modelShort == "" {
+					emit(PipelineEvent{
+						Phase: PhaseBuildGraph, Status: StatusSkip, Source: SourceLLM,
+						Message: "Keeping the model's graph despite its blockers: " + detShort +
+							", so falling back would lose a capability you asked for.",
+					})
+					compileRes.Notes = append(compileRes.Notes,
+						"This graph still has unresolved blockers, kept because the deterministic "+
+							"alternative "+detShort+". Fix the blockers rather than regenerating.")
+					ok = true
+				} else {
+					emit(PipelineEvent{
+						Phase: PhaseBuildGraph, Status: StatusSkip, Source: SourceLLM,
+						Message: "Falling back to the deterministic planner: " + lerr.Error(),
+					})
+					compileRes, ok = detRes, true
+					designedBy = SourcePlanner
+				}
+			} else {
+				// No deterministic alternative exists, so the model's graph — blockers
+				// and all — is the only thing there is. Better than nothing, and the
+				// blockers are reported.
+				emit(PipelineEvent{
+					Phase: PhaseBuildGraph, Status: StatusSkip, Source: SourceLLM,
+					Message: "Keeping the model's graph: no deterministic pattern fits this intent.",
+				})
+				ok = compileRes.Workflow.Name != "" || len(compileRes.Workflow.Flow.Nodes) > 0
+			}
 		}
 	}
 
@@ -305,13 +368,26 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 	if designedBy == SourceLLM {
 		compileRes.Notes = append(compileRes.Notes,
 			"The builder model designed this graph from the installed tools, skills and MCP servers.")
-	} else {
-		// A deterministic graph can still miss what the user asked for; say so
-		// rather than presenting it as a complete answer.
-		if short := DeterministicShortfall(compileIntent, catalog, compileRes); short != "" {
-			compileRes.Notes = append(compileRes.Notes,
-				"Heads up: this graph was built by the deterministic planner and "+short+". Review the steps before saving.")
+	}
+
+	// Coverage is checked on EVERY path, not just the deterministic one. A
+	// model-designed graph can miss a named capability too, and the symptom is
+	// identical from the outside: a graph that runs and quietly does the wrong
+	// thing. Checking only the planner would have left the more common case
+	// unguarded now that the model designs by default.
+	if short := CoverageShortfall(compileIntent, catalog, compileRes); short != "" {
+		who := "the builder model"
+		if designedBy == SourcePlanner {
+			who = "the deterministic planner"
 		}
+		compileRes.Notes = append(compileRes.Notes,
+			"Heads up: "+who+" built this graph and "+short+
+				". It will run, but it is not using a capability you asked for — review the steps before saving.")
+		emit(PipelineEvent{
+			Phase: PhaseBuildGraph, Status: StatusComplete, Source: designedBy,
+			Message: "Coverage gap: " + short,
+			Payload: map[string]any{"coverage_shortfall": short},
+		})
 	}
 	if compileRes.Generation != nil {
 		compileRes.Generation.PlanMatched = len(compileRes.Plan) > 0

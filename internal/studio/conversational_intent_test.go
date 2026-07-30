@@ -31,9 +31,25 @@ func TestConversationalIntent(t *testing.T) {
 	for _, s := range []string{
 		"Every weekday at 7am send a deals digest to Telegram",
 		"Daily market report emailed at 8",
+		"Fetch each URL and store the contents in the knowledge base",
 	} {
 		if ConversationalIntent(s) {
 			t.Errorf("a scheduled pipeline must not read as conversational: %q", s)
+		}
+	}
+}
+
+// Real phrasings that the first version missed because it required exact
+// bigrams. Words get wedged between the pair in ordinary English.
+func TestConversationalIntent_ToleratesWordsBetweenTheCues(t *testing.T) {
+	for _, s := range []string{
+		"I want to build a travel advisory agent that answers all travel related questions as an expert",
+		"an agent that responds to any question about our pricing",
+		"a support assistant that helps with billing queries",
+		"answer customer questions about shipping",
+	} {
+		if !ConversationalIntent(s) {
+			t.Errorf("should read as conversational: %q", s)
 		}
 	}
 }
@@ -47,6 +63,61 @@ func TestAdviseStrategy_ConversationalIntentIsNotAPipeline(t *testing.T) {
 	}
 	if adv.DeterministicPattern != "" {
 		t.Errorf("no pipeline pattern should be claimed, got %q", adv.DeterministicPattern)
+	}
+}
+
+// The reported failure, end to end.
+//
+// Studio's own refiner rewrites a conversational prompt into a numbered spec.
+// That numbering used to read as an explicit workflow request, bypass the
+// conversational guard, and let a keyword pattern claim it — "options" from
+// "flight/hotel options" plus "sends" from "user sends a message" matched
+// market_digest, producing a web_search → summarize graph for a travel advisor.
+const refinedTravelSpec = `An interactive, conversational travel advisor agent that responds to user travel questions in real time.
+1. TRIGGER: The agent activates whenever a user sends a message containing a travel-related question or request (e.g., destination recommendations, itinerary planning, flight/hotel options, visa requirements).
+2. INPUTS / DATA SOURCES:
+   - The user's natural-language message.
+   - The trvl MCP server (tool: mcp__trvl__travel) for retrieving structured travel data.
+3. PROCESSING STEPS (in order, executed adaptively per message):
+   a. Receive and interpret the user's message.
+   c. If the message is ambiguous, ask one brief clarifying question and wait for the reply.
+   d. Call mcp__trvl__travel to retrieve relevant travel data.
+4. OUTPUT: The agent's expert travel advice, delivered through the configured output channel.`
+
+func TestAdviseStrategy_RefinerNumberingDoesNotForceAWorkflow(t *testing.T) {
+	adv := AdviseStrategy(refinedTravelSpec, travelCatalog(), "", false)
+	if adv.Mode == "workflow" {
+		t.Fatalf("a numbered SPEC is formatting, not a workflow request: %+v", adv)
+	}
+	if adv.DeterministicPattern != "" {
+		t.Errorf("no keyword pattern should claim this, got %q", adv.DeterministicPattern)
+	}
+}
+
+func TestAdviseStrategy_NumberedSpecStillCountsWhenNotConversational(t *testing.T) {
+	// The structural signal must keep working for a genuine procedure — this is
+	// the case the numbering heuristic exists for.
+	spec := `1. TRIGGER: every weekday at 7am.
+2. SEARCH: find the latest articles.
+3. CREATE NOTEBOOK: add sources.
+4. GENERATE AUDIO: poll status until ready.
+5. DELIVER OUTPUT: send a telegram message.`
+	if adv := AdviseStrategy(spec, travelCatalog(), "", false); adv.Mode != "workflow" {
+		t.Fatalf("an ordered operating procedure is still a workflow: %+v", adv)
+	}
+}
+
+func TestExplicitWorkflowPhrase_SeparatesWordsFromFormatting(t *testing.T) {
+	if !explicitWorkflowPhrase("build this as a fixed workflow") {
+		t.Error("an explicit phrase must register")
+	}
+	// Numbering alone is NOT a phrase — that is the whole point of the split.
+	if explicitWorkflowPhrase("1. do this\n2. then that") {
+		t.Error("numbering is formatting, not an explicit request")
+	}
+	// …but it is still picked up by the structural check.
+	if !structuredWorkflowProcedureRequested(refinedTravelSpec) {
+		t.Error("the structural check should still see the numbered spec")
 	}
 }
 

@@ -29,6 +29,35 @@ import (
 	"strings"
 )
 
+// EncodesProcedure reports whether a deterministic draft is a CURATED
+// multi-step procedure rather than a generic fallback skeleton.
+//
+// The deterministic planner produces two very different kinds of thing, and
+// treating them the same is what made "model-first" a bad trade:
+//
+//   - Curated macro-flows: the NotebookLM podcast graph wires create → add
+//     sources → generate audio → poll status in the one order that works. That
+//     ordering is hard-won knowledge a builder model does not have, and letting
+//     a model design it produced a useless single-node web_search graph.
+//   - Generic skeletons: the digest patterns are web_search → summarise, matched
+//     on keywords, referencing no MCP at all. A model beats these easily.
+//
+// The signal is whether the draft reaches for real capabilities: an MCP tool or
+// a skill means the pattern knew something specific about the job. Builtins
+// alone mean it fell back to a shape that fits anything, which is exactly when
+// the model should be asked instead.
+func EncodesProcedure(res Result) bool {
+	if len(res.Workflow.Skills) > 0 {
+		return true
+	}
+	for t := range draftToolSet(res.Workflow) {
+		if strings.HasPrefix(strings.ToLower(t), "mcp__") {
+			return true
+		}
+	}
+	return false
+}
+
 // namedSkills returns the catalogue skills the intent explicitly names. Mirrors
 // namedMCPTools: matched against what is installed, never invented.
 func namedSkills(intent string, cat Catalog) []string {
@@ -52,14 +81,20 @@ func namedSkills(intent string, cat Catalog) []string {
 	return uniqueStrings(out)
 }
 
-// DeterministicShortfall reports what a deterministic result FAILS to cover for
-// this intent, or "" when it covers everything the user named.
+// CoverageShortfall reports what a generated draft FAILS to cover for this
+// intent, or "" when it covers everything the user named.
 //
-// res is the draft the deterministic planner produced. The comparison is against
-// what actually landed in the draft — tools on an agent, node tools on a
-// workflow — rather than against what the planner intended, because the whole
-// failure mode here is a planner believing it handled something it did not.
-func DeterministicShortfall(intent string, cat Catalog, res Result) string {
+// Deliberately NOT specific to the deterministic planner. A model-designed graph
+// can miss a named capability too — it just misses it for different reasons
+// (context crowding, a plausible-looking generic substitute) — and the failure
+// looks identical from the outside: a graph that runs, and does the wrong thing.
+// One check, applied to whoever built the draft.
+//
+// The comparison is against what actually landed in the draft — tools on an
+// agent, node tools on a workflow — rather than against what the planner
+// intended, because the whole failure mode is a planner believing it handled
+// something it did not.
+func CoverageShortfall(intent string, cat Catalog, res Result) string {
 	var missing []string
 
 	if named := namedMCPTools(intent, cat); len(named) > 0 {
