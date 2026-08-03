@@ -166,10 +166,17 @@ export function migrateEndpoints(workflow) {
     removeIds.add(t.id)
   }
   // Exit nodes → a delivery channel (when the route names one) and removed.
+  // ONLY channel exits migrate. An http/console exit carries configuration
+  // (e.g. a webhook URL) that has no home on the workflow object, and the
+  // backend reads it straight off the graph (studio.DeriveEndpoints). Removing
+  // those here silently deleted a configured endpoint every time the draft was
+  // reopened, imported, auto-fixed or healed.
   for (const x of exitNodes) {
     const p = x.params || {}
+    const route = p.route || ''
+    if (route && route !== 'channel') continue
     const chan = p.config?.channel || p.config?.id
-    if (p.route === 'channel' && chan && !channels.includes(chan)) channels.push(chan)
+    if (route === 'channel' && chan && !channels.includes(chan)) channels.push(chan)
     removeIds.add(x.id)
   }
 

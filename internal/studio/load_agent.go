@@ -63,6 +63,10 @@ func FromAgentDefinition(def agent.Definition) Draft {
 	if strat := strings.ToLower(strings.TrimSpace(def.Reasoning.Strategy)); isAgentStrategy(strat) {
 		d.Strategy = strat
 		d.SystemPrompt = def.SystemPrompt
+		// Without this the Build step's contract panel opened empty for every
+		// saved agent, which read as "you never filled this in" rather than
+		// "this was never stored".
+		d.Policy = AgentPolicyFromReasoning(def.Reasoning.Contract)
 		d.Unattended = def.Unattended
 		d.Tools = agentToolList(def)
 		d.Skills = append([]string(nil), def.Skills...)

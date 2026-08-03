@@ -26,6 +26,26 @@ type adminAuditRecord struct {
 	Details   map[string]any `json:"details,omitempty"`
 }
 
+// auditActor identifies who is making a request, for any record that needs to
+// name a person: the admin audit log, and the rules store's Author field.
+//
+// Shared rather than duplicated so those two can never disagree about who did
+// something. Falls back to "api-key" — an explicit "authenticated, but only by
+// a shared key" rather than a blank that reads as a lost value.
+func (s *Server) auditActor(c *fiber.Ctx) string {
+	if c != nil {
+		if claims := auth.ClaimsFromCtx(c); claims != nil {
+			if a := strings.TrimSpace(claims.Subject); a != "" {
+				return a
+			}
+			if a := strings.TrimSpace(claims.Email); a != "" {
+				return a
+			}
+		}
+	}
+	return "api-key"
+}
+
 func (s *Server) recordAdminAudit(c *fiber.Ctx, action, resource, target, status string, details map[string]any) {
 	if s == nil || s.actions == nil {
 		return
@@ -46,16 +66,10 @@ func (s *Server) recordAdminAudit(c *fiber.Ctx, action, resource, target, status
 			rec.RequestID = requestID
 		}
 		if claims := auth.ClaimsFromCtx(c); claims != nil {
-			rec.Actor = strings.TrimSpace(claims.Subject)
-			if rec.Actor == "" {
-				rec.Actor = strings.TrimSpace(claims.Email)
-			}
 			rec.Role = strings.TrimSpace(claims.Role)
 		}
 	}
-	if rec.Actor == "" {
-		rec.Actor = "api-key"
-	}
+	rec.Actor = s.auditActor(c)
 	s.actions.Append(message.Event{
 		Type:      "admin.audit",
 		AgentID:   adminAuditAgentID,

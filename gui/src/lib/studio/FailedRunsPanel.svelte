@@ -118,10 +118,19 @@
           {/if}
 
           {#if diagnosis}
-            {#if diagnosis.root_cause}
+            <!-- `summary` is the one field the server sets on EVERY path,
+                 including the "no retained trace" one whose whole payload is
+                 this line plus its suggestions. -->
+            {#if diagnosis.summary}
+              <div class="fr-cause">
+                <span class="fr-label">What happened</span>
+                <span>{diagnosis.summary}</span>
+              </div>
+            {/if}
+            {#if diagnosis.rootCause}
               <div class="fr-cause">
                 <span class="fr-label">Root cause</span>
-                <span>{diagnosis.root_cause}</span>
+                <span>{diagnosis.rootCause}</span>
               </div>
             {/if}
             {#if (diagnosis.evidence || []).length}
@@ -130,15 +139,23 @@
                 <ul>{#each diagnosis.evidence as e}<li>{e}</li>{/each}</ul>
               </details>
             {/if}
-            {#if diagnosis.next_action}
+            {#if diagnosis.nextAction}
               <div class="fr-fix">
                 <span class="fr-label">Recommended fix</span>
-                <span>{diagnosis.next_action}</span>
+                <span>{diagnosis.nextAction}</span>
               </div>
             {/if}
-            {#if diagnosis.failed_node}
-              <button class="btn btn-sm" type="button" on:click={() => onReveal(diagnosis.failed_node)}>
-                Show “{diagnosis.failed_node}” on the canvas
+            {#if (diagnosis.suggestions || []).length}
+              <div class="fr-fix">
+                <span class="fr-label">Try this</span>
+                <ul class="fr-suggestions">
+                  {#each diagnosis.suggestions as sug}<li>{sug}</li>{/each}
+                </ul>
+              </div>
+            {/if}
+            {#if diagnosis.failedNode}
+              <button class="btn btn-sm" type="button" on:click={() => onReveal(diagnosis.failedNode)}>
+                Show “{diagnosis.failedNode}” on the canvas
               </button>
             {/if}
           {:else}
@@ -201,6 +218,8 @@
 </div>
 
 <style>
+  .fr-suggestions { margin: 4px 0 0; padding-left: 18px; }
+  .fr-suggestions li { margin: 2px 0; }
   .fr { display: flex; flex-direction: column; gap: 8px; }
   .fr-muted { font-size: .84rem; color: var(--text-dim, #6b7294); }
   .fr-error {

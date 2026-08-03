@@ -3759,10 +3759,34 @@ func (s *Server) soulRulesPath() (string, error) {
 	return filepath.Join(ws.Root, "studio", "soul-yaml-rules.md"), nil
 }
 
-// soulRules returns the effective rulebook: the user's saved copy if present and
-// non-empty, otherwise the built-in default. Never errors — a missing file just
-// falls back to the default so generation/validation/fix always have rules.
+// soulRulesDir is the versioned rules store: <workspace>/studio/rules. The
+// store is append-only, so this is a directory of records rather than the
+// single flat file soulRulesPath describes.
+func (s *Server) soulRulesDir() (string, error) {
+	ws, err := config.ResolveWorkspace()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(ws.Root, "studio", "rules"), nil
+}
+
+// soulRules returns the effective rulebook: the newest stored version if there
+// is one, else a legacy flat file from before the store was adopted, else the
+// built-in default. Never errors — a missing rulebook just falls back so
+// generation/validation/fix always have rules.
+//
+// Reading the store rather than the flat file is what makes a deployment
+// record's RulesVersion hash resolvable: the hash pinned at deploy time now
+// names a version whose full text is actually retrievable.
 func (s *Server) soulRules() string {
+	if dir, err := s.soulRulesDir(); err == nil {
+		if rec, found, rerr := studio.LatestRules(dir); rerr == nil && found &&
+			strings.TrimSpace(rec.Rules) != "" {
+			return rec.Rules
+		}
+	}
+	// Legacy flat file, still authoritative for workspaces that predate the
+	// store and have not saved since.
 	if path, err := s.soulRulesPath(); err == nil {
 		if b, rerr := os.ReadFile(path); rerr == nil && strings.TrimSpace(string(b)) != "" {
 			return string(b)
@@ -3786,31 +3810,83 @@ func (s *Server) handleStudioGetRules(c *fiber.Ctx) error {
 // studioRulesRequest is the PUT /api/v1/studio/rules body.
 type studioRulesRequest struct {
 	Rules string `json:"rules"`
+	// Note is an optional reason for the change — the part of an audit trail a
+	// content hash cannot supply.
+	Note string `json:"note"`
 }
 
 // handleStudioSaveRules implements PUT /api/v1/studio/rules — saves the edited
-// rulebook to the workspace. An empty body resets to the built-in default by
-// removing the saved copy.
+// rulebook as a new version in the append-only store. An empty body resets to
+// the built-in default by recording the default AS a version, not by deleting.
+//
+// This used to os.WriteFile over a single flat file and os.Remove it to reset,
+// which meant the text injected into every subsequent generation could be
+// overwritten or destroyed with no author, no timestamp, no prior copy, and no
+// way to answer "what were the rules when this agent was deployed?" — even
+// though deployment records were already pinning a RulesVersion hash that
+// nothing could resolve.
 func (s *Server) handleStudioSaveRules(c *fiber.Ctx) error {
 	var req studioRulesRequest
 	if err := c.BodyParser(&req); err != nil {
 		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
-	path, err := s.soulRulesPath()
+	dir, err := s.soulRulesDir()
 	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
-	if strings.TrimSpace(req.Rules) == "" {
-		_ = os.Remove(path) // reset to built-in default
-		return c.JSON(fiber.Map{"ok": true, "isDefault": true, "rules": studio.DefaultSOULRules})
+	author := s.auditActor(c)
+
+	// Reset is a version too. Recording the default as the new head keeps the
+	// history contiguous and leaves the previous text recoverable, where the old
+	// os.Remove discarded the only copy irreversibly.
+	rules, isDefault := req.Rules, false
+	note := strings.TrimSpace(req.Note)
+	if strings.TrimSpace(rules) == "" {
+		rules, isDefault = studio.DefaultSOULRules, true
+		if note == "" {
+			note = "reset to the built-in default"
+		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+
+	rec, err := studio.SaveRulesWithNote(dir, rules, author, note)
+	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
-	if err := os.WriteFile(path, []byte(req.Rules), 0o644); err != nil {
+	// Retire the legacy flat file only once the store holds the text, so a
+	// crash between the two leaves the rulebook readable by the old path.
+	if path, perr := s.soulRulesPath(); perr == nil {
+		_ = os.Remove(path)
+	}
+	return c.JSON(fiber.Map{
+		"ok": true, "isDefault": isDefault,
+		"version": rec.Version, "hash": rec.Hash, "saved": rec.Saved, "author": rec.Author,
+		"rules": func() string {
+			if isDefault {
+				return studio.DefaultSOULRules
+			}
+			return ""
+		}(),
+	})
+}
+
+// handleStudioRulesHistory implements GET /api/v1/studio/rules/history — the
+// stored versions, newest first. Without this the store's audit trail exists on
+// disk but is unreachable from the product.
+func (s *Server) handleStudioRulesHistory(c *fiber.Ctx) error {
+	dir, err := s.soulRulesDir()
+	if err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
-	return c.JSON(fiber.Map{"ok": true, "isDefault": false})
+	// RulesMeta, not RulesRecord: history lists versions, and shipping the full
+	// rulebook text for every entry would make this response grow without bound.
+	recs, err := studio.RulesHistory(dir)
+	if err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	}
+	if recs == nil {
+		recs = []studio.RulesMeta{}
+	}
+	return c.JSON(fiber.Map{"versions": recs})
 }
 
 // studioDraftsDir derives the Studio drafts directory from the resolved

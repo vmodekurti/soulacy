@@ -126,3 +126,42 @@ describe('migrateEndpoints', () => {
     expect(migrateEndpoints(wf2)).toBe(wf2)
   })
 })
+
+describe('migrateEndpoints keeps configured non-channel exits', () => {
+  const wf = (params) => ({
+    trigger: { type: 'schedule' },
+    channels: [],
+    flow: {
+      entry: 'step',
+      nodes: [
+        { id: 'step', kind: 'python' },
+        { id: 'exit_1', kind: 'exit', params },
+      ],
+      edges: [{ from: 'step', to: 'exit_1' }],
+    },
+  })
+
+  it('keeps an http exit and its config in the graph', () => {
+    const m = migrateEndpoints(wf({ route: 'http', config: { url: 'https://example.test/hook' } }))
+    const ex = m.flow.nodes.find((n) => n.id === 'exit_1')
+    expect(ex).toBeTruthy()
+    expect(ex.params.config.url).toBe('https://example.test/hook')
+    expect(m.flow.edges).toHaveLength(1)
+  })
+
+  it('keeps a console exit in the graph', () => {
+    const m = migrateEndpoints(wf({ route: 'console', config: {} }))
+    expect(m.flow.nodes.find((n) => n.id === 'exit_1')).toBeTruthy()
+  })
+
+  it('still migrates a channel exit into workflow.channels and drops the node', () => {
+    const m = migrateEndpoints(wf({ route: 'channel', config: { channel: 'telegram' } }))
+    expect(m.channels).toContain('telegram')
+    expect(m.flow.nodes.find((n) => n.id === 'exit_1')).toBeFalsy()
+  })
+
+  it('still migrates a legacy exit that names no route', () => {
+    const m = migrateEndpoints(wf({}))
+    expect(m.flow.nodes.find((n) => n.id === 'exit_1')).toBeFalsy()
+  })
+})

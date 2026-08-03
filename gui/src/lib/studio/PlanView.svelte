@@ -184,7 +184,13 @@
             {#if !review.ready}
               <span class="review-warn">Resolve the items under “Needs attention” before enabling.</span>
             {/if}
-            <button class="btn primary" on:click={() => onSave && onSave()} disabled={saving}>
+            <!-- Honour the verdict this panel just rendered. The button used to
+                 be disabled={saving} alone, so it sat enabled directly beneath
+                 its own "resolve these first" warning — the message and the gate
+                 contradicting each other on the same row. -->
+            <button class="btn primary" on:click={() => onSave && onSave()}
+                    disabled={saving || !review.ready}
+                    title={!review.ready ? 'Resolve the items under “Needs attention” first' : ''}>
               {saving ? 'Saving…' : 'Save automation'}
             </button>
           </div>

@@ -2,6 +2,7 @@ package studio
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -25,13 +26,25 @@ func TestFilterCatalog_TrimsAndKeepsRelevant(t *testing.T) {
 	}
 	cat := Catalog{Skills: skills}
 	out := FilterCatalogForIntent("get me stock market finance quotes", cat)
-	if len(out.Skills) != maxGroundedSkills {
-		t.Fatalf("expected trim to %d, got %d", maxGroundedSkills, len(out.Skills))
+	// The cap is a ceiling, not a quota. This used to require EXACTLY 24, which
+	// encoded the padding behaviour: the one relevant skill plus twenty-three
+	// entries the fixture itself calls "noise" / "unrelated capability". Handing
+	// those to the builder model is what produced agents carrying capabilities
+	// nothing in the request pointed at, so they are now dropped rather than
+	// used as filler.
+	if len(out.Skills) > maxGroundedSkills {
+		t.Fatalf("trim exceeded the cap: got %d, max %d", len(out.Skills), maxGroundedSkills)
+	}
+	if len(out.Skills) == 0 {
+		t.Fatal("trim dropped everything, including the relevant skill")
 	}
 	found := false
 	for _, s := range out.Skills {
 		if s.Name == "stocks" {
 			found = true
+		}
+		if strings.HasPrefix(s.Name, "noise") {
+			t.Errorf("unrelated skill %q was kept as filler", s.Name)
 		}
 	}
 	if !found {

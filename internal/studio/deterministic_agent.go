@@ -20,6 +20,7 @@ func CompileDeterministicAgent(intent string, cat Catalog, strategy string, answ
 	draft := Draft{
 		Name:         deterministicAgentName(intent),
 		Intent:       intent,
+		RawIntent:    strings.TrimSpace(cat.RawIntent),
 		Trigger:      inferredTriggerFromIntent(intent),
 		Strategy:     strategy,
 		Tools:        deterministicTools(intent, cat),

@@ -16,7 +16,11 @@ package studio
 // "use the defaults for this strategy", so existing drafts keep working and a
 // round-trip through Studio never invents configuration the user did not set.
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/soulacy/soulacy/pkg/agent"
+)
 
 // Strategy tokens. Centralised so the panel, the advisor and the compiler agree.
 const (
@@ -59,6 +63,12 @@ type AgentContract struct {
 	RecoveryRetries int `json:"recovery_retries,omitempty"`
 }
 
+// NOTE ON THE BOOLEAN TAGS IN THE TWO STRUCTS BELOW: none carry `omitempty`,
+// and that is load-bearing. Every one of these flags defaults to TRUE, and the
+// Studio panel renders a missing field as `?? true`. With `omitempty` a flag the
+// operator turned OFF was dropped from the JSON entirely and came back ON — the
+// panel showed the opposite of what was saved, and the next edit pushed that
+// reverted value back down. False has to travel.
 // ReActPolicy bounds the observe→act loop. Every field here exists because an
 // unbounded ReAct loop fails by burning budget rather than by stopping.
 type ReActPolicy struct {
@@ -84,11 +94,11 @@ type ReActPolicy struct {
 	ConfidenceThreshold float64 `json:"confidence_threshold,omitempty"`
 	// PreserveBestResult keeps the best intermediate answer, so a loop that
 	// exhausts its budget still returns its best work instead of nothing.
-	PreserveBestResult bool `json:"preserve_best_result,omitempty"`
+	PreserveBestResult bool `json:"preserve_best_result"`
 	// FallbackToAuto downgrades to Auto after repeated invalid steps rather than
 	// failing the run. This is what makes ReAct safe to offer at all on models
 	// whose tool-calling is unreliable.
-	FallbackToAuto bool `json:"fallback_to_auto,omitempty"`
+	FallbackToAuto bool `json:"fallback_to_auto"`
 }
 
 // PlanExecutePolicy governs the plan→execute split.
@@ -98,13 +108,13 @@ type PlanExecutePolicy struct {
 	Steps []PlanExecuteStep `json:"steps,omitempty"`
 	// ReplanAfterFailure lets the planner revise the plan when a step fails,
 	// instead of aborting a multi-phase run because phase two moved.
-	ReplanAfterFailure bool `json:"replan_after_failure,omitempty"`
+	ReplanAfterFailure bool `json:"replan_after_failure"`
 	// ParallelIndependentSteps allows independent steps to run concurrently.
-	ParallelIndependentSteps bool `json:"parallel_independent_steps,omitempty"`
+	ParallelIndependentSteps bool `json:"parallel_independent_steps"`
 	// ApprovalBeforeSideEffects pauses for a human before any step that would
 	// touch the outside world. Defaults off only because it is meaningless
 	// without an interactive session; the save path still gates side effects.
-	ApprovalBeforeSideEffects bool `json:"approval_before_side_effects,omitempty"`
+	ApprovalBeforeSideEffects bool `json:"approval_before_side_effects"`
 	// PlanTimeout caps the PLANNING phase specifically, separate from the step
 	// budget — a planner that cannot converge should not consume the whole run.
 	PlanTimeout string `json:"plan_timeout,omitempty"`
@@ -255,4 +265,185 @@ func ValidatePolicy(d Draft) []string {
 		}
 	}
 	return out
+}
+
+// ── Persistence ────────────────────────────────────────────────────────────
+//
+// AgentPolicy used to be write-only: the Build step edited it, the API accepted
+// it, and nothing ever wrote it to the agent definition or read it back. Every
+// goal, instruction and completion criterion an operator typed was discarded on
+// save. These two functions are the bridge, and they are deliberately EXACT —
+// only what the draft actually states is written, so a round-trip cannot invent
+// a policy the operator never chose.
+
+// ToReasoningContract projects a draft's policy onto the agent definition.
+// Returns nil when the draft states nothing, so a plain agent's SOUL.yaml stays
+// free of an empty contract block.
+func (p *AgentPolicy) ToReasoningContract() *agent.ReasoningContract {
+	if p == nil {
+		return nil
+	}
+	out := &agent.ReasoningContract{}
+	any := false
+	if c := p.Contract; c != nil {
+		out.Goal = c.Goal
+		out.Instructions = c.Instructions
+		out.CompletionCriteria = c.CompletionCriteria
+		out.ToolChoice = c.ToolChoice
+		out.RecoveryRetries = c.RecoveryRetries
+		any = any || c.Goal != "" || c.Instructions != "" || c.CompletionCriteria != "" ||
+			c.ToolChoice != "" || c.RecoveryRetries > 0
+	}
+	if r := p.ReAct; r != nil {
+		out.ReAct = &agent.ReasoningReActPolicy{
+			Objective:           r.Objective,
+			ObserveActContract:  r.ObserveActContract,
+			StopConditions:      r.StopConditions,
+			RecoveryBehavior:    r.RecoveryBehavior,
+			InvalidStepBudget:   r.InvalidStepBudget,
+			RepeatedToolLimit:   r.RepeatedToolLimit,
+			ConfidenceThreshold: r.ConfidenceThreshold,
+			PreserveBestResult:  boolPtr(r.PreserveBestResult),
+			FallbackToAuto:      boolPtr(r.FallbackToAuto),
+		}
+		any = true
+	}
+	if pl := p.Plan; pl != nil {
+		steps := make([]agent.ReasoningPlanStep, 0, len(pl.Steps))
+		for _, s := range pl.Steps {
+			steps = append(steps, agent.ReasoningPlanStep{
+				Title:          s.Title,
+				Status:         s.Status,
+				AllowedTools:   append([]string(nil), s.AllowedTools...),
+				ExpectedOutput: s.ExpectedOutput,
+				Verification:   s.Verification,
+				DependsOn:      append([]string(nil), s.DependsOn...),
+			})
+		}
+		out.Plan = &agent.ReasoningPlanPolicy{
+			Steps:                     steps,
+			ReplanAfterFailure:        boolPtr(pl.ReplanAfterFailure),
+			ParallelIndependentSteps:  boolPtr(pl.ParallelIndependentSteps),
+			ApprovalBeforeSideEffects: boolPtr(pl.ApprovalBeforeSideEffects),
+			PlanTimeout:               pl.PlanTimeout,
+		}
+		any = true
+	}
+	if !any {
+		return nil
+	}
+	return out
+}
+
+// AgentPolicyFromReasoning reads a stored contract back into a draft policy, so
+// re-opening a saved agent shows the operator what they wrote rather than an
+// empty panel.
+func AgentPolicyFromReasoning(c *agent.ReasoningContract) *AgentPolicy {
+	if c == nil {
+		return nil
+	}
+	out := &AgentPolicy{}
+	if c.Goal != "" || c.Instructions != "" || c.CompletionCriteria != "" ||
+		c.ToolChoice != "" || c.RecoveryRetries > 0 {
+		out.Contract = &AgentContract{
+			Goal:               c.Goal,
+			Instructions:       c.Instructions,
+			CompletionCriteria: c.CompletionCriteria,
+			ToolChoice:         c.ToolChoice,
+			RecoveryRetries:    c.RecoveryRetries,
+		}
+	}
+	if r := c.ReAct; r != nil {
+		out.ReAct = &ReActPolicy{
+			Objective:           r.Objective,
+			ObserveActContract:  r.ObserveActContract,
+			StopConditions:      r.StopConditions,
+			RecoveryBehavior:    r.RecoveryBehavior,
+			InvalidStepBudget:   r.InvalidStepBudget,
+			RepeatedToolLimit:   r.RepeatedToolLimit,
+			ConfidenceThreshold: r.ConfidenceThreshold,
+			PreserveBestResult:  boolOr(r.PreserveBestResult, true),
+			FallbackToAuto:      boolOr(r.FallbackToAuto, true),
+		}
+	}
+	if pl := c.Plan; pl != nil {
+		steps := make([]PlanExecuteStep, 0, len(pl.Steps))
+		for _, s := range pl.Steps {
+			steps = append(steps, PlanExecuteStep{
+				Title:          s.Title,
+				Status:         s.Status,
+				AllowedTools:   append([]string(nil), s.AllowedTools...),
+				ExpectedOutput: s.ExpectedOutput,
+				Verification:   s.Verification,
+				DependsOn:      append([]string(nil), s.DependsOn...),
+			})
+		}
+		out.Plan = &PlanExecutePolicy{
+			Steps:                     steps,
+			ReplanAfterFailure:        boolOr(pl.ReplanAfterFailure, true),
+			ParallelIndependentSteps:  boolOr(pl.ParallelIndependentSteps, true),
+			ApprovalBeforeSideEffects: boolOr(pl.ApprovalBeforeSideEffects, true),
+			PlanTimeout:               pl.PlanTimeout,
+		}
+	}
+	if out.Contract == nil && out.ReAct == nil && out.Plan == nil {
+		return nil
+	}
+	return out
+}
+
+func boolPtr(b bool) *bool { return &b }
+
+func boolOr(p *bool, def bool) bool {
+	if p == nil {
+		return def
+	}
+	return *p
+}
+
+// ContractPrompt renders the operator's contract as the paragraph handed to the
+// model. This is what makes the panel more than record-keeping: the reasoning
+// loop is driven by the system prompt, so a goal or a completion criterion that
+// never reaches it changes nothing about how the agent behaves.
+func ContractPrompt(p *AgentPolicy) string {
+	if p == nil || p.Contract == nil {
+		return ""
+	}
+	c := p.Contract
+	var b strings.Builder
+	if g := strings.TrimSpace(c.Goal); g != "" {
+		b.WriteString("Goal of a successful run: ")
+		b.WriteString(g)
+	}
+	if i := strings.TrimSpace(c.Instructions); i != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("How to behave: ")
+		b.WriteString(i)
+	}
+	if d := strings.TrimSpace(c.CompletionCriteria); d != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n")
+		}
+		b.WriteString("You are done only when: ")
+		b.WriteString(d)
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return operatorContractHeading + "\n" + b.String()
+}
+
+// operatorContractHeading marks the block so a re-save can detect it is already
+// present instead of stacking another copy on every round-trip.
+const operatorContractHeading = "### Operator contract"
+
+// GetPlan returns the draft's Plan-Execute policy, or nil. Nil-safe so callers
+// do not each repeat the two-level check.
+func (p *AgentPolicy) GetPlan() *PlanExecutePolicy {
+	if p == nil {
+		return nil
+	}
+	return p.Plan
 }

@@ -248,6 +248,39 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 		compileIntent = refinement.RefinedIntent
 	}
 
+	// Coverage is judged against the refined intent AND the original.
+	//
+	// The user names a capability in THEIR words; refinement rewrites those words.
+	// When the rewrite drops the server name — which it is free to do, it is
+	// prose, not a contract — checking only the refined text means the request
+	// that named an MCP server and the graph that ignored it both look consistent,
+	// and the whole coverage guard silently disengages. That made the guard work
+	// on prompts whose refinement happened to repeat the name and fail on
+	// otherwise identical ones, which is indistinguishable from it being tuned to
+	// one example.
+	//
+	// Concatenating is enough: every check over this text asks "does the intent
+	// NAME something installed", and a name in either version is a name.
+	coverageIntent := compileIntent
+	if o := strings.TrimSpace(combined); o != "" && o != compileIntent {
+		coverageIntent = compileIntent + "\n" + o
+	}
+
+	// Carry the user's ORIGINAL words alongside the refined intent.
+	//
+	// Capability grounding matches against this: the refined intent is a long
+	// expansion that shares ordinary vocabulary with dozens of unrelated skills,
+	// so matching on it attaches them all. groundSkills already prefers
+	// Draft.RawIntent for exactly this reason, but nothing on the generation path
+	// ever set that field — it is populated only when loading a saved agent — so
+	// the guard silently fell back to the text it exists to avoid, and a weather
+	// agent came out carrying finance and design skills.
+	//
+	// `intent`, NOT `combined`: combined is the refined text concatenated with the
+	// original, so using it here would smuggle the expansion back in and reproduce
+	// the exact bloat this is meant to prevent.
+	catalog.RawIntent = strings.TrimSpace(intent)
+
 	deterministic := func() (Result, bool) {
 		if advice.Mode == "workflow" {
 			return CompileDeterministicWorkflow(compileIntent, catalog, opts.Answers)
@@ -284,6 +317,61 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 			compileRes, lerr = CompileAgent(ctx, llm, compileIntent, designCat, strategy, opts.Answers)
 		}
 		ok = lerr == nil
+
+		// Coverage retry: the model built something valid but skipped a capability
+		// the user NAMED.
+		//
+		// This is the "it used web_search instead of the travel MCP server I asked
+		// for" failure. Structurally the graph is fine, so no contract blocker
+		// fires and nothing below would notice; the only previous response was a
+		// note advising the user to re-read the steps themselves.
+		//
+		// Retrying — rather than substituting the tool name deterministically — is
+		// what keeps the ARGUMENTS right. web_search takes {"query": ...} and an
+		// MCP tool takes whatever its schema says, so swapping the name in place
+		// would trade a graph that runs and does the wrong thing for one that does
+		// not run at all. The model has the tool's real parameters in its
+		// catalogue, so asking again is the repair that can fill them in.
+		//
+		// Once, and only when something concrete was missed: a named capability
+		// that this workspace actually has. Costs one extra call on a request that
+		// has already demonstrably gone wrong.
+		if ok {
+			if short := CoverageShortfall(coverageIntent, catalog, compileRes); short != "" {
+				emit(PipelineEvent{
+					Phase: PhaseBuildGraph, Status: StatusStart, Source: SourceLLM,
+					Message: "Retrying: the first graph " + short + ".",
+				})
+				retryCat := designCat
+				retryCat.MustUseTools = namedMCPTools(coverageIntent, catalog)
+				retryCat.MustUseSkills = namedSkills(coverageIntent, catalog)
+				var retryRes Result
+				var rerr error
+				if advice.Mode == "workflow" {
+					retryRes, rerr = Compile(ctx, llm, compileIntent, retryCat, opts.Answers)
+				} else {
+					retryRes, rerr = CompileAgent(ctx, llm, compileIntent, retryCat, strategy, opts.Answers)
+				}
+				// Keep the retry only if it actually closed the gap. A retry that
+				// misses too is not evidence of anything, and swapping in a second
+				// unrelated graph would just churn the canvas.
+				if rerr == nil && CoverageShortfall(coverageIntent, catalog, retryRes) == "" {
+					compileRes = retryRes
+					compileRes.Notes = append(compileRes.Notes,
+						"The first graph "+short+", so Studio rebuilt it using the capabilities you named.")
+					emit(PipelineEvent{
+						Phase: PhaseBuildGraph, Status: StatusComplete, Source: SourceLLM,
+						Message: "Retry wired in the capability you asked for.",
+					})
+				} else {
+					emit(PipelineEvent{
+						Phase: PhaseBuildGraph, Status: StatusSkip, Source: SourceLLM,
+						Message: "Retry did not close the gap; keeping the first graph.",
+					})
+				}
+			}
+		}
+
 		if ok {
 			if c := AssessContract(compileRes.Workflow, catalog, opts.In); c.Blockers > 0 {
 				// Repair BEFORE giving up on it. These are the same deterministic
@@ -317,9 +405,9 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 			// instead of your travel MCP" is invisible until someone reads the nodes.
 			// So when the model captured a named capability and the fallback would
 			// drop it, keep the model's graph and report the blockers.
-			modelShort := CoverageShortfall(compileIntent, catalog, compileRes)
+			modelShort := CoverageShortfall(coverageIntent, catalog, compileRes)
 			if detRes, detOK := deterministic(); detOK {
-				detShort := CoverageShortfall(compileIntent, catalog, detRes)
+				detShort := CoverageShortfall(coverageIntent, catalog, detRes)
 				if detShort != "" && modelShort == "" {
 					emit(PipelineEvent{
 						Phase: PhaseBuildGraph, Status: StatusSkip, Source: SourceLLM,
@@ -375,7 +463,7 @@ func RunGeneratePipeline(ctx context.Context, llm LLM, intent string, catalog Ca
 	// identical from the outside: a graph that runs and quietly does the wrong
 	// thing. Checking only the planner would have left the more common case
 	// unguarded now that the model designs by default.
-	if short := CoverageShortfall(compileIntent, catalog, compileRes); short != "" {
+	if short := CoverageShortfall(coverageIntent, catalog, compileRes); short != "" {
 		who := "the builder model"
 		if designedBy == SourcePlanner {
 			who = "the deterministic planner"

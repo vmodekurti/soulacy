@@ -155,14 +155,60 @@ func TestCatalog(t *testing.T) {
 	for _, d := range cat {
 		byName[d.Name] = d
 	}
-	if d, ok := byName["llm.providers.anthropic.api_key"]; !ok || !d.Set || d.Category != CategoryLLM {
+	if d, ok := byName["llm.providers.anthropic.api_key"]; !ok || !d.Set || d.Category != CategoryLLM || d.Source != SourceVault {
 		t.Errorf("anthropic descriptor wrong: %+v ok=%v", d, ok)
 	}
-	if d, ok := byName["channels.slack.bot_token"]; !ok || d.Set || d.Category != CategoryChannel {
+	// Present in config as plaintext, absent from the vault. Set must be true:
+	// it RESOLVES, which is what every caller means by "set" — readiness blocks
+	// on it, doctor reports on it, and `sy secrets` ticks it. This assertion
+	// previously required false, which is why a workspace configured entirely
+	// through config.yaml was told its credentials were missing and handed a
+	// blocker whose own instructions ("add it in Settings → Secrets") could not
+	// clear it. Source is what preserves the distinction that actually matters:
+	// this one is sitting in plaintext and ought to be migrated.
+	if d, ok := byName["channels.slack.bot_token"]; !ok || !d.Set || d.Category != CategoryChannel || d.Source != SourceConfig {
 		t.Errorf("slack descriptor wrong: %+v ok=%v", d, ok)
 	}
-	if d, ok := byName["ALPHAVANTAGE_API_KEY"]; !ok || d.Category != CategoryTool || !d.Set {
+	if d, ok := byName["ALPHAVANTAGE_API_KEY"]; !ok || d.Category != CategoryTool || !d.Set || d.Source != SourceVault {
 		t.Errorf("custom descriptor wrong: %+v ok=%v", d, ok)
+	}
+	// A slot with nothing anywhere must still read as unset — the fix widens
+	// what counts as available, it does not make everything available.
+	for _, d := range cat {
+		if !d.Set && d.Source != "" {
+			t.Errorf("unset descriptor %q claims source %q", d.Name, d.Source)
+		}
+		if d.Set && d.Source == "" {
+			t.Errorf("set descriptor %q does not say where the value came from", d.Name)
+		}
+	}
+}
+
+// The environment leg of the documented vault → env → config precedence.
+func TestCatalogResolvesFromEnvironment(t *testing.T) {
+	ctx := context.Background()
+	m := New(newFakeVault())
+	cfg := sampleConfig()
+
+	var envVar string
+	for _, d := range m.Catalog(ctx, cfg) {
+		if d.Category == CategoryLLM && !d.Set && d.EnvVar != "" {
+			envVar = d.EnvVar
+			break
+		}
+	}
+	if envVar == "" {
+		t.Skip("no unset LLM descriptor with an env fallback in the sample config")
+	}
+	t.Setenv(envVar, "from-environment")
+
+	for _, d := range m.Catalog(ctx, cfg) {
+		if d.EnvVar == envVar {
+			if !d.Set || d.Source != SourceEnv {
+				t.Errorf("descriptor %q ignored its environment fallback %s: %+v", d.Name, envVar, d)
+			}
+			return
+		}
 	}
 }
 

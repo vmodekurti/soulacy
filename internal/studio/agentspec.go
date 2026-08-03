@@ -74,6 +74,9 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	writeAgentStrategyGuidance(&sb, strategy)
 
 	sb.WriteString(GenerationProfilePromptBlock(catalog.Generation))
+	// Same correction the workflow builder gets. Without this the coverage retry
+	// re-sent an identical prompt for every agent and could not possibly succeed.
+	writeMustUseBlock(&sb, catalog, false)
 	writeCatalogGrounding(&sb, catalog)
 	writePatternGrounding(&sb, intent, catalog)
 
@@ -160,13 +163,16 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 		Name:         strings.TrimSpace(payload.Name),
 		SystemPrompt: agentprompt.EnsureShared(payload.SystemPrompt),
 		Intent:       intent,
-		Trigger:      payload.Trigger,
-		Channels:     trimStrings(payload.Channels),
-		Strategy:     strategy,
-		Tools:        trimStrings(payload.Tools),
-		Skills:       trimStrings(payload.Skills),
-		Knowledge:    trimStrings(payload.Knowledge),
-		NewAgents:    payload.NewAgents,
+		// The user's original words, so capability grounding below matches against
+		// what they asked for rather than the refiner's expanded version of it.
+		RawIntent: strings.TrimSpace(catalog.RawIntent),
+		Trigger:   payload.Trigger,
+		Channels:  trimStrings(payload.Channels),
+		Strategy:  strategy,
+		Tools:     trimStrings(payload.Tools),
+		Skills:    trimStrings(payload.Skills),
+		Knowledge: trimStrings(payload.Knowledge),
+		NewAgents: payload.NewAgents,
 		Recommendation: &Recommendation{
 			Mode:      strategy,
 			Rationale: strings.TrimSpace(payload.Rationale),

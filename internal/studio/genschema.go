@@ -15,7 +15,15 @@ import "context"
 
 // ValidNodeKinds is the closed set of flow node kinds the engine understands.
 // Kept here so the generation schema and any future validation share one source.
-var ValidNodeKinds = []string{"tool", "agent", "python", "llm", "branch"}
+//
+// "parallel" belongs here because the engine executes it (reasoning.FlowNodeParallel,
+// with fan-out and all/any/quorum/best_effort joins) and both the plan view and
+// the test bench are written to render it. Omitting it from the schema enum meant
+// that on providers which enforce enums natively — Gemini responseSchema,
+// Anthropic forced-tool input_schema — the builder was structurally incapable of
+// emitting a fan-out node, so every generated graph was serial no matter how
+// parallel the work actually was.
+var ValidNodeKinds = []string{"tool", "agent", "python", "llm", "branch", "parallel"}
 
 // ValidTriggerTypes is the closed set of trigger types a draft may declare.
 var ValidTriggerTypes = []string{"schedule", "channel", "webhook", "manual"}

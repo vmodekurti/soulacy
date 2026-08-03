@@ -46,6 +46,25 @@ function has(v) {
   return typeof v === 'string' ? !!v.trim() : !!v
 }
 
+/**
+ * intentOf is the prompt Studio should actually build from.
+ *
+ * The Describe step has two boxes: "Your prompt" and an optional "Refined
+ * prompt". Refining is a convenience, not a prerequisite, so an empty refined
+ * box must fall through to what the user typed.
+ *
+ * This exists because generate() read the refined box alone and returned
+ * silently when it was empty — so typing in the main box and pressing Generate
+ * did nothing whatsoever: no request, no error, no explanation. The spec panel
+ * used this fallback and therefore filled in and enabled its Generate button,
+ * which is exactly what made a dead button look like a working one. Exported so
+ * the panel, the two Generate buttons and the compile call cannot drift apart
+ * about which text is being built.
+ */
+export function intentOf(refined, raw) {
+  return String(refined || '').trim() || String(raw || '').trim()
+}
+
 /** True when the draft can be opened in Build — a broken draft still counts. */
 export function hasDraft(ctx) {
   const c = ctx || {}

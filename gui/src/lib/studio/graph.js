@@ -7,7 +7,7 @@
  *     flow:{ nodes:[{id,kind,tool,agent,input,output,
  *                    inputs:[{name,type,label}],outputs:[{name,type,label}],
  *                    params,x,y}],
- *            edges:[{from,to,if,fromPort,toPort}], entry }
+ *            edges:[{from,to,if,from_port,to_port}], entry }
  *   }
  *
  * Mapping rules:
@@ -16,7 +16,7 @@
  *     (BFS depth from `entry` = column, ordinal-within-depth = row).
  *   - flow.edges -> xyflow edges (from->source, to->target). Edges whose `to`
  *     is "end"/"" are skipped (they only mark a terminal, not a real link).
- *     edge.fromPort/toPort map to xyflow sourceHandle/targetHandle so they
+ *     edge.from_port/to_port map to xyflow sourceHandle/targetHandle so they
  *     attach to the right declared port; edge.if becomes the edge LABEL and a
  *     conditional class; the fallback (no if) leg out of a branch is dashed
  *     ("else"). Each edge carries data.index = its ordinal in flow.edges so the
@@ -228,8 +228,8 @@ export function toFlow(workflow, validation = null, runState = null) {
       type: 'live',
       source: e.from,
       target: e.to,
-      sourceHandle: e.fromPort || undefined,
-      targetHandle: e.toPort || undefined,
+      sourceHandle: e.from_port || e.fromPort || undefined,
+      targetHandle: e.to_port || e.toPort || undefined,
       label: hasIf ? e.if : (isElse ? 'else' : undefined),
       animated: false,
       class: cls,

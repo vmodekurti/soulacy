@@ -15,6 +15,9 @@
   }
 </script>
 
+<!-- Text fields commit on `change` (blur / Enter), not `input`: every commit
+     replaces the parent's workflow object, which re-lanes this card and can
+     destroy the focused element mid-word, and fires a validate round-trip. -->
 {#if node}
   <div class="config-card">
     {#each fields as f (f.key)}
@@ -29,10 +32,10 @@
             {#each f.options as opt}<option value={opt}>{opt}</option>{/each}
           </select>
         {:else if f.type === 'code'}
-          <textarea class="cf-code" rows="6" value={f.value} on:input={(e) => set(f, e.target.value)}
+          <textarea class="cf-code" rows="6" value={f.value} on:change={(e) => set(f, e.target.value)}
                     placeholder="def run(inputs):&#10;    return inputs"></textarea>
         {:else}
-          <input type="text" value={f.value} on:input={(e) => set(f, e.target.value)}
+          <input type="text" value={f.value} on:change={(e) => set(f, e.target.value)}
                  placeholder={f.suggestion || ''} />
         {/if}
         {#if f.suggestion && !f.value}

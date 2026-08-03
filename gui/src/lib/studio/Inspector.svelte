@@ -1,4 +1,5 @@
 <script>
+  import { tick } from 'svelte'
   import { classifyCode } from './codeclass.js'
   // Right-hand inspector.
   //   - When a flow node is selected: read-only view of its fields (Wave 1).
@@ -13,7 +14,7 @@
   export let onChange = () => {} // (patch) => void; patch merged into workflow
   // (index, patch) => void; patch merged into the draft edge at flow.edges[index].
   export let onEdgeChange = () => {}
-  // ({from,to,fromPort,toPort}) => void; append a new edge to the draft.
+  // ({from,to,from_port,to_port}) => void; append a new edge to the draft.
   export let onAddEdge = () => {}
   // (index) => void; remove the draft edge at flow.edges[index].
   export let onEdgeDelete = () => {}
@@ -62,6 +63,12 @@
       intentError = (e && e.message) || 'Could not compile this step'
     } finally {
       intentBusy = false
+      // The compiled patch keeps the SAME node id, so the id-guarded resync
+      // below never fires on its own: the tool/input/code fields would keep
+      // showing the pre-compile text and, on blur, write it back over what was
+      // just compiled. Force one resync now that the patched node has arrived.
+      await tick()
+      lastNodeId = null
     }
   }
 
@@ -358,8 +365,8 @@
   function retargetEdge(end, value) {
     if (!selectedEdge) return
     const patch = end === 'from'
-      ? { from: value, fromPort: '' }
-      : { to: value, toPort: '' }
+      ? { from: value, from_port: '' }
+      : { to: value, to_port: '' }
     onEdgeChange(selectedEdge.index, patch)
   }
 
@@ -403,8 +410,8 @@
     </select>
     {#if portsOf(selectedEdge.edge.from, 'out').length}
       <label class="field-label" for="edge-fromport">from port</label>
-      <select id="edge-fromport" value={selectedEdge.edge.fromPort || ''}
-        on:change={(e) => onEdgeChange(selectedEdge.index, { fromPort: e.target.value })}>
+      <select id="edge-fromport" value={selectedEdge.edge.from_port || selectedEdge.edge.fromPort || ''}
+        on:change={(e) => onEdgeChange(selectedEdge.index, { from_port: e.target.value })}>
         <option value="">(default)</option>
         {#each portsOf(selectedEdge.edge.from, 'out') as p}<option value={p}>{p}</option>{/each}
       </select>
@@ -419,8 +426,8 @@
     </select>
     {#if portsOf(selectedEdge.edge.to, 'in').length}
       <label class="field-label" for="edge-toport">to port</label>
-      <select id="edge-toport" value={selectedEdge.edge.toPort || ''}
-        on:change={(e) => onEdgeChange(selectedEdge.index, { toPort: e.target.value })}>
+      <select id="edge-toport" value={selectedEdge.edge.to_port || selectedEdge.edge.toPort || ''}
+        on:change={(e) => onEdgeChange(selectedEdge.index, { to_port: e.target.value })}>
         <option value="">(default)</option>
         {#each portsOf(selectedEdge.edge.to, 'in') as p}<option value={p}>{p}</option>{/each}
       </select>
@@ -904,9 +911,9 @@
           {#each editableEdges as { e, index } (index)}
             <li class="edge-row">
               <div class="edge-ends">
-                <span class="edge-from">{e.from}{#if e.fromPort}<span class="port">·{e.fromPort}</span>{/if}</span>
+                <span class="edge-from">{e.from}{#if e.from_port || e.fromPort}<span class="port">·{e.from_port || e.fromPort}</span>{/if}</span>
                 <span class="edge-arrow">→</span>
-                <span class="edge-to">{e.to}{#if e.toPort}<span class="port">·{e.toPort}</span>{/if}</span>
+                <span class="edge-to">{e.to}{#if e.to_port || e.toPort}<span class="port">·{e.to_port || e.toPort}</span>{/if}</span>
               </div>
               <input
                 class="edge-if"

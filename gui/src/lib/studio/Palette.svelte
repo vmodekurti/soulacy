@@ -20,6 +20,10 @@
   export let drafts = []          // [{ id, name }]
   export let onOpenDraft = null   // (draftId) => void
   export let onDeleteDraft = null // (draftId, name) => void
+  // Id of the agent/draft currently being loaded, so the row that was clicked
+  // says so and the others cannot be clicked into a race. Loading a workflow is
+  // a network round-trip; without this the palette looked inert while it ran.
+  export let busyId = ''
   export let browse = { open: false, loading: false, error: '', results: [], message: '' }
 
   // Each item carries an optional `drag` payload describing what dropping it on
@@ -78,10 +82,14 @@
     const tools = (c && c.tools && c.tools.mcp_tools) || []
     const byServer = new Map()
     tools.forEach((x) => {
-      const name = x.name || x.full_name
+      // The engine resolves MCP tools ONLY by their namespaced full name
+      // (mcp__<server>__<tool>); a bare short name fails with "tool not found"
+      // at run time. Drag the full name, show the short one.
+      const full = x.full_name || x.name
+      const label = x.name || x.full_name
       const server = x.server || 'mcp'
       if (!byServer.has(server)) byServer.set(server, [])
-      byServer.get(server).push({ label: name, sub: '', drag: { kind: 'tool', name } })
+      byServer.get(server).push({ label, sub: '', drag: { kind: 'tool', name: full } })
     })
     const servers = (c && c.mcp && (c.mcp.servers || c.mcp)) || []
     ;(Array.isArray(servers) ? servers : []).forEach((s) => {
@@ -325,6 +333,7 @@
                 <button
                   class="item openable"
                   type="button"
+                  disabled={!!busyId}
                   on:click={() => {
                     if (it.draftId && onOpenDraft) onOpenDraft(it.draftId)
                     else if (it.openable && onOpenAgent) onOpenAgent(it.agentId)
@@ -332,6 +341,9 @@
                   title={it.draftId ? 'Click to load this draft onto the canvas' : 'Click to open this agent in the editor'}
                 >
                   <span class="item-label">{it.label}</span>
+                  {#if busyId && (busyId === it.draftId || busyId === it.agentId)}
+                    <span class="item-loading">loading…</span>
+                  {/if}
                   {#if it.badge}<span class="item-badge">{it.badge}</span>{/if}
                   {#if it.sub}<span class="item-sub" title={it.sub}>{concise(it.sub)}</span>{/if}
                 </button>
@@ -416,6 +428,8 @@
 </aside>
 
 <style>
+  .item-loading { font-size: 10px; color: var(--accent, #8b85ff); margin-left: 6px; }
+  .item.openable:disabled { opacity: .55; cursor: progress; }
   .palette {
     flex: 0 0 260px;
     background: var(--bg-elev);

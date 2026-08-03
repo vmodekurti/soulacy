@@ -106,11 +106,65 @@ func AssessContract(draft Draft, cat Catalog, in PreflightInput, options ...Cont
 		add("runtime."+nonEmpty(w.Kind, "warning"), "Runtime warning", "warn", w.NodeID, w.Message, w.Fix)
 	}
 
+	assessInboundInputUse(draft, add, pass)
 	assessAuthoringRules(draft, opts, add, pass)
 	res.OK = res.Blockers == 0
 	res.Score = contractScore(res.Blockers, res.Warnings)
 	res.Summary = contractSummary(res)
 	return res
+}
+
+// assessInboundInputUse catches a workflow that is STARTED by a person sending
+// something and then never reads what they sent.
+//
+// Such a graph runs, passes every structural check, and answers the same thing
+// on every run regardless of the question — the build spec, frozen in at compile
+// time. Asked "how is the weather in Buffalo Grove for the next 7 days", one
+// replied with a research digest about how to build a weather bot, because that
+// was the intent it had been compiled from and the user's message reached no
+// node.
+//
+// Deliberately a WARNING, not a blocker. An interactive workflow that ignores
+// its input is sometimes exactly right — "when someone messages me, post today's
+// status" takes no argument — so refusing to save would block a legitimate
+// design. But it is never right by ACCIDENT, and it is invisible until someone
+// reads the node inputs, which is precisely when a warning earns its place.
+//
+// Agents are exempt: a reasoning agent receives the message through its loop
+// rather than through a template reference, so absence proves nothing.
+func assessInboundInputUse(draft Draft, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {
+	if draft.IsAgent() || len(draft.Flow.Nodes) == 0 {
+		return
+	}
+	// Channel and webhook only — NOT manual.
+	//
+	// A manual run is usually someone pressing Run to make the thing happen, with
+	// nothing attached; warning there would fire on every perfectly good
+	// one-button workflow. A channel message or an inbound webhook, by contrast,
+	// ALWAYS carries a payload, so a graph that reads none of it is discarding
+	// the only thing that distinguishes one run from another.
+	switch strings.ToLower(strings.TrimSpace(draft.Trigger.Type)) {
+	case "channel", "webhook":
+	default:
+		return
+	}
+	// Any reference to the inbound payload counts, under any of its aliases.
+	refs := []string{".trigger.text", ".trigger.message", ".trigger.input", ".trigger.", ".input"}
+	for _, n := range draft.Flow.Nodes {
+		hay := n.Input + " " + n.Code + " " + n.Intent
+		for _, r := range refs {
+			if strings.Contains(hay, r) {
+				pass("input.inbound", "Uses the incoming message",
+					"This workflow reads what the person sent, so each run answers the request it was given.")
+				return
+			}
+		}
+	}
+	add("input.inbound", "Uses the incoming message", "warn", draft.Flow.Entry,
+		"This workflow is triggered by an incoming message but no step reads it, so every run will "+
+			"produce the same result regardless of what the person asks.",
+		"Reference the inbound text in the first step — for example {{ .trigger.text }} in the search "+
+			"query or prompt — or switch the trigger to a schedule if the same result every time is intended.")
 }
 
 func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {

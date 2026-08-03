@@ -108,19 +108,27 @@ func groundSkills(draft *Draft, cat Catalog) []string {
 	}
 
 	// (1) Verify + correct everything the model chose.
+	//
+	// "Verify" used to mean only "does this skill exist?", never "does it have
+	// anything to do with the request". So a builder that reached for a dozen
+	// skills had all twelve approved: a travel advisor shipped with
+	// options-payoff, earnings-recap and tradingview-reader attached, because
+	// each of those is genuinely installed. The careful relevance test below
+	// guarded INJECTION while model choices walked straight past it — the
+	// asymmetry, not the model, is what put finance tooling on a travel agent.
+	var modelChosen []string
 	for _, s := range draft.Skills {
 		raw := strings.TrimSpace(s)
 		if raw == "" {
 			continue
 		}
 		if canon, ok := byLowerName[strings.ToLower(raw)]; ok {
-			add(canon)
+			modelChosen = append(modelChosen, canon)
 			continue
 		}
 		if best := bestSkillMatch(raw, index); best != "" {
-			if add(best) {
-				notes = append(notes, "Mapped skill \""+raw+"\" → installed \""+best+"\".")
-			}
+			notes = append(notes, "Mapped skill \""+raw+"\" → installed \""+best+"\".")
+			modelChosen = append(modelChosen, best)
 			continue
 		}
 		notes = append(notes, "Dropped skill \""+raw+"\" — no matching installed skill.")
@@ -154,6 +162,13 @@ func groundSkills(draft *Draft, cat Catalog) []string {
 	}
 	total := len(index)
 	distinctive := func(tok string) bool {
+		// Words that are generic in English are generic in every catalogue. The
+		// document-frequency test below cannot see this on a small install: it
+		// needs a token in >5 skills before it will discount anything, so with a
+		// dozen skills installed "agent" and "data" counted as topic evidence.
+		if genericTokens[tok] {
+			return false
+		}
 		// Generic only in a catalog big enough to judge: a token in >25% of skills
 		// AND in more than 5 of them. Small catalogs keep every token meaningful.
 		d := df[tok]
@@ -167,6 +182,41 @@ func groundSkills(draft *Draft, cat Catalog) []string {
 			}
 		}
 		return n
+	}
+
+	// (1b) Now that relevance can be judged, admit the model's picks.
+	//
+	// A small, considered selection is trusted as-is: the builder can have
+	// reasons a token comparison cannot see, and second-guessing two or three
+	// deliberate choices would do more harm than the bloat it prevents. The
+	// guard is for the failure actually observed — a builder reaching for a
+	// large slice of the catalogue, where the count itself is the evidence that
+	// it stopped choosing and started listing.
+	//
+	// Drops are recorded as notes rather than made silently, so the user can see
+	// what was removed and re-add it.
+	const trustedSkillPicks = 4
+	for _, name := range modelChosen {
+		if len(modelChosen) <= trustedSkillPicks {
+			add(name)
+			continue
+		}
+		var toks map[string]bool
+		for _, e := range index {
+			if e.name == name {
+				toks = e.tokens
+				break
+			}
+		}
+		// Same bar as injection. A single shared word is not enough: "mcp-creator"
+		// shares "mcp" with a prompt that merely names an MCP tool, which is an
+		// incidental mention rather than a topic match. Deliberate small
+		// selections bypass this entirely via trustedSkillPicks above.
+		if nameMentioned(intentLow, name) || distinctiveOverlap(intentTokens, toks) >= 2 {
+			add(name)
+			continue
+		}
+		notes = append(notes, "Dropped skill \""+name+"\" — nothing in your request relates to it. Add it back if you meant to include it.")
 	}
 
 	type cand struct {

@@ -42,6 +42,29 @@ type Catalog struct {
 	// (e.g. "telegram", "slack", "discord", "http"). Studio wires a workflow's
 	// delivery to one of these instead of inventing a channel name.
 	Channels []string `json:"channels,omitempty"`
+	// RawIntent is the user's ORIGINAL words, before Studio's own refinement.
+	//
+	// Capability matching must use this, not the refined intent. The refiner
+	// expands a one-line request into a long, domain-heavy specification that
+	// shares ordinary vocabulary with dozens of unrelated skills, so matching
+	// against it injects them all — the "~30 skills of bloat" failure that
+	// groundSkills documents and guards against by preferring Draft.RawIntent.
+	//
+	// That guard was inert: Draft.RawIntent is populated only when LOADING a
+	// saved agent, never during generation, so every generated draft fell back to
+	// the refined text the guard exists to avoid. Carrying the original words
+	// through the catalogue — which already carries the other generation context,
+	// Rules and ReferenceGraph — is what makes it work.
+	RawIntent string `json:"raw_intent,omitempty"`
+	// MustUseTools / MustUseSkills name capabilities the graph is REQUIRED to
+	// use, because the user named them in the prompt and this workspace has them.
+	//
+	// Set only on a coverage retry — the first attempt is given the catalogue and
+	// left to choose. When a model has already listed a travel MCP server among
+	// its options and still reached for web_search, restating the same catalogue
+	// is unlikely to produce a different answer; naming the omission is.
+	MustUseTools  []string `json:"must_use_tools,omitempty"`
+	MustUseSkills []string `json:"must_use_skills,omitempty"`
 	// KnowledgeBases are the knowledge bases the agent could draw on, so Studio
 	// can attach a relevant KB instead of starting from scratch (Story #7).
 	KnowledgeBases []CatalogKB `json:"knowledge_bases,omitempty"`
@@ -401,6 +424,49 @@ const canonicalExample = `{
   ]
 }`
 
+// writeMustUseBlock renders the coverage CORRECTION, shared by the workflow and
+// agent builder prompts.
+//
+// Shared rather than written into each, because the first version of this lived
+// only in the workflow prompt. The retry still FIRED for agents — it just sent
+// an unchanged prompt and so could never close the gap, which is worse than not
+// retrying at all: it burns a model call and then reports "retry did not help",
+// implying the model refused when in fact it was never told anything new. A
+// capability the user named is missing in exactly the same way whichever
+// architecture is being built, so the correction belongs in one place.
+//
+// `graph` selects the wording: a workflow is corrected by adding a tool NODE, an
+// agent by adding to its tool allowlist.
+func writeMustUseBlock(sb *strings.Builder, catalog Catalog, graph bool) {
+	if len(catalog.MustUseTools) == 0 && len(catalog.MustUseSkills) == 0 {
+		return
+	}
+	// Before the catalogue listing on purpose: it frames how that list is read.
+	// The previous attempt failed by treating the catalogue as a menu of options
+	// rather than a set of commitments.
+	sb.WriteString("CORRECTION — YOUR PREVIOUS ATTEMPT IGNORED A CAPABILITY THE USER NAMED.\n")
+	sb.WriteString("The user's request explicitly refers to the following, and this workspace has them installed.\n")
+	if len(catalog.MustUseTools) > 0 {
+		if graph {
+			sb.WriteString("You MUST emit a `tool` node calling EACH of these, using its exact name and its real argument names:\n")
+		} else {
+			sb.WriteString("EACH of these MUST appear in the agent's \"tools\" allowlist by its exact name, and the system_prompt MUST say when to call it:\n")
+		}
+		for _, t := range catalog.MustUseTools {
+			sb.WriteString("  - " + t + "\n")
+		}
+		sb.WriteString("Do NOT substitute web_search, fetch_url, http_request, or a python node for any of them. ")
+		sb.WriteString("A generic web search is NOT an acceptable stand-in for a purpose-built tool the user asked for: it returns pages about the subject instead of the data the tool returns.\n")
+	}
+	if len(catalog.MustUseSkills) > 0 {
+		sb.WriteString("You MUST include these skills:\n")
+		for _, s := range catalog.MustUseSkills {
+			sb.WriteString("  - " + s + "\n")
+		}
+	}
+	sb.WriteString("Everything else is still your judgement — only the omission above is being corrected.\n\n")
+}
+
 // BuildPrompt builds the instruction the model must answer. It pins the
 // canonical Draft JSON shape and demands JSON-only output, optionally
 // grounding the model in the supplied catalog and weaving in any answers
@@ -424,7 +490,21 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 	sb.WriteString("- channels is a list of output channel names (e.g. \"telegram\", \"slack\", \"email\").\n")
 	sb.WriteString("- THE OUTPUT NODE IS THE ANSWER, NOT A DELIVERY RECEIPT: the flow's output node (its result is the reply the user reads AND what is delivered) MUST be the node that produces the human-readable CONTENT — the agent/llm/python node that formats the final message, summary, chart URL, or answer. NEVER make a `channel.send` (or any pure delivery/notify) node the terminal/output node: `channel.send` returns a delivery receipt like {\"ok\":true,\"channel\":...}, which is a useless reply. Set the content node as the last node (or reference it via the flow-level output field). Deliver to channels via the `channels` list, not by ending the graph on channel.send.\n")
 	sb.WriteString("- channel.send IS FOR OUT-OF-BAND DELIVERY ONLY (e.g. pushing a scheduled result to Telegram/Slack). For channel/manual/webhook (interactive) triggers the reply is returned to the caller automatically — do NOT route the answer through channel.send. If a run must BOTH answer interactively AND push to a channel, produce the content in a node, make THAT node the output, and add channel.send as a SEPARATE branch — never as the output node.\n")
-	sb.WriteString("- VALID NODE KINDS ARE ONLY: tool, agent, python, llm, branch. Do NOT invent a \"start\", \"entry\", \"begin\", \"end\", or \"receive_request\" node — those kinds are invalid and break the flow. The graph has NO separate start/end node: the FIRST real node (usually an `llm` extractor or an `agent`) is the entry, named in the top-level `entry` field. The user's inbound text is available to any node as {{ .trigger.text }} (aliases {{ .trigger.message }} / {{ .trigger.input }}) — reference it directly instead of creating a passthrough start node.\n")
+	// Parallel is taught here as well as allowed by the schema. The enum alone
+	// only stops the model being REJECTED for emitting one; it does not tell the
+	// model the kind exists, and a model that has never seen it will keep writing
+	// independent fetches as a serial chain.
+	sb.WriteString("- USE `parallel` FOR INDEPENDENT WORK: when two or more steps do not depend on each other's output (e.g. searching three different sources, or fetching several URLs), emit a node of kind \"parallel\" whose edges fan out to those steps, instead of chaining them one after another. Set \"join\" to one of: \"all\" (wait for every branch — the default), \"any\" (first success wins), \"quorum\" with \"join_quorum\": N (proceed once N succeed), or \"best_effort\" (continue with whatever succeeded). Use \"max_parallel\": N to cap concurrency when the branches hit the same rate-limited service. Serial chaining of genuinely independent steps is a correctness-neutral but user-visible slowdown, so prefer parallel whenever the steps do not read each other's outputs.\n")
+	// Stated as a hard requirement, not a convenience. The line below already
+	// mentioned {{ .trigger.text }}, but only as an alternative to inventing a
+	// passthrough start node — so a model could read it, avoid the start node, and
+	// still hardcode a query built from the build spec. The result runs, passes
+	// every structural check, and answers the same thing on every run: asked for
+	// the weather in a named town, one such graph returned a research digest on
+	// how to build a weather bot, because that was the intent it was compiled
+	// from and the user's message was read by nothing.
+	sb.WriteString("- IF THE TRIGGER IS channel OR webhook, THE GRAPH MUST CONSUME THE INBOUND MESSAGE. The person's text arrives as {{ .trigger.text }} (aliases {{ .trigger.message }} / {{ .trigger.input }}) and MUST appear in the first node that searches, fetches, or prompts — e.g. \"input\": {\"query\":\"{{ .trigger.text }}\"}. Do NOT hardcode a query, topic, or prompt derived from this build description: the build description says what the workflow IS, the inbound message says what THIS RUN must answer. A channel-triggered graph that never references the trigger will return an identical result to every question it is ever asked, which is always a bug. (A schedule trigger has no inbound message; for those, a fixed query is correct.)\n")
+	sb.WriteString("- VALID NODE KINDS ARE ONLY: tool, agent, python, llm, branch, parallel. Do NOT invent a \"start\", \"entry\", \"begin\", \"end\", or \"receive_request\" node — those kinds are invalid and break the flow. The graph has NO separate start/end node: the FIRST real node (usually an `llm` extractor or an `agent`) is the entry, named in the top-level `entry` field. The user's inbound text is available to any node as {{ .trigger.text }} (aliases {{ .trigger.message }} / {{ .trigger.input }}) — reference it directly instead of creating a passthrough start node.\n")
 	sb.WriteString("- KEEP GRAPHS SIMPLE, but COMPOSE THE CAPABILITIES YOU HAVE: aim for a handful of meaningful nodes, not a 10-15 step pipeline. Collapse pure DATA GLUE (parsing, reshaping, dedupe, formatting) into a SINGLE `python` node. But do NOT collapse real OPERATIONS into python: when an available tool / MCP tool / skill performs the operation, emit a discrete `tool` node that CALLS it, and sequence several such nodes for a multi-step external job (e.g. create -> add sources -> generate -> poll). Delegate open-ended reasoning/summarizing to an `agent` node.\n")
 	sb.WriteString("- USE `llm` NODES FOR FUZZY HUMAN LANGUAGE: when a downstream tool needs clean structured arguments (city, ticker, date range, product query, intent) but the trigger text may be phrased many ways, insert a `llm` node before the tool. Put the raw text in `input`, set params.system to an extraction instruction, set params.response_format to \"json\", and store the object in `output`. Then wire/pass only the extracted scalar fields to tools. Do not use brittle regex Python for natural-language intent extraction.\n")
 	sb.WriteString("- PRODUCTION MINDSET: Treat every intent as a production workload. Handle empty states, edge cases, and failure modes explicitly (e.g. using a branch node to emit a fallback message if no items are found).\n")
@@ -485,6 +565,8 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 		}
 		sb.WriteString("\n")
 	}
+
+	writeMustUseBlock(&sb, catalog, true)
 
 	if len(catalog.MCP) > 0 {
 		sb.WriteString("Available MCP servers and their tools (use the EXACT tool name in a tool node):\n")
@@ -759,6 +841,15 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 		rd := DiagnoseRawOutput(raw)
 		return Result{}, fmt.Errorf("studio: %s [%s, %d chars returned] model output: %s",
 			rd.Reason, rd.Kind, rd.Chars, rd.Excerpt)
+	}
+
+	// Carry the user's original words onto the draft. Workflows do not ground
+	// skills, so this is not about capability selection here — it is so the saved
+	// agent records what was actually asked for (save.go persists it as
+	// StudioRawIntent) and a later reload grounds against the request rather than
+	// the refiner's expansion of it.
+	if draft.RawIntent == "" {
+		draft.RawIntent = strings.TrimSpace(catalog.RawIntent)
 	}
 
 	// Deterministic post-parse normalization: fill in an obvious trigger the

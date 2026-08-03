@@ -52,6 +52,12 @@ type studioBuildSpecResponse struct {
 	// Compared says whether a previous intent was supplied at all, so `false`
 	// above cannot be misread as "the refinement did nothing".
 	Compared bool `json:"compared"`
+	// Recommendation is the strategy Studio would pick for this intent right now.
+	// The Describe panel has a Strategy row and previously had nothing to put in
+	// it, so it read "not specified" for every prompt ever typed — the one row
+	// that was never once correct. AdviseStrategy is deterministic and needs no
+	// model call, so the answer is available at exactly the moment the panel asks.
+	Recommendation *studio.StrategyAdvice `json:"recommendation,omitempty"`
 }
 
 // handleStudioBuildSpec implements POST /api/v1/studio/build-spec. Pure and
@@ -63,10 +69,22 @@ func (s *Server) handleStudioBuildSpec(c *fiber.Ctx) error {
 		return s.errMsg(c, fiber.StatusBadRequest, "invalid request body: "+err.Error())
 	}
 
+	// Grounded against what this workspace actually has installed, so the panel
+	// can report "you named the trvl MCP tool and we have it" rather than
+	// "capabilities: not specified" for a prompt that named one. Still pure and
+	// deterministic — reading the catalogue is a local lookup, not a model call.
+	//
+	// groundCatalog is REQUIRED, not belt-and-braces: studioCatalogSnapshot fills
+	// in agents, builtin tools and providers, but MCP servers and skills are
+	// populated only here. Without it the spec panel would go on reporting
+	// "not specified" for every MCP server the user named.
+	cat := s.studioCatalogSnapshot()
+	s.groundCatalog(&cat)
+
 	// An empty intent is NOT a 400: ExtractBuildSpec answers it with the blocking
 	// question "What should this agent do?", which is the useful response for a
 	// screen the user is still typing into.
-	spec := studio.ExtractBuildSpec(req.Intent)
+	spec := studio.ExtractBuildSpecFrom(req.Intent, cat)
 	res := studioBuildSpecResponse{
 		BuildSpec: spec,
 		Ready:     spec.Ready(),
@@ -75,8 +93,14 @@ func (s *Server) handleStudioBuildSpec(c *fiber.Ctx) error {
 	if res.Blockers == nil {
 		res.Blockers = []studio.SpecQuestion{}
 	}
+	// Only once there is something to advise ON. Advising on an empty intent
+	// would put a confident "Auto" against a blank prompt.
+	if strings.TrimSpace(req.Intent) != "" {
+		advice := studio.AdviseStrategy(req.Intent, cat, "", false)
+		res.Recommendation = &advice
+	}
 	if strings.TrimSpace(req.PreviousIntent) != "" {
-		previous := studio.ExtractBuildSpec(req.PreviousIntent)
+		previous := studio.ExtractBuildSpecFrom(req.PreviousIntent, cat)
 		res.Compared = true
 		res.Diff = studio.DiffSpecs(previous, spec)
 		res.MateriallyDifferent = studio.MateriallyDifferent(previous, spec)

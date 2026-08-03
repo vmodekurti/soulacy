@@ -55,10 +55,14 @@ export function specRows(spec, recommendation) {
   const s = spec || {}
   const rows = []
 
-  const strat = strategyLabel(recommendation && recommendation.mode)
+  // `reason` is what StrategyAdvice serialises; `rationale` is the older
+  // generated-workflow field. Both reach this row, so accept either rather than
+  // silently dropping the explanation for whichever source is in play.
+  const rec = recommendation || {}
+  const strat = strategyLabel(rec.mode)
   rows.push({
     key: 'strategy', icon: '◇', label: 'Strategy',
-    value: strat, detail: (recommendation && recommendation.rationale) || '',
+    value: strat, detail: rec.rationale || rec.reason || '',
     empty: !strat,
   })
 
@@ -96,6 +100,23 @@ export function specBlockers(spec) {
   const s = spec || {}
   if (Array.isArray(s.blockers) && s.blockers.length) return s.blockers
   return (Array.isArray(s.questions) ? s.questions : []).filter((q) => q && q.blocker)
+}
+
+/**
+ * unresolvedBlockers are the spec blockers the user has not yet answered.
+ *
+ * This is THE gate on Generate, and it is exported rather than computed inside
+ * the panel because the header also has a Generate button. While the predicate
+ * lived only in BuildSpecPanel, that header button generated straight past the
+ * required answers — the check was enforced on the button the user could see
+ * the reason next to, and skipped on the one they were more likely to press.
+ *
+ * `spec.ready` is not usable here: it describes the spec as the SERVER saw it,
+ * before these answers were typed.
+ */
+export function unresolvedBlockers(spec, answers) {
+  const a = answers || {}
+  return specBlockers(spec).filter((b) => !String(a[b && b.id] || '').trim())
 }
 
 /** Non-blocking clarifying questions — useful, but they do not gate Generate. */
