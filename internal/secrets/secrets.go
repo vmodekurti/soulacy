@@ -17,6 +17,7 @@ package secrets
 
 import (
 	"context"
+	"os"
 	"sort"
 	"strings"
 
@@ -45,8 +46,29 @@ type Descriptor struct {
 	Category    Category `json:"category"`    // llm | channel | server | tool
 	EnvVar      string   `json:"env_var"`     // environment fallback, if any
 	Description string   `json:"description"` // human-friendly label
-	Set         bool     `json:"set"`         // true if a value exists in the vault
+	// Set reports whether this secret RESOLVES to a value — by the same
+	// vault → env → config precedence Resolve uses and this package documents.
+	//
+	// It used to mean "present in the vault" alone, which made readiness refuse
+	// to save or run for anyone who had configured a key by environment variable
+	// or plaintext config. The resulting blocker was unclearable by its own
+	// instructions ("add the credential in Settings → Secrets" — it was already
+	// there), and the same preflight simultaneously reported the provider as
+	// available, because provider registration DOES honour the other two legs.
+	Set bool `json:"set"`
+	// Source says where the value came from: "vault", "env", "config", or "" when
+	// unset. Set alone cannot distinguish "safely in the vault" from "sitting in
+	// plaintext config", which is a real difference the secrets UI should keep
+	// showing — and is what the migration prompt keys on.
+	Source string `json:"source,omitempty"`
 }
+
+// Secret sources, in resolution order.
+const (
+	SourceVault  = "vault"
+	SourceEnv    = "env"
+	SourceConfig = "config"
+)
 
 // Manager wraps the credential vault for global-scope secret operations. It is
 // nil-safe: a Manager built from a nil vault degrades gracefully (Get returns
@@ -107,9 +129,10 @@ func (m *Manager) List(ctx context.Context) ([]string, error) {
 }
 
 // Catalog returns the known + custom secret descriptors for the given config,
-// each marked with whether a value is currently stored in the vault. Structured
-// slots (LLM providers, channel tokens, server key) are derived from cfg;
-// any additional vault entries are surfaced as CategoryTool ("custom").
+// each marked with whether a value RESOLVES (vault → env → config, the same
+// precedence Resolve implements) and where from. Structured slots (LLM
+// providers, channel tokens, server key) are derived from cfg; any additional
+// vault entries are surfaced as CategoryTool ("custom").
 func (m *Manager) Catalog(ctx context.Context, cfg *config.Config) []Descriptor {
 	stored := map[string]bool{}
 	if names, err := m.List(ctx); err == nil {
@@ -118,6 +141,10 @@ func (m *Manager) Catalog(ctx context.Context, cfg *config.Config) []Descriptor 
 		}
 	}
 
+	// The other two legs of the documented precedence. Without these, a key held
+	// in an environment variable or still in plaintext config reads as missing.
+	cfgVals := secretValuesInConfig(cfg)
+
 	var out []Descriptor
 	seen := map[string]bool{}
 	add := func(d Descriptor) {
@@ -125,7 +152,16 @@ func (m *Manager) Catalog(ctx context.Context, cfg *config.Config) []Descriptor 
 			return
 		}
 		seen[d.Name] = true
-		d.Set = stored[d.Name]
+		switch {
+		case stored[d.Name]:
+			d.Set, d.Source = true, SourceVault
+		case d.EnvVar != "" && strings.TrimSpace(os.Getenv(d.EnvVar)) != "":
+			d.Set, d.Source = true, SourceEnv
+		case strings.TrimSpace(cfgVals[d.Name]) != "":
+			d.Set, d.Source = true, SourceConfig
+		default:
+			d.Set, d.Source = false, ""
+		}
 		out = append(out, d)
 	}
 

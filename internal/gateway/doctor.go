@@ -93,11 +93,16 @@ func (s *Server) providerDoctorChecks(c *fiber.Ctx) []doctorProviderCheck {
 			registered[id] = true
 		}
 	}
+	// Source, not Set. Doctor's whole point here is to warn when a key is
+	// readable but sitting in plaintext config rather than the vault, so it
+	// needs "in the vault" specifically — Set now means "resolves from anywhere",
+	// which would report a plaintext key as safely stored and silently drop the
+	// migration warning.
 	vaultSet := map[string]bool{}
 	mgr := secrets.New(s.CredentialVault())
 	if mgr.Enabled() {
 		for _, d := range mgr.Catalog(c.Context(), s.cfg) {
-			if d.Category == secrets.CategoryLLM && d.Set {
+			if d.Category == secrets.CategoryLLM && d.Source == secrets.SourceVault {
 				vaultSet[d.Name] = true
 			}
 		}

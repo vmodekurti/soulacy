@@ -30,6 +30,8 @@
   import { stepResultsByNode } from '../lib/studio/testresults.js'
   import { repairVerdict, repairProofLabel } from '../lib/studio/repairverdict.js'
   import { fixturesFromWorkflow, outcomeWithFixtures } from '../lib/studio/benchfixtures.js'
+  import { unresolvedBlockers } from '../lib/studio/buildspecview.js'
+  import { snapshotSession, sessionAfterDelete, promptsForDraft } from '../lib/studio/session.js'
   import {
     partitionLibrary, filterLibrary, libraryFacets, hasActiveFilters, emptyQuery,
   } from '../lib/studio/libraryfilter.js'
@@ -43,7 +45,11 @@
   import FailedRunsPanel from '../lib/studio/FailedRunsPanel.svelte'
   import {
     STEP_DESCRIBE, STEP_BUILD, STEP_TEST, STEP_SAVE,
-    stepStates, canEnter, autoStep, saveBlockedReason,
+    // autoStep is deliberately no longer imported: it computed a "resume where
+    // you left off" landing step, which is what sent the user back into the
+    // middle of an agent instead of the Studio home. It remains exported and
+    // tested for any caller that genuinely wants that behaviour.
+    stepStates, canEnter, saveBlockedReason, intentOf,
   } from '../lib/studio/wizard.js'
   import '../lib/studio/studio.css'
 
@@ -72,7 +78,7 @@
   // parameters and let you add one with a click.
   $: toolParams = (() => {
     const m = {}
-    for (const t of (catalog && catalog.mcp_tools) || []) {
+    for (const t of (catalog && catalog.tools && catalog.tools.mcp_tools) || []) {
       if (t && t.full_name) m[t.full_name] = t.params || ''
     }
     return m
@@ -250,13 +256,47 @@
   let buildSpecToken = 0       // guards against a slow response overwriting a newer one
   let buildSpecPrevIntent = '' // what the last spec was compared AGAINST
 
+  // The generated workflow's own recommendation wins once it exists — that one
+  // reflects what was actually built. Before Generate there is no workflow, so
+  // the Strategy row used to read "not specified" for every prompt ever typed;
+  // the build-spec endpoint now returns the same deterministic advice up front.
+  $: specRecommendation =
+    (workflow && workflow.recommendation) || (buildSpec && buildSpec.recommendation) || null
+
+  // Required spec details the user has not answered yet. Shared with
+  // BuildSpecPanel so both Generate buttons enforce the same gate.
+  $: specUnresolved = unresolvedBlockers(buildSpec, refineAnswers)
+
+  // The prompt Studio should actually build from.
+  //
+  // There are two prompt boxes: "Your prompt" (rawPrompt) and the optional
+  // "Refined prompt" (intent). Refining is a convenience, NOT a prerequisite —
+  // but generate() read `intent` alone and returned silently when it was empty,
+  // so typing in the main box and pressing Generate did nothing at all: no
+  // request, no error, no explanation. The spec panel meanwhile fell back to
+  // rawPrompt, so it filled in and enabled its Generate button, which is what
+  // made the dead button look like a working one.
+  //
+  // Same fallback order as loadBuildSpec, so what the panel describes and what
+  // generation builds are always the same text.
+  //
+  // Defined as a function with a reactive view over it, so handlers that run
+  // right after one of the boxes changes read the current text rather than the
+  // previous tick's — the staleness trap that nowCtx() and modeOf() exist for.
+  $: effectiveIntent = intentOf(intent, rawPrompt)
+
   function scheduleBuildSpec() {
     if (buildSpecDebounce) clearTimeout(buildSpecDebounce)
     buildSpecDebounce = setTimeout(loadBuildSpec, 400)
   }
 
   async function loadBuildSpec() {
-    const text = (intent || rawPrompt || '').trim()
+    // intentOf, not `intent || rawPrompt`: the latter tests raw truthiness, so a
+    // refined box holding only whitespace shadowed the real prompt and the panel
+    // showed nothing while generation built from the raw text. Same helper as
+    // the Generate buttons, so panel and action cannot disagree about whether
+    // there is anything to build.
+    const text = intentOf(intent, rawPrompt)
     if (!text) { buildSpec = null; buildSpecError = ''; return }
     const token = ++buildSpecToken
     buildSpecLoading = true
@@ -692,6 +732,7 @@ Use null for fields that are not present.`
   // merge the compiled tool/agent/python fields into the node on the canvas.
   async function compileNode(intent, node) {
     if (!node) return
+    if (!ensureCloudOk(() => compileNode(intent, node))) return
     // Upstream outputs (var names) so the per-node compiler can wire by field.
     // When a recent dry-run captured real output shapes, attach them so the model
     // compiles against actual data instead of guessing the payload format.
@@ -821,15 +862,13 @@ Use null for fields that are not present.`
   // the confirmation dialog. The actual compile happens in runCompile, called
   // once the user confirms the refined spec.
   async function generate() {
-    const text = intent.trim()
+    // intentOf, not intent alone: an un-refined prompt is still a prompt.
+    const text = intentOf(intent, rawPrompt)
     if (!text || compiling || refining || cloudGate) return
     // Local-first cloud-escalation gate: if the builder is a cloud model and the
     // user hasn't acknowledged it this session, ask before sending the prompt
     // off-box. They can continue with cloud or switch to a local model.
-    if (modelAdvice && modelAdvice.cloud_escalation && !cloudAck) {
-      cloudGate = { provider: modelAdvice.provider, model: modelAdvice.model }
-      return
-    }
+    if (!ensureCloudOk(generate)) return
     // Regenerating from an edited prompt replaces the whole canvas (including any
     // manual rewiring). Confirm when there's existing work to lose — do this up
     // front, before spending a refine round-trip.
@@ -838,6 +877,7 @@ Use null for fields that are not present.`
       try { ok = window.confirm('Regenerate from this prompt? It replaces the current workflow on the canvas.') } catch (_) { ok = true }
       if (!ok) return
     }
+    pipelineModalHidden = false
     refining = true
     compileError = ''
     try {
@@ -874,11 +914,34 @@ Use null for fields that are not present.`
     }
   }
 
+  // The local-first promise ("using the cloud is always your choice") was
+  // enforced on exactly two buttons — Generate and its streamed variant. Every
+  // other builder-model call (Refine prompt, the prompt editor's Generate,
+  // Apply answers, Build until it works, Fix with AI, AI review, Write code for
+  // this step, and the Inspector's compile/refine) sent the same prompt AND the
+  // same setup context (skills, tools, channels) to the cloud with no dialog at
+  // all. Refine sits one button to the LEFT of the gated Generate.
+  //
+  // ensureCloudOk is the single gate. It returns true when the call may go
+  // ahead; otherwise it opens the dialog, remembers what to resume, and returns
+  // false so the caller stops.
+  function ensureCloudOk(retry) {
+    if (cloudAck) return true
+    if (!(modelAdvice && modelAdvice.cloud_escalation)) return true
+    cloudGate = { provider: modelAdvice.provider, model: modelAdvice.model, retry: retry || null }
+    return false
+  }
+
   // Cloud-escalation gate: user chose to continue with the cloud builder.
   function approveCloud() {
+    // Resume whatever raised the gate. This used to always call generate(),
+    // so approving from the STREAMED path silently ran the classic one, and
+    // approving from any other action did nothing that action had asked for.
+    const retry = cloudGate && cloudGate.retry
     cloudAck = true
     cloudGate = null
-    generate()
+    if (typeof retry === 'function') retry()
+    else generate()
   }
   // User chose to keep things local — open the model picker to switch.
   function declineCloud() {
@@ -940,6 +1003,7 @@ Use null for fields that are not present.`
   // and Save persists a strategy-based agent.
   async function runAgentCompile(text, mode, ans) {
     if (!text || compiling) return
+    pipelineModalHidden = false
     compiling = true
     compileError = ''
     try {
@@ -995,7 +1059,19 @@ Use null for fields that are not present.`
   let runBlockers = []
   // Mirrors the server's 422 condition so the button is refused before the round
   // trip. Warnings deliberately do NOT block — only blockers do.
-  $: hasExecutionBlockers = !!(preflight && (preflight.blockers || []).length)
+  //
+  // `preflight` alone was not enough: it is populated only by a Save attempt and
+  // cleared when that dialog is dismissed, so before the user's first Save this
+  // gate was inert and Run live happily started a workflow the server would
+  // refuse with a 422. `readiness` is loaded for the draft itself, so it holds
+  // whether or not a save has been tried.
+  $: hasExecutionBlockers = !!(
+    (preflight && (preflight.blockers || []).length) ||
+    (readiness && (readiness.blockers || []).length) ||
+    (securityReview && (securityReview.blockers || []).length)
+  )
+  // An empty graph is a distinct reason to refuse, and needs its own message.
+  $: flowIsEmpty = !(workflow && workflow.flow && (workflow.flow.nodes || []).length)
 
   // What the strategy advisor concluded about the selected model, carried
   // through from the compile response so an override can be informed (ST-02).
@@ -1085,7 +1161,13 @@ Use null for fields that are not present.`
         return
       }
       if (e && e.status === 422 && e.body) {
-        runBlockers = (e.body.blockers || e.body.errors || []).slice()
+        const pf = e.body.preflight || {}
+        const ct = e.body.contract || {}
+        runBlockers = (
+          (Array.isArray(pf.blockers) && pf.blockers.length ? pf.blockers : null)
+          || (Array.isArray(ct.checks) ? ct.checks.filter((c) => c && c.status === 'block') : null)
+          || (e.body.error ? [e.body.error] : [])
+        ).slice()
         tryResult = null
         return
       }
@@ -1106,7 +1188,7 @@ Use null for fields that are not present.`
     if (!runConfirm) return
     runAck = {
       confirm_side_effects: true,
-      acknowledged_tools: (runConfirm.confirm_tools || runConfirm.tools || []).map(
+      acknowledged_tools: runConfirmTools.map(
         t => (typeof t === 'string' ? t : t && t.name)
       ).filter(Boolean),
     }
@@ -1114,6 +1196,18 @@ Use null for fields that are not present.`
     tryAgent()
   }
   function cancelRun() { runConfirm = null }
+
+  // The 409 body from /studio/try-agent is
+  //   { error, requires_confirmation, unacknowledged_tools, preview }
+  // and every categorised tool list lives on preview.summary (SecuritySummary).
+  // The dialog used to read `runConfirm.confirm_tools` etc. — one and two levels
+  // too high — so all six lists were permanently empty: the user was asked to
+  // approve real, irreversible side effects with nothing shown, and the
+  // acknowledgement that went back was an empty array.
+  $: runConfirmPreview = (runConfirm && runConfirm.preview) || {}
+  $: runConfirmSummary = runConfirmPreview.summary || {}
+  $: runConfirmTools = (runConfirm && runConfirm.unacknowledged_tools)
+    || runConfirmPreview.side_effect_tools || []
 
   // Any edit invalidates the acknowledgement. Deliberately conservative: the
   // preview the user approved described THAT draft, and an edit can add a tool
@@ -1181,8 +1275,13 @@ Use null for fields that are not present.`
   // SOUL.yaml WITHOUT saving, so the user can review before applying.
   let repairDiff = null   // { p, candidate, lines, stats }
   let repairDiffBusy = false
+  let repairDiffFor = null // the proposal currently being diffed
   async function previewProposal(p) {
     if (!workflow || repairDiffBusy) return
+    // Which proposal is being diffed. The label used to key off `repairDiff`,
+    // which is only set AFTER both round-trips finish — so the busy label could
+    // only ever appear on a repeat preview of the same proposal.
+    repairDiffFor = p
     repairDiffBusy = true
     repairError = ''
     try {
@@ -1214,6 +1313,7 @@ Use null for fields that are not present.`
       repairError = (e && e.message) || 'could not preview the change'
     } finally {
       repairDiffBusy = false
+      repairDiffFor = null
     }
   }
   function applyDiff() {
@@ -1267,7 +1367,14 @@ Use null for fields that are not present.`
 
   // ── Execution-mode override (Workflow ⇄ Auto ⇄ ReAct ⇄ Plan-Execute) ───────
   // The current draft's mode: a fixed workflow (no strategy) or a reasoning agent.
-  $: currentMode = workflow && workflow.strategy ? String(workflow.strategy).toLowerCase() : 'workflow'
+  // modeOf is the single definition; currentMode is just its reactive view.
+  // Event handlers must call modeOf(workflow) directly, because a reactive
+  // value still holds the previous draft's mode during the handler that
+  // replaced the draft.
+  function modeOf(wf) {
+    return wf && wf.strategy ? String(wf.strategy).toLowerCase() : 'workflow'
+  }
+  $: currentMode = modeOf(workflow)
 
   // switchMode lets the developer override how Studio classified the task —
   // converting a result that's better as an agent (e.g. an autonomous
@@ -1302,6 +1409,7 @@ Use null for fields that are not present.`
   // fallback.
   async function runCompile(text, ans, forceWorkflow = false) {
     if (!text || compiling) return
+    pipelineModalHidden = false
     compiling = true
     compileError = ''
     try {
@@ -1326,6 +1434,9 @@ Use null for fields that are not present.`
   async function refineFromModal() {
     const raw = rawPrompt.trim()
     if (!raw || modalRefining) return
+    if (!ensureCloudOk(refineFromModal)) return
+    // A previous "Run in background" must not silence THIS action too.
+    pipelineModalHidden = false
     modalRefining = true
     promptError = ''
     // Pin what the NEXT spec read should be compared against, so the panel can
@@ -1347,8 +1458,9 @@ Use null for fields that are not present.`
   // prompt (intent), skipping a re-refine. Falls back to the original if the
   // refined box is empty (e.g. the user only filled the original and hit go).
   async function generateFromModal() {
-    const text = (intent.trim() || rawPrompt.trim())
+    const text = intentOf(intent, rawPrompt)
     if (!text || compiling || refining) return
+    if (!ensureCloudOk(generateFromModal)) return
     if (workflow && workflow.flow && (workflow.flow.nodes || []).length) {
       let ok = true
       try { ok = window.confirm('Generate from this prompt? It replaces the current workflow on the canvas.') } catch (_) { ok = true }
@@ -1362,10 +1474,13 @@ Use null for fields that are not present.`
   async function applyAnswers() {
     // Re-send compile with the current answers map -> re-render.
     if (compiling) return
+    if (!ensureCloudOk(applyAnswers)) return
     compiling = true
     compileError = ''
     try {
-      const data = await bridge.compile(intent.trim(), answers, compactCatalog(catalog))
+      // intentOf for the same reason as generate(): re-compiling with
+      // answers must use the prompt the user actually wrote, refined or not.
+      const data = await bridge.compile(intentOf(intent, rawPrompt), answers, compactCatalog(catalog))
       applyCompile(data)
     } catch (e) {
       compileError = e.message || 'compile failed'
@@ -1383,6 +1498,23 @@ Use null for fields that are not present.`
     return mode || 'Workflow'
   }
 
+  // recoLabel('auto') already ends in "agent", but every call site that names a
+  // build appends " agent" itself — producing "Generate Auto tool agent agent"
+  // on the confirm dialog's primary button. Rather than strip the noun from the
+  // label (which would leave a bare "Auto tool" where the label stands alone),
+  // this adds it only when it is not already there.
+  function recoAgentLabel(mode) {
+    const label = recoLabel(mode)
+    return /\bagents?$/i.test(label) ? label : `${label} agent`
+  }
+
+  // "Built as a Auto tool agent" — the article is hardcoded in the copy, so it
+  // is wrong for every label starting with a vowel. Chosen from the label rather
+  // than written into each sentence, so adding a strategy cannot reintroduce it.
+  function recoArticle(mode) {
+    return /^[aeiou]/i.test(recoAgentLabel(mode)) ? 'an' : 'a'
+  }
+
   // resetTransientDraftState clears everything tied to a SPECIFIC prior draft so
   // it can't bleed into a freshly generated/loaded one. Without this, a new draft
   // inherited the previous agent's run history, build report, a leftover preflight
@@ -1390,10 +1522,17 @@ Use null for fields that are not present.`
   // applyCompile (post-generate) and setWorkflow (template/load/import).
   function resetTransientDraftState() {
     loadedAgentId = null
+    // A new or newly-opened draft is unsaved work again, so it must be carried
+    // across navigation. Leaving this true after one save would silently stop
+    // preserving every subsequent draft.
+    sessionCommitted = false
     runTrace = null
     runDiagnosis = null
     runHistory = []
     selectedRunId = null
+    // A new draft must not leave the trace panel pointed at the last agent
+    // whose failure was inspected.
+    runTraceAgentId = ''
     runTraceErr = ''
     buildReport = null
     buildLog = []
@@ -1414,6 +1553,10 @@ Use null for fields that are not present.`
     runAck = null
     runBlockers = []
     strategyAdvice = null
+    // A readiness verdict describes ONE draft. Leaving it up across a swap let
+    // the Save step answer "ready?" about the draft the user just replaced.
+    readiness = null
+    readinessError = ''
     // Swapping in a different draft invalidates the SOUL.yaml view's serialization
     // (which is only re-generated on entry). Drop back to canvas so a stale YAML
     // can't be shown — or, worse, saved over the new draft. routeToAgent re-opens
@@ -1482,7 +1625,11 @@ Use null for fields that are not present.`
     // Guided default (Guided Studio Builder): land a freshly generated
     // deterministic workflow in the simple Plan view so the user reviews the
     // lanes + plain-English plan first. Agents keep their spec view.
+    // ...and conversely, an agent must NOT be left on 'plan' from a previous
+    // workflow draft: the Plan tab is rendered only for workflows, so the user
+    // would be looking at a view with no tab to leave it by.
     if (workflow && !workflow.strategy) viewMode = 'plan'
+    else if (workflow && viewMode === 'plan') viewMode = 'canvas'
     // A finished generate IS a milestone, so advance here rather than reactively.
     // Deliberately Build and not Test: the first thing you want after generating
     // is to see what was built, not to skip past it to a run.
@@ -1497,7 +1644,24 @@ Use null for fields that are not present.`
   // REPLACED IN PLACE rather than opened — an auto-fix during the Save review
   // swaps the workflow, and navigating to Build there would throw the user out
   // of the review they were in the middle of.
-  function setWorkflow(wf, { name, keepStep = false } = {}) {
+  // keepPrompt is for IN-PLACE replacements (auto-fix, heal, troubleshoot, a
+  // YAML re-parse): those swap the same draft for a repaired version, so the
+  // user's prompt still describes it. Every OPEN (template, draft, agent,
+  // import, clone) adopts the incoming draft's own prompt instead — including
+  // adopting an EMPTY one, which is what stops a stale prompt from being shown
+  // against, and generated over, a different agent.
+  // Snapshot of the draft as it was LOADED. Compared against the live draft to
+  // tell "the user has edited this" from "this is exactly what was opened".
+  // Cheap because it is only taken on load and read on a view switch.
+  let draftFingerprint = ''
+  function fingerprintOf(wf) {
+    try { return wf ? JSON.stringify(wf) : '' } catch (_) { return '' }
+  }
+  function draftEdited() {
+    return fingerprintOf(workflow) !== draftFingerprint
+  }
+
+  function setWorkflow(wf, { name, keepStep = false, keepPrompt = false } = {}) {
     // Clear prior-draft state first; callers that re-establish identity (e.g.
     // openAgentOnCanvas setting loadedAgentId) do so AFTER this returns.
     resetTransientDraftState()
@@ -1505,11 +1669,14 @@ Use null for fields that are not present.`
     // so old flows adopt the lane model (Guided Studio Builder, Story 2).
     workflow = wf ? migrateEndpoints(wf) : null
     if (workflow && name && !workflow.name) workflow = { ...workflow, name }
-    // Restore the generating prompt into the intent box so the user can see and
-    // edit the original instruction, then Generate to re-create the workflow.
-    if (workflow && typeof workflow.intent === 'string') intent = workflow.intent
-    // Restore the original (pre-refine) prompt for the dual-pane editor.
-    rawPrompt = (workflow && typeof workflow.raw_intent === 'string') ? workflow.raw_intent : ''
+    // Adopt the generating prompt of the draft being opened so the user can see
+    // and edit the instruction that produced it. A draft with no stored prompt
+    // adopts an EMPTY one — the previous draft's text must not survive here.
+    if (!keepPrompt) {
+      const p = promptsForDraft(workflow)
+      intent = p.intent
+      rawPrompt = p.rawPrompt
+    }
     questions = []
     notes = []
     explanation = null
@@ -1521,6 +1688,9 @@ Use null for fields that are not present.`
     validation = null
     saveMsg = ''
     saveError = ''
+    // Taken AFTER the draft is fully established (migration + name applied) so a
+    // draft nobody has touched compares equal to what was opened.
+    draftFingerprint = fingerprintOf(workflow)
     refineState = { loading: false, error: '', message: '' }
     // Swap in this draft's saved test suite. hydrateBench always assigns, so a
     // workflow with no fixtures correctly empties the bench rather than
@@ -1595,7 +1765,15 @@ Use null for fields that are not present.`
     if (!workflow || !workflow.flow || !Array.isArray(workflow.flow.edges)) return
     const edgesArr = workflow.flow.edges
     if (index < 0 || index >= edgesArr.length) return
-    const nextEdges = edgesArr.map((e, i) => (i === index ? { ...e, ...patch } : e))
+    const nextEdges = edgesArr.map((e, i) => {
+      if (i !== index) return e
+      const merged = { ...e, ...patch }
+      // Writing a port drops any legacy camelCase twin so the two can't
+      // disagree about which port this wire uses.
+      if ('from_port' in patch) delete merged.fromPort
+      if ('to_port' in patch) delete merged.toPort
+      return merged
+    })
     workflow = { ...workflow, flow: { ...workflow.flow, edges: nextEdges } }
     // Keep the selected-edge mirror in sync so the field stays controlled.
     if (selectedEdge && selectedEdge.index === index) {
@@ -1650,12 +1828,17 @@ Use null for fields that are not present.`
     return validateConnection({ nodes: rawNodes, source, target, sourceHandle, targetHandle }).ok
   }
 
+  // Ports are persisted as from_port/to_port (the SOUL.yaml + API contract).
+  // Older drafts may still carry the camelCase spelling, so read both.
+  function edgeFromPort(e) { return (e && (e.from_port || e.fromPort)) || '' }
+  function edgeToPort(e) { return (e && (e.to_port || e.toPort)) || '' }
+
   function edgeExists(from, to, fromPort, toPort) {
     const edges = (workflow && workflow.flow && workflow.flow.edges) || []
     return edges.some((e) =>
       e.from === from && e.to === to &&
-      (e.fromPort || '') === (fromPort || '') &&
-      (e.toPort || '') === (toPort || ''))
+      edgeFromPort(e) === (fromPort || '') &&
+      edgeToPort(e) === (toPort || ''))
   }
 
   // A connection was drawn on the canvas — persist it as a real flow edge.
@@ -1681,8 +1864,8 @@ Use null for fields that are not present.`
   function addEdge(spec) {
     if (!workflow || !workflow.flow || !spec) return
     const { from, to } = spec
-    const fromPort = spec.fromPort || ''
-    const toPort = spec.toPort || ''
+    const fromPort = spec.from_port || spec.fromPort || ''
+    const toPort = spec.to_port || spec.toPort || ''
     if (!from || !to || from === to) return
     if (isFramingId(from) || isFramingId(to)) return
     const ids = realNodeIds()
@@ -1696,8 +1879,8 @@ Use null for fields that are not present.`
     const flow = workflow.flow
     const edges = Array.isArray(flow.edges) ? flow.edges : []
     const newEdge = { from, to, if: '' }
-    if (fromPort) newEdge.fromPort = fromPort
-    if (toPort) newEdge.toPort = toPort
+    if (fromPort) newEdge.from_port = fromPort
+    if (toPort) newEdge.to_port = toPort
     const nextEdges = [...edges, newEdge]
     workflow = { ...workflow, flow: { ...flow, nodes: bakePositions(flow.nodes), edges: nextEdges } }
     selectedNode = null
@@ -1756,6 +1939,9 @@ Use null for fields that are not present.`
   // workflow is loaded onto the canvas). Enables fetching the agent's live
   // per-block run trace — what really happened on its last real run.
   let loadedAgentId = ''
+  // Set once the draft has been persisted, so leaving Studio does not re-save it
+  // as an in-progress session. Reset whenever a new draft starts.
+  let sessionCommitted = false
   let runTrace = null         // { agentId, runId, startedAt, entries:[...] }
   let runDiagnosis = null     // { status, summary, rootCause, nextAction, suggestions, evidence }
   let runTraceErr = ''
@@ -1835,7 +2021,10 @@ Use null for fields that are not present.`
       // the draft (which can't model every field — run_timeout, memory scopes,
       // confirm_tools, …). Read the real file once per loaded agent, as long as
       // there are no unsaved code edits to preserve.
-      if (loadedAgentId && isAgent && !dirty && codeRawForId !== loadedAgentId) {
+      // draftEdited() is the missing half of `dirty`: without it, edits made in
+      // the AGENT PANEL were overwritten by the on-disk file the moment the user
+      // looked at the code view.
+      if (loadedAgentId && isAgent && !dirty && !draftEdited() && codeRawForId !== loadedAgentId) {
         try {
           const raw = await bridge.agentYaml(loadedAgentId)
           yamlText = (raw && raw.yaml) || ''
@@ -1862,13 +2051,18 @@ Use null for fields that are not present.`
     codeError = ''
     // Parse the authoritative YAML back into a draft for the canvas.
     if (codeYaml.trim()) {
+      // codeLoading drives the view's "working" state; without it a large
+      // SOUL.yaml made this tab look dead for the length of the parse.
+      codeLoading = true
       try {
         const r = await bridge.fromYaml(codeYaml)
         codeWarnings = (r && Array.isArray(r.warnings)) ? r.warnings : []
-        if (r && r.workflow) setWorkflow(r.workflow)
+        if (r && r.workflow) setWorkflow(r.workflow, { keepPrompt: true })
       } catch (e) {
         codeError = (e && e.message) || 'YAML could not be parsed'
         return // stay in code view so the user can fix it
+      } finally {
+        codeLoading = false
       }
     }
     codeOrig = codeYaml
@@ -1887,13 +2081,16 @@ Use null for fields that are not present.`
     if (!workflow || viewMode === 'plan') return
     if (viewMode === 'code' && codeYaml.trim()) {
       codeError = ''
+      codeLoading = true
       try {
         const r = await bridge.fromYaml(codeYaml)
         codeWarnings = (r && Array.isArray(r.warnings)) ? r.warnings : []
-        if (r && r.workflow) setWorkflow(r.workflow)
+        if (r && r.workflow) setWorkflow(r.workflow, { keepPrompt: true })
       } catch (e) {
         codeError = (e && e.message) || 'YAML could not be parsed'
         return // stay in code view so the user can fix it
+      } finally {
+        codeLoading = false
       }
       codeOrig = codeYaml
     }
@@ -1985,6 +2182,7 @@ Use null for fields that are not present.`
   // and merge its findings into the validation panel.
   async function reviewWithAI() {
     if (reviewing) return
+    if (!ensureCloudOk(reviewWithAI)) return
     reviewing = true
     codeError = ''
     try {
@@ -2020,6 +2218,7 @@ Use null for fields that are not present.`
   // the right field, restructuring), then re-validate.
   async function fixWithAI() {
     if (codeFixing) return
+    if (!ensureCloudOk(fixWithAI)) return
     codeFixing = true
     codeError = ''
     try {
@@ -2045,10 +2244,17 @@ Use null for fields that are not present.`
   // The YAML stays authoritative for what gets WRITTEN; it is only parsed to a
   // draft so the contract has something to judge, so nothing the canvas cannot
   // express is lost.
+  // The pre-save gate below is three network round-trips (parse + contract +
+  // security review) BEFORE `saving` is set, and it can end by opening the
+  // preflight dialog without ever saving. Without its own flag the button
+  // stayed live and read "Save YAML" throughout, so the click looked ignored
+  // and a second click re-ran the whole gate.
+  let gateChecking = false
   async function saveFromCode(skipPreflight = false) {
-    if (saving) return
+    if (saving || gateChecking) return
     if (!skipPreflight) {
       let draftForGate = null
+      gateChecking = true
       try {
         const parsed = await bridge.fromYaml(codeYaml)
         draftForGate = (parsed && parsed.workflow) || null
@@ -2061,10 +2267,15 @@ Use null for fields that are not present.`
         try { report = await runStudioContract(draftForGate) } catch (_) { report = null }
         if (report && ((report.blockers && report.blockers.length) || (report.warnings && report.warnings.length))) {
           preflight = report
-          pendingCodeSave = true   // resume THIS save, not the canvas one
+          // Hold the judged document, so re-check / auto-fix / readiness all act
+          // on the YAML rather than on the canvas draft, and so proceeding
+          // resumes THIS save rather than the canvas one.
+          gateDraft = draftForGate
+          gateChecking = false
           return
         }
       }
+      gateChecking = false
     }
     saving = true
     saveError = ''
@@ -2260,8 +2471,18 @@ Use null for fields that are not present.`
     return entry
   }
 
+  // Reveal the bench before a run writes into it. The test result renders
+  // inside the `showTests` block, so with tests hidden (Build step hides them)
+  // pressing Test produced a result nobody could see — the button looked dead.
+  function revealBench() {
+    if (showTests) return
+    showTests = true
+    persistLayout()
+  }
+
   async function runTest() {
     if (!workflow || testing) return
+    revealBench()
     testing = true
     testError = ''
     testResult = null
@@ -2311,6 +2532,7 @@ Use null for fields that are not present.`
   let previewing = false
   async function previewRun() {
     if (!workflow || previewing || testing) return
+    revealBench()
     previewing = true
     testError = ''
     testResult = null
@@ -2344,11 +2566,12 @@ Use null for fields that are not present.`
   async function troubleshoot(errText, opts = {}) {
     const err = (errText || testError || '').trim()
     if (!workflow || !err || troubleshooting) return
+    if (!ensureCloudOk(() => troubleshoot(errText, opts))) return
     troubleshooting = true
     try {
       const res = await bridge.troubleshoot(workflow, err, opts)
       if (res && res.workflow) {
-        setWorkflow(res.workflow, { name: workflow.name })
+        setWorkflow(res.workflow, { name: workflow.name, keepPrompt: true })
         toast(res.changed ? 'Applied an AI fix for that error — re-test to confirm.' : 'AI could not find an automatic fix for that error.')
         if (res.preflight && ((res.preflight.blockers || []).length || (res.preflight.warnings || []).length)) {
           preflight = res.preflight
@@ -2377,10 +2600,17 @@ Use null for fields that are not present.`
     testError = ''
     const request = entry.request
     try {
+      // Forward EVERY captured condition. Replaying with only mocks/assertions
+      // silently re-ran from the default start node with none of the variables
+      // the original run used — and then filed that result under the original
+      // request, which could not have produced it.
       const res = await bridge.test(request.workflow, request.input, {
         mocks: request.mocks,
         assertions: request.assertions,
         mode: request.mode,
+        variables: request.variables,
+        environment: request.environment,
+        startNode: request.startNode,
       })
       testResult = res || null
       pushHistory(request, testResult)
@@ -2496,7 +2726,7 @@ Use null for fields that are not present.`
       hasNodes: !!(workflow && workflow.flow && (workflow.flow.nodes || []).length),
       isAgent: !!(workflow && workflow.strategy),
       tested: !!testResult,
-      testPassed: !!(testResult && testResult.ok !== false && !testError),
+      testPassed: !!(testResult && testResult.passed !== false && !testError),
       readiness,
       saved: !!loadedAgentId,
     }
@@ -2513,12 +2743,31 @@ Use null for fields that are not present.`
   // collapsing the bench on Build gives the canvas the room the design shows,
   // and expanding it on Test means "Test" does not land the user on a canvas
   // with a strip at the bottom they then have to go find.
-  function applyStepLayout(id) {
+  // `mode` is passed in rather than read from the reactive `currentMode`.
+  // Callers reach here synchronously right after assigning `workflow` (via
+  // setWorkflow → advanceToStep, and via applyCompile), and a `$:` value has not
+  // recomputed at that point — so this read described the PREVIOUS draft and
+  // opened an agent in the workflow layout, or vice versa. Same class of bug
+  // that nowCtx() was introduced to fix a few lines below.
+  function applyStepLayout(id, mode) {
+    // Same derivation as the `currentMode` reactive value, computed from the
+    // draft as it is RIGHT NOW rather than as of the last render.
+    const m = mode || modeOf(workflow)
     if (id === STEP_BUILD && viewMode !== 'canvas' && viewMode !== 'code' && viewMode !== 'plan') {
-      viewMode = currentMode === 'workflow' ? 'plan' : 'canvas'
+      viewMode = m === 'workflow' ? 'plan' : 'canvas'
+    }
+    // A flowless agent has no Plan tab (the tab is rendered only for workflows),
+    // so leaving viewMode on 'plan' from a previous workflow draft strands the
+    // user on a view whose tab is not on screen.
+    if (id === STEP_BUILD && m !== 'workflow' && viewMode === 'plan') {
+      viewMode = 'canvas'
     }
     if (id === STEP_BUILD) { showTests = false; maximizedFrame = '' }
     if (id === STEP_TEST) { showTests = true; maximizedFrame = 'bench' }
+    // The Save step's whole question is "ready?", and its panel used to open
+    // reading "Nothing checked yet" — syncReadiness only fires for the preflight
+    // DIALOG, so arriving at the step itself never ran a check.
+    if (id === STEP_SAVE && workflow) loadReadiness()
     persistLayout()
   }
 
@@ -2576,12 +2825,16 @@ Use null for fields that are not present.`
   }
 
   async function loadReadiness() {
-    if (!workflow) { readiness = null; return }
+    // Readiness is shown inside the preflight dialog, so it must describe the
+    // document that dialog is judging — otherwise the YAML view reports the
+    // canvas draft's readiness under the YAML's blockers.
+    const subject = gateSubject()
+    if (!subject) { readiness = null; return }
     const token = ++readinessToken
     readinessLoading = true
     readinessError = ''
     try {
-      const res = await bridge.readiness(workflow, false)
+      const res = await bridge.readiness(subject, false)
       if (token !== readinessToken) return
       readiness = res || null
     } catch (e) {
@@ -2599,38 +2852,75 @@ Use null for fields that are not present.`
   // Deep-link a readiness item to the screen that fixes it. Anything that edits
   // THIS draft keeps the user inside Studio — bouncing them to another page and
   // losing an unsaved draft would be a worse outcome than the warning.
+  // Every case here must be an action the SERVER actually emits. The previous
+  // list (open_channels / open_secrets / add_to_confirm_tools / review_consent /
+  // set_intent_gate) matched nothing in the Go tree, while the six actions the
+  // server does emit besides open_providers/open_mcp fell through to `default`
+  // — so a blocker rendered a "Fix this" button that did nothing at all.
   function readinessAction(item) {
     switch (item && item.action) {
       case 'open_providers': window.location.hash = '#providers'; break
       case 'open_mcp':       window.location.hash = '#mcp'; break
-      case 'open_channels':  window.location.hash = '#channels'; break
-      case 'open_secrets':
-        // The credentials editor is an inline panel on the canvas, so return
-        // there rather than navigating away.
-        preflight = null
-        viewMode = 'canvas'
+      case 'open_delivery':  window.location.hash = '#channels'; break
+      case 'choose_model':
+        closePreflight()
+        openModelPicker()
         break
-      case 'add_to_confirm_tools':
-      case 'review_consent':
-      case 'set_intent_gate':
-        securityPanelOpen = true
-        preflight = null
+      case 'add_assertions':
+      case 'run_live':
+        // Both are fixed at the bench: add an assertion, or exercise it live.
+        closePreflight()
         viewMode = 'canvas'
+        revealBench()
+        goStep(STEP_TEST)
         break
-      default: break
+      case 'open_studio':
+      case 'open_preflight':
+      default:
+        // Everything else (tool / agent / field / dependency / template /
+        // schedule / policy / security) is repaired in the workflow editor.
+        closePreflight()
+        viewMode = 'canvas'
+        goStep(STEP_BUILD)
+        if (item && item.nodeId) revealNode(item.nodeId)
+        break
     }
   }
 
-  // Set when the preflight dialog was raised BY the SOUL.yaml save, so
-  // proceeding resumes that save rather than the canvas one — which would write
-  // the draft and silently discard whatever the YAML expressed that the canvas
-  // cannot.
-  let pendingCodeSave = false
+  // The draft the preflight dialog is currently judging.
+  //
+  // null means "the canvas draft" (`workflow`). Non-null means the dialog was
+  // raised by the SOUL.yaml save and is judging the parsed YAML instead, so
+  // proceeding must resume THAT save — writing the canvas draft would silently
+  // discard whatever the YAML expressed that the canvas cannot.
+  //
+  // This used to be a bare `pendingCodeSave` boolean that only cancelPreflight
+  // reset, so any other way of dismissing the dialog left it stuck true and the
+  // next canvas Save wrote stale YAML over the user's canvas edits. Holding the
+  // subject itself (rather than a flag about it) also lets re-check, auto-fix
+  // and readiness act on the document that was actually judged — previously
+  // they all operated on `workflow` regardless, so in the YAML view "Re-check"
+  // could clear blockers that were never in the YAML.
+  let gateDraft = null
+  $: pendingCodeSave = gateDraft !== null
+
+  // The draft under review, whichever view raised the dialog.
+  function gateSubject() {
+    return gateDraft || workflow
+  }
+
+  // Single exit point, so a new dismissal path cannot forget to reset the
+  // subject the way revealNode and readinessAction did.
+  function closePreflight() {
+    preflight = null
+    gateDraft = null
+  }
+
   function proceedAfterPreflight() {
     if (!preflight || !canProceedPastPreflight) return
-    preflight = null
-    if (pendingCodeSave) {
-      pendingCodeSave = false
+    const wasCodeSave = gateDraft !== null
+    closePreflight()
+    if (wasCodeSave) {
       saveFromCode(true)
       return
     }
@@ -2639,8 +2929,7 @@ Use null for fields that are not present.`
 
   function cancelPreflight() {
     if (saving) return
-    preflight = null
-    pendingCodeSave = false
+    closePreflight()
   }
 
   // Jump from a validation blocker/warning to the offending block: close the
@@ -2648,7 +2937,7 @@ Use null for fields that are not present.`
   function revealNode(nodeId) {
     const wf = workflow && workflow.flow && Array.isArray(workflow.flow.nodes) ? workflow.flow.nodes : []
     const node = wf.find((n) => n && n.id === nodeId)
-    preflight = null
+    closePreflight()
     if (node) {
       selectedNode = node
       selectedEdge = null
@@ -2659,9 +2948,14 @@ Use null for fields that are not present.`
 
   // Re-run validation in place (e.g. after the user fixed something) without
   // closing the dialog.
+  let rechecking = false
   async function rerunPreflight() {
-    if (!workflow) return
-    try { preflight = await runStudioContract(workflow) } catch (_) { /* keep current */ }
+    // Re-check the document that was judged, not whatever is on the canvas.
+    const subject = gateSubject()
+    if (!subject || rechecking) return
+    rechecking = true
+    try { preflight = await runStudioContract(subject) } catch (_) { /* keep current */ }
+    finally { rechecking = false }
   }
 
   // "Fix automatically": run deterministic contract + data-flow repair on the
@@ -2672,25 +2966,41 @@ Use null for fields that are not present.`
   let preflightFixMsg = ''
   let preflightFixKind = 'info'
   async function fixAutomatically() {
-    if (!workflow || fixing) return
+    const subject = gateSubject()
+    if (!subject || fixing) return
+    // Repairing the YAML draft must write back to the YAML. Applying the repair
+    // to the canvas instead was doubly wrong: it rewrote a draft the user was
+    // not looking at, and proceedAfterPreflight then saved the untouched
+    // codeYaml, throwing the repair away.
+    const repairingCode = gateDraft !== null
     fixing = true
     preflightFixMsg = 'Studio is checking whether these findings have a safe automatic repair...'
     preflightFixKind = 'info'
     try {
-      const res = await bridge.autowire(workflow)
+      const res = await bridge.autowire(subject)
       const fixedCount = Number(res && res.fixed ? res.fixed : 0)
-      if (res && res.workflow) {
+      if (res && res.workflow && repairingCode) {
+        gateDraft = res.workflow
+        try {
+          const y = await bridge.toYaml(res.workflow)
+          if (y && y.yaml) codeYaml = y.yaml
+        } catch (_) {
+          // Leave the editor untouched rather than showing YAML that does not
+          // match the draft now being gated.
+        }
+        toast(fixedCount ? `Auto-fixed ${fixedCount} issue${fixedCount === 1 ? '' : 's'} in the YAML.` : 'No auto-fixable issues found. Re-checking the latest contract.')
+      } else if (res && res.workflow) {
         // keepStep: this is an in-place repair during a review, not opening a
         // different draft — the user must stay where they were.
         const editingAgentId = loadedAgentId
-        setWorkflow(res.workflow, { name: workflow.name, keepStep: true })
+        setWorkflow(res.workflow, { name: workflow.name, keepStep: true, keepPrompt: true })
         // setWorkflow clears the loaded-agent binding (correct when SWAPPING
         // drafts, wrong here): losing it would make the next Save create a
         // duplicate agent instead of updating the one being repaired.
         if (editingAgentId) loadedAgentId = editingAgentId
         toast(fixedCount ? `Auto-fixed ${fixedCount} issue${fixedCount === 1 ? '' : 's'}.` : 'No auto-fixable issues found. Re-checking the latest contract.')
       }
-      const next = await runStudioContract((res && res.workflow) || workflow)
+      const next = await runStudioContract((res && res.workflow) || subject)
       preflight = next
       const blockerCount = (next && next.blockers && next.blockers.length) || 0
       const warningCount = (next && next.warnings && next.warnings.length) || 0
@@ -2848,7 +3158,7 @@ Use null for fields that are not present.`
       toast(`No ${from} usage found to rewrite.`)
       return
     }
-    setWorkflow({ ...workflow, flow: { ...flow, nodes: nextNodes } }, { name: workflow.name })
+    setWorkflow({ ...workflow, flow: { ...flow, nodes: nextNodes } }, { name: workflow.name, keepPrompt: true })
     toast(`Rewrote ${hits} ${from} → ${suggestId}.`)
     scheduleSecurityReview()
   }
@@ -2872,6 +3182,7 @@ Use null for fields that are not present.`
   let showBuildInspector = false
   async function buildUntilWorks() {
     if (!workflow || building) return
+    if (!ensureCloudOk(buildUntilWorks)) return
     building = true
     buildReport = null
     buildGlue = []
@@ -2887,7 +3198,7 @@ Use null for fields that are not present.`
       if (res && res.report) {
         buildReport = res.report
         buildTraceId = res.traceId || null
-        if (res.report.workflow) setWorkflow(res.report.workflow, { name: workflow.name })
+        if (res.report.workflow) setWorkflow(res.report.workflow, { name: workflow.name, keepPrompt: true })
         preflight = res.preflight && !res.preflight.ok ? res.preflight : null
         toast(res.report.summary || 'Build complete.')
       }
@@ -2948,7 +3259,7 @@ Use null for fields that are not present.`
   }
   function applyHealDiff() {
     if (!healDiff) return
-    setWorkflow(healDiff.candidate, { name: healDiff.name })
+    setWorkflow(healDiff.candidate, { name: healDiff.name, keepPrompt: true })
     const kind = healDiff.source === 'session' ? 'Debugged real run applied' : 'Heal applied'
     toast(kind + ' — review and Save to persist.')
     healDiff = null
@@ -3032,6 +3343,19 @@ Use null for fields that are not present.`
       // the next one would silently reuse a reason the user never re-affirmed.
       acceptReason = ''
       $editAgent = res.agentId
+      // A saved draft is finished work, not work-in-progress.
+      //
+      // Save navigates to Deployed, so onDestroy would snapshot the draft and
+      // Studio would reopen mid-agent the next time it was clicked — with no way
+      // back to the home screen short of a page refresh. The agent is persisted
+      // and listed under "Continue existing work", so keeping a private copy of
+      // it as an unfinished session is both redundant and misleading.
+      //
+      // The flag is what actually makes this stick: navigating unmounts Studio,
+      // and onDestroy runs AFTER this line, so clearing the store here alone
+      // would be immediately overwritten by the very snapshot being suppressed.
+      sessionCommitted = true
+      studioSession.set(null)
       window.location.hash = '#agents'
       consent = null
     } catch (e) {
@@ -3065,8 +3389,16 @@ Use null for fields that are not present.`
   // of what actually ran (input, output, duration, error, whether the input came
   // from typed port wires). Surfaced so a non-technical user can see WHERE a real
   // run went wrong, not just that it failed.
-  async function loadRunTrace(runId = '') {
-    if (!loadedAgentId || runTraceLoading) return
+  // Which agent the trace panel is showing. The Failed-runs list spans EVERY
+  // agent, so a failure can belong to something other than the draft on the
+  // canvas — and with an unsaved draft open there is no loadedAgentId at all.
+  // Keying the fetch off loadedAgentId meant clicking a failure either returned
+  // silently ("No diagnosis for this run") or loaded the wrong agent's trace.
+  let runTraceAgentId = ''
+  async function loadRunTrace(runId = '', agentId = '') {
+    const aid = agentId || runTraceAgentId || loadedAgentId
+    if (!aid || runTraceLoading) return
+    runTraceAgentId = aid
     runTraceLoading = true
     runTraceErr = ''
     selectedRunId = runId || ''
@@ -3074,9 +3406,9 @@ Use null for fields that are not present.`
       // Fetch the chosen run's trace AND refresh the full run history (every run,
       // scheduled or on-demand) so the picker stays current.
       const [res, hist, diagnosis] = await Promise.all([
-        bridge.runTrace(loadedAgentId, runId || undefined),
-        bridge.runHistory(loadedAgentId).catch(() => ({ runs: [] })),
-        bridge.runDiagnosis(loadedAgentId, runId || undefined).catch(() => null),
+        bridge.runTrace(aid, runId || undefined),
+        bridge.runHistory(aid).catch(() => ({ runs: [] })),
+        bridge.runDiagnosis(aid, runId || undefined).catch(() => null),
       ])
       runTrace = res || null
       runDiagnosis = diagnosis || null
@@ -3383,28 +3715,32 @@ Use null for fields that are not present.`
     await refreshPaletteDrafts()
   }
 
-  async function saveDraft() {
+  // { name } while the name dialog is open, null otherwise.
+  let draftPrompt = null
+
+  function saveDraft() {
     if (!workflow || savingDraft) return
-    const suggested = (workflow.name || '').trim() || 'My workflow'
-    let name
-    try {
-      name = window.prompt('Save draft as:', suggested)
-    } catch (_) {
-      name = suggested        // sandbox could block prompt — fall back silently
-    }
-    if (name == null) return   // cancelled
-    name = (name || '').trim() || suggested
+    draftPrompt = { name: (workflow.name || '').trim() || 'My workflow' }
+  }
+
+  async function confirmSaveDraft() {
+    if (!workflow || savingDraft || !draftPrompt) return
+    const fallback = (workflow.name || '').trim() || 'My workflow'
+    const name = (draftPrompt.name || '').trim() || fallback
+    draftPrompt = null
     savingDraft = true
     saveError = ''
     saveMsg = ''
     try {
-      const res = await bridge.draftSave(name, workflow)
-      const id = (res && res.id) || ''
-      // Keep the draft's name in sync so subsequent saves/export reuse it.
+      // Rename FIRST, then save that. The old order saved the pre-rename draft
+      // and renamed only the copy on screen, so reopening the saved draft
+      // brought back the name the user had just replaced.
       if (name && workflow.name !== name) {
         workflow = { ...workflow, name }
         rebuildGraph()
       }
+      const res = await bridge.draftSave(name, workflow)
+      const id = (res && res.id) || ''
       toast(`Saved draft “${name}”${id ? ' (' + id + ')' : ''}.`)
       refreshPaletteDrafts()
     } catch (e) {
@@ -3448,7 +3784,11 @@ Use null for fields that are not present.`
   onMount(() => { loadLibrary({ open: false }).catch(() => {}) })
 
   function closeLibrary() {
-    library = { ...library, open: false }
+    // busyId is the per-row "in flight" lock. Only the error paths used to
+    // clear it, so a SUCCESSFUL load left it set forever and every library and
+    // palette button stayed disabled (or silently returned at its guard) until
+    // the page was reloaded.
+    library = { ...library, open: false, busyId: '' }
   }
 
   // ── Library search + faceted filters (ST-15) ──────────────────────────────
@@ -3561,7 +3901,11 @@ Use null for fields that are not present.`
   // Click an agent in the left palette → load its workflow onto the canvas for
   // editing. Re-Saving (same name → same id) upserts it.
   async function openAgentOnCanvas(id) {
-    if (!id) return
+    if (!id || library.busyId) return
+    // Same row-level lock the library list uses, so the palette row greys out
+    // while the workflow loads and a double-click cannot race two setWorkflow
+    // calls onto the canvas.
+    library = { ...library, busyId: id }
     try {
       const data = await bridge.loadAgentWorkflow(id)
       const wf = (data && data.workflow) || null
@@ -3573,6 +3917,8 @@ Use null for fields that are not present.`
       toast('Loaded workflow — edit and Save to update the agent.')
     } catch (e) {
       toast(e.message || 'Could not load agent workflow')
+    } finally {
+      library = { ...library, busyId: '' }
     }
   }
 
@@ -3592,7 +3938,21 @@ Use null for fields that are not present.`
     codeWarnings = []
     compileError = ''
     setWorkflow(null)
+    studioSession.set(null)
     return true
+  }
+
+  // Drop any STORED session that was showing the deleted agent, separately from
+  // the live canvas.
+  //
+  // Clearing only the canvas left the deleted agent in the cross-navigation
+  // snapshot, so it reappeared the next time the user came back to Studio —
+  // which is why the delete looked like it needed a page refresh to take effect.
+  // Called on every delete path, including the ones where the canvas was showing
+  // something else entirely.
+  function forgetDeletedAgentSession(id) {
+    studioSession.set(sessionAfterDelete(get(studioSession), id))
+    forgetCarriedAgent(id)
   }
 
   // Delete an agent straight from the palette (with confirm), then refresh the
@@ -3605,6 +3965,7 @@ Use null for fields that are not present.`
     try {
       await bridge.deleteAgent(id)
       const wasOpen = clearCanvasIfShowing(id)
+      forgetDeletedAgentSession(id)
       toast(wasOpen
         ? `Deleted agent ${name || id}. Canvas cleared.`
         : `Deleted agent ${name || id}.`)
@@ -3643,6 +4004,7 @@ Use null for fields that are not present.`
       await bridge.deleteAgent(a.id)
       library = { ...library, busyId: '', agents: library.agents.filter((x) => x.id !== a.id) }
       if (clearCanvasIfShowing(a.id)) toast(`Deleted agent ${a.name || a.id}. Canvas cleared.`)
+      forgetDeletedAgentSession(a.id)
       await loadCatalog()
     } catch (e) {
       library = { ...library, busyId: '', error: e.message || 'could not delete agent' }
@@ -3760,6 +4122,7 @@ Use null for fields that are not present.`
   async function refineNode(nodeId, instruction) {
     const instr = (instruction || '').trim()
     if (!workflow || !nodeId || !instr || refineState.loading) return
+    if (!ensureCloudOk(() => refineNode(nodeId, instruction))) return
     refineState = { loading: true, error: '', message: '' }
     try {
       const data = await bridge.refine(workflow, nodeId, instr)
@@ -3848,7 +4211,10 @@ Use null for fields that are not present.`
   // and the classic refine→compile path (refining/compiling, no sub-events).
   // `pipelineModalHidden` lets them dismiss the overlay and let it run on.
   let pipelineModalHidden = false
-  $: genBusy = pipelineRunning || compiling || refining
+  // modalRefining belongs here too: the Describe step's "Refine prompt" is a
+  // full builder-model call, and leaving it out of genBusy is what made that
+  // button the one place in Studio where a long wait showed nothing at all.
+  $: genBusy = pipelineRunning || compiling || refining || modalRefining
   $: pipelineLatest = pipelineLog.length ? pipelineLog[pipelineLog.length - 1] : null
   // Real backend phase names (from internal/studio/generatepipeline.go) — not
   // invented UI copy. Used to label the streamed events the server actually
@@ -3866,7 +4232,7 @@ Use null for fields that are not present.`
   // The one-line "what's happening right now", reflecting the real operation in
   // flight rather than a scripted step. The refine and compile calls ARE real
   // builder-model calls; the streamed path names its actual current phase.
-  $: genStatusText = refining
+  $: genStatusText = (refining || modalRefining)
       ? 'Refining your prompt into a build-ready spec…'
       : pipelineRunning
         ? (pipelineLatest ? phaseLabel(pipelineLatest.phase) + '…' : 'Starting the build pipeline…')
@@ -3930,12 +4296,9 @@ Use null for fields that are not present.`
   // successfully the compiled draft is applied to the canvas via the same
   // applyCompile path the classic flow uses.
   async function generateStreamed() {
-    const text = intent.trim()
+    const text = intentOf(intent, rawPrompt)
     if (!text || compiling || refining || pipelineRunning || cloudGate) return
-    if (modelAdvice && modelAdvice.cloud_escalation && !cloudAck) {
-      cloudGate = { provider: modelAdvice.provider, model: modelAdvice.model }
-      return
-    }
+    if (!ensureCloudOk(generateStreamed)) return
     if (workflow && workflow.flow && (workflow.flow.nodes || []).length) {
       let ok = true
       try { ok = window.confirm('Regenerate from this prompt? It replaces the current workflow on the canvas.') } catch (_) { ok = true }
@@ -4036,21 +4399,24 @@ Use null for fields that are not present.`
   }
 
   async function loadModelsFor(provider) {
-    if (!provider) { modelPicker = { ...modelPicker, models: [] }; return }
+    if (!provider) { modelPicker = { ...modelPicker, models: [], modelsLoading: false }; return }
+    modelPicker = { ...modelPicker, models: [], modelsLoading: true }
     try {
       const r = await bridge.providerModels(provider)
       const raw = (r && (r.models || r)) || []
       const models = Array.isArray(raw)
         ? raw.map((m) => (typeof m === 'string' ? m : (m.id || m.name || ''))).filter(Boolean)
         : []
-      modelPicker = { ...modelPicker, models }
+      modelPicker = { ...modelPicker, models, modelsLoading: false }
     } catch (_) {
-      modelPicker = { ...modelPicker, models: [] }
+      modelPicker = { ...modelPicker, models: [], modelsLoading: false }
     }
   }
 
   function pickProvider(p) {
-    modelPicker = { ...modelPicker, provider: p, model: '' }
+    // Clear the previous provider's models immediately — leaving them on screen
+    // (and clickable) while the new list loads offers choices that do not exist.
+    modelPicker = { ...modelPicker, provider: p, model: '', models: [], modelsLoading: !!p }
     resetModelChooser()
     loadModelsFor(p)
   }
@@ -4110,26 +4476,58 @@ Use null for fields that are not present.`
   // the intent, the generated/refined workflow, and the transparency panels are
   // lost when you leave Studio and come back. We snapshot into a module-level
   // store on unmount and restore on mount.
+  // Unsaved work carried across a navigation, held UNAPPLIED until the user
+  // picks it. Re-entering Studio is a "start something / pick something" action,
+  // so the home screen must present exactly two choices — describe something
+  // new, or continue existing work — and not silently repopulate the prompt
+  // boxes with text from a previous visit.
+  let carriedSession = null
+
   function hydrateSession() {
     const s = get(studioSession)
     if (!s) return
-    if (s.workflow) setWorkflow(s.workflow)   // rebuilds the canvas (also sets intent from workflow.intent)
+    carriedSession = s
+  }
+
+  // The user chose "pick up where you left off": now apply it.
+  function resumeCarriedSession() {
+    const s = carriedSession
+    if (!s) return
+    carriedSession = null
+    // keepStep is essential, not cosmetic: setWorkflow ends with
+    // advanceToStep(STEP_BUILD), so restoring a draft would jump straight into
+    // Build regardless of anything decided here. Removing the resume-step
+    // calculation below was not enough on its own — this was the jump that
+    // actually put the user back inside the agent.
+    if (s.workflow) setWorkflow(s.workflow, { keepStep: true })
+    // setWorkflow runs resetTransientDraftState, which clears loadedAgentId, so
+    // this must come AFTER it. Without carrying the id, a restored canvas showed
+    // an agent with no identity: deleting that agent left it on screen because
+    // clearCanvasIfShowing compares ids and found none, and the next Save would
+    // have created a duplicate instead of updating the agent being edited.
+    if (s.loadedAgentId) loadedAgentId = s.loadedAgentId
     if (typeof s.intent === 'string') intent = s.intent
+    if (typeof s.rawPrompt === 'string') rawPrompt = s.rawPrompt
     if (Array.isArray(s.notes)) notes = s.notes
     if (Array.isArray(s.questions)) questions = s.questions
     if (Array.isArray(s.suggestions)) suggestions = s.suggestions
     if (s.explanation) explanation = s.explanation
     if (s.refinement) { refinement = s.refinement; refineAnswers = s.refineAnswers || {} }
-    // Resuming a session is the ONE place a computed landing step is right:
-    // a single decision made from settled state, not a reaction to the user
-    // typing their way through intermediate states.
-    const ctx = nowCtx()
-    const resume = autoStep(STEP_DESCRIBE, ctx)
-    if (resume !== step && canEnter(resume, ctx).ok) {
-      step = resume
-      applyStepLayout(resume)
-    }
+    // Resuming IS the deliberate act of going back into the work, so this one
+    // path may land on Build. Arriving in Studio never does.
+    if (workflow) advanceToStep(STEP_BUILD)
   }
+
+  // A carried session describing an agent that has since been deleted must go
+  // with it, exactly as the stored snapshot does.
+  function forgetCarriedAgent(id) {
+    carriedSession = sessionAfterDelete(carriedSession, id)
+  }
+
+  // Label for the resume row. The draft may be an unsaved template/import with
+  // no name, so fall back rather than render an empty button.
+  $: carriedName = (carriedSession && carriedSession.workflow
+    && (carriedSession.workflow.name || '').trim()) || 'Untitled draft'
   onMount(hydrateSession)
 
   function hydrateRouteIntent() {
@@ -4184,16 +4582,29 @@ Use null for fields that are not present.`
   })
 
   onDestroy(() => {
-    studioSession.set({
-      intent,
+    // Carried work the user never picked up survives another navigation
+    // untouched. Without this, snapshotSession sees an empty canvas, returns
+    // null, and the unsaved draft is gone on the second visit.
+    if (!workflow && carriedSession) {
+      studioSession.set(carriedSession)
+      return
+    }
+    // snapshotSession owns the rules (and their tests): it returns null for a
+    // committed draft or an empty canvas, so navigating away cannot resurrect
+    // something the user just saved, cleared, or deleted.
+    studioSession.set(snapshotSession({
+      committed: sessionCommitted,
       workflow,
+      intent,
+      rawPrompt,
+      loadedAgentId,
       notes,
       questions,
       suggestions,
       explanation,
       refinement,
       refineAnswers,
-    })
+    }))
   })
 </script>
 
@@ -4222,7 +4633,17 @@ Use null for fields that are not present.`
       <button class="intent-expand" type="button" data-tooltip="Open the full prompt editor" on:click={() => (promptViewer = true)} aria-label="Open prompt editor">⤢ Editor</button>
     </div>
     <div class="generate-group" style="display:inline-flex;gap:.35rem;align-items:center;">
-      <button class="btn primary" on:click={generateOrStream} disabled={compiling || refining || pipelineRunning || !!refinement || !intent.trim()}>
+      <!-- Same blocker gate as the panel's Generate button. Without it this one
+           built straight past the required answers, which made the panel's gate
+           look decorative. `title` carries the reason, since this button has no
+           room for the explanatory text the panel shows beneath its own. -->
+      <button class="btn primary" on:click={generateOrStream}
+              disabled={compiling || refining || pipelineRunning || !!refinement || !effectiveIntent || specUnresolved.length > 0}
+              title={!effectiveIntent
+                ? 'Describe what you want built first'
+                : specUnresolved.length
+                  ? `Answer ${specUnresolved.length} required detail${specUnresolved.length === 1 ? '' : 's'} first`
+                  : ''}>
         {refining ? 'Refining…' : compiling ? 'Generating…' : pipelineRunning ? 'Running pipeline…' : 'Generate'}
       </button>
       <!--
@@ -4334,6 +4755,7 @@ Use null for fields that are not present.`
       drafts={paletteDrafts}
       onOpenDraft={openDraftById}
       onDeleteDraft={deleteDraftFromPalette}
+      busyId={library.busyId}
     />
     {/if}
 
@@ -4363,13 +4785,29 @@ Use null for fields that are not present.`
                    it was unreachable from here. Shown inline rather than behind
                    the My Workflows dialog, because a user should not have to
                    open a dialog to discover their own agents exist. -->
-              {#if libParts.deployed.length || libParts.saved.length || libParts.drafts.length}
+              {#if carriedSession || libParts.deployed.length || libParts.saved.length || libParts.drafts.length}
                 <div class="d-existing">
                   <div class="d-existing-head">
                     <span>Or continue existing work</span>
                     <button class="btn btn-sm" type="button" on:click={openLibrary}>See all</button>
                   </div>
                   <ul class="d-existing-list">
+                    <!-- Work carried across a navigation. It is offered here as a
+                         CHOICE rather than restored into the prompt boxes: a
+                         prompt that reappears on its own reads as Studio showing
+                         a random agent, and it used to describe whatever was
+                         last open rather than anything the user asked for. -->
+                    {#if carriedSession}
+                      <li>
+                        <button class="d-existing-item" type="button" on:click={resumeCarriedSession}>
+                          <span class="d-existing-name">
+                            {carriedName}
+                            <span class="agent-badge off">in progress</span>
+                          </span>
+                          <span class="d-existing-sub">Unsaved work from your last visit — pick up where you left off</span>
+                        </button>
+                      </li>
+                    {/if}
                     {#each [...libParts.deployed, ...libParts.saved].slice(0, 5) as a (a.id)}
                       <li>
                         <button class="d-existing-item" type="button" disabled={!!library.busyId}
@@ -4383,7 +4821,7 @@ Use null for fields that are not present.`
                                than as a different kind of thing. -->
                           <span class="d-existing-sub">
                             {a.description || (a.strategy
-                              ? `${recoLabel(a.strategy)} agent · ${a.trigger || 'manual'}`
+                              ? `${recoAgentLabel(a.strategy)} · ${a.trigger || 'manual'}`
                               : `${a.trigger || 'manual'} · ${a.nodes || 0} steps`)}
                           </span>
                         </button>
@@ -4408,7 +4846,7 @@ Use null for fields that are not present.`
             <div class="describe-right">
               <BuildSpecPanel
                 spec={buildSpec}
-                recommendation={workflow && workflow.recommendation}
+                recommendation={specRecommendation}
                 loading={buildSpecLoading}
                 error={buildSpecError}
                 answers={refineAnswers}
@@ -4416,6 +4854,8 @@ Use null for fields that are not present.`
                 onAnswer={(id, v) => (refineAnswers = { ...refineAnswers, [id]: v })}
                 onRefine={refineFromModal}
                 onGenerate={generateOrStream}
+                refining={modalRefining || refining}
+                generating={compiling || pipelineRunning}
               />
             </div>
           </div>
@@ -4447,7 +4887,7 @@ Use null for fields that are not present.`
             </div>
 
             <aside class="save-side">
-              <h4 class="step-h">Ready to save?</h4>
+              <h4 class="step-h">Agent details</h4>
               <label class="save-field">
                 <span>Agent name</span>
                 <input type="text" bind:value={workflow.name} placeholder="Name this agent" />
@@ -4527,7 +4967,7 @@ Use null for fields that are not present.`
       {/if}
 
       {#if workflow && unsetSecrets.length && viewMode === 'canvas'}
-        <Collapsible id="credentials" data-tooltip="Credentials" sub={`${unsetSecrets.length} key${unsetSecrets.length === 1 ? '' : 's'} not set — your tools/MCP may need them`} open={false}>
+        <Collapsible id="credentials" title="Credentials" sub={`${unsetSecrets.length} key${unsetSecrets.length === 1 ? '' : 's'} not set — your tools/MCP may need them`} open={false}>
           <div class="creds">
             <p class="creds-hint">Set the API keys your tools and MCP servers need, without leaving Studio. Values are stored in the gateway's secret store, never in the agent file.</p>
             {#each unsetSecrets as sec (sec.name)}
@@ -4707,8 +5147,11 @@ Use null for fields that are not present.`
         </details>
       {/if}
 
-      <!-- Validation strip (M3): non-blocking ok / N errors / N warnings. -->
-      {#if workflow && validation}
+      <!-- Validation strip (M3): non-blocking ok / N errors / N warnings.
+           Hidden in the code view: it judges the CANVAS draft, and the SOUL.yaml
+           editor reports on the text actually being edited. Showing both meant a
+           broken YAML sat under a green "Valid — No issues found." -->
+      {#if workflow && validation && viewMode !== 'code'}
         {#if validation.ok && !validation.warnings.length}
           <div class="strip strip-ok" data-tooltip="Workflow validates">
             <span class="strip-label">Valid</span>
@@ -4878,7 +5321,7 @@ Use null for fields that are not present.`
           <!-- ReAct / Plan-Execute AGENT spec (no fixed flow). Editable. -->
           <div class="agent-spec">
             <div class="agent-spec-head">
-              <span class="agent-badge on">{recoLabel(workflow.strategy)} agent</span>
+              <span class="agent-badge on">{recoAgentLabel(workflow.strategy)}</span>
               <span class="agent-spec-name">{workflow.name || 'Untitled agent'}</span>
               <span class="agent-spec-note">Reasons over its tools — no fixed graph. Loops & polls as needed.</span>
               <button class="agent-yaml-link" type="button" on:click={showCodeView}
@@ -5074,11 +5517,17 @@ Use null for fields that are not present.`
           <!-- Run Live is refused while execution blockers remain (ST-07). The
                server enforces this with a 422; disabling here means the user
                finds out before spending a run rather than after. -->
+          <!-- Every disabled reason gets its own tooltip branch. The empty-flow
+               case used to fall through to the "this will run the workflow"
+               text, so the button was dead while the tooltip described what
+               pressing it would do. -->
           <button class="btn" on:click={tryAgent}
-            disabled={trying || hasExecutionBlockers || !(workflow.flow && (workflow.flow.nodes || []).length)}
-            data-tooltip={hasExecutionBlockers
-              ? 'Resolve the execution blockers first — this workflow cannot run yet.'
-              : 'Run the workflow for real with the sample input and show the result + tool trace'}>
+            disabled={trying || hasExecutionBlockers || flowIsEmpty}
+            data-tooltip={flowIsEmpty
+              ? 'Add at least one step before running this workflow.'
+              : hasExecutionBlockers
+                ? 'Resolve the execution blockers first — this workflow cannot run yet.'
+                : 'Run the workflow for real with the sample input and show the result + tool trace'}>
             {trying ? 'Running…' : '▶ Run live'}
           </button>
           <button
@@ -5133,20 +5582,45 @@ Use null for fields that are not present.`
               {reviewing ? 'Reviewing…' : '🔍 AI review'}
             </button>
           {/if}
-          <button class="btn primary"
-                  on:click={() => (viewMode === 'code' ? saveFromCode() : save())}
-                  disabled={saving || (viewMode === 'canvas' && (!!consent || !!preflight || (securityReview && (securityReview.blockers || []).length > 0)))}
-                  title={securityReview && (securityReview.blockers || []).length > 0 ? 'Fix security blockers to save' : ''}>
-            {saving ? 'Saving…' : (viewMode === 'code' ? 'Save YAML' : 'Save')}
-          </button>
+          <!-- The bare "Save" is deliberately CODE-VIEW ONLY. On Build/Test the
+               wizard still has Test and Save ahead of it, and a Save button at
+               the bottom of the canvas invited people to skip both — the step
+               rail's "Save" step is the one place that shows whether it is
+               safe to save. Authored SOUL.yaml has no such step, so "Save YAML"
+               stays. -->
+          {#if viewMode === 'code'}
+            <button class="btn primary"
+                    on:click={() => saveFromCode()}
+                    disabled={saving || gateChecking || !!consent || !!preflight || (securityReview && (securityReview.blockers || []).length > 0)}
+                    title={securityReview && (securityReview.blockers || []).length > 0 ? 'Fix security blockers to save' : ''}>
+              {saving ? 'Saving…' : gateChecking ? 'Checking…' : 'Save YAML'}
+            </button>
+          {:else}
+            <button class="btn primary"
+                    on:click={() => goStep(STEP_SAVE)}
+                    disabled={!canEnter(STEP_SAVE, wizardCtx).ok}
+                    data-tooltip="Review readiness, then save — step 4 of the wizard">
+              Review &amp; save →
+            </button>
+          {/if}
         </div>
 
         {#if saveMsg}<div class="strip strip-ok">✓ {saveMsg}</div>{/if}
         {#if saveError}<div class="strip strip-error">⚠ {saveError}</div>{/if}
         <!-- F-GUI-3 — visible reminder that mirrors the pre-save contract gate,
              so operators aren't surprised when Save is disabled. -->
-        {#if viewMode === 'canvas' && securityReview && (securityReview.blockers || []).length > 0}
-          <div class="strip strip-error">⚠ Fix security blockers to save — {(securityReview.blockers || []).length} pending.</div>
+        <!-- Not canvas-only: Save is disabled in every view, so hiding the
+             reason in Plan and SOUL.yaml left the button dead with no
+             explanation anywhere on screen. -->
+        {#if securityReview && (securityReview.blockers || []).length > 0}
+          <div class="strip strip-error">
+            ⚠ Fix security blockers to save — {(securityReview.blockers || []).length} pending.
+            {#if viewMode !== 'canvas'}
+              <!-- The review panel itself lives on the canvas, so from here the
+                   strip has to say where to go, not just that something is wrong. -->
+              <button class="btn btn-sm" type="button" on:click={showCanvasView}>Review on canvas</button>
+            {/if}
+          </div>
         {/if}
 
         <!-- F-GUI-3 — Security review panel. Always visible while editing a
@@ -5246,13 +5720,13 @@ Use null for fields that are not present.`
           </div>
         {/if}
 
-        {#if viewMode === 'canvas' && currentMode === 'workflow'}
+        {#if viewMode === 'canvas'}
           <!-- Drag this splitter to give the bottom workbench more/less height. -->
           <div class="wb-splitter" role="separator" aria-orientation="horizontal"
             data-tooltip="Drag to resize the workbench" on:pointerdown={startBenchResize}></div>
         {/if}
         <div class="workbench" style={maximizedFrame === 'bench' ? '' : `max-height:${benchHeight}px`}>
-          {#if viewMode === 'canvas' && currentMode === 'workflow'}
+          {#if viewMode === 'canvas'}
             <div class="wb-bar">
               <span class="wb-title">Workbench</span>
               <button class="frame-max" type="button"
@@ -5414,7 +5888,7 @@ Use null for fields that are not present.`
                             {p._applying ? 'Applying…' : 'Approve & apply'}
                           </button>
                           <button class="btn btn-sm" type="button" on:click={() => previewProposal(p)} disabled={p._applying || repairDiffBusy}>
-                            {repairDiffBusy && repairDiff?.p === p ? 'Diffing…' : 'Preview diff'}
+                            {repairDiffBusy && repairDiffFor === p ? 'Diffing…' : 'Preview diff'}
                           </button>
                           <button class="btn btn-sm" type="button" on:click={() => rejectProposal(p)} disabled={p._applying}>Dismiss</button>
                         </div>
@@ -5520,7 +5994,7 @@ Use null for fields that are not present.`
 
         <!-- ── Architect build report: what was wrong, and how it was fixed ── -->
         {#if buildReport}
-          <Collapsible id="build-report" data-tooltip="Build report" sub={buildReport.summary}>
+          <Collapsible id="build-report" title="Build report" sub={buildReport.summary}>
             <svelte:fragment slot="actions">
               <span class="build-badge" class:ok={buildReport.ok}>
                 {buildReport.verified ? '✓ Verified by running it' : buildReport.ok ? '✓ Validated' : '⚠ Needs attention'}
@@ -5610,7 +6084,7 @@ Use null for fields that are not present.`
           </Collapsible>
         {/if}
 
-        {#if showTests && viewMode === 'canvas' && currentMode === 'workflow'}
+        {#if showTests && viewMode === 'canvas'}
         <!-- ── Runtime self-heal: failed (incl. scheduled) runs ──────────── -->
         <div class="panel bench">
           <div class="bench-section">
@@ -5630,7 +6104,7 @@ Use null for fields that are not present.`
                 repair={failedRepair}
                 loading={loadingFailed}
                 busy={!!healing}
-                onSelect={(run) => { if (run && run.id) loadRunTrace(run.id).catch(() => {}) }}
+                onSelect={(run) => { if (run && run.id) loadRunTrace(run.id, run.agentId).catch(() => {}) }}
                 onRepair={(run) => { if (run && run.id) healFailedRun(run.id) }}
                 onRetry={(run) => { if (run && run.id) healFailedRun(run.id) }}
                 onReject={() => (failedRepair = null)}
@@ -5689,6 +6163,10 @@ Use null for fields that are not present.`
           </div>
         </div>
 
+        <!-- The TEST bench proper is workflow-only: a reasoning agent has no
+             fixed graph to mock, assert over or dry-run, and is exercised from
+             the "Try it" panel in the agent editor instead. -->
+        {#if currentMode === 'workflow'}
         <!-- ── Test bench editors: Mocks + Assertions (M5) ──────────────── -->
         <div class="panel bench">
           <!-- Test inputs (ST-10): Input / Mock Data / Variables / Environment.
@@ -5781,7 +6259,7 @@ Use null for fields that are not present.`
 
         <!-- Clarify panel -->
         {#if questions.length}
-          <Collapsible id="clarify" data-tooltip="Clarify">
+          <Collapsible id="clarify" title="Clarify">
             {#each questions as q (q.id)}
               <div class="q">
                 <label for={'q-' + q.id}>{q.text}</label>
@@ -5813,7 +6291,7 @@ Use null for fields that are not present.`
           </div>
         {/if}
         {#if testResult}
-          <Collapsible id="test-result" data-tooltip="Test result">
+          <Collapsible id="test-result" title="Test result">
             <!-- Overall pass/fail banner (only when assertions ran) -->
             {#if testResult.assertions && testResult.assertions.length}
               <div class="overall {testResult.passed ? 'overall-pass' : 'overall-fail'}">
@@ -5893,9 +6371,11 @@ Use null for fields that are not present.`
           </Collapsible>
         {/if}
 
+        {/if}
+
         <!-- ── Live run trace (Phase 1): the saved agent's last REAL run ──── -->
         {#if loadedAgentId}
-          <Collapsible id="run-trace" data-tooltip="Run history" sub="Every run of this agent — scheduled or on-demand. Pick one to view its per-block trace.">
+          <Collapsible id="run-trace" title="Run trace" sub="Every run of this agent — scheduled or on-demand. Pick one to view its per-block trace.">
             <svelte:fragment slot="actions">
               <button class="btn btn-sm" type="button" on:click={() => loadRunTrace()} disabled={runTraceLoading}>
                 {runTraceLoading ? 'Loading…' : '↻ Refresh'}
@@ -5999,9 +6479,12 @@ Use null for fields that are not present.`
           </Collapsible>
         {/if}
 
+        <!-- In-memory history of TEST-bench runs, so workflow-only like the
+             bench that produces it. -->
+        {#if currentMode === 'workflow'}
         <!-- ── Run history (S5.4): last ~10 runs, IN MEMORY only ──────────── -->
         {#if history.length}
-          <Collapsible id="run-history" data-tooltip="Run history" sub="Session-only — cleared on reload (no storage in the sandbox).">
+          <Collapsible id="run-history" title="Run history" sub="Session-only — cleared on reload (no storage in the sandbox).">
             <svelte:fragment slot="actions">
               <button class="btn btn-sm" type="button" on:click={clearHistory}>Clear</button>
             </svelte:fragment>
@@ -6024,6 +6507,7 @@ Use null for fields that are not present.`
               {/each}
             </ul>
           </Collapsible>
+        {/if}
         {/if}
         {/if}
         </div><!-- /.workbench -->
@@ -6082,57 +6566,67 @@ Use null for fields that are not present.`
           touch before continuing.
         </p>
 
-        {#if (runConfirm.confirm_tools || []).length}
+        {#if runConfirmTools.length}
+          <div class="rc-group">
+            <div class="rc-label">You are approving</div>
+            <ul class="rc-list">
+              {#each runConfirmTools as t}
+                <li>{typeof t === 'string' ? t : (t.name || t.tool)}</li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+        {#if (runConfirmSummary.confirm_tools || []).length}
           <div class="rc-group">
             <div class="rc-label">Needs confirmation</div>
             <ul class="rc-list">
-              {#each runConfirm.confirm_tools as t}
+              {#each runConfirmSummary.confirm_tools as t}
                 <li>{typeof t === 'string' ? t : (t.name || t.tool)}</li>
               {/each}
             </ul>
           </div>
         {/if}
-        {#if (runConfirm.channel_tools || []).length}
+        {#if (runConfirmSummary.channel_tools || []).length}
           <div class="rc-group">
             <div class="rc-label">Sends to</div>
             <ul class="rc-list">
-              {#each runConfirm.channel_tools as t}
+              {#each runConfirmSummary.channel_tools as t}
                 <li>{typeof t === 'string' ? t : (t.name || t.tool)}</li>
               {/each}
             </ul>
           </div>
         {/if}
-        {#if (runConfirm.network_tools || []).length}
+        {#if (runConfirmSummary.network_tools || []).length}
           <div class="rc-group">
             <div class="rc-label">Reaches the network</div>
             <ul class="rc-list">
-              {#each runConfirm.network_tools as t}
+              {#each runConfirmSummary.network_tools as t}
                 <li>{typeof t === 'string' ? t : (t.name || t.tool)}</li>
               {/each}
             </ul>
           </div>
         {/if}
-        {#if (runConfirm.file_tools || []).length}
+        {#if (runConfirmSummary.file_tools || []).length}
           <div class="rc-group">
             <div class="rc-label">Reads or writes files</div>
             <ul class="rc-list">
-              {#each runConfirm.file_tools as t}
+              {#each runConfirmSummary.file_tools as t}
                 <li>{typeof t === 'string' ? t : (t.name || t.tool)}</li>
               {/each}
             </ul>
           </div>
         {/if}
-        {#if (runConfirm.privileged_tools || []).length}
+        {#if (runConfirmSummary.privileged_tools || []).length}
           <div class="rc-group danger">
             <div class="rc-label">Privileged</div>
             <ul class="rc-list">
-              {#each runConfirm.privileged_tools as t}
+              {#each runConfirmSummary.privileged_tools as t}
                 <li>{typeof t === 'string' ? t : (t.name || t.tool)}</li>
               {/each}
             </ul>
           </div>
         {/if}
-        {#if (runConfirm.untrusted_content_sources || []).length}
+        {#if (runConfirmSummary.untrusted_content_sources || []).length}
           <p class="rc-warn">
             This run reads untrusted content, so anything it fetches can attempt to
             influence what the agent does next.
@@ -6261,7 +6755,7 @@ Use null for fields that are not present.`
                       <span class="agent-badge on">deployed</span>
                     </span>
                     <span class="picker-desc">{a.description || (a.strategy
-                      ? recoLabel(a.strategy) + ' agent · ' + (a.trigger || 'manual')
+                      ? recoAgentLabel(a.strategy) + ' · ' + (a.trigger || 'manual')
                       : (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's')))}</span>
                   </button>
                   <div class="lib-actions">
@@ -6291,7 +6785,7 @@ Use null for fields that are not present.`
                       <span class="agent-badge off">not deployed</span>
                     </span>
                     <span class="picker-desc">{a.description || (a.strategy
-                      ? recoLabel(a.strategy) + ' agent · ' + (a.trigger || 'manual')
+                      ? recoAgentLabel(a.strategy) + ' · ' + (a.trigger || 'manual')
                       : (a.trigger + ' · ' + a.nodes + ' step' + (a.nodes === 1 ? '' : 's')))}</span>
                   </button>
                   <div class="lib-actions">
@@ -6455,7 +6949,9 @@ Use null for fields that are not present.`
               </button>
             {/each}
 
-            {#if (modelPicker.models || []).length === 0}
+            {#if modelPicker.modelsLoading}
+              <p class="mp-empty">Loading models…</p>
+            {:else if (modelPicker.models || []).length === 0}
               <p class="mp-empty">This provider reported no models. Enter one by hand below.</p>
             {:else if modelChoices.length === 0}
               <p class="mp-empty">No model matches “{modelFilter.trim()}”.</p>
@@ -6568,7 +7064,11 @@ Use null for fields that are not present.`
     <div class="modal-backdrop" role="presentation">
       <div class="modal gen-progress-modal" role="dialog" aria-modal="true"
            aria-labelledby="gen-progress-title" aria-live="polite">
-        <h2 id="gen-progress-title" class="modal-title">Generating your workflow</h2>
+        <h2 id="gen-progress-title" class="modal-title">
+          {(refining || modalRefining) && !compiling && !pipelineRunning
+            ? 'Refining your prompt'
+            : 'Generating your workflow'}
+        </h2>
         <div class="gen-status">
           <span class="spinner" aria-hidden="true"></span>
           <span>{genStatusText}</span>
@@ -6668,7 +7168,7 @@ Use null for fields that are not present.`
           <div class="describe-right">
             <BuildSpecPanel
               spec={buildSpec}
-              recommendation={workflow && workflow.recommendation}
+              recommendation={specRecommendation}
               loading={buildSpecLoading}
               error={buildSpecError}
               answers={refineAnswers}
@@ -6676,6 +7176,8 @@ Use null for fields that are not present.`
               onAnswer={(id, v) => (refineAnswers = { ...refineAnswers, [id]: v })}
               onRefine={refineFromModal}
               onGenerate={generateFromModal}
+              refining={modalRefining || refining}
+              generating={compiling || pipelineRunning}
             />
           </div>
         </div>
@@ -6707,6 +7209,30 @@ Use null for fields that are not present.`
           <button class="btn" on:click={() => (rulesOpen = false)}>Close</button>
           <button class="btn primary" on:click={saveRules} disabled={rulesSaving || rulesLoading}>{rulesSaving ? 'Saving…' : 'Save'}</button>
           {#if rulesMsg}<span class="save-msg" class:ok={rulesMsg.startsWith('✓')}>{rulesMsg}</span>{/if}
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  <!-- Name a draft. An in-app dialog rather than window.prompt(), which blocks
+       the whole page until dismissed and is disabled outright in some embedded
+       contexts. -->
+  {#if draftPrompt}
+    <div class="modal-backdrop" on:click|self={() => (draftPrompt = null)} role="presentation">
+      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="draftname-title">
+        <h2 id="draftname-title" class="modal-title">Save draft as</h2>
+        <label class="save-field">
+          <span>Draft name</span>
+          <!-- svelte-ignore a11y-autofocus -->
+          <input type="text" autofocus bind:value={draftPrompt.name}
+            on:keydown={(e) => { if (e.key === 'Enter') confirmSaveDraft(); if (e.key === 'Escape') draftPrompt = null }} />
+        </label>
+        <div class="modal-actions">
+          <button class="btn" type="button" on:click={() => (draftPrompt = null)}>Cancel</button>
+          <button class="btn primary" type="button" on:click={confirmSaveDraft}
+            disabled={savingDraft || !String(draftPrompt.name || '').trim()}>
+            {savingDraft ? 'Saving…' : 'Save draft'}
+          </button>
         </div>
       </div>
     </div>
@@ -6859,7 +7385,9 @@ Use null for fields that are not present.`
           <button class="btn" on:click={fixAutomatically} disabled={saving || fixing} data-tooltip="Run deterministic Studio repair, then re-check contract, wiring, and security issues">
             {fixing ? 'Fixing…' : 'Fix automatically'}
           </button>
-          <button class="btn" on:click={rerunPreflight} disabled={saving || fixing}>Re-check</button>
+          <button class="btn" on:click={rerunPreflight} disabled={saving || fixing || rechecking}>
+            {rechecking ? 'Re-checking…' : 'Re-check'}
+          </button>
           {#if !preflightHasBlockers}
             <button class="btn primary" on:click={proceedAfterPreflight}
               disabled={saving || fixing || !canProceedPastPreflight}
@@ -6922,7 +7450,7 @@ Use null for fields that are not present.`
 
         {#if refinement.recommended_mode && refinement.recommended_mode !== 'workflow'}
           <div class="refine-mode">
-            <strong>Recommended build: {recoLabel(refinement.recommended_mode)} agent</strong>
+            <strong>Recommended build: {recoAgentLabel(refinement.recommended_mode)}</strong>
             {#if refinement.recommended_reason} — {refinement.recommended_reason}{/if}
             <div class="refine-mode-sub">This task reasons over its tools (looping/polling), so Studio will build a reasoning agent instead of a fixed flow canvas.</div>
           </div>
@@ -6971,7 +7499,7 @@ Use null for fields that are not present.`
         <div class="modal-actions">
           <button class="btn" on:click={cancelRefinement} disabled={compiling}>Cancel</button>
           <button class="btn primary" on:click={confirmRefinement} disabled={compiling || !((refinement.refined_intent || '').trim())}>
-            {compiling ? 'Generating…' : (refinement.recommended_mode === 'auto' || refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoLabel(refinement.recommended_mode)} agent` : 'Generate workflow'}
+            {compiling ? 'Generating…' : (refinement.recommended_mode === 'auto' || refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoAgentLabel(refinement.recommended_mode)}` : 'Generate workflow'}
           </button>
         </div>
       </div>
@@ -6981,11 +7509,11 @@ Use null for fields that are not present.`
   {#if agentRoute}
     <div class="modal-backdrop" on:click|self={() => (agentRoute = null)} role="presentation">
       <div class="modal agent-route-modal" role="dialog" aria-modal="true" aria-labelledby="agentroute-title">
-        <h2 id="agentroute-title" class="modal-title">Built as a {recoLabel(agentRoute.mode)} agent</h2>
+        <h2 id="agentroute-title" class="modal-title">Built as {recoArticle(agentRoute.mode)} {recoAgentLabel(agentRoute.mode)}</h2>
         <p class="modal-body">
           This task reasons over its tools — it decides which skill or tool to use
           per request — so it can't be expressed as a fixed workflow graph. Studio
-          built it as a <strong>{recoLabel(agentRoute.mode)}</strong> agent instead
+          built it as {recoArticle(agentRoute.mode)} <strong>{recoAgentLabel(agentRoute.mode)}</strong> instead
           and opened its <strong>SOUL.yaml</strong>, where the agent actually lives.
         </p>
         {#if agentRoute.reason}
@@ -7097,7 +7625,12 @@ Use null for fields that are not present.`
     height: 100%;
     min-height: 0;
     flex: 1 1 auto;
-    overflow: hidden;
+    /* `clip`, not `hidden`: a [data-tooltip] pseudo-element that overhangs the
+     * right edge makes an `overflow:hidden` box SCROLLABLE, and the browser
+     * scrolls it when a control inside is focused. That shifted the whole
+     * editor ~37px left (clipping the draft name in the step rail) with no way
+     * to scroll back. `clip` forbids scrolling outright. */
+    overflow: clip;
   }
 
   /* Top bar */
@@ -8389,6 +8922,14 @@ Use null for fields that are not present.`
   .save-field > span { color: var(--text-dim, #6b7294); }
   .save-field input { width: 100%; box-sizing: border-box; }
   .save-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  /* Matches StrategyPanel's .sp-chip. That rule is component-scoped, so the
+     class name alone rendered these channel chips as bare text here — Svelte
+     scoping means a shared class name is not a shared style. */
+  .sp-chip {
+    padding: 2px 8px; border-radius: 999px; font-size: .75rem;
+    font-family: var(--mono, monospace);
+    background: color-mix(in srgb, var(--accent, #6d5efc) 14%, transparent);
+  }
   .save-note {
     display: flex; flex-direction: column; gap: 2px;
     padding: 8px 10px; border-radius: 6px; font-size: .8rem;

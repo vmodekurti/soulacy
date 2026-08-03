@@ -53,9 +53,11 @@ func scheduledDigestTemplate() Template {
 			Flow: Flow{
 				Nodes: []sdkr.FlowNode{
 					{
-						ID:     "fetch",
-						Kind:   sdkr.FlowNodeTool,
-						Tool:   "http_get",
+						ID:   "fetch",
+						Kind: sdkr.FlowNodeTool,
+						// fetch_url is the engine's GET builtin (see
+						// internal/runtime/engine_tools_http.go). It takes `url`.
+						Tool:   "fetch_url",
 						Input:  `{"url":"https://hacker-news.firebaseio.com/v0/topstories.json"}`,
 						Output: "stories",
 						X:      0, Y: 0,
@@ -124,10 +126,13 @@ func webhookRespondTemplate() Template {
 			Flow: Flow{
 				Nodes: []sdkr.FlowNode{
 					{
-						ID:     "act",
-						Kind:   sdkr.FlowNodeTool,
-						Tool:   "http_post",
-						Input:  `{"url":"https://example.com/act","body":"{{.trigger}}"}`,
+						ID:   "act",
+						Kind: sdkr.FlowNodeTool,
+						// http_request is the engine's general HTTP builtin; it
+						// requires `method` and `url` (engine_tools_http.go).
+						// There is no `http_post` builtin.
+						Tool:   "http_request",
+						Input:  `{"method":"POST","url":"https://example.com/act","body":"{{.trigger}}"}`,
 						Output: "actionResult",
 						X:      0, Y: 0,
 					},

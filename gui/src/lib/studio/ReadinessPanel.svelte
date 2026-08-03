@@ -40,21 +40,26 @@
   // An item is actionable when the server gave a machine-readable action rather
   // than only prose. Prose tells you what is wrong; an action gets you there.
   function actionable(item) { return !!(item && item.action) }
+  // Labels for the actions the server actually emits (internal/studio:
+  // preflight_runtime.go actionForKind + readiness.go actionForContractCheck /
+  // actionForSecurityCategory). The old list named five actions that exist
+  // nowhere in the backend.
   function actionLabel(item) {
     switch (item && item.action) {
       case 'open_providers': return 'Configure provider'
       case 'open_mcp': return 'Connect server'
-      case 'open_channels': return 'Add destination'
-      case 'open_secrets': return 'Add credential'
-      case 'add_to_confirm_tools': return 'Add to confirm_tools'
-      case 'review_consent': return 'Review consent'
-      case 'set_intent_gate': return 'Set intent gate'
+      case 'open_delivery': return 'Add destination'
+      case 'choose_model': return 'Choose a model'
+      case 'add_assertions': return 'Add an assertion'
+      case 'run_live': return 'Run it live'
+      case 'open_studio':
+      case 'open_preflight': return 'Open the editor'
       case 'reveal_node': return 'Show the step'
       default: return 'Fix this'
     }
   }
   function fire(item) {
-    if (item && item.action === 'reveal_node' && item.node_id) onReveal(item.node_id)
+    if (item && item.action === 'reveal_node' && item.nodeId) onReveal(item.nodeId)
     else onAction(item)
   }
 </script>
@@ -119,8 +124,8 @@
                      user and where to do it. An item with neither a button nor a
                      next step is a dead end. -->
                 <span class="rp-manual">Fix this on the canvas — automatic repair cannot decide it.</span>
-                {#if item.node_id}
-                  <button class="btn btn-sm" type="button" disabled={busy} on:click={() => onReveal(item.node_id)}>Show the step</button>
+                {#if item.nodeId}
+                  <button class="btn btn-sm" type="button" disabled={busy} on:click={() => onReveal(item.nodeId)}>Show the step</button>
                 {/if}
               {/if}
             </div>

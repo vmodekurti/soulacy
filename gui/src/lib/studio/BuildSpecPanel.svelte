@@ -15,7 +15,7 @@
 
   import {
     specRows, specBlockers, specQuestions, changeSummary,
-    deliveryPrompt, isDeliveryQuestion, knownDestinations,
+    deliveryPrompt, isDeliveryQuestion, knownDestinations, unresolvedBlockers,
   } from './buildspecview.js'
 
   export let spec = null            // /studio/build-spec payload
@@ -28,6 +28,11 @@
   export let onAnswer = () => {}    // (id, value) => void
   export let onRefine = () => {}
   export let onGenerate = () => {}
+  // Both actions are builder-model calls that can take many seconds. The panel
+  // used to know only `loading` (the spec READ), so pressing either button left
+  // it enabled and unchanged for the whole call — the click looked ignored.
+  export let refining = false       // a refine-prompt pass is in flight
+  export let generating = false     // a generate/compile pass is in flight
 
   $: rows = specRows(spec, recommendation)
   $: blockers = specBlockers(spec)
@@ -44,8 +49,9 @@
   // A blocker is only satisfied once the user has actually supplied the value —
   // `ready` reflects the spec as the SERVER saw it, before these answers were
   // typed, so the live gate is the unresolved list rather than that flag.
-  $: unresolved = blockers.filter((b) => !String(answers[b && b.id] || '').trim())
-  $: canGenerate = !loading && !!spec && unresolved.length === 0
+  $: unresolved = unresolvedBlockers(spec, answers)
+  $: busy = loading || refining || generating
+  $: canGenerate = !busy && !!spec && unresolved.length === 0
 </script>
 
 <div class="bs">
@@ -173,12 +179,21 @@
     {/if}
 
     <div class="bs-actions">
-      <button class="btn" type="button" disabled={loading} on:click={onRefine}>Refine prompt</button>
+      <button class="btn" type="button" disabled={busy} on:click={onRefine}>
+        {#if refining}<span class="bs-spin" aria-hidden="true"></span>Refining…{:else}Refine prompt{/if}
+      </button>
       <button class="btn primary" type="button" disabled={!canGenerate} on:click={onGenerate}
         data-tooltip={unresolved.length ? 'Answer the required questions first' : ''}>
-        Generate workflow
+        {#if generating}<span class="bs-spin" aria-hidden="true"></span>Generating…{:else}Generate workflow{/if}
       </button>
     </div>
+    {#if refining || generating}
+      <p class="bs-working" role="status" aria-live="polite">
+        {refining
+          ? 'Reading your prompt and writing a build-ready spec — this can take a few seconds.'
+          : 'Asking the builder model to write the workflow — this can take a minute.'}
+      </p>
+    {/if}
     {#if unresolved.length}
       <p class="bs-gate">
         {unresolved.length} required detail{unresolved.length === 1 ? '' : 's'} still missing — generating now would
@@ -189,6 +204,17 @@
 </div>
 
 <style>
+  .bs-working {
+    margin: 8px 0 0; font-size: 12px; color: var(--text-muted, #8b93ab);
+  }
+  .bs-spin {
+    display: inline-block; width: 11px; height: 11px; margin-right: 7px;
+    vertical-align: -1px;
+    border: 2px solid currentColor; border-right-color: transparent;
+    border-radius: 50%; animation: bs-spin 0.7s linear infinite;
+  }
+  @keyframes bs-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .bs-spin { animation: none; } }
   .bs { display: flex; flex-direction: column; gap: 10px; }
   .bs-head h3 { margin: 0; font-size: .95rem; }
   .bs-sub { margin: 2px 0 0; font-size: .8rem; color: var(--text-dim, #6b7294); }

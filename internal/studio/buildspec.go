@@ -71,13 +71,20 @@ type BuildSpec struct {
 }
 
 // Ready reports whether the spec has everything required to generate.
+// Ready is exactly "nothing is blocking", and deliberately nothing more.
+//
+// It used to also require len(Stages) > 0, which is a second, invisible gate:
+// the UI lists Blockers to tell the user what to fix, so a spec with an empty
+// blocker list and Ready() == false is a disabled button with nothing to click
+// and no explanation. Any reason to refuse must be expressed as a question, so
+// the user can see it and act on it. deriveQuestions owns that judgement now.
 func (s BuildSpec) Ready() bool {
 	for _, q := range s.Questions {
 		if q.Blocker {
 			return false
 		}
 	}
-	return len(s.Stages) > 0
+	return true
 }
 
 // Blockers returns only the questions that prevent generation.
@@ -104,7 +111,22 @@ var (
 // ExtractBuildSpec reads an intent into a structured spec. Pure and
 // deterministic: the same text always yields the same spec, so a user can learn
 // what Studio keys on instead of guessing at a model's mood.
+// ExtractBuildSpec reads an intent with no knowledge of the installation.
+// Prefer ExtractBuildSpecFrom, which can also report the capabilities this
+// workspace actually has.
 func ExtractBuildSpec(intent string) BuildSpec {
+	return ExtractBuildSpecFrom(intent, Catalog{})
+}
+
+// ExtractBuildSpecFrom reads an intent AGAINST the installed catalogue.
+//
+// Without the catalogue, "Capabilities" could only ever report a hardcoded list
+// of seven brand names, so a prompt saying "using the trvl MCP travel tool"
+// showed "not specified" — and then a question demanded to know what the agent
+// should do, for a prompt that had just said. The panel exists to prove Studio
+// understood the request; reporting "not specified" for something stated
+// outright does the opposite.
+func ExtractBuildSpecFrom(intent string, cat Catalog) BuildSpec {
 	spec := BuildSpec{Intent: strings.TrimSpace(intent)}
 	low := strings.ToLower(spec.Intent)
 	if strings.TrimSpace(low) == "" {
@@ -117,10 +139,10 @@ func ExtractBuildSpec(intent string) BuildSpec {
 
 	spec.Trigger, spec.Schedule, spec.ScheduleText = extractTrigger(low)
 	spec.Inputs = extractInputs(spec.Intent, low)
-	spec.Stages = extractStages(low)
+	spec.Stages = extractStages(low, spec.Intent)
 	spec.Outputs = extractOutputs(low)
 	spec.Delivery = extractDelivery(low)
-	spec.Integrations = extractIntegrations(low)
+	spec.Integrations = extractIntegrations(low, spec.Intent, cat)
 	spec.Security = deriveSecurity(spec)
 	spec.Questions = deriveQuestions(spec, low)
 	return spec
@@ -131,8 +153,12 @@ func extractTrigger(low string) (kind, cron, text string) {
 	case reEveryday.MatchString(low) || strings.Contains(low, "schedule") ||
 		strings.Contains(low, "daily") || strings.Contains(low, "weekly"):
 		kind = "schedule"
-	case strings.Contains(low, "when someone") || strings.Contains(low, "on message") ||
-		strings.Contains(low, "responds to") || strings.Contains(low, "answers questions"):
+	// ConversationalIntent instead of another hand-rolled phrase list. The four
+	// literals it replaces missed "answers user travel questions" — a wording so
+	// close to "answers questions" that the panel calling it manually-triggered
+	// looked arbitrary. One matcher, used by the trigger, the strategy advisor
+	// and the planner, cannot drift out of agreement with itself.
+	case ConversationalIntent(low):
 		return "channel", "", "when a message arrives"
 	case strings.Contains(low, "webhook") || strings.Contains(low, "http post"):
 		return "webhook", "", "on an inbound HTTP request"
@@ -316,7 +342,19 @@ func sourcesListItems(original string) []string {
 	return out
 }
 
-func extractStages(low string) []SpecStage {
+// extractStages matches against `low` but quotes from `orig`: matching wants a
+// case-folded haystack, while the excerpt shown to the user should read back in
+// the words and capitalisation they actually wrote. The two strings are the
+// same length because ToLower is applied per byte to ASCII here, so an index
+// into one is valid in the other — verified by the caller passing both from the
+// same source string.
+func extractStages(low, orig string) []SpecStage {
+	// If casing changed the length (non-ASCII), indexes are not transferable;
+	// quoting from `low` is then the only safe option and is merely less pretty.
+	quote := orig
+	if len(orig) != len(low) {
+		quote = low
+	}
 	var out []SpecStage
 	seen := map[string]bool{}
 	for _, sm := range stageMarkers {
@@ -326,7 +364,7 @@ func extractStages(low string) []SpecStage {
 				continue
 			}
 			seen[sm.name] = true
-			out = append(out, SpecStage{Name: sm.name, Detail: excerptAround(low, idx)})
+			out = append(out, SpecStage{Name: sm.name, Detail: excerptAround(quote, idx)})
 			break
 		}
 	}
@@ -352,16 +390,54 @@ func extractStages(low string) []SpecStage {
 
 // excerptAround returns a short window of the intent around a match, so the
 // spec can show its evidence instead of asserting a stage exists.
+//
+// The window snaps OUT to whitespace at both ends. Cutting at a fixed offset
+// produced quotes like "gent uses the travel mcp travel tool ... to fi", which
+// reads as though Studio garbled the prompt — the opposite of the reassurance
+// an evidence excerpt is for. Snapping outward also keeps the cut off the
+// middle of a multi-byte rune, which fixed offsets do not guarantee.
+//
+// `s` should be the ORIGINAL text, not a lowercased copy: this is quoted back
+// to the person who wrote it, and evidence that doesn't match what they typed
+// invites them to doubt the match rather than trust it.
 func excerptAround(s string, idx int) string {
+	if idx < 0 || idx > len(s) {
+		return ""
+	}
 	start := idx - 40
-	if start < 0 {
+	if start <= 0 {
 		start = 0
+	} else {
+		// Walk back to the space before the word the window landed inside.
+		for start > 0 && !isSpaceByte(s[start-1]) {
+			start--
+		}
 	}
 	end := idx + 60
-	if end > len(s) {
+	if end >= len(s) {
 		end = len(s)
+	} else {
+		for end < len(s) && !isSpaceByte(s[end]) {
+			end++
+		}
 	}
-	return strings.TrimSpace(reWhitespace.ReplaceAllString(s[start:end], " "))
+	out := strings.TrimSpace(reWhitespace.ReplaceAllString(s[start:end], " "))
+	if out == "" {
+		return ""
+	}
+	// Mark the elisions, so a mid-sentence quote is visibly an excerpt rather
+	// than looking like a sentence that begins and ends where it does.
+	if start > 0 {
+		out = "… " + out
+	}
+	if end < len(s) {
+		out += " …"
+	}
+	return out
+}
+
+func isSpaceByte(b byte) bool {
+	return b == ' ' || b == '\t' || b == '\n' || b == '\r'
 }
 
 func extractOutputs(low string) []string {
@@ -393,17 +469,58 @@ func extractDelivery(low string) []string {
 	return out
 }
 
-func extractIntegrations(low string) []string {
+// extractIntegrations reports the capabilities this intent will use.
+//
+// The brand list below is a nicety — it gives a friendly label for services
+// people name colloquially. It is NOT the source of truth, because a fixed list
+// can only ever recognise what someone thought to add to it. The catalogue is,
+// so an MCP server or skill the user actually installed and named is reported
+// whether or not anyone anticipated it.
+func extractIntegrations(low, intent string, cat Catalog) []string {
+	seen := map[string]bool{}
 	var out []string
+	add := func(s string) {
+		if s = strings.TrimSpace(s); s != "" && !seen[strings.ToLower(s)] {
+			seen[strings.ToLower(s)] = true
+			out = append(out, s)
+		}
+	}
+
 	for phrase, label := range map[string]string{
 		"notebooklm": "NotebookLM", "google drive": "Google Drive",
 		"github": "GitHub", "notion": "Notion", "jira": "Jira",
 		"spotify": "Spotify", "youtube": "YouTube",
 	} {
 		if strings.Contains(low, phrase) {
-			out = append(out, label)
+			add(label)
 		}
 	}
+
+	// Anything the intent names that this workspace genuinely has. Reuses the
+	// same matchers the planner uses to SELECT tools, so the spec panel and the
+	// generated graph cannot disagree about what was asked for.
+	//
+	// Reported per SERVER, not per tool. This row is read by a person deciding
+	// whether Studio understood them, and they wrote "the trvl travel tool", not
+	// "mcp__trvl__travel"; a busy server would also flood the row with twenty
+	// entries. It also keeps deriveSecurity's sentence readable, since that
+	// renders as "signs in to <name>".
+	named := map[string]bool{}
+	for _, tool := range namedMCPTools(intent, cat) {
+		named[tool] = true
+	}
+	for _, srv := range cat.MCP {
+		for _, tool := range srv.Tools {
+			if named[tool.Name] {
+				add(strings.TrimSpace(srv.Server))
+				break
+			}
+		}
+	}
+	for _, skill := range namedSkills(intent, cat) {
+		add("skill " + skill)
+	}
+
 	sort.Strings(out)
 	return out
 }
@@ -442,7 +559,21 @@ func containsAnyStage(s BuildSpec, names ...string) bool {
 func deriveQuestions(s BuildSpec, low string) []SpecQuestion {
 	var qs []SpecQuestion
 
-	if len(s.Stages) == 0 {
+	// A CONVERSATIONAL agent has no compile-time stages, by definition.
+	//
+	// The stage extractor looks for pipeline verbs — search, fetch, summarise,
+	// deliver. An interactive agent decides what to do per message at RUNTIME, so
+	// "a conversation agent that provides weather updates for a place or zipcode"
+	// yields no stages while describing the job perfectly clearly. Demanding a
+	// processing step there tells the user their request was unintelligible and
+	// gives them no wording that could satisfy it, because no phrasing of a
+	// conversational agent will ever produce pipeline stages.
+	//
+	// Keyed on the intent reading as interactive OR naming a capability, not on
+	// integrations alone: an earlier version required a named capability, so this
+	// same blocker returned the moment someone described a chat agent without
+	// naming an MCP server — which is the ordinary case, not the exception.
+	if len(s.Stages) == 0 && len(s.Integrations) == 0 && !ConversationalIntent(s.Intent) {
 		qs = append(qs, SpecQuestion{
 			ID: "stages", Question: "What should this agent actually do with the information?",
 			Why:     "Studio could not identify any processing step, so there is nothing to build yet.",

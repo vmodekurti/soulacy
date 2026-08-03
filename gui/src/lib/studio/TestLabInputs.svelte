@@ -42,12 +42,10 @@
     { id: 'vars', label: 'Variables' },
     { id: 'env', label: 'Environment' },
   ]
-  function badge(id) {
-    if (id === 'mocks') return mockCount || ''
-    if (id === 'vars') return varCount || ''
-    if (id === 'env') return envCount || ''
-    return ''
-  }
+  // Must be a reactive VALUE, not a function call in the template: Svelte only
+  // re-evaluates `{#if}` conditions whose dependencies it can see, and a plain
+  // function call over a const `each` item has none — the badge froze at mount.
+  $: badges = { input: '', mocks: mockCount || '', vars: varCount || '', env: envCount || '' }
 </script>
 
 <div class="tl">
@@ -59,7 +57,7 @@
         type="button" on:click={() => (tab = t.id)}
       >
         {t.label}
-        {#if badge(t.id)}<span class="tl-badge">{badge(t.id)}</span>{/if}
+        {#if badges[t.id]}<span class="tl-badge">{badges[t.id]}</span>{/if}
         {#if t.id === 'mocks' && errCount}<span class="tl-badge bad" title="{errCount} mock(s) have invalid JSON">!</span>{/if}
       </button>
     {/each}

@@ -27,9 +27,50 @@ type OllamaProvider struct {
 
 const DefaultOllamaKeepAlive = "30m"
 
+// DefaultOllamaOptions are applied to every Ollama request unless the operator
+// overrides them in config.
+//
+// num_ctx is 16384 rather than 4096 because 4096 could not hold a Soulacy agent.
+// The shared Operating Contract is ~835 tokens before an agent adds its own role
+// prompt, strategy contract, tool schemas, skills and knowledge — and a single
+// news or search tool result then dwarfs all of it. Real runs were measured at
+// 9.5k and 10.8k prompt tokens, so every one of them was being silently
+// truncated to 4096 and answered from a mangled prompt.
+//
+// The cost is KV-cache memory, which is why this is not set higher: 16384 covers
+// the observed working set with headroom, and an operator running a large model
+// on a small machine can still lower it deliberately.
 var DefaultOllamaOptions = map[string]any{
-	"num_ctx":   4096,
+	"num_ctx":   16384,
 	"num_batch": 128,
+}
+
+// contextLimit returns the configured num_ctx, or 0 when it is not set or is not
+// a number this can compare against.
+func (o *OllamaProvider) contextLimit() int {
+	if o == nil {
+		return 0
+	}
+	switch v := o.options["num_ctx"].(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case float64: // config decoded from JSON/YAML arrives as float64
+		return int(v)
+	}
+	return 0
+}
+
+// nextContextSize suggests the next power-of-two window that would hold a prompt
+// of n tokens with room to answer, so the error message names a concrete value
+// rather than telling the operator to "increase it".
+func nextContextSize(n int) int {
+	size := 4096
+	for size < n+2048 && size < 262144 {
+		size *= 2
+	}
+	return size
 }
 
 // NewOllamaProvider creates a provider targeting the given Ollama base URL.
@@ -228,6 +269,27 @@ func (o *OllamaProvider) Complete(ctx context.Context, req CompletionRequest) (*
 	content := stripThinkBlocks(result.Message.Content)
 	if strings.TrimSpace(content) == "" {
 		content = stripThinkBlocks(result.Message.Thinking)
+	}
+
+	// Ollama TRUNCATES a prompt longer than num_ctx instead of refusing it, and
+	// says nothing. The model then answers a prompt whose beginning — the system
+	// contract, the instructions, often the user's own question — has been cut
+	// off, and typically emits a single token. Upstream that surfaced as
+	// "(no final response produced)": a total failure with no stated cause, on a
+	// run where every tool call had succeeded.
+	//
+	// The numbers to diagnose it are right here in the response, so say it.
+	// Checked only when the answer is empty AND there were no tool calls: a model
+	// legitimately returning just a tool call is not a failure.
+	if strings.TrimSpace(content) == "" && len(result.Message.ToolCalls) == 0 {
+		if limit := o.contextLimit(); limit > 0 && result.PromptEvalCount >= limit {
+			return nil, fmt.Errorf(
+				"ollama: the prompt was %d tokens but this provider's context window is %d, "+
+					"so Ollama truncated it and %s returned an empty answer. "+
+					"Raise llm.providers.<id>.options.num_ctx to at least %d, or reduce the agent's "+
+					"system prompt, skills and tools",
+				result.PromptEvalCount, limit, model, nextContextSize(result.PromptEvalCount))
+		}
 	}
 
 	r := &CompletionResponse{

@@ -68,8 +68,18 @@ func ConversationalIntent(intent string) bool {
 	li := strings.ToLower(intent)
 
 	// Unambiguous phrases: any one of these settles it.
+	//
+	// "conversation" is listed as well as "conversational" because the adjective
+	// was matched literally and "a conversation agent" — the way people actually
+	// write it — fell straight through to manual/scheduled. The same trap applies
+	// to the nouns below: someone describing a chatbot or an assistant has
+	// described an interactive agent just as plainly as someone who used the
+	// word "conversational".
 	if anyContains(li,
-		"conversational", "on demand", "on-demand", "on request",
+		"conversation", "conversational", "converse",
+		"chatbot", "chat bot", "chat agent", "chat interface",
+		"assistant", "interactive",
+		"on demand", "on-demand", "on request",
 		"when a user", "when the user", "user asks", "responds to user",
 		"respond to user", "user's request", "users request",
 		"clarifying question", "clarifying questions", "ask the user",
@@ -170,9 +180,17 @@ func compileKnowledgeIngestionWorkflow(intent string, cat Catalog, answers map[s
 }
 
 func compileDigestWorkflow(intent string, cat Catalog, answers map[string]string, name, purpose, pattern, querySuffix string) (Result, bool) {
-	searchTool := deterministicBuiltinOrDefault(cat, "web_search")
+	searchTool := deterministicSearchTool(intent, cat)
 	channels := deterministicChannels(intent, cat)
-	query := deterministicDigestQuery(intent, querySuffix)
+	trigger := inferredTriggerFromIntent(intent)
+	query := digestQueryFor(trigger, intent, querySuffix)
+	// What the summarise step is answering. For a schedule it is the standing
+	// brief; for an interactive run it is whatever the person just asked, which
+	// is the difference between a weather answer and an essay about weather bots.
+	askedFor := intent
+	if interactiveTrigger(trigger) {
+		askedFor = `{{ default .trigger.text "` + escapeTemplateLiteral(intent) + `" }}`
+	}
 	nodes := []sdkr.FlowNode{
 		{
 			ID:          "search_sources",
@@ -192,7 +210,7 @@ func compileDigestWorkflow(intent string, cat Catalog, answers map[string]string
 			Kind:        sdkr.FlowNodeLLM,
 			Description: "Summarize search results into the requested digest.",
 			Intent:      purpose,
-			Input:       fmt.Sprintf(`{"prompt":%q,"results":{{ toJson .search_results }}}`, "Write a concise, decision-ready digest for this user intent: "+intent+". Use only the provided results. Include source links when available."),
+			Input:       fmt.Sprintf(`{"prompt":%q,"results":{{ toJson .search_results }}}`, "Answer this request using ONLY the provided results, and answer the request itself rather than describing how one might build something to answer it: "+askedFor+". Include source links when available."),
 			Output:      "digest",
 			X:           540,
 			Y:           120,
@@ -213,7 +231,7 @@ func compileDigestWorkflow(intent string, cat Catalog, answers map[string]string
 	return finalizeDeterministicWorkflow(Draft{
 		Name:       name,
 		Intent:     intent,
-		Trigger:    inferredTriggerFromIntent(intent),
+		Trigger:    trigger,
 		Channels:   channels,
 		Unattended: scheduledDeliveryWorkflow(intent),
 		Flow: Flow{
@@ -225,6 +243,48 @@ func compileDigestWorkflow(intent string, cat Catalog, answers map[string]string
 		},
 		Recommendation: &Recommendation{Mode: "workflow", Rationale: "Soulacy selected a deterministic " + pattern + " graph."},
 	}, intent, answers, cat, pattern)
+}
+
+// interactiveTrigger reports whether runs are STARTED BY A PERSON sending
+// something — a channel message, a manual run, an inbound webhook — as opposed
+// to a schedule firing on its own.
+//
+// The distinction decides where a workflow's input comes from. A scheduled
+// digest has no incoming message, so baking the query in at compile time is
+// correct and is the whole point. An interactive run has one, and ignoring it
+// means every run answers the same question no matter what was asked.
+func interactiveTrigger(t Trigger) bool {
+	switch strings.ToLower(strings.TrimSpace(t.Type)) {
+	case "channel", "manual", "webhook":
+		return true
+	}
+	return false
+}
+
+// digestQueryFor returns the search query expression for a digest workflow.
+//
+// For an interactive trigger this is a TEMPLATE over the inbound message, not a
+// literal. Baking the build intent in produced the reported failure exactly: an
+// agent forced to a workflow was asked "how is the weather in Buffalo Grove for
+// the next 7 days" and replied with a research digest about how to build a
+// Telegram weather bot — because the query it ran was the BUILD SPEC, and the
+// user's actual message was never read by any node.
+//
+// The `default` fallback keeps a manual run with no input working: it degrades
+// to the compile-time query rather than searching for an empty string.
+func digestQueryFor(t Trigger, intent, suffix string) string {
+	if interactiveTrigger(t) {
+		return `{{ default .trigger.text "` + escapeTemplateLiteral(deterministicDigestQuery(intent, suffix)) + `" }}`
+	}
+	return deterministicDigestQuery(intent, suffix)
+}
+
+// escapeTemplateLiteral makes a compile-time string safe inside a Go-template
+// quoted argument.
+func escapeTemplateLiteral(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `"`, `\"`)
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func deterministicDigestQuery(intent, suffix string) string {
@@ -464,6 +524,11 @@ func finalizeDeterministicWorkflow(draft Draft, intent string, answers map[strin
 	if draft.SystemPrompt == "" {
 		draft.SystemPrompt = deterministicWorkflowSystemPrompt(intent, answers, cat.Lessons)
 	}
+	// One place covers every deterministic template, so a new template cannot
+	// forget to carry the user's original words onto the draft.
+	if draft.RawIntent == "" {
+		draft.RawIntent = strings.TrimSpace(cat.RawIntent)
+	}
 	normalizeTrigger(&draft, intent)
 	normalizeFlow(&draft)
 	reconcilePorts(&draft)
@@ -497,6 +562,33 @@ func finalizeDeterministicWorkflow(draft Draft, intent string, answers map[strin
 		Plan:        BuildPlan(intent, cat),
 		Generation:  cat.Generation,
 	}, true
+}
+
+// deterministicSearchTool picks the tool that FETCHES for this intent.
+//
+// It exists because deterministicBuiltinOrDefault only ever consults
+// cat.Tools — the builtins — so every deterministic workflow reached for
+// web_search even when the user had installed an MCP server for exactly this
+// job and named it in the prompt. That is the whole of the "fixed workflows
+// don't wire in my MCP server, they just use web search" complaint: an agent
+// (Auto/ReAct/Plan-Execute) receives mcp_tools and decides at RUNTIME, so it
+// finds the server; a workflow's tools are frozen at COMPILE time by this
+// function, which could not see MCP at all.
+//
+// The one exception already in the file — notebookMCPToolOrDefault — proves the
+// need: someone hit this for NotebookLM and solved it for that vendor alone.
+// This generalises it, catalogue-driven, with no vendor names.
+//
+// Falls back to web_search, so an intent that names nothing installed keeps the
+// old behaviour rather than losing its fetch step.
+func deterministicSearchTool(intent string, cat Catalog) string {
+	if tools := namedMCPTools(intent, cat); len(tools) > 0 {
+		// namedMCPTools is the same matcher the agent path and the spec panel
+		// use, so a workflow and an agent built from one prompt reach for the
+		// same server instead of disagreeing about what the user asked for.
+		return tools[0]
+	}
+	return deterministicBuiltinOrDefault(cat, "web_search")
 }
 
 func deterministicBuiltinOrDefault(cat Catalog, name string) string {

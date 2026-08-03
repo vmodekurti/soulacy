@@ -1557,11 +1557,32 @@ func TestOllamaOptionsWithDefaultsOverridesDefault(t *testing.T) {
 // default values are present when not overridden.
 func TestOllamaOptionsWithDefaultsKeepsDefaultWhenNotOverridden(t *testing.T) {
 	out := ollamaOptionsWithDefaults(map[string]any{})
-	if out["num_ctx"] != 4096 {
-		t.Errorf("num_ctx = %v, want 4096 (default)", out["num_ctx"])
+	// Assert against the declared default rather than a copy of its value: this
+	// test is about the default being APPLIED, and pinning the number here meant
+	// changing the default looked like a regression.
+	if out["num_ctx"] != DefaultOllamaOptions["num_ctx"] {
+		t.Errorf("num_ctx = %v, want %v (default)", out["num_ctx"], DefaultOllamaOptions["num_ctx"])
 	}
-	if out["num_batch"] != 128 {
-		t.Errorf("num_batch = %v, want 128 (default)", out["num_batch"])
+	if out["num_batch"] != DefaultOllamaOptions["num_batch"] {
+		t.Errorf("num_batch = %v, want %v (default)", out["num_batch"], DefaultOllamaOptions["num_batch"])
+	}
+}
+
+// The default must be able to hold a Soulacy agent. At 4096 it could not: the
+// shared Operating Contract alone is ~835 tokens before any role prompt, tool
+// schema or tool result, and real runs were measured at 9.5k–10.8k prompt
+// tokens — every one of them silently truncated by Ollama and answered from a
+// mangled prompt, surfacing as "(no final response produced)".
+func TestDefaultContextWindowFitsAnAgentPrompt(t *testing.T) {
+	got, ok := DefaultOllamaOptions["num_ctx"].(int)
+	if !ok {
+		t.Fatalf("num_ctx default is %T, want int", DefaultOllamaOptions["num_ctx"])
+	}
+	const observedWorkingSet = 10823 // measured from a real failing run
+	if got < observedWorkingSet {
+		t.Errorf("default num_ctx = %d, which cannot hold an observed %d-token agent prompt; "+
+			"Ollama truncates silently, so this fails with an empty answer and no stated cause",
+			got, observedWorkingSet)
 	}
 }
 

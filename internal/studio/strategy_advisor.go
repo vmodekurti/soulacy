@@ -111,6 +111,26 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 			pattern = "fixed workflow"
 		}
 		advice.Reason = "Soulacy selected Workflow because the intent describes a deterministic " + pattern + " pipeline."
+
+		// Forcing Workflow onto a conversational request is allowed — the operator
+		// may know something Studio does not — but Studio must not then claim the
+		// request "describes a deterministic pipeline" with high confidence when it
+		// plainly describes a conversation. That sentence told the user their own
+		// words had been read as something they were not, and nothing on screen
+		// said what the choice costs.
+		//
+		// What it costs is specific and worth naming: a fixed graph runs the same
+		// steps in the same order every message. It cannot ask a clarifying
+		// question and wait for the answer, and it carries nothing from one message
+		// to the next — which is most of what "conversational" means.
+		if ConversationalIntent(intent) {
+			advice.Confidence = "low"
+			advice.Reason = "You chose Workflow, so Soulacy built a fixed graph — but this request reads as conversational, not as a pipeline."
+			advice.CapabilityWarning = "This request describes a conversation, and a fixed workflow runs the " +
+				"same steps in the same order for every message: it cannot ask a clarifying question and wait " +
+				"for the reply, and it keeps no context between messages. Make sure the first step reads the " +
+				"incoming message, or switch to Auto to get an agent that decides per message."
+		}
 		return advice
 	}
 	if req == "plan_execute" || hasPlanExecuteCues(intent) || dynamicSkillRoutingIntent(intent) {

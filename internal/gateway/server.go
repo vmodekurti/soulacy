@@ -33,6 +33,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
+	"github.com/gofiber/fiber/v2/middleware/etag"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/logger"
@@ -906,6 +907,9 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/studio/fix-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioFixYAML)
 	api.Get("/studio/rules", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioGetRules)
 	api.Put("/studio/rules", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioSaveRules)
+	// The store has always been append-only; this is what makes its history
+	// reachable, so a deployment record's RulesVersion can be looked up.
+	api.Get("/studio/rules/history", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioRulesHistory)
 	api.Post("/studio/review-yaml", s.rbacMW(rbac.ResourceAgents, rbac.ActionWrite), s.handleStudioReviewYAML)
 	// Studio plugin backend (M3): canvas-time graph validation (read-only).
 	api.Post("/studio/validate", s.rbacMW(rbac.ResourceAgents, rbac.ActionRead), s.handleStudioValidate)
@@ -1209,33 +1213,54 @@ func (s *Server) buildApp() *fiber.App {
 	// --- Static GUI (embedded Svelte build) ---
 	// Registered last so all API and WS routes take precedence.
 	// SPA fallback: any path not matched above returns index.html.
+	//
+	// mountStaticGUI holds the cache policy and is separated from the embed so it
+	// can be exercised over an in-memory FS. Testing it through the real gateway
+	// meant testing nothing: GUIEnabled is false in the test config, so any such
+	// test silently skips forever.
 	if s.cfg.Server.GUIEnabled {
 		sub, err := fs.Sub(webui.FS, "dist")
 		if err == nil {
-			// Cache policy: Vite emits content-hashed asset filenames
-			// (index-<hash>.js/css) that are safe to cache forever, but index.html
-			// references the current hashes and MUST revalidate — otherwise a
-			// rebuilt GUI won't load until the user hard-refreshes.
-			app.Use("/", func(c *fiber.Ctx) error {
-				if strings.HasPrefix(c.Path(), "/assets/") {
-					c.Set("Cache-Control", "public, max-age=31536000, immutable")
-				} else {
-					c.Set("Cache-Control", "no-cache")
-				}
-				return c.Next()
-			})
-			app.Use("/", filesystem.New(filesystem.Config{
-				Root:         http.FS(sub),
-				Index:        "index.html",
-				NotFoundFile: "index.html",
-				Browse:       false,
-			}))
+			mountStaticGUI(app, http.FS(sub))
 		} else {
 			s.log.Warn("could not mount embedded GUI", zap.Error(err))
 		}
 	}
 
 	return app
+}
+
+// mountStaticGUI serves the built GUI with the cache policy an upgradeable SPA
+// needs: hashed assets forever, index.html revalidated.
+//
+// The revalidation half needs BOTH parts. "Cache-Control: no-cache" permits the
+// browser to store the response and only obliges it to revalidate — which it
+// cannot do without a validator to send in If-None-Match. The embedded FS
+// reports no ModTime, so index.html went out with neither an ETag nor a
+// Last-Modified, and Chrome served its stored copy: users ran the previous GUI
+// after every upgrade until they hard-refreshed, while the header claiming to
+// prevent exactly that was present and correct.
+//
+// ETag is scoped to the static handler on purpose — hashing every API response
+// body to serve 304s is not a trade this needs.
+func mountStaticGUI(app *fiber.App, root http.FileSystem) {
+	app.Use("/", func(c *fiber.Ctx) error {
+		// Vite emits content-hashed asset filenames, so those are immutable; the
+		// entry document names the current hashes and must never be stale.
+		if strings.HasPrefix(c.Path(), "/assets/") {
+			c.Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			c.Set("Cache-Control", "no-cache")
+		}
+		return c.Next()
+	})
+	app.Use("/", etag.New())
+	app.Use("/", filesystem.New(filesystem.Config{
+		Root:         root,
+		Index:        "index.html",
+		NotFoundFile: "index.html",
+		Browse:       false,
+	}))
 }
 
 func (s *Server) requestBodyLimit() int {

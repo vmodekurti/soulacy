@@ -59,6 +59,68 @@ type ReasoningConfig struct {
 	Think   ReasoningPhaseConfig `yaml:"think,omitempty" json:"think,omitempty"`
 	Plan    ReasoningPhaseConfig `yaml:"plan,omitempty" json:"plan,omitempty"`
 	Reflect ReasoningPhaseConfig `yaml:"reflect,omitempty" json:"reflect,omitempty"`
+	// Contract is the operator-authored agent contract that Studio's Build step
+	// edits: what a successful run achieves, how the agent should behave, how it
+	// knows it is done, and the loop policy for the chosen strategy. It lives on
+	// the definition so it SURVIVES a save and a SOUL.yaml round-trip — without a
+	// home here, everything typed into that panel was discarded.
+	Contract *ReasoningContract `yaml:"contract,omitempty" json:"contract,omitempty"`
+}
+
+// ReasoningContract is what a reasoning agent is FOR, in the operator's words.
+//
+// Booleans are pointers throughout. These policies default to TRUE, so a plain
+// `bool` with `omitempty` would erase the difference between "the operator
+// turned this off" and "the operator never said" — and turning a safety flag
+// off would silently revert to on at the next round-trip.
+type ReasoningContract struct {
+	// Goal is the single sentence describing what a successful run achieves.
+	Goal string `yaml:"goal,omitempty" json:"goal,omitempty"`
+	// Instructions is the operating guidance handed to the model.
+	Instructions string `yaml:"instructions,omitempty" json:"instructions,omitempty"`
+	// CompletionCriteria is the explicit, checkable statement of done. Without
+	// it a reasoning loop's only stop condition is its step budget.
+	CompletionCriteria string `yaml:"completion_criteria,omitempty" json:"completion_criteria,omitempty"`
+	// ToolChoice is "auto" | "required" | "none". Empty = auto.
+	ToolChoice string `yaml:"tool_choice,omitempty" json:"tool_choice,omitempty"`
+	// RecoveryRetries bounds retries of a failed step. Zero = default.
+	RecoveryRetries int `yaml:"recovery_retries,omitempty" json:"recovery_retries,omitempty"`
+	// ReAct applies when Strategy == "react".
+	ReAct *ReasoningReActPolicy `yaml:"react,omitempty" json:"react,omitempty"`
+	// Plan applies when Strategy == "plan_execute".
+	Plan *ReasoningPlanPolicy `yaml:"plan,omitempty" json:"plan,omitempty"`
+}
+
+// ReasoningReActPolicy bounds the observe→act loop.
+type ReasoningReActPolicy struct {
+	Objective           string  `yaml:"objective,omitempty" json:"objective,omitempty"`
+	ObserveActContract  string  `yaml:"observe_act_contract,omitempty" json:"observe_act_contract,omitempty"`
+	StopConditions      string  `yaml:"stop_conditions,omitempty" json:"stop_conditions,omitempty"`
+	RecoveryBehavior    string  `yaml:"recovery_behavior,omitempty" json:"recovery_behavior,omitempty"`
+	InvalidStepBudget   int     `yaml:"invalid_step_budget,omitempty" json:"invalid_step_budget,omitempty"`
+	RepeatedToolLimit   int     `yaml:"repeated_tool_limit,omitempty" json:"repeated_tool_limit,omitempty"`
+	ConfidenceThreshold float64 `yaml:"confidence_threshold,omitempty" json:"confidence_threshold,omitempty"`
+	PreserveBestResult  *bool   `yaml:"preserve_best_result,omitempty" json:"preserve_best_result,omitempty"`
+	FallbackToAuto      *bool   `yaml:"fallback_to_auto,omitempty" json:"fallback_to_auto,omitempty"`
+}
+
+// ReasoningPlanPolicy governs the plan→execute split.
+type ReasoningPlanPolicy struct {
+	Steps                     []ReasoningPlanStep `yaml:"steps,omitempty" json:"steps,omitempty"`
+	ReplanAfterFailure        *bool               `yaml:"replan_after_failure,omitempty" json:"replan_after_failure,omitempty"`
+	ParallelIndependentSteps  *bool               `yaml:"parallel_independent_steps,omitempty" json:"parallel_independent_steps,omitempty"`
+	ApprovalBeforeSideEffects *bool               `yaml:"approval_before_side_effects,omitempty" json:"approval_before_side_effects,omitempty"`
+	PlanTimeout               string              `yaml:"plan_timeout,omitempty" json:"plan_timeout,omitempty"`
+}
+
+// ReasoningPlanStep is one declared phase of a Plan-Execute run.
+type ReasoningPlanStep struct {
+	Title          string   `yaml:"title" json:"title"`
+	Status         string   `yaml:"status,omitempty" json:"status,omitempty"`
+	AllowedTools   []string `yaml:"allowed_tools,omitempty" json:"allowed_tools,omitempty"`
+	ExpectedOutput string   `yaml:"expected_output,omitempty" json:"expected_output,omitempty"`
+	Verification   string   `yaml:"verification,omitempty" json:"verification,omitempty"`
+	DependsOn      []string `yaml:"depends_on,omitempty" json:"depends_on,omitempty"`
 }
 
 // ReasoningPhaseConfig tunes an internal reasoning LLM phase.

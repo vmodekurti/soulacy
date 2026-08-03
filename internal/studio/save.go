@@ -402,6 +402,13 @@ func reactSystemPrompt(draft Draft) string {
 		b.WriteString("\n\n")
 		b.WriteString(contract)
 	}
+	// The operator's own contract, after the generic one so their words win on a
+	// conflict. Guarded by its heading so a re-save does not stack copies — the
+	// prompt round-trips through draft.SystemPrompt.
+	if oc := ContractPrompt(draft.Policy); oc != "" && !strings.Contains(b.String(), operatorContractHeading) {
+		b.WriteString("\n\n")
+		b.WriteString(oc)
+	}
 	if t := strings.TrimSpace(draft.Intent); t != "" {
 		if goal := "Goal: " + t; !strings.Contains(b.String(), goal) {
 			b.WriteString("\n\n")
@@ -508,6 +515,16 @@ func reasoningConfigFor(draft Draft, strategy string) agent.ReasoningConfig {
 	}
 	if draft.MaxPlanSteps > 0 {
 		cfg.MaxPlanSteps = draft.MaxPlanSteps
+	}
+	// Carry the operator's contract onto the definition so it survives the save
+	// and the SOUL.yaml round-trip. Only what the draft actually states is
+	// written — merging the defaults in here would fill every agent's YAML with
+	// a policy nobody chose.
+	cfg.Contract = draft.Policy.ToReasoningContract()
+	// Turning parallelism OFF is the one loop flag the engine already honours:
+	// MaxParallelSteps of 1 is its documented strictly-serial walk.
+	if pl := draft.Policy.GetPlan(); pl != nil && !pl.ParallelIndependentSteps {
+		cfg.MaxParallelSteps = 1
 	}
 	return cfg
 }
