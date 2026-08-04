@@ -552,3 +552,11 @@ func resolveUpdateInstallDir(explicit string) (string, error) {
 	}
 	return filepath.Dir(exe), nil
 }
+
+// DefaultSourceDescription names where updates come from when no manifest URL is
+// configured. Exported so the gateway's readiness and deployment checks describe
+// the SAME source the CLI actually uses, instead of reporting the default as an
+// unconfigured gap.
+func DefaultSourceDescription() string {
+	return "GitHub releases for " + defaultGitHubRepo
+}

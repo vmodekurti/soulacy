@@ -1086,8 +1086,15 @@ func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
 	// who closed the tab or hit Cancel could not stop the run: it kept burning
 	// model tokens with nobody listening. The writer cancels this when the client
 	// goes away (ST-04).
+	//
+	// NOTE: no `defer cancelRun()` here. Fiber hands the connection to the stream
+	// writer and this handler RETURNS IMMEDIATELY — so a handler-level defer
+	// cancelled the run before the writer had even started, and every streamed
+	// generate died on its first LLM call with "context canceled" in a few
+	// milliseconds. Cancellation belongs to the two places that actually know the
+	// run is over: the producer goroutine (work finished) and the stream writer
+	// (client went away).
 	ctx, cancelRun := context.WithCancel(context.WithoutCancel(c.Context()))
-	defer cancelRun()
 
 	type sse struct{ event, data string }
 	events := make(chan sse, 32)
@@ -1117,6 +1124,9 @@ func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
 	}()
 
 	go func() {
+		// Releases the run context once the pipeline is done, whether it
+		// succeeded or failed, so nothing leaks if the writer never runs.
+		defer cancelRun()
 		defer close(events)
 		defer func() { close(hbStop); hbWG.Wait() }()
 		emit := func(kind, data string) {

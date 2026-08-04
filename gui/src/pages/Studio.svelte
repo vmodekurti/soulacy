@@ -1564,7 +1564,13 @@ Use null for fields that are not present.`
     if (viewMode === 'code') { viewMode = 'canvas'; codeYaml = ''; codeOrig = '' }
   }
 
-  function applyCompile(data) {
+  // `gate` opens the post-generation blocker dialog. It belongs to a generation
+  // that SUCCEEDED but produced a draft that cannot run — that is the case it
+  // was written for. A generation that FAILED must not raise it: the blockers
+  // then describe the hole where the draft should be ("flow: no nodes declared",
+  // "no runnable steps"), which buries the actual cause under three complaints
+  // about a draft the user never got.
+  function applyCompile(data, { gate = true } = {}) {
     // Remember which saved agent we were editing BEFORE reset clears it.
     const prevAgentId = loadedAgentId
     resetTransientDraftState()
@@ -1597,7 +1603,7 @@ Use null for fields that are not present.`
           reason: (data && data.strategy_reason) || '',
         }
       : null
-    if (data && data.contract) {
+    if (gate && data && data.contract) {
       const generatedGate = contractToPreflight(data.contract)
       if (generatedGate.blockers.length) {
         preflight = {
@@ -4337,18 +4343,32 @@ Use null for fields that are not present.`
         genAbort.signal,
       )
       const result = done && done.result
-      // Adopt the draft whenever there IS one, error or not. Discarding it on
-      // error was the bug: the story requires a failed generation to preserve
-      // the partial draft, and throwing it away meant the user lost the work
-      // AND could not see what went wrong with it.
-      if (result && result.compile && result.compile.workflow) {
-        applyCompile(result.compile)
+      const failed = !!(done && done.error)
+      const wf = result && result.compile && result.compile.workflow
+      // "Partial draft" only means something if something was actually built.
+      // When the pipeline dies in its first phase the draft is an empty husk:
+      // no steps, no strategy, no name. Putting that on the canvas presented a
+      // failure as a workflow to repair.
+      const substantive = !!(wf && (((wf.flow && wf.flow.nodes) || []).length > 0 || wf.strategy))
+
+      if (failed && !substantive) {
+        // Nothing was built. Keep the user where they are, with their prompt
+        // intact, and say why — rather than handing them an empty draft.
+        const why = done.error
+        compileError = why
+        promptError = why
+      } else if (wf) {
+        // Adopt the draft whenever there IS one, error or not: a failed
+        // generation must preserve the partial work rather than discard it.
+        // The blocker dialog stays shut on the error path — the error is the
+        // headline, not the contract.
+        applyCompile(result.compile, { gate: !failed })
         if (result.refinement) rawPrompt = result.refinement.original || rawPrompt
-      }
-      if (done && done.error) {
-        compileError = result && result.compile
-          ? `${done.error} — the partial draft is on the canvas.`
-          : done.error
+        if (failed) {
+          compileError = `${done.error} — the partial draft is on the canvas.`
+        } else if (done && done.blocked) {
+          compileError = done.blocked_reason || 'This draft has unresolved blockers.'
+        }
       } else if (done && done.blocked) {
         compileError = done.blocked_reason || 'This draft has unresolved blockers.'
       }

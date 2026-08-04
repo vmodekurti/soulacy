@@ -220,7 +220,12 @@ func compileDigestWorkflow(intent string, cat Catalog, answers map[string]string
 	edges := []sdkr.FlowEdge{{From: "search_sources", To: "summarize_digest"}}
 	output := "summarize_digest"
 	if len(channels) == 0 && anyContains(strings.ToLower(intent), "send", "notify", "deliver") {
-		channels = deterministicChannels("send telegram", cat)
+		// Was literally deterministicChannels("send telegram", cat) — which named
+		// Telegram for every intent that said "send", whatever the user actually
+		// asked for. Read the real intent; if it names no channel, the picker
+		// falls back to the workspace's own configured channel rather than a
+		// hard-coded one.
+		channels = deterministicChannels(intent, cat)
 	}
 	if len(channels) > 0 {
 		// Prefer schedule/channel output routing over explicit channel.send args;

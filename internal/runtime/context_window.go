@@ -51,6 +51,19 @@ func modelContextLimit(provider, model string) int {
 		return 32768
 	case strings.Contains(m, "mistral"), strings.Contains(m, "mixtral"), strings.Contains(m, "qwen"):
 		return 32768
+	// The large open-weight families. All ship windows of 128k or more, and all
+	// of them previously fell through to the unknown-model branch — which cost a
+	// tool-using agent its history every single turn and left the final answer
+	// with nothing to synthesise from. Local Ollama can still be serving them
+	// with a small num_ctx, so only the hosted providers get the full window;
+	// either way the context-exceeded retry catches an over-estimate.
+	case strings.Contains(m, "glm"), strings.Contains(m, "deepseek"),
+		strings.Contains(m, "kimi"), strings.Contains(m, "minimax"),
+		strings.Contains(m, "nemotron"), strings.Contains(m, "gpt-oss"):
+		if isHostedCloudProvider(provider) {
+			return 128000
+		}
+		return 32768
 	case strings.Contains(m, "llama3.1"), strings.Contains(m, "llama-3.1"),
 		strings.Contains(m, "llama3.2"), strings.Contains(m, "llama-3.2"):
 		// Architecturally 128k, but local Ollama's default num_ctx is far smaller;
@@ -64,10 +77,16 @@ func modelContextLimit(provider, model string) int {
 	// Hosted cloud providers (e.g. ollama_cloud) run models at their FULL context,
 	// unlike a local Ollama whose num_ctx defaults small. An unrecognised model on
 	// such a provider should NOT get the tiny local default — that over-trims and
-	// breaks multi-step tool use. Give it a generous-but-bounded budget; an actual
-	// overflow is still caught by the context-exceeded retry.
+	// breaks multi-step tool use.
+	//
+	// 32768 was still far too small for the reason this table keeps growing: a
+	// model released after the last edit is, by definition, unrecognised, and
+	// today's hosted models are 128k+. Guessing LOW is not the safe direction —
+	// it silently deletes the tool results a run depends on and the user gets an
+	// empty answer, with no error anywhere. Guessing high costs at most one
+	// rejected call, which the context-exceeded retry below already absorbs.
 	if isHostedCloudProvider(provider) {
-		return 32768
+		return 128000
 	}
 	return defaultContextLimit
 }

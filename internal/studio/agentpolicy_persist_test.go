@@ -192,3 +192,62 @@ func mustDef(t *testing.T, d Draft) agent.Definition {
 	}
 	return def
 }
+
+// The Build screen's contract panel opened blank on every generated agent,
+// because nothing in generation ever produced a contract — the model was only
+// asked for a system prompt. These cover the mapping from the designer's answer
+// onto the draft the panel renders.
+func TestGeneratedAgentCarriesAContract(t *testing.T) {
+	p := agentSpecPayload{
+		Goal:               "Send a weekday news briefing to Telegram.",
+		Instructions:       "Be concise. Cite each source.",
+		CompletionCriteria: "The briefing has been accepted by the Telegram channel.",
+	}
+	pol := contractPolicyFrom(p, "some intent")
+	if pol == nil || pol.Contract == nil {
+		t.Fatal("no contract produced")
+	}
+	if pol.Contract.Goal != p.Goal {
+		t.Errorf("goal = %q", pol.Contract.Goal)
+	}
+	if pol.Contract.Instructions != p.Instructions {
+		t.Errorf("instructions = %q", pol.Contract.Instructions)
+	}
+	if pol.Contract.CompletionCriteria != p.CompletionCriteria {
+		t.Errorf("completion = %q", pol.Contract.CompletionCriteria)
+	}
+}
+
+// A model that ignores the new fields must still not leave the Goal box blank:
+// the user's own intent is what a successful run achieves.
+func TestGoalFallsBackToTheIntent(t *testing.T) {
+	pol := contractPolicyFrom(agentSpecPayload{}, "  Every weekday, send me an AI news digest.  ")
+	if pol == nil || pol.Contract == nil {
+		t.Fatal("no contract produced")
+	}
+	if pol.Contract.Goal != "Every weekday, send me an AI news digest." {
+		t.Errorf("goal = %q, want the trimmed intent", pol.Contract.Goal)
+	}
+	// Not invented — an empty completion criterion must stay empty so the
+	// "no completion criteria" warning remains truthful.
+	if pol.Contract.CompletionCriteria != "" {
+		t.Errorf("completion criteria was invented: %q", pol.Contract.CompletionCriteria)
+	}
+}
+
+func TestNoContractWhenNothingToSay(t *testing.T) {
+	if pol := contractPolicyFrom(agentSpecPayload{}, "   "); pol != nil {
+		t.Errorf("expected nil policy, got %+v", pol)
+	}
+}
+
+// The designer must actually be ASKED for the contract, or the fields above are
+// only ever populated by the fallback.
+func TestAgentPromptAsksForTheContract(t *testing.T) {
+	prompt := BuildAgentPrompt("do a thing", Catalog{}, "auto", nil)
+	for _, want := range []string{"\"goal\"", "\"instructions\"", "\"completion_criteria\""} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("agent designer prompt never asks for %s", want)
+		}
+	}
+}
