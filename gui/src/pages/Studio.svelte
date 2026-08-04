@@ -49,7 +49,7 @@
     // you left off" landing step, which is what sent the user back into the
     // middle of an agent instead of the Studio home. It remains exported and
     // tested for any caller that genuinely wants that behaviour.
-    stepStates, canEnter, saveBlockedReason, intentOf,
+    stepStates, canEnter, saveBlockedReason, intentOf, generatedMode,
   } from '../lib/studio/wizard.js'
   import '../lib/studio/studio.css'
 
@@ -229,6 +229,7 @@
   let modelAdvice = null      // builder-model advice (local-first)
   let cloudAck = false        // user acknowledged cloud builder this session
   let cloudGate = null        // { provider, model } when the escalation dialog is open
+  let workflowExperiment = null // explicit opt-in dialog for generated fixed graphs
 
   // ── Pre-generation prompt refinement ──────────────────────────────────────
   // Pressing Generate first runs a refine pass: the framework LLM rewrites the
@@ -956,21 +957,17 @@ Use null for fields that are not present.`
     if (!refinement || compiling) return
     const text = (refinement.refined_intent || '').trim() || refinement.original
     const ans = Object.keys(refineAnswers).length ? { ...refineAnswers } : undefined
-    const mode = (refinement.recommended_mode || 'workflow')
+    // Ordinary Generate never creates an experimental fixed graph. A model may
+    // still identify a workflow-shaped task, but Studio routes that to
+    // Plan-Execute until the operator explicitly selects Workflow.
+    const mode = generatedMode(refinement.recommended_mode)
     const reason = refinement.recommended_reason || ''
     refinement = null
-    if (mode === 'auto' || mode === 'react' || mode === 'plan_execute') {
-      // A tool/reasoning agent (no fixed flow): build the AGENT directly, take the
-      // user to SOUL.yaml, and explain via a modal. "auto" is the recommended
-      // default — the engine runs it as a reliable native tool-calling loop.
-      await runAgentCompile(text, mode, ans)
-      if (workflow && workflow.strategy) routeToAgent(mode, reason)
-    } else {
-      await runCompile(text, ans)
-      // Safety net: the compiler may only realise it's reasoning-fit after trying
-      // to build the flow (it returns a workflow carrying a react recommendation).
-      await escalateIfReasoningFit()
-    }
+    // A tool/reasoning agent (no fixed flow): build the AGENT directly, take the
+    // user to SOUL.yaml, and explain via a modal. "auto" is the recommended
+    // default — the engine runs it as a reliable native tool-calling loop.
+    await runAgentCompile(text, mode, ans)
+    if (workflow && workflow.strategy) routeToAgent(mode, reason)
   }
 
   // routeToAgent finalises the "this is an agent, not a workflow" handoff: show
@@ -1388,10 +1385,22 @@ Use null for fields that are not present.`
       compileError = 'Add a prompt (Generate from a description) before switching mode.'
       return
     }
+
+    // Workflow generation is never a one-click strategy switch. Opening this
+    // dialog is the explicit opt-in boundary shared by the strategy panel and
+    // the "build as workflow anyway" escape hatch.
+    if (mode === 'workflow') {
+      workflowExperiment = { text, from: currentMode }
+      return
+    }
+    await performSwitchMode(mode, text)
+  }
+
+  async function performSwitchMode(mode, text, skipReplaceConfirm = false) {
     // Switching modes RE-COMPILES from the prompt and discards any manual edits to
     // the current draft (system prompt, tools, skills, or canvas wiring). Confirm
     // before throwing that work away.
-    if (workflow) {
+    if (workflow && !skipReplaceConfirm) {
       let ok = true
       try {
         ok = window.confirm(`Switch to ${recoLabel(mode)}? This regenerates from your prompt and discards any manual edits to the current ${currentMode === 'workflow' ? 'workflow' : 'agent'}.`)
@@ -1402,6 +1411,20 @@ Use null for fields that are not present.`
     // reasoning-fit routing re-classifies the task and reverts to an agent.
     if (mode === 'workflow') await runCompile(text, undefined, true)
     else await runAgentCompile(text, mode)
+  }
+
+  async function confirmExperimentalWorkflow() {
+    const pending = workflowExperiment
+    workflowExperiment = null
+    if (!pending || compiling) return
+    await performSwitchMode('workflow', pending.text, true)
+  }
+
+  async function useAutoInstead() {
+    const pending = workflowExperiment
+    workflowExperiment = null
+    if (!pending || compiling || currentMode === 'auto') return
+    await performSwitchMode('auto', pending.text)
   }
 
   // runCompile performs the actual compile + canvas rebuild from a finalized
@@ -1454,7 +1477,7 @@ Use null for fields that are not present.`
     }
   }
 
-  // Prompt editor — "Generate": build the workflow straight from the REFINED
+  // Prompt editor — "Generate": build the agent straight from the REFINED
   // prompt (intent), skipping a re-refine. Falls back to the original if the
   // refined box is empty (e.g. the user only filled the original and hit go).
   async function generateFromModal() {
@@ -1494,8 +1517,8 @@ Use null for fields that are not present.`
     if (mode === 'auto') return 'Auto tool agent'
     if (mode === 'react') return 'ReAct (advanced loop)'
     if (mode === 'plan_execute') return 'Plan-Execute'
-    if (mode === 'workflow') return 'Workflow (fixed flow)'
-    return mode || 'Workflow'
+    if (mode === 'workflow') return 'Workflow (experimental fixed flow)'
+    return mode || 'Auto tool agent'
   }
 
   // recoLabel('auto') already ends in "agent", but every call site that names a
@@ -7468,11 +7491,15 @@ Use null for fields that are not present.`
           <div class="refine-summary">{refinement.summary}</div>
         {/if}
 
-        {#if refinement.recommended_mode && refinement.recommended_mode !== 'workflow'}
+        {#if refinement.recommended_mode}
           <div class="refine-mode">
-            <strong>Recommended build: {recoAgentLabel(refinement.recommended_mode)}</strong>
+            <strong>Recommended build: {recoAgentLabel(generatedMode(refinement.recommended_mode))}</strong>
             {#if refinement.recommended_reason} — {refinement.recommended_reason}{/if}
-            <div class="refine-mode-sub">This task reasons over its tools (looping/polling), so Studio will build a reasoning agent instead of a fixed flow canvas.</div>
+            {#if refinement.recommended_mode === 'workflow'}
+              <div class="refine-mode-sub">This looks like a fixed procedure, so Studio will use Plan-Execute by default. AI-generated workflows are experimental and require an explicit opt-in from the strategy panel.</div>
+            {:else}
+              <div class="refine-mode-sub">This task reasons over its tools (looping/polling), so Studio will build a reasoning agent instead of a fixed flow canvas.</div>
+            {/if}
           </div>
         {/if}
 
@@ -7519,7 +7546,33 @@ Use null for fields that are not present.`
         <div class="modal-actions">
           <button class="btn" on:click={cancelRefinement} disabled={compiling}>Cancel</button>
           <button class="btn primary" on:click={confirmRefinement} disabled={compiling || !((refinement.refined_intent || '').trim())}>
-            {compiling ? 'Generating…' : (refinement.recommended_mode === 'auto' || refinement.recommended_mode === 'react' || refinement.recommended_mode === 'plan_execute') ? `Generate ${recoAgentLabel(refinement.recommended_mode)}` : 'Generate workflow'}
+            {compiling ? 'Generating…' : `Generate ${recoAgentLabel(generatedMode(refinement.recommended_mode))}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
+
+  {#if workflowExperiment}
+    <div class="modal-backdrop" on:click|self={() => (workflowExperiment = null)} role="presentation">
+      <div class="modal workflow-experiment-modal" role="dialog" aria-modal="true" aria-labelledby="workflow-experiment-title">
+        <div class="workflow-experiment-kicker">Experimental feature</div>
+        <h2 id="workflow-experiment-title" class="modal-title">Generate a fixed workflow?</h2>
+        <p class="modal-body">
+          Studio will generate a fixed execution graph from your prompt. Generated
+          graphs may select incorrect tools, lose inputs between steps, or require
+          manual wiring. Review and test every step before deployment.
+        </p>
+        <div class="workflow-experiment-callout">
+          For most conversational, adaptive, and tool-using agents, <strong>Auto</strong>
+          or <strong>Plan-Execute</strong> is more reliable. Continuing also replaces
+          manual edits to the current {workflowExperiment.from === 'workflow' ? 'workflow' : 'agent'}.
+        </div>
+        <div class="modal-actions">
+          <button class="btn" type="button" on:click={() => (workflowExperiment = null)} disabled={compiling}>Cancel</button>
+          <button class="btn primary" type="button" on:click={useAutoInstead} disabled={compiling}>Use Auto instead</button>
+          <button class="btn workflow-experiment-continue" type="button" on:click={confirmExperimentalWorkflow} disabled={compiling}>
+            Continue with Experimental Workflow
           </button>
         </div>
       </div>
@@ -8877,6 +8930,28 @@ Use null for fields that are not present.`
   .consent-scope { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-muted); }
   .consent-scope select { width: auto; flex: 1; }
   .modal-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+  .workflow-experiment-modal {
+    width: min(560px, 92vw);
+    border-color: color-mix(in srgb, var(--warn, #f5a742) 55%, var(--border));
+  }
+  .workflow-experiment-kicker {
+    display: inline-flex; margin-bottom: 8px; padding: 2px 8px;
+    border-radius: 999px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .06em;
+    color: var(--warn, #f5a742);
+    border: 1px solid color-mix(in srgb, var(--warn, #f5a742) 55%, transparent);
+    background: color-mix(in srgb, var(--warn, #f5a742) 12%, transparent);
+  }
+  .workflow-experiment-callout {
+    margin: 0 0 16px; padding: 10px 12px; border-radius: 8px;
+    font-size: 12px; line-height: 1.5; color: var(--text-muted);
+    border: 1px solid color-mix(in srgb, var(--warn, #f5a742) 35%, transparent);
+    background: color-mix(in srgb, var(--warn, #f5a742) 9%, transparent);
+  }
+  .workflow-experiment-continue {
+    color: var(--warn, #f5a742);
+    border-color: color-mix(in srgb, var(--warn, #f5a742) 60%, transparent);
+  }
 
   /* Streamed generation: elapsed, per-node progress, planner-vs-model source. */
   .gen-elapsed { margin-left: auto; font-size: .78rem; color: var(--text-dim, #6b7294); font-variant-numeric: tabular-nums; }

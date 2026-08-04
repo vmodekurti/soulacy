@@ -278,8 +278,8 @@ func TestStudioModelCapabilities_UnknownModelIsConservative(t *testing.T) {
 	if known, _ := out["known"].(bool); known {
 		t.Fatalf("this model is not in the registry: %v", out)
 	}
-	if out["recommended_mode"] != "workflow" {
-		t.Errorf("an unprofiled model should be steered to a fixed graph, got %v", out["recommended_mode"])
+	if out["recommended_mode"] != "auto" {
+		t.Errorf("an unprofiled model should use the non-workflow default, got %v", out["recommended_mode"])
 	}
 	if ok, _ := out["supports_react"].(bool); ok {
 		t.Error("an unprofiled model must not read as ReAct-capable")

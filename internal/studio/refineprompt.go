@@ -332,18 +332,20 @@ func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	// mode regardless of what the model guessed (models often mislabel these).
 	// This is the SAME authority the server-side compile route uses, on the SAME
 	// combined text, so the decision can't diverge by entry path.
-	// An explicit "build as a fixed workflow (not a ReAct agent)" request is the
-	// user's decision and wins over both the model's guess and the reasoning-fit
-	// inference below — otherwise Generate kept producing a ReAct agent despite
-	// the prompt, because the task mentions loops/polling.
+	// Workflow authoring is experimental, so prompt wording and model guesses do
+	// not count as the required UI/API opt-in. A fixed procedure is presented as
+	// Plan-Execute until the operator chooses Workflow and accepts its warning.
 	if explicitWorkflowRequested(combined) && !explicitReActRequested(combined) {
-		mode = "workflow"
+		mode = "plan_execute"
 	} else if forced := RecommendAgentMode(combined); forced != "" {
 		mode = forced
 	} else if mode == "" {
 		mode = inferModeFromIntent(combined)
 	}
 	mode = avoidImplicitReAct(mode, combined)
+	if mode == "workflow" {
+		mode = "plan_execute"
+	}
 	refined := strings.TrimSpace(payload.RefinedIntent)
 	if !light && refinementNeedsLocalExpansion(intent, refined) {
 		local := buildDeterministicRefinement(intent, catalog, false)
@@ -381,7 +383,7 @@ func buildDeterministicRefinement(intent string, catalog Catalog, light bool) Pr
 	advice := AdviseStrategy(intent, catalog, "", false)
 	mode := advice.Mode
 	if mode == "" {
-		mode = "workflow"
+		mode = "auto"
 	}
 	sections := []string{
 		"Goal\n" + firstSentence(intent),
@@ -808,11 +810,11 @@ func hasPlanExecuteCues(intent string) bool {
 	return false
 }
 
-// RecommendAgentMode is the SINGLE authoritative architecture decision. It
-// returns the full verdict — "auto", "plan_execute", "react", or "" (a
-// deterministic workflow) — from the intent text. ReAct is advanced/manual:
-// automatic classification picks Auto or Plan-Execute unless the user explicitly
-// asks for ReAct.
+// RecommendAgentMode is the SINGLE authoritative default architecture decision.
+// It returns "auto", "plan_execute", or "react" from the intent text. Workflow
+// is absent by design: fixed-graph generation requires the separate explicit
+// experimental opt-in. ReAct is advanced/manual and is selected only when the
+// user explicitly asks for it.
 func RecommendAgentMode(intent string) string {
 	advice := AdviseStrategy(intent, Catalog{}, "", false)
 	if advice.Mode == "workflow" {
@@ -921,14 +923,15 @@ func structuredWorkflowProcedureRequested(intent string) bool {
 
 // inferModeFromIntent is a deterministic backstop: phrases implying loops over
 // items, polling, or driving an interactive external service lean Plan-Execute;
-// ordinary conversational/tool assistants lean Auto; else workflow.
+// ordinary conversational/tool assistants lean Auto; fixed procedures use
+// Plan-Execute because Workflow requires an explicit experimental opt-in.
 func inferModeFromIntent(intent string) string {
 	t := strings.ToLower(intent)
 	if explicitReActRequested(intent) {
 		return "react"
 	}
 	if explicitWorkflowRequested(intent) {
-		return "workflow"
+		return "plan_execute"
 	}
 	planCues := []string{
 		"poll", "until ready", "until complete", "until done", "wait for",
@@ -949,7 +952,7 @@ func inferModeFromIntent(intent string) string {
 			return "auto"
 		}
 	}
-	return "workflow"
+	return "auto"
 }
 
 // parseRefinement tolerantly extracts the refine JSON from raw model output,

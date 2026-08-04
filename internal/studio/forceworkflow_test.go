@@ -6,10 +6,10 @@ import (
 	"testing"
 )
 
-func TestRecommendAgentMode_ExplicitWorkflowWins(t *testing.T) {
+func TestRecommendAgentMode_ExplicitWorkflowDefaultsToPlanExecute(t *testing.T) {
 	intent := `Every weekday at 7am, build an "AI articles podcast" as a fixed workflow (not a ReAct or Plan-Execute agent). Loop over search results, poll the NotebookLM audio generation.`
-	if got := RecommendAgentMode(intent); got != "" {
-		t.Fatalf("explicit fixed-workflow request should yield workflow (\"\"), got %q", got)
+	if got := RecommendAgentMode(intent); got != "plan_execute" {
+		t.Fatalf("workflow prompt text should default to plan_execute, got %q", got)
 	}
 	// Sanity: without the explicit cue, the same loop/poll task routes to an agent.
 	agentish := `Loop over search results and poll the NotebookLM audio generation asynchronously.`
@@ -22,7 +22,7 @@ func TestRecommendAgentMode_ExplicitWorkflowWins(t *testing.T) {
 	}
 }
 
-func TestRecommendAgentMode_NumberedNotebookLMProcedureStaysWorkflow(t *testing.T) {
+func TestRecommendAgentMode_NumberedNotebookLMProcedureUsesPlanExecute(t *testing.T) {
 	intent := `1. TRIGGER: Schedule to run automatically every weekday at 7:00 AM.
 2. SEARCH: Execute a web search for AI-related articles published in the last 7 days across three specific domains: site:hbr.org, site:technologyreview.com, and site:gartner.com. Retrieve the top 3 candidate URLs per domain.
 3. FETCH & VALIDATE: For each candidate URL, read the corresponding cookie file from ~/.soulacy/soulspace/<domain>_cookies.txt. Execute a Python script to fetch the page content using these cookies to bypass paywalls. Pass the fetched text to an LLM to verify it is a genuine, recent article about AI, extracting its title and URL. Discard any URLs that fail to fetch or fail validation.
@@ -33,8 +33,8 @@ func TestRecommendAgentMode_NumberedNotebookLMProcedureStaysWorkflow(t *testing.
 8. POLL STATUS: Use mcp__notebooklm__studio_status to poll the generation status until the audio artifact is complete and a URL is returned.
 9. DELIVER OUTPUT: Send a Telegram message containing the episode title, the final podcast audio link, and a one-line summary list of the included articles.`
 
-	if got := RecommendAgentMode(intent); got != "" {
-		t.Fatalf("numbered deterministic NotebookLM procedure should stay workflow; got %q", got)
+	if got := RecommendAgentMode(intent); got != "plan_execute" {
+		t.Fatalf("numbered deterministic NotebookLM procedure should use plan_execute; got %q", got)
 	}
 
 	out := `{"refined_intent":` + strconv.Quote(intent) + `,"summary":"daily podcast workflow","recommended_mode":"plan_execute","mode_reason":"has polling and NotebookLM"}`
@@ -42,7 +42,7 @@ func TestRecommendAgentMode_NumberedNotebookLMProcedureStaysWorkflow(t *testing.
 	if err != nil {
 		t.Fatalf("RefinePrompt: %v", err)
 	}
-	if r.RecommendedMode != "workflow" {
-		t.Fatalf("refine should override model plan_execute for a numbered fixed procedure; got %q", r.RecommendedMode)
+	if r.RecommendedMode != "plan_execute" {
+		t.Fatalf("refine should keep plan_execute for a numbered fixed procedure; got %q", r.RecommendedMode)
 	}
 }

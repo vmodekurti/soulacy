@@ -56,6 +56,24 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 	// the gate override intent-based advice before there is anything to judge.
 	modelChosen := strings.TrimSpace(advice.Model) != ""
 
+	// Generated workflows are an explicit experimental opt-in. The refiner and
+	// deterministic pattern matcher may still RECOGNISE a fixed procedure, but
+	// neither is allowed to select Workflow for the operator. Only the dedicated
+	// UI/API opt-in sets forceWorkflow.
+	if forceWorkflow {
+		pattern := deterministicWorkflowPattern(intent)
+		advice.Mode = "workflow"
+		advice.RuntimeStrategy = ""
+		advice.Confidence = "low"
+		advice.DeterministicPattern = pattern
+		advice.Reason = "You explicitly selected Experimental Workflow, so Studio will generate a fixed graph for review and testing."
+		advice.CapabilityWarning = "Experimental workflow generation can choose the wrong tools, lose inputs between steps, or require manual wiring. Review and test every step before deployment."
+		if ConversationalIntent(intent) {
+			advice.CapabilityWarning += " This request also reads as conversational: a fixed graph cannot ask a clarifying question and wait for the reply, and it keeps no context between messages."
+		}
+		return advice
+	}
+
 	if explicitReActRequested(intent) {
 		advice.Mode = "react"
 		advice.RuntimeStrategy = "react"
@@ -69,7 +87,27 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 		}
 		return advice
 	}
+	// A mode selected through the strategy control is stronger than any cue in
+	// the prompt. In particular, a prompt that mentions a fixed procedure must
+	// not turn an explicit Auto selection into Plan-Execute.
+	if req == "auto" {
+		advice.Mode = "auto"
+		advice.RuntimeStrategy = "auto"
+		advice.Confidence = "high"
+		advice.Reason = "The user selected Auto; the runtime can use native tool calling when the model supports it."
+		return advice
+	}
 	pattern := deterministicWorkflowPattern(intent)
+	structuredProcedure := structuredWorkflowProcedureRequested(intent)
+	// Studio's refiner formats conversational agents as numbered operating specs.
+	// Do not let that formatting (or broad digest keywords) outvote explicit
+	// interactive language. A literal workflow phrase is still treated as a
+	// fixed-procedure cue, but it remains Plan-Execute until the UI opt-in.
+	if ConversationalIntent(intent) && !explicitWorkflowPhrase(intent) && req != "workflow" {
+		pattern = ""
+		structuredProcedure = false
+	}
+	advice.DeterministicPattern = pattern
 	// An interactive intent must not be captured by a pipeline pattern.
 	//
 	// The digest patterns match on topic keywords, so "the agent SEARCHES for
@@ -78,72 +116,23 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 	// many words, that the agent responds on demand and asks clarifying questions
 	// first. A fixed graph cannot ask a question and branch on the reply.
 	//
-	// An EXPLICIT request for a workflow still wins: the user is allowed to want
-	// a pipeline. This only stops keyword matching from making that choice for
-	// them.
-	// STRONG: the user said so, or the UI forced it. This always wins.
-	strongWorkflow := forceWorkflow || req == "workflow" || explicitWorkflowPhrase(intent)
-	// WEAK: inferred from shape — a numbered, labelled procedure.
-	weakWorkflow := structuredWorkflowProcedureRequested(intent)
-
-	// A conversational intent overrides the WEAK signals only.
-	//
-	// This is the loop that produced a market_digest graph for a travel advisor:
-	// the user wrote "an interactive, conversational travel advisor"; Studio's own
-	// refiner expanded it into "1. TRIGGER: … 2. INPUTS: … 3. PROCESSING STEPS";
-	// that numbering read as an explicit workflow request, which bypassed the
-	// conversational guard; and a keyword pattern then matched on "options" (from
-	// "flight/hotel options") plus "sends" (from "user sends a message").
-	//
-	// Studio's own reformatting of the user's words must not outvote the words.
-	// An explicit phrase still does.
-	if ConversationalIntent(intent) && !strongWorkflow {
-		pattern = ""
-		weakWorkflow = false
-	}
-	explicitlyWorkflow := strongWorkflow || weakWorkflow
-	if explicitlyWorkflow || pattern != "" {
-		advice.Mode = "workflow"
-		advice.RuntimeStrategy = ""
-		advice.Confidence = "high"
-		advice.DeterministicPattern = pattern
-		if pattern == "" {
-			pattern = "fixed workflow"
-		}
-		advice.Reason = "Soulacy selected Workflow because the intent describes a deterministic " + pattern + " pipeline."
-
-		// Forcing Workflow onto a conversational request is allowed — the operator
-		// may know something Studio does not — but Studio must not then claim the
-		// request "describes a deterministic pipeline" with high confidence when it
-		// plainly describes a conversation. That sentence told the user their own
-		// words had been read as something they were not, and nothing on screen
-		// said what the choice costs.
-		//
-		// What it costs is specific and worth naming: a fixed graph runs the same
-		// steps in the same order every message. It cannot ask a clarifying
-		// question and wait for the answer, and it carries nothing from one message
-		// to the next — which is most of what "conversational" means.
-		if ConversationalIntent(intent) {
-			advice.Confidence = "low"
-			advice.Reason = "You chose Workflow, so Soulacy built a fixed graph — but this request reads as conversational, not as a pipeline."
-			advice.CapabilityWarning = "This request describes a conversation, and a fixed workflow runs the " +
-				"same steps in the same order for every message: it cannot ask a clarifying question and wait " +
-				"for the reply, and it keeps no context between messages. Make sure the first step reads the " +
-				"incoming message, or switch to Auto to get an agent that decides per message."
-		}
-		return advice
-	}
-	if req == "plan_execute" || hasPlanExecuteCues(intent) || dynamicSkillRoutingIntent(intent) {
-		// Capability gate (P0-5): a model that cannot hold a plan together will
-		// fail planning and silently degrade to ReAct. Steer to a fixed
-		// workflow instead of setting up that failure, unless the operator
-		// asked for Plan-Execute explicitly — in which case warn and comply.
+	// Conversational language suppresses only inferred fixed-procedure signals.
+	// A literal workflow request remains useful routing evidence, but generation
+	// still requires the forceWorkflow opt-in handled above.
+	// A fixed-looking request is routed to Plan-Execute by default. The pattern is
+	// retained as evidence for the recommendation, but it is not permission to
+	// generate a graph. Even wording such as "as a workflow" remains only intent
+	// text; the explicit Experimental Workflow control is the opt-in boundary.
+	fixedProcedure := pattern != "" || explicitWorkflowPhrase(intent) || structuredProcedure || req == "workflow"
+	if req == "plan_execute" || hasPlanExecuteCues(intent) || dynamicSkillRoutingIntent(intent) || fixedProcedure {
+		// Capability gate (P0-5): workflow is no longer a silent fallback. Use Auto
+		// when the selected model cannot sustain planning and explain the tradeoff.
 		if planOK, why := caps.SupportsPlanExecute(); modelChosen && !planOK && req != "plan_execute" {
-			advice.Mode = "workflow"
-			advice.RuntimeStrategy = ""
-			advice.Confidence = "high"
-			advice.Reason = "Soulacy selected Workflow because the task suits planning but " +
-				modelLabel(caps) + " cannot sustain it: " + why + "."
+			advice.Mode = "auto"
+			advice.RuntimeStrategy = "auto"
+			advice.Confidence = "low"
+			advice.Reason = "Studio kept workflow generation off and selected Auto because " + modelLabel(caps) + " cannot sustain Plan-Execute: " + why + "."
+			advice.CapabilityWarning = "This task looks multi-step, but the selected model is not proven for planning. Choose a stronger model or explicitly opt into Experimental Workflow and review every step."
 			return advice
 		}
 		advice.Mode = "plan_execute"
@@ -156,18 +145,10 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 				advice.Confidence = "low"
 			}
 		} else {
-			advice.Reason = "Soulacy selected Plan-Execute because the task needs multi-phase or dynamic tool routing without a stable fixed workflow."
+			advice.Reason = "Soulacy selected Plan-Execute because the task needs a multi-phase or fixed procedure, while workflow generation remains an experimental opt-in."
 		}
 		return advice
 	}
-	if req == "auto" {
-		advice.Mode = "auto"
-		advice.RuntimeStrategy = "auto"
-		advice.Confidence = "high"
-		advice.Reason = "The user selected Auto; the runtime can use native tool calling when the model supports it."
-		return advice
-	}
-
 	li := strings.ToLower(intent)
 	if hasStrongReasoningCues(intent) && !interactiveAssistantIntent(li) {
 		advice.Mode = "plan_execute"
@@ -187,15 +168,14 @@ func AdviseStrategy(intent string, cat Catalog, requested string, forceWorkflow 
 			" has native tool calling and reliable tool-argument accuracy."
 		return advice
 	}
-	// An unprofiled model must not land in Auto by omission — that is the
-	// optimistic default P0-5 exists to remove.
+	// An unprofiled model no longer falls back to an implicitly generated
+	// workflow. Keep the safe default visible and warn that the model is unproven.
 	if modelChosen && !caps.Known {
-		advice.Mode = "workflow"
-		advice.RuntimeStrategy = ""
-		advice.Confidence = "medium"
-		advice.Reason = "Soulacy selected Workflow because " + modelLabel(caps) +
-			" has not been profiled, and a fixed graph asks the least of an unknown model."
-		advice.CapabilityWarning = caps.Notes
+		advice.Mode = "auto"
+		advice.RuntimeStrategy = "auto"
+		advice.Confidence = "low"
+		advice.Reason = "Studio selected Auto because workflow generation is experimental and " + modelLabel(caps) + " has not been profiled."
+		advice.CapabilityWarning = caps.Notes + " Verify tool calling before deployment or choose a known model."
 		return advice
 	}
 	if cat.Generation != nil && cat.Generation.Compact && hasStrongReasoningCues(intent) {

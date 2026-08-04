@@ -2,15 +2,15 @@ package studio
 
 import "testing"
 
-func TestAdviseStrategy_NumberedNotebookProcedureIsWorkflow(t *testing.T) {
+func TestAdviseStrategy_NumberedNotebookProcedureUsesPlanExecute(t *testing.T) {
 	intent := `1. schedule every weekday at 7am
 2. search hbr.org and technologyreview.com
 3. create a NotebookLM notebook
 4. generate an audio podcast
 5. send to telegram`
 	got := AdviseStrategy(intent, Catalog{}, "", false)
-	if got.Mode != "workflow" || got.DeterministicPattern != "NotebookLM podcast" {
-		t.Fatalf("advice=%+v, want NotebookLM workflow", got)
+	if got.Mode != "plan_execute" || got.DeterministicPattern != "NotebookLM podcast" {
+		t.Fatalf("advice=%+v, want NotebookLM Plan-Execute", got)
 	}
 }
 
@@ -32,9 +32,9 @@ func TestAdviseStrategy_ReActRequiresExplicitRequest(t *testing.T) {
 	}
 }
 
-func TestAdviseStrategy_ScheduledDigestIsWorkflow(t *testing.T) {
+func TestAdviseStrategy_ScheduledDigestUsesPlanExecute(t *testing.T) {
 	got := AdviseStrategy("Every morning send a concise AI research digest to Slack", Catalog{}, "", false)
-	if got.Mode != "workflow" || got.DeterministicPattern == "" {
-		t.Fatalf("advice=%+v, want deterministic workflow", got)
+	if got.Mode != "plan_execute" || got.DeterministicPattern == "" {
+		t.Fatalf("advice=%+v, want deterministic Plan-Execute recommendation", got)
 	}
 }

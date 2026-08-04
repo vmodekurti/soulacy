@@ -357,10 +357,9 @@ func (c Capabilities) SupportsPlanExecute() (bool, string) {
 }
 
 // RecommendedMode returns the safest execution mode for this model:
-// "workflow" (fixed graph), "plan_execute", or "react".
-//
-// The ordering is deliberate — a fixed workflow asks the least of a model and
-// is therefore the fallback, not the aspiration.
+// "auto", "plan_execute", or "react". Workflow generation is deliberately not
+// returned here: it is an experimental authoring feature that requires an
+// explicit operator opt-in, never a capability fallback.
 func (c Capabilities) RecommendedMode() string {
 	if ok, _ := c.SupportsReAct(); ok {
 		return "react"
@@ -368,7 +367,7 @@ func (c Capabilities) RecommendedMode() string {
 	if ok, _ := c.SupportsPlanExecute(); ok {
 		return "plan_execute"
 	}
-	return "workflow"
+	return "auto"
 }
 
 // StrategyWarning returns an operator-facing warning when an EXPLICITLY chosen
@@ -379,12 +378,12 @@ func StrategyWarning(provider, model, strategy string) string {
 	case "react":
 		if ok, why := c.SupportsReAct(); !ok {
 			return "ReAct is a poor fit for " + modelLabel(c) + ": " + why +
-				". Consider a fixed Workflow, which asks far less of the model."
+				". Use Auto or choose a stronger model."
 		}
 	case "plan_execute":
 		if ok, why := c.SupportsPlanExecute(); !ok {
 			return "Plan-Execute is a poor fit for " + modelLabel(c) + ": " + why +
-				". Planning will fail and the run will fall back. Consider a fixed Workflow."
+				". Planning may fail and fall back; use Auto or choose a stronger model."
 		}
 	}
 	return ""

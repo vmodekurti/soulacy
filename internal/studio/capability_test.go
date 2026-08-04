@@ -43,8 +43,8 @@ func TestUnknownModelsAreConservative(t *testing.T) {
 	if ok, why := c.SupportsReAct(); ok || why == "" {
 		t.Error("an unprofiled model must not clear the ReAct bar, and must say why")
 	}
-	if c.RecommendedMode() != "workflow" {
-		t.Errorf("unknown models should be steered to a fixed workflow, got %q", c.RecommendedMode())
+	if c.RecommendedMode() != "auto" {
+		t.Errorf("unknown models should use the non-workflow default, got %q", c.RecommendedMode())
 	}
 	if !strings.Contains(c.Notes, "capability probe") {
 		t.Errorf("notes should tell the operator how to resolve it: %q", c.Notes)
@@ -81,7 +81,7 @@ func TestStrategyWarning(t *testing.T) {
 	if w == "" {
 		t.Fatal("explicit ReAct on a weak model must warn")
 	}
-	if !strings.Contains(w, "Workflow") {
+	if !strings.Contains(w, "Auto") {
 		t.Errorf("the warning should offer the safer alternative: %q", w)
 	}
 	// A sound choice is silent.
@@ -127,8 +127,8 @@ func TestRecommendedMode(t *testing.T) {
 	cases := map[string]string{
 		"anthropic/claude-opus-4": "react",
 		"ollama/llama3.3":         "plan_execute",
-		"ollama/phi3":             "workflow",
-		"ollama/gemma2":           "workflow",
+		"ollama/phi3":             "auto",
+		"ollama/gemma2":           "auto",
 	}
 	for key, want := range cases {
 		parts := strings.SplitN(key, "/", 2)
@@ -147,12 +147,15 @@ func TestAdviseStrategy_CapabilityGating(t *testing.T) {
 		t.Errorf("a capable model should keep plan_execute, got %q (%s)", a.Mode, a.Reason)
 	}
 
-	// With a model that cannot hold a plan together, steer to a fixed workflow
-	// rather than setting up a planning failure that degrades silently.
+	// With a model that cannot hold a plan together, keep workflow generation off
+	// and use Auto with a visible warning.
 	weak := Catalog{Generation: &GenerationProfile{Provider: "ollama", Model: "gemma2"}}
 	a := AdviseStrategy(planIntent, weak, "", false)
-	if a.Mode != "workflow" {
-		t.Errorf("a weak model should be steered to workflow, got %q (%s)", a.Mode, a.Reason)
+	if a.Mode != "auto" {
+		t.Errorf("a weak model should be steered to auto, got %q (%s)", a.Mode, a.Reason)
+	}
+	if a.CapabilityWarning == "" {
+		t.Error("the weaker fallback should explain why planning was not selected")
 	}
 	if a.Capabilities == nil || a.Capabilities.Model != "gemma2" {
 		t.Errorf("advice should carry the profile it reasoned from: %+v", a.Capabilities)
@@ -171,11 +174,12 @@ func TestAdviseStrategy_CapabilityGating(t *testing.T) {
 		t.Errorf("confidence should drop when warning, got %q", a.Confidence)
 	}
 
-	// An unprofiled model must not land in Auto by omission.
+	// An unprofiled model uses Auto deliberately rather than silently generating
+	// an experimental workflow, and carries a warning.
 	unknown := Catalog{Generation: &GenerationProfile{Provider: "acme", Model: "mystery-1"}}
 	a = AdviseStrategy("answer questions about our docs", unknown, "", false)
-	if a.Mode == "auto" {
-		t.Errorf("an unprofiled model must not default into Auto: %+v", a)
+	if a.Mode != "auto" || a.CapabilityWarning == "" {
+		t.Errorf("an unprofiled model should use warned Auto: %+v", a)
 	}
 
 	// With NO model chosen, capability gating must not fire at all — that is a

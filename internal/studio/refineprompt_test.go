@@ -111,8 +111,8 @@ func TestRefinePrompt_ExpandsEchoedModelOutput(t *testing.T) {
 			t.Fatalf("refined prompt missing %q:\n%s", want, r.RefinedIntent)
 		}
 	}
-	if r.RecommendedMode != "workflow" {
-		t.Fatalf("recommended mode = %q, want workflow", r.RecommendedMode)
+	if r.RecommendedMode != "plan_execute" {
+		t.Fatalf("recommended mode = %q, want plan_execute", r.RecommendedMode)
 	}
 }
 

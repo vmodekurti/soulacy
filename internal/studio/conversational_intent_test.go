@@ -102,8 +102,8 @@ func TestAdviseStrategy_NumberedSpecStillCountsWhenNotConversational(t *testing.
 3. CREATE NOTEBOOK: add sources.
 4. GENERATE AUDIO: poll status until ready.
 5. DELIVER OUTPUT: send a telegram message.`
-	if adv := AdviseStrategy(spec, travelCatalog(), "", false); adv.Mode != "workflow" {
-		t.Fatalf("an ordered operating procedure is still a workflow: %+v", adv)
+	if adv := AdviseStrategy(spec, travelCatalog(), "", false); adv.Mode != "plan_execute" {
+		t.Fatalf("an ordered operating procedure should default to Plan-Execute: %+v", adv)
 	}
 }
 
@@ -121,12 +121,12 @@ func TestExplicitWorkflowPhrase_SeparatesWordsFromFormatting(t *testing.T) {
 	}
 }
 
-func TestAdviseStrategy_ExplicitWorkflowRequestStillWins(t *testing.T) {
-	// The guard must not take the choice away from a user who asked for a
-	// pipeline; it only stops keyword matching from choosing on their behalf.
+func TestAdviseStrategy_WorkflowRequiresForceOptIn(t *testing.T) {
+	// Prompt text and a refiner recommendation are not the experimental opt-in.
+	// Only the dedicated force flag may generate a workflow.
 	adv := AdviseStrategy(travelAdvisorIntent, travelCatalog(), "workflow", false)
-	if adv.Mode != "workflow" {
-		t.Fatalf("an explicit workflow request must be honoured: %+v", adv)
+	if adv.Mode != "plan_execute" {
+		t.Fatalf("an unforced workflow recommendation should use Plan-Execute: %+v", adv)
 	}
 	if adv2 := AdviseStrategy(travelAdvisorIntent, travelCatalog(), "", true); adv2.Mode != "workflow" {
 		t.Fatalf("forceWorkflow must be honoured: %+v", adv2)
@@ -136,8 +136,8 @@ func TestAdviseStrategy_ExplicitWorkflowRequestStillWins(t *testing.T) {
 func TestAdviseStrategy_ScheduledDigestStillMatchesItsPattern(t *testing.T) {
 	intent := "Every weekday at 7am, find the best laptop deals and send a digest to Telegram"
 	adv := AdviseStrategy(intent, travelCatalog(), "", false)
-	if adv.Mode != "workflow" {
-		t.Fatalf("a scheduled digest is still a workflow: %+v", adv)
+	if adv.Mode != "plan_execute" {
+		t.Fatalf("a scheduled digest should default to Plan-Execute: %+v", adv)
 	}
 	if adv.DeterministicPattern == "" {
 		t.Error("the deterministic pattern should still be reported")
