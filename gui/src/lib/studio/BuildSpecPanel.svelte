@@ -49,6 +49,17 @@
   // A blocker is only satisfied once the user has actually supplied the value —
   // `ready` reflects the spec as the SERVER saw it, before these answers were
   // typed, so the live gate is the unresolved list rather than that flag.
+  // "none" is a real answer ("don't deliver anywhere"), so it must read as
+  // resolved — the generic blocker check only looks for a non-empty string,
+  // which it satisfies, but name it here so the intent is not accidental.
+  const NO_DELIVERY = 'none'
+  function channelLabel(id) {
+    if (id === NO_DELIVERY) return 'Nowhere — just return the result'
+    const list = Array.isArray(channels) ? channels : (channels && channels.channels) || []
+    const ch = list.find((c) => c && String(c.id).toLowerCase() === String(id).toLowerCase())
+    return (ch && (ch.name || ch.id)) || id
+  }
+
   $: unresolved = unresolvedBlockers(spec, answers)
   $: busy = loading || refining || generating
   $: canGenerate = !busy && !!spec && unresolved.length === 0
@@ -127,7 +138,17 @@
           <span class="bs-why">{b.why}</span>
         {/if}
 
-        {#if dq && destinations.length}
+        {#if (b.options || []).length}
+          <!-- A closed set of valid answers: the workspace's own channels. A
+               free-text box here is answered with a typo, and a channel that
+               isn't installed is indistinguishable from one that is. -->
+          <select value={answers[b.id] || ''} on:change={(e) => onAnswer(b.id, e.target.value)}>
+            <option value="">Choose…</option>
+            {#each b.options as opt}
+              <option value={opt}>{channelLabel(opt)}</option>
+            {/each}
+          </select>
+        {:else if dq && destinations.length}
           <!-- Soulacy already knows these destinations from the channel's own
                configuration, so offer them rather than making the user go and
                look up an ID it could have filled in. "Enter another…" keeps the
@@ -167,12 +188,21 @@
         {#each questions as q (q.id)}
           <div class="bs-question">
             <span>{q.question}</span>
-            <input
-              type="text"
-              value={answers[q.id] || ''}
-              placeholder="Optional"
-              on:change={(e) => onAnswer(q.id, e.target.value)}
-            />
+            {#if (q.options || []).length}
+              <select value={answers[q.id] || ''} on:change={(e) => onAnswer(q.id, e.target.value)}>
+                <option value="">Choose…</option>
+                {#each q.options as opt}
+                  <option value={opt}>{channelLabel(opt)}</option>
+                {/each}
+              </select>
+            {:else}
+              <input
+                type="text"
+                value={answers[q.id] || ''}
+                placeholder="Optional"
+                on:change={(e) => onAnswer(q.id, e.target.value)}
+              />
+            {/if}
           </div>
         {/each}
       </details>

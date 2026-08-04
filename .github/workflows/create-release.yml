@@ -20,6 +20,9 @@ on:
 
 permissions:
   contents: write
+  # Required to start the Release workflow below. Without it the tag is
+  # created and nothing ever builds it.
+  actions: write
 
 concurrency:
   group: create-release-${{ inputs.version }}
@@ -83,9 +86,25 @@ jobs:
           git push origin "refs/tags/${version}"
 
           echo "Created ${version} at ${{ steps.release.outputs.short_commit }}."
-          echo "::warning::Tag pushed, but this will NOT start the Release workflow."
-          echo "GitHub suppresses workflow triggers for refs pushed with the default"
-          echo "GITHUB_TOKEN, so .github/workflows/release.yml does not run from this push."
-          echo "Go to Actions -> Release -> Run workflow, and set 'Use workflow from'"
-          echo "to the tag ${version}. Without that step the release has no binaries"
-          echo "and no release-manifest.json, and 'sy update' cannot see it."
+
+      # A tag pushed with the default GITHUB_TOKEN does NOT trigger workflows —
+      # GitHub suppresses that to prevent recursion. The result was a release
+      # page with no binaries and no release-manifest.json, so `sy update` could
+      # never see the release, and the only thing standing between a tag and a
+      # usable release was somebody remembering to run this by hand.
+      #
+      # An explicit workflow_dispatch is NOT suppressed, so start it here.
+      - name: Build and publish the release for this tag
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${{ steps.release.outputs.version }}"
+          # --ref <tag> is what makes every step in release.yml read the TAG from
+          # github.ref_name. Dispatching from a branch would build artifacts
+          # named after the branch and a manifest to match.
+          gh workflow run release.yml --ref "${version}"
+          echo "Release workflow started for ${version}."
+          echo "Watch it: gh run list --workflow=release.yml --limit 5"

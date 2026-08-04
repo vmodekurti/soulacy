@@ -22,6 +22,12 @@ type agentSpecPayload struct {
 	Knowledge    []string   `json:"knowledge"` // KB names to attach
 	NewAgents    []NewAgent `json:"new_agents"`
 	Rationale    string     `json:"rationale"`
+	// The agent contract, stated separately from the system prompt so the Build
+	// screen can SHOW it and the operator can edit it. Generation never produced
+	// these, which is why that panel opened blank on every generated agent.
+	Goal               string `json:"goal"`
+	Instructions       string `json:"instructions"`
+	CompletionCriteria string `json:"completion_criteria"`
 }
 
 // BuildAgentPrompt builds the instruction for generating a ReAct/Plan-Execute
@@ -49,11 +55,14 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
   "name": "<short human name>",
   "system_prompt": "<rich instructions: the agent's role, the goal, the ordered approach in plain language (incl. looping over each item and polling async jobs until ready), the exact tools to use and when, edge-case/error handling, and the final output format>",
   "trigger": { "type": "schedule|channel|webhook|manual", "config": { "cron": "0 7 * * *" } },
-  "channels": ["telegram"],
+  "channels": ["<channel ids the user named, from the installed list above; omit entirely if they named none>"],
   "tools": ["<EXACT builtin or mcp__server__tool names from the catalog the agent may call>"],
   "skills": ["<EXACT installed skill names to enable, if any>"],
   "knowledge": ["<EXACT KB names to attach, if relevant>"],
   "new_agents": [ { "id":"...", "name":"...", "description":"...", "system_prompt":"..." } ],
+  "goal": "<one sentence: what a successful run achieves, in the user's terms>",
+  "instructions": "<how the agent should behave — tone, constraints, what to prefer or avoid. One short paragraph.>",
+  "completion_criteria": "<the checkable statement of done: what must be true before the run may stop>",
   "rationale": "<1-2 sentences on why a reasoning agent fits this task>"
 }` + "\n\n")
 
@@ -70,6 +79,7 @@ func BuildAgentPrompt(intent string, catalog Catalog, strategy string, answers m
 	sb.WriteString("\n")
 	sb.WriteString("- Include authentication/setup steps the user asked for as the FIRST instruction if a matching tool exists (e.g. refresh/login tools).\n")
 	sb.WriteString("- Invent a peer agent ONLY if needed, and give it a full reusable system_prompt in new_agents.\n")
+	sb.WriteString("- ALSO state the contract in its own fields: `goal`, `instructions` and `completion_criteria`. These are shown to the operator as an editable contract, so write them for a person to read — not as a restatement of the JSON above. `completion_criteria` must be checkable (\"the digest has been delivered to Telegram\"), never vague (\"the task is done\").\n")
 	sb.WriteString("- Pull concrete values from the user's words (queries, counts, schedule cadence, target channel).\n\n")
 	writeAgentStrategyGuidance(&sb, strategy)
 
@@ -177,6 +187,7 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 			Mode:      strategy,
 			Rationale: strings.TrimSpace(payload.Rationale),
 		},
+		Policy: contractPolicyFrom(payload, intent),
 	}
 	if draft.Name == "" {
 		draft.Name = "Studio Agent"
@@ -205,6 +216,8 @@ func CompileAgent(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	// grounded set.
 	groundNotes := GroundAgentCapabilities(&draft, catalog)
 	defaultNotes := applyGenerationDefaults(&draft, intent)
+	// The operator's explicit channel choice wins over whatever the model named.
+	ApplyChannelAnswers(&draft, answers)
 
 	explanation := ExplainDraft(draft)
 	notes := []string{"Generated a " + recoLabelGo(strategy) + " agent — it reasons over its tools rather than running a fixed graph."}
@@ -289,4 +302,29 @@ func suggestMissingAgent(draft Draft, cat Catalog) []Suggestion {
 		}
 	}
 	return out
+}
+
+// contractPolicyFrom turns the designer's stated contract into the draft policy
+// the Build screen shows.
+//
+// The Goal falls back to the intent because that IS what the user said a
+// successful run achieves — an empty Goal box on a freshly generated agent read
+// as "you forgot to fill this in" when nothing had ever filled it. The other two
+// are left empty when the model says nothing rather than being invented, so the
+// missing-completion-criteria warning stays honest.
+func contractPolicyFrom(payload agentSpecPayload, intent string) *AgentPolicy {
+	goal := strings.TrimSpace(payload.Goal)
+	if goal == "" {
+		goal = strings.TrimSpace(intent)
+	}
+	instructions := strings.TrimSpace(payload.Instructions)
+	completion := strings.TrimSpace(payload.CompletionCriteria)
+	if goal == "" && instructions == "" && completion == "" {
+		return nil
+	}
+	return &AgentPolicy{Contract: &AgentContract{
+		Goal:               goal,
+		Instructions:       instructions,
+		CompletionCriteria: completion,
+	}}
 }

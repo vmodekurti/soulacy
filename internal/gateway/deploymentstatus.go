@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"github.com/soulacy/soulacy/internal/updates"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -65,7 +66,12 @@ func (s *Server) deploymentReadiness(providersReady, usableOutbound, enabledAgen
 	if !authReady && s != nil && s.cfg != nil {
 		authReady = strings.TrimSpace(s.cfg.Server.APIKey) != ""
 	}
-	updateReady := strings.TrimSpace(updateManifest) != ""
+	// True for BOTH supported configurations: a custom manifest URL, or the
+	// built-in GitHub releases source that `sy update` uses when none is set.
+	// This used to be `!= ""`, which marked every default install as failing a
+	// required production check for a feature that was working.
+	updateReady := true
+	_ = updateManifest
 
 	checks := []deploymentCheck{
 		{
@@ -102,7 +108,8 @@ func (s *Server) deploymentReadiness(providersReady, usableOutbound, enabledAgen
 			Key:    "updates",
 			Label:  "Update manifest",
 			Status: statusForRequired(updateReady),
-			Detail: detailForBool(updateReady, "Release update manifest is configured.", "Configure updates.manifest_url before production rollout."),
+			Detail: detailForBool(updateReady, "Release update manifest is configured.",
+				"Using the built-in "+updates.DefaultSourceDescription()+". Set updates.manifest_url to publish from your own host."),
 		},
 		{
 			Key:    "costs",

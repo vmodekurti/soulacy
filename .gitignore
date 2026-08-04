@@ -124,3 +124,6 @@ workspace/
 .dev.vars*
 !.dev.vars.example
 !.env.example
+
+# Scratch space used by agent sessions (build/verify artifacts, never source).
+_to_delete/

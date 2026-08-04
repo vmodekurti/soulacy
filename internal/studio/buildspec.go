@@ -48,6 +48,10 @@ type SpecQuestion struct {
 	// Field names the spec field an answer populates, so the UI can bind an
 	// inline control instead of re-parsing free text.
 	Field string `json:"field,omitempty"`
+	// Options, when set, are the only valid answers — the UI renders a picker
+	// instead of a free-text box. Used for channel choices, where a typo is
+	// indistinguishable from a channel that isn't installed.
+	Options []string `json:"options,omitempty"`
 }
 
 // BuildSpec is Studio's structured reading of an intent.
@@ -144,7 +148,7 @@ func ExtractBuildSpecFrom(intent string, cat Catalog) BuildSpec {
 	spec.Delivery = extractDelivery(low)
 	spec.Integrations = extractIntegrations(low, spec.Intent, cat)
 	spec.Security = deriveSecurity(spec)
-	spec.Questions = deriveQuestions(spec, low)
+	spec.Questions = deriveQuestions(spec, low, cat)
 	return spec
 }
 
@@ -556,7 +560,7 @@ func containsAnyStage(s BuildSpec, names ...string) bool {
 // deriveQuestions asks for what is missing. A question is a BLOCKER only when
 // no sensible default exists — over-blocking turns a guided flow into an
 // interrogation, and every question here has to earn its place.
-func deriveQuestions(s BuildSpec, low string) []SpecQuestion {
+func deriveQuestions(s BuildSpec, low string, cat Catalog) []SpecQuestion {
 	var qs []SpecQuestion
 
 	// A CONVERSATIONAL agent has no compile-time stages, by definition.
@@ -599,11 +603,45 @@ func deriveQuestions(s BuildSpec, low string) []SpecQuestion {
 		}
 	}
 	if len(s.Delivery) == 0 && len(s.Outputs) > 0 {
-		qs = append(qs, SpecQuestion{
-			ID: "delivery", Question: "Where should the result go when it's ready?",
-			Why:     "This produces something, but the intent doesn't say who receives it.",
-			Blocker: false, Field: "delivery",
-		})
+		// A BLOCKER, and offered as a choice. This used to be an optional
+		// free-text nudge, which meant an intent that named no channel was
+		// answered by the generator picking one — in practice always the first
+		// configured channel, so every agent delivered to the same place whether
+		// or not that was wanted. Asking costs one click; guessing wrong sends
+		// someone's output to the wrong audience.
+		// Only ask when there is something to choose from. A blocker whose picker
+		// is empty is the "disabled button with nothing to click" this file's own
+		// Ready() comment warns about.
+		if opts := channelOptions(cat); len(opts) > 0 {
+			qs = append(qs, SpecQuestion{
+				ID: "output_channel", Question: "Which channel should the result be delivered to?",
+				Why:     "This produces something, but the intent doesn't say where it goes. Studio will not choose for you.",
+				Blocker: true, Field: "delivery",
+				Options: deliveryChannelOptions(cat),
+			})
+		} else {
+			qs = append(qs, SpecQuestion{
+				ID: "delivery", Question: "Where should the result go when it's ready?",
+				Why:     "This produces something, but the intent doesn't say who receives it. No channels are configured yet.",
+				Blocker: false, Field: "delivery",
+			})
+		}
+	}
+	// The inbound side of the same question: a channel-triggered agent has to
+	// listen somewhere, and which one was previously inferred from whichever
+	// channel happened to be configured.
+	// Asked only when the answer is a real choice. With one channel configured
+	// there is nothing to decide, and asking would be interrogation rather than
+	// guidance.
+	if s.Trigger == "channel" && !namesAnyChannel(low, cat) {
+		if opts := channelOptions(cat); len(opts) > 1 {
+			qs = append(qs, SpecQuestion{
+				ID: "input_channel", Question: "Which channel should this agent listen on?",
+				Why:     "It is triggered by incoming messages, but the intent doesn't say which channel they arrive on.",
+				Blocker: true, Field: "trigger",
+				Options: opts,
+			})
+		}
 	}
 	if len(s.Integrations) > 0 {
 		qs = append(qs, SpecQuestion{
@@ -692,4 +730,68 @@ func MateriallyDifferent(before, after BuildSpec) bool {
 	}
 	// Resolving a blocker is material even when no field changed shape.
 	return len(before.Blockers()) != len(after.Blockers())
+}
+
+// channelOptions lists the channels this workspace actually has, so the picker
+// can never offer something that is not installed.
+func channelOptions(cat Catalog) []string {
+	out := make([]string, 0, len(cat.Channels))
+	for _, ch := range cat.Channels {
+		if c := strings.TrimSpace(ch); c != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// NoDeliveryChannel is the explicit "don't send this anywhere" answer. Present
+// as a real choice because "returns its answer to whoever asked" is a perfectly
+// good design, and without it the only way past the question is to name a
+// channel the user does not want.
+const NoDeliveryChannel = "none"
+
+func deliveryChannelOptions(cat Catalog) []string {
+	return append(channelOptions(cat), NoDeliveryChannel)
+}
+
+// namesAnyChannel reports whether the intent already names one of the installed
+// channels, in which case there is nothing to ask.
+func namesAnyChannel(low string, cat Catalog) bool {
+	for _, ch := range cat.Channels {
+		c := strings.ToLower(strings.TrimSpace(ch))
+		if c != "" && strings.Contains(low, c) {
+			return true
+		}
+	}
+	return false
+}
+
+// ApplyChannelAnswers forces the channels the operator explicitly chose onto a
+// freshly generated draft.
+//
+// The answer is applied deterministically rather than left to the builder model.
+// The model is TOLD the answer (it appears under "Answers to clarifying
+// questions"), but "told" is not "guaranteed": the previous behaviour was that
+// whichever channel the model felt like naming became the delivery target, which
+// is exactly how every generated agent ended up on the same channel regardless
+// of what was asked for.
+func ApplyChannelAnswers(d *Draft, answers map[string]string) {
+	if d == nil || len(answers) == 0 {
+		return
+	}
+	if v := strings.TrimSpace(answers["output_channel"]); v != "" {
+		if strings.EqualFold(v, NoDeliveryChannel) {
+			// An explicit "nowhere" — the agent returns its answer to whoever
+			// asked instead of broadcasting it.
+			d.Channels = nil
+		} else {
+			d.Channels = []string{strings.ToLower(v)}
+		}
+	}
+	if v := strings.TrimSpace(answers["input_channel"]); v != "" && !strings.EqualFold(v, NoDeliveryChannel) {
+		c := strings.ToLower(v)
+		if !containsFold(d.Channels, c) {
+			d.Channels = append(d.Channels, c)
+		}
+	}
 }

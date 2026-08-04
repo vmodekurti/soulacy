@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"github.com/soulacy/soulacy/internal/updates"
 	"os"
 	"sort"
 	"strconv"
@@ -855,7 +856,11 @@ func deploymentReadinessDetail(deployment deploymentReadiness) string {
 
 func updateManifestHint(src string) string {
 	if strings.TrimSpace(src) == "" {
-		return "Set updates.manifest_url in config.yaml or SOULACY_UPDATE_MANIFEST to enable sy update check/install."
+		// Not a gap: this is the default and it works. Say what it points at, so
+		// an operator who needs a private release host knows the override exists
+		// without being told a working install is broken.
+		return "Updates come from the built-in " + updates.DefaultSourceDescription() +
+			". Set updates.manifest_url only to publish from your own release host."
 	}
 	return "Run sy update check before rollout and sy update install --dry-run to verify the artifact."
 }

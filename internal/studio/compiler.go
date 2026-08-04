@@ -374,7 +374,7 @@ const canonicalExample = `{
   "name": "Weekday AI Digest",
   "system_prompt": "You are a specialized AI news curator. You wake up every weekday morning to compile a brief, high-signal digest of the latest artificial intelligence research and product news. You execute your workflow methodically: searching the web, filtering out noise with a python script, and delegating the final synthesis to your summarizer agent. Your tone is professional and concise. When encountering empty search results or errors, you gracefully emit a fallback message rather than failing. Stick strictly to the defined workflow steps.",
   "trigger": { "type": "schedule", "config": { "cron": "0 8 * * 1-5" } },
-  "channels": ["telegram"],
+  "channels": ["<channel ids the user named, from the installed list above; omit entirely if they named none>"],
   "flow": {
     "nodes": [
       { "id": "search_ai_news", "kind": "tool", "tool": "web_search",
@@ -857,6 +857,9 @@ func Compile(ctx context.Context, llm LLM, intent string, catalog Catalog, answe
 	// implies one (S2.2). Modest and rule-based — it never overrides a
 	// trigger the model already set correctly.
 	normalizeTrigger(&draft, intent)
+
+	// The operator's explicit channel choice wins over whatever the model named.
+	ApplyChannelAnswers(&draft, answers)
 
 	// Deterministic graph normalization (Story M3): make the node kinds the
 	// model implied explicit, so the returned/persisted draft carries the same
