@@ -59,10 +59,6 @@ func TestGenerateStreamDoesNotCancelItsOwnRunContext(t *testing.T) {
 	for sc.Scan() {
 		body.WriteString(sc.Text())
 		body.WriteString("\n")
-		if strings.Contains(sc.Text(), `"status":"error"`) || strings.HasPrefix(sc.Text(), "event: done") {
-			// Keep reading a little past the marker so the done payload lands.
-			continue
-		}
 	}
 	raw := body.String()
 	if strings.Contains(raw, "context canceled") {
