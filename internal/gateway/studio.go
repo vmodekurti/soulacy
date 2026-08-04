@@ -183,62 +183,47 @@ func (s *Server) providerRegistered(id string) bool {
 // failure than stamping the configured default.
 func (s *Server) canCheckProviders() bool { return s.llmRouter != nil }
 
-// stampDefaultLLM makes a generated draft run on the workspace's configured
-// default provider, and REPLACES anything that cannot actually serve a request.
+// stampDefaultLLM makes a FRESHLY generated draft run on the workspace's
+// configured runtime default. The Studio builder model is an authoring detail,
+// never a runtime choice; even when that provider is registered, preserving it
+// here leaks llm.studio.provider/model into SOUL.yaml and makes an agent fail on
+// a model the operator never selected for execution.
 //
-// Filling only blank fields was not enough. Nothing in internal/studio sets
-// llm.provider during generation — so a provider that appears there came from
-// the builder model's own JSON, which happily invents plausible-looking names
-// ("openai", "gpt-4") that were never configured here. Because the field was
-// non-empty, the old stamp skipped it and the invention was saved into the
-// agent's SOUL.yaml, where it fails every run while looking like a deliberate
-// choice the user made.
-//
-// The rule is therefore:
-//   - empty            → use the configured default
-//   - set, unregistered → REPLACE with the configured default (a hallucination
-//     or a stale pin; either way it cannot run)
-//   - set, registered   → keep it. Someone deliberately pinned a working
-//     provider and Studio must not overrule that.
-//
-// The model is replaced together with the provider: a model name only means
-// something relative to its provider, so keeping one across a provider swap
-// produces a pairing that exists nowhere.
+// Both callers are generation endpoints. Existing saved agents bypass this
+// function and therefore retain deliberate per-agent provider/model pins during
+// edit/save round-trips.
 func (s *Server) stampDefaultLLM(d *studio.Draft) {
 	if d == nil {
 		return
 	}
 	p, m := s.defaultAgentLLM()
-	cur := strings.TrimSpace(d.LLM.Provider)
-
-	// With no router we cannot verify anything; fall back to filling blanks only,
-	// which is the pre-existing behaviour and cannot make things worse.
+	// With no router we cannot verify registration, but config is still more
+	// authoritative than model-authored JSON for a fresh draft.
 	if !s.canCheckProviders() {
-		if cur == "" {
-			d.LLM.Provider = p
-		}
-		if strings.TrimSpace(d.LLM.Model) == "" {
-			d.LLM.Model = m
-		}
+		d.LLM.Provider = p
+		d.LLM.Model = m
 		return
 	}
 
-	// Keep a provider that is genuinely usable, whoever chose it.
-	if cur != "" && s.providerRegistered(cur) {
-		if strings.TrimSpace(d.LLM.Model) == "" && strings.EqualFold(cur, p) {
-			d.LLM.Model = m
-		}
-		return
-	}
-
-	// Either blank or unusable. Prefer the configured default — but only if it
-	// is itself registered, otherwise we would be swapping one dead reference
-	// for another. When it is not, clear the field: blank resolves against
-	// whatever the runtime actually has, whereas a dead name fails every run.
-	// The preflight provider check reports the underlying misconfiguration.
 	if s.providerRegistered(p) {
 		d.LLM.Provider = p
 		d.LLM.Model = m
+		return
+	}
+
+	// A stale default should not make every generated agent dead on arrival.
+	// Choose a provider the live router actually registered, deterministically,
+	// and pair it only with that provider's configured model.
+	ids := append([]string(nil), s.llmRouter.ProviderIDs()...)
+	sort.Strings(ids)
+	if len(ids) > 0 {
+		fallback := ids[0]
+		d.LLM.Provider = fallback
+		if pc, ok := s.cfg.LLM.Providers[fallback]; ok {
+			d.LLM.Model = strings.TrimSpace(pc.Model)
+		} else {
+			d.LLM.Model = ""
+		}
 		return
 	}
 	d.LLM.Provider = ""

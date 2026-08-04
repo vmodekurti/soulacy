@@ -253,10 +253,17 @@ func deterministicTools(intent string, cat Catalog) []string {
 	}
 
 	needsSearch := anyContains(li, "search", "research", "find", "latest", "news", "deal", "stock", "option", "article", "url", "web")
+	// Tool names such as mcp__weather__search_location contain "search" but do
+	// not request a generic web search. Prefer the named, installed MCP capability
+	// unless the operator separately asked to search the web.
+	if strings.Contains(li, "mcp__weather__") && !anyContains(li, "web search", "search the web", "internet search") {
+		needsSearch = false
+	}
 	needsFetch := anyContains(li, "url", "article", "document", "page", "fetch", "scrape", "ingest")
 	needsKB := anyContains(li, "knowledge", "kb", "store", "ingest", "tag", "document")
 	needsQueue := anyContains(li, "queue", "daily", "schedule", "later", "pending", "inbox")
-	needsDelivery := anyContains(li, "send", "notify", "telegram", "slack", "discord", "whatsapp", "deliver")
+	sameChannelReply := sameChannelReplyIntent(intent)
+	needsDelivery := !sameChannelReply && anyContains(li, "send", "notify", "telegram", "slack", "discord", "whatsapp", "deliver")
 
 	if needsSearch {
 		addBuiltin("web_search")
@@ -275,7 +282,7 @@ func deterministicTools(intent string, cat Catalog) []string {
 		addBuiltin("queue_list")
 		addBuiltin("queue_names")
 	}
-	if needsDelivery || len(deterministicChannels(intent, cat)) > 0 {
+	if needsDelivery || (len(deterministicChannels(intent, cat)) > 0 && !sameChannelReply) {
 		addBuiltin("channel.send")
 		addBuiltin("channel.status")
 	}
@@ -287,8 +294,11 @@ func deterministicTools(intent string, cat Catalog) []string {
 		addBuiltin("channel.send")
 		addBuiltin("channel.status")
 	case strings.Contains(li, "weather"):
-		addMCP("weather", "forecast", "current", "location", "resolve", "alert", "openmeteo", "open-meteo")
-		addBuiltin("web_search")
+		weatherTools := matchingMCPTools(cat, "weather", "forecast", "current", "location", "resolve", "alert", "openmeteo", "open-meteo")
+		out = append(out, weatherTools...)
+		if len(weatherTools) == 0 {
+			addBuiltin("web_search")
+		}
 	case anyContains(li, "stock", "option", "finance", "ticker", "earnings", "market"):
 		addMCP("yahoo", "finance", "stock", "quote", "ticker", "option", "earnings", "funda")
 		addBuiltin("web_search")
@@ -307,6 +317,23 @@ func deterministicTools(intent string, cat Catalog) []string {
 		addBuiltin("fetch_url")
 	}
 	return uniqueStrings(out)
+}
+
+// sameChannelReplyIntent distinguishes an ordinary reply from an outbound
+// delivery action. The runtime automatically sends an agent's final answer back
+// over the inbound channel; granting channel.send for wording such as "respond
+// via the same channel" adds a privileged side effect, confirmation gate, and
+// intent-deny policy that the conversation neither needs nor requested.
+func sameChannelReplyIntent(intent string) bool {
+	li := strings.ToLower(intent)
+	if !ConversationalIntent(intent) {
+		return false
+	}
+	return anyContains(li,
+		"same channel", "channel the query arrived", "channel the message arrived",
+		"sends it back to the user", "send it back to the user",
+		"responds to the user", "respond to the user", "replies to the user",
+		"reply to the user", "returns the answer to the user")
 }
 
 func hasCatalogBuiltin(cat Catalog, name string) bool {

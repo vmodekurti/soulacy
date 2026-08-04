@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/soulacy/soulacy/internal/studio"
 )
 
 // studioFake registers a controllable LLM provider under the resolved studio
@@ -43,6 +45,24 @@ func TestStudioCompile_RoutesReasoningTaskToAgent(t *testing.T) {
 	}
 	if wf["strategy"] != "plan_execute" {
 		t.Errorf("expected /compile to return a plan_execute agent, got strategy=%v", wf["strategy"])
+	}
+}
+
+func TestStampDefaultLLM_DoesNotLeakRegisteredBuilderModelIntoGeneratedAgent(t *testing.T) {
+	s, _ := studioFake(t)
+	s.llmRouter.Register(&fakeLLMProvider{id: "ollama_cloud"})
+	s.cfg.LLM.Studio.Provider = "ollama_cloud"
+	s.cfg.LLM.Studio.Model = "glm-5.2"
+
+	draft := studio.Draft{}
+	// Reproduce a builder-authored pair. Registration alone does not make it an
+	// operator choice for the generated agent's runtime.
+	draft.LLM.Provider = "ollama_cloud"
+	draft.LLM.Model = "glm-5.2"
+	s.stampDefaultLLM(&draft)
+
+	if draft.LLM.Provider != "openai" || draft.LLM.Model != "gpt-4o-mini" {
+		t.Fatalf("generated runtime LLM = %s/%s, want configured default openai/gpt-4o-mini", draft.LLM.Provider, draft.LLM.Model)
 	}
 }
 
