@@ -325,26 +325,18 @@ func refinePrompt(ctx context.Context, llm LLM, intent string, catalog Catalog, 
 	}
 
 	combined := payload.RefinedIntent + " " + intent
-	mode := normalizeMode(payload.RecommendedMode)
-	// Deterministic override: when the intent has STRONG signals a fixed flow
-	// physically cannot satisfy (async polling, per-item loops, dynamic capability
-	// routing, or an explicit multi-phase plan), force the corresponding agent
-	// mode regardless of what the model guessed (models often mislabel these).
-	// This is the SAME authority the server-side compile route uses, on the SAME
-	// combined text, so the decision can't diverge by entry path.
-	// Workflow authoring is experimental, so prompt wording and model guesses do
-	// not count as the required UI/API opt-in. A fixed procedure is presented as
-	// Plan-Execute until the operator chooses Workflow and accepts its warning.
-	if explicitWorkflowRequested(combined) && !explicitReActRequested(combined) {
-		mode = "plan_execute"
-	} else if forced := RecommendAgentMode(combined); forced != "" {
-		mode = forced
-	} else if mode == "" {
-		mode = inferModeFromIntent(combined)
-	}
-	mode = avoidImplicitReAct(mode, combined)
-	if mode == "workflow" {
-		mode = "plan_execute"
+	// The refiner describes the request; it does not choose runtime architecture.
+	// Treating its recommended_mode as an explicit operator selection let a model
+	// label a detailed conversational spec "workflow", which the experimental
+	// workflow guard then converted blindly to Plan-Execute. The same weather bot
+	// that should use one native tool call per message consequently entered the
+	// heavier planner and failed before execution. Keep architecture deterministic
+	// and identical to the compile route: only the user's words may select ReAct,
+	// while conversational assistants resolve to Auto and true multi-phase jobs
+	// resolve to Plan-Execute.
+	mode := RecommendAgentMode(combined)
+	if mode == "" {
+		mode = "auto"
 	}
 	refined := strings.TrimSpace(payload.RefinedIntent)
 	if !light && refinementNeedsLocalExpansion(intent, refined) {
@@ -742,20 +734,12 @@ func maxInt(a, b int) int {
 	return b
 }
 
-func avoidImplicitReAct(mode, intent string) string {
-	if strings.EqualFold(strings.TrimSpace(mode), "react") && !explicitReActRequested(intent) {
-		return "plan_execute"
-	}
-	return mode
-}
-
 // hasStrongReasoningCues reports whether the intent has signals that a FIXED flow
 // cannot satisfy (asynchronous jobs that must be polled, per-item loops, or
 // driving an interactive multi-step external service like NotebookLM). These
 // override a model's "workflow" guess — we've seen fixed flows fail every time
 // on these. They now route to Plan-Execute unless the user explicitly asks for
-// ReAct. Distinct from inferModeFromIntent's softer cues (used only as a
-// no-model fallback).
+// ReAct.
 func hasStrongReasoningCues(intent string) bool {
 	t := strings.ToLower(intent)
 	strong := []string{
@@ -919,40 +903,6 @@ func structuredWorkflowProcedureRequested(intent string) bool {
 		return true
 	}
 	return false
-}
-
-// inferModeFromIntent is a deterministic backstop: phrases implying loops over
-// items, polling, or driving an interactive external service lean Plan-Execute;
-// ordinary conversational/tool assistants lean Auto; fixed procedures use
-// Plan-Execute because Workflow requires an explicit experimental opt-in.
-func inferModeFromIntent(intent string) string {
-	t := strings.ToLower(intent)
-	if explicitReActRequested(intent) {
-		return "react"
-	}
-	if explicitWorkflowRequested(intent) {
-		return "plan_execute"
-	}
-	planCues := []string{
-		"poll", "until ready", "until complete", "until done", "wait for",
-		"each ", "every item", "one by one", "iterate", "loop over",
-		"notebooklm", "notebook lm", "research and then", "figure out", "explore", "manage",
-	}
-	for _, c := range planCues {
-		if strings.Contains(t, c) {
-			return "plan_execute"
-		}
-	}
-	autoCues := []string{
-		"assistant", "answers questions", "answer questions", "responds to", "chat",
-		"tool", "skill", "find", "search", "research assistant", "deal finder",
-	}
-	for _, c := range autoCues {
-		if strings.Contains(t, c) {
-			return "auto"
-		}
-	}
-	return "auto"
 }
 
 // parseRefinement tolerantly extracts the refine JSON from raw model output,

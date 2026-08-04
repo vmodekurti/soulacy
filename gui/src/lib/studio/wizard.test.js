@@ -13,7 +13,7 @@ const saved = { ...tested, saved: true }
 
 describe('generatedMode', () => {
   it('never selects experimental Workflow during ordinary generation', () => {
-    expect(generatedMode('workflow')).toBe('plan_execute')
+    expect(generatedMode('workflow')).toBe('auto')
   })
 
   it('preserves supported agent strategies', () => {

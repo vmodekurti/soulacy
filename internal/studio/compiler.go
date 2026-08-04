@@ -1214,7 +1214,9 @@ func inferTriggerType(lc string) string {
 		"when someone messages", "when someone sends", "on telegram",
 		"on slack", "on discord", "on whatsapp", "reply to messages",
 		"when a message", "when i message", "respond to messages",
-		"someone dms", "incoming message",
+		"someone dms", "incoming message", "receives a user message",
+		"receive a user message", "receives user messages", "user queries",
+		"query arrived", "same channel", "channel the query arrived",
 	}
 	for _, cue := range channelCues {
 		if strings.Contains(lc, cue) {

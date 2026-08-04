@@ -70,12 +70,13 @@ export function intentOf(refined, raw) {
  *
  * A refiner/model may still recommend "workflow", but generated fixed graphs
  * are experimental and require the dedicated Workflow opt-in. Ordinary
- * Generate therefore turns a fixed-procedure recommendation into Plan-Execute;
- * malformed or missing recommendations fall back to Auto.
+ * Generate therefore treats a stale/model-produced Workflow recommendation as
+ * Auto; the server-side advisor can still select Plan-Execute from the intent.
+ * Malformed or missing recommendations also fall back to Auto.
  */
 export function generatedMode(mode) {
   const m = String(mode || '').trim().toLowerCase()
-  if (m === 'workflow') return 'plan_execute'
+  if (m === 'workflow') return 'auto'
   if (m === 'auto' || m === 'react' || m === 'plan_execute') return m
   return 'auto'
 }

@@ -7496,7 +7496,7 @@ Use null for fields that are not present.`
             <strong>Recommended build: {recoAgentLabel(generatedMode(refinement.recommended_mode))}</strong>
             {#if refinement.recommended_reason} — {refinement.recommended_reason}{/if}
             {#if refinement.recommended_mode === 'workflow'}
-              <div class="refine-mode-sub">This looks like a fixed procedure, so Studio will use Plan-Execute by default. AI-generated workflows are experimental and require an explicit opt-in from the strategy panel.</div>
+              <div class="refine-mode-sub">Studio will use a safe agent strategy by default. AI-generated workflows are experimental and require an explicit opt-in from the strategy panel.</div>
             {:else}
               <div class="refine-mode-sub">This task reasons over its tools (looping/polling), so Studio will build a reasoning agent instead of a fixed flow canvas.</div>
             {/if}
