@@ -12,7 +12,7 @@
   // This panel shows the contract for the SELECTED mode only. Rendering ReAct's
   // budgets under Plan-Execute would imply they were in force when they are not.
 
-  export let mode = 'workflow'          // workflow | auto | react | plan_execute
+  export let mode = 'auto'              // workflow | auto | react | plan_execute
   export let advice = null              // { warning, confidence, capabilities, mode, reason }
   export let recommendation = null      // { mode, rationale }
   export let policy = null              // effective AgentPolicy from the draft
@@ -25,7 +25,7 @@
   export let onUpdate = () => {}        // (patch) => void, merged into draft.policy
 
   const MODES = [
-    { id: 'workflow',     label: 'Workflow' },
+    { id: 'workflow',     label: 'Workflow', experimental: true },
     { id: 'auto',         label: 'Auto' },
     { id: 'react',        label: 'ReAct (advanced)' },
     { id: 'plan_execute', label: 'Plan-Execute' },
@@ -92,7 +92,10 @@
         role="tab" aria-selected={mode === m.id}
         type="button" disabled={busy}
         on:click={() => onSwitchMode(m.id)}
-      >{m.label}</button>
+      >
+        <span>{m.label}</span>
+        {#if m.experimental}<span class="sp-exp">Experimental</span>{/if}
+      </button>
     {/each}
   </div>
 
@@ -128,9 +131,10 @@
 
   {#if mode === 'workflow'}
     <p class="sp-note">
-      A fixed graph. Studio owns the steps and runs the same bounded sequence every
-      time — use it when ordering, fan-out/fan-in, polling or scheduled side effects
-      must be guaranteed rather than decided.
+      <strong>Experimental:</strong> Studio generates a fixed graph and runs the same
+      bounded sequence every time. Generated graphs can choose the wrong tools, lose
+      inputs between steps, or require manual wiring. Review and test every step before
+      deployment.
     </p>
   {:else}
     <!-- Shared agent contract -->
@@ -339,8 +343,9 @@
 
     {#if mode === 'auto'}
       <p class="sp-note">
-        Switches to Workflow when strict ordering, fan-out/fan-in, polling or
-        scheduled side effects are required.
+        Studio keeps generated workflows off by default. Use Plan-Execute for
+        multi-step work; choose Experimental Workflow only when you need a fixed
+        graph and will review and test it.
       </p>
     {/if}
 
@@ -360,12 +365,21 @@
     padding: 6px 14px; border-radius: 6px; font-size: .85rem; cursor: pointer;
     border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
     background: transparent; color: var(--text, inherit);
+    display: inline-flex; align-items: center; gap: 6px;
   }
   .sp-mode.active {
     background: var(--accent, #6d5efc); color: #fff;
     border-color: var(--accent, #6d5efc);
   }
   .sp-mode:disabled { opacity: .55; cursor: default; }
+  .sp-exp {
+    padding: 1px 5px; border-radius: 999px; font-size: .58rem;
+    line-height: 1.3; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--warn, #f0ad4e);
+    border: 1px solid color-mix(in srgb, var(--warn, #f0ad4e) 55%, transparent);
+    background: color-mix(in srgb, var(--warn, #f0ad4e) 12%, transparent);
+  }
+  .sp-mode.active .sp-exp { color: #fff; border-color: rgba(255, 255, 255, .65); }
 
   .sp-head { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; }
   .sp-banner {

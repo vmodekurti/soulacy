@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   STEPS, STEP_DESCRIBE, STEP_BUILD, STEP_TEST, STEP_SAVE,
   stepIndex, hasDraft, canEnter, isDone, stepStates,
-  nextStep, prevStep, autoStep, saveBlockedReason,
+  nextStep, prevStep, autoStep, saveBlockedReason, generatedMode,
 } from './wizard.js'
 
 const empty = {}
@@ -10,6 +10,23 @@ const described = { intent: 'daily podcast' }
 const built = { intent: 'daily podcast', hasNodes: true }
 const tested = { ...built, tested: true, testPassed: true }
 const saved = { ...tested, saved: true }
+
+describe('generatedMode', () => {
+  it('never selects experimental Workflow during ordinary generation', () => {
+    expect(generatedMode('workflow')).toBe('plan_execute')
+  })
+
+  it('preserves supported agent strategies', () => {
+    expect(generatedMode('auto')).toBe('auto')
+    expect(generatedMode('react')).toBe('react')
+    expect(generatedMode('plan_execute')).toBe('plan_execute')
+  })
+
+  it('defaults missing or malformed recommendations to Auto', () => {
+    expect(generatedMode('')).toBe('auto')
+    expect(generatedMode('something-new')).toBe('auto')
+  })
+})
 
 describe('canEnter', () => {
   it('always allows Describe', () => {

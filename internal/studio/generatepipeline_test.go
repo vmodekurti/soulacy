@@ -116,7 +116,7 @@ func TestRunGeneratePipeline_SyncModeWorksWithoutEmit(t *testing.T) {
 	}
 }
 
-func TestRunGeneratePipeline_UsesDeterministicPlannerAfterRefine(t *testing.T) {
+func TestRunGeneratePipeline_UsesDeterministicAgentAfterRefine(t *testing.T) {
 	llm := &refineOnlyLLM{}
 	res, err := RunGeneratePipeline(
 		context.Background(),
@@ -131,8 +131,8 @@ func TestRunGeneratePipeline_UsesDeterministicPlannerAfterRefine(t *testing.T) {
 	if llm.calls != 1 {
 		t.Fatalf("LLM calls=%d, want exactly one refine call", llm.calls)
 	}
-	if res.Compile.Workflow.IsAgent() {
-		t.Fatalf("expected deterministic workflow, got agent: %#v", res.Compile.Workflow)
+	if !res.Compile.Workflow.IsAgent() || res.Compile.Workflow.Strategy != "plan_execute" {
+		t.Fatalf("expected deterministic Plan-Execute agent, got: %#v", res.Compile.Workflow)
 	}
 	if res.Compile.Workflow.Strategy == "react" {
 		t.Fatalf("deterministic planner should not emit implicit ReAct")
@@ -142,7 +142,7 @@ func TestRunGeneratePipeline_UsesDeterministicPlannerAfterRefine(t *testing.T) {
 	}
 }
 
-func TestRunGeneratePipeline_UsesBuilderModelByDefault(t *testing.T) {
+func TestRunGeneratePipeline_DoesNotUseBuilderForUnforcedWorkflow(t *testing.T) {
 	res, err := RunGeneratePipeline(
 		context.Background(),
 		pipelineFakeLLM{},
@@ -153,7 +153,10 @@ func TestRunGeneratePipeline_UsesBuilderModelByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipeline returned error: %v", err)
 	}
-	if !strings.Contains(strings.Join(res.Compile.Notes, "\n"), "builder model designed") {
-		t.Fatalf("expected model-designed graph note, got %#v", res.Compile.Notes)
+	if !res.Compile.Workflow.IsAgent() {
+		t.Fatalf("unforced generation created a workflow: %#v", res.Compile.Workflow)
+	}
+	if !strings.Contains(strings.Join(res.Compile.Notes, "\n"), "deterministic planner") {
+		t.Fatalf("expected deterministic agent note, got %#v", res.Compile.Notes)
 	}
 }

@@ -5,27 +5,27 @@ import (
 	"testing"
 )
 
-func TestRefinePrompt_StrongCuesOverrideModelWorkflow(t *testing.T) {
-	// Model says "workflow" and the task matches Soulacy's deterministic
-	// NotebookLM podcast macro-workflow, so Studio should keep it as Workflow.
+func TestRefinePrompt_StrongCuesDoNotAutoGenerateWorkflow(t *testing.T) {
+	// Even when the model says "workflow" and the task looks deterministic,
+	// Studio requires an explicit experimental opt-in and recommends an agent.
 	out := `{"refined_intent":"Daily at 7am, authenticate with NotebookLM, create a notebook, add each source, generate the audio overview and poll status until ready, then deliver.","summary":"daily audio briefing","recommended_mode":"workflow","mode_reason":"fixed daily sequence"}`
 	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "daily ai audio news briefing with notebooklm", Catalog{})
 	if err != nil {
 		t.Fatalf("RefinePrompt: %v", err)
 	}
-	if r.RecommendedMode != "workflow" {
-		t.Errorf("NotebookLM podcast cues should route to deterministic workflow, got %q", r.RecommendedMode)
+	if r.RecommendedMode != "plan_execute" {
+		t.Errorf("NotebookLM podcast cues should route to Plan-Execute, got %q", r.RecommendedMode)
 	}
 }
 
-func TestRefinePrompt_PlainWorkflowStaysWorkflow(t *testing.T) {
+func TestRefinePrompt_PlainWorkflowDefaultsToPlanExecute(t *testing.T) {
 	out := `{"refined_intent":"Every weekday at 8am search the web for AI news, summarize the top 5, post to Telegram.","summary":"daily digest","recommended_mode":"workflow","mode_reason":"fixed pipeline"}`
 	r, err := RefinePrompt(context.Background(), fakeLLM{out: out}, "daily ai news digest to telegram", Catalog{})
 	if err != nil {
 		t.Fatalf("RefinePrompt: %v", err)
 	}
-	if r.RecommendedMode != "workflow" {
-		t.Errorf("a plain fixed pipeline should stay workflow, got %q", r.RecommendedMode)
+	if r.RecommendedMode != "plan_execute" {
+		t.Errorf("a plain fixed pipeline should default to Plan-Execute, got %q", r.RecommendedMode)
 	}
 }
 
@@ -85,10 +85,10 @@ func TestRecommendAgentMode_SkillRoutingAssistant(t *testing.T) {
 	if got := RecommendAgentMode(intent); got != "plan_execute" {
 		t.Fatalf("a dynamic skill-routing assistant must be plan_execute by default; got %q", got)
 	}
-	// A genuinely fixed pipeline must NOT be forced to an agent.
+	// A genuinely fixed pipeline still defaults to a safe agent strategy.
 	fixed := "Every weekday at 8am, search the web for AI news, summarize the top 5, and post to Telegram."
-	if got := RecommendAgentMode(fixed); got != "" {
-		t.Errorf("a fixed scheduled pipeline should stay a workflow; got %q", got)
+	if got := RecommendAgentMode(fixed); got != "plan_execute" {
+		t.Errorf("a fixed scheduled pipeline should default to Plan-Execute; got %q", got)
 	}
 }
 

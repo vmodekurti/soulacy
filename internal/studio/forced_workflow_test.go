@@ -37,9 +37,9 @@ func TestForcingWorkflowOnAConversationalIntentIsHonest(t *testing.T) {
 	}
 }
 
-// A genuine pipeline forced to Workflow must NOT be warned — that would train
-// people to ignore the warning.
-func TestForcingWorkflowOnAPipelineIsNotWarned(t *testing.T) {
+// Even a genuine pipeline gets the experimental warning: generation quality is
+// the risk, not merely whether the intent looks deterministic.
+func TestForcingWorkflowOnAPipelineIsExplicitlyWarned(t *testing.T) {
 	cat := Catalog{Tools: []string{"web_search"}}
 	advice := AdviseStrategy(
 		"Every weekday at 7am send a digest of AI research news to telegram", cat, "workflow", true)
@@ -47,11 +47,11 @@ func TestForcingWorkflowOnAPipelineIsNotWarned(t *testing.T) {
 	if advice.Mode != "workflow" {
 		t.Fatalf("mode = %q, want workflow", advice.Mode)
 	}
-	if advice.CapabilityWarning != "" {
-		t.Errorf("warned about a genuine pipeline: %q", advice.CapabilityWarning)
+	if advice.CapabilityWarning == "" {
+		t.Fatal("experimental workflow generation must always warn")
 	}
-	if advice.Confidence != "high" {
-		t.Errorf("confidence = %q, want high for a real pipeline", advice.Confidence)
+	if advice.Confidence != "low" {
+		t.Errorf("confidence = %q, want low for experimental generation", advice.Confidence)
 	}
 }
 

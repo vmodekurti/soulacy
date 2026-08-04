@@ -58,9 +58,9 @@ func (s *scriptedLLM) Complete(ctx context.Context, prompt string) (string, erro
 	return graphJSON("web_search"), nil
 }
 
-// The whole complaint in one test: the user named an installed MCP server, and
-// the compiled workflow used a generic web search instead.
-func TestWorkflowRetriesWhenItIgnoresANamedMCPServer(t *testing.T) {
+// Unforced generation now creates an agent. Its allowlist must preserve the
+// explicitly named MCP tool without invoking workflow coverage repair.
+func TestAgentPreservesNamedMCPServerWithoutWorkflowCoverageRetry(t *testing.T) {
 	llm := &scriptedLLM{}
 	res, err := RunGeneratePipeline(context.Background(), llm, trvlWorkflowIntent, trvlCatalog(), PipelineOptions{})
 	if err != nil {
@@ -80,23 +80,12 @@ func TestWorkflowRetriesWhenItIgnoresANamedMCPServer(t *testing.T) {
 	if !usedTrvl {
 		t.Errorf("the workflow does not call the trvl MCP tool the prompt named; tools = %v", tools)
 	}
-	if usedWebSearch {
-		t.Errorf("the workflow still uses web_search in place of the named MCP tool; tools = %v", tools)
+	for _, prompt := range llm.prompts {
+		if strings.Contains(prompt, "CORRECTION") {
+			t.Fatalf("unexpected workflow coverage retry; %d model call(s)", len(llm.prompts))
+		}
 	}
-	// The pipeline refines before it compiles, so the retry is the LAST prompt
-	// rather than a fixed index.
-	last := llm.prompts[len(llm.prompts)-1]
-	if !strings.Contains(last, "CORRECTION") {
-		t.Fatalf("no coverage retry was issued; %d model call(s) made", len(llm.prompts))
-	}
-	// The retry has to actually SAY what was missed — restating the same
-	// catalogue would just produce the same answer again.
-	if !strings.Contains(last, "mcp__trvl__travel") {
-		t.Error("the retry prompt does not name the omitted capability")
-	}
-	if !strings.Contains(strings.ToLower(last), "do not substitute web_search") {
-		t.Error("the retry prompt does not rule out the generic substitute that caused the failure")
-	}
+	_ = usedWebSearch // web_search may remain as an additional allowed capability.
 }
 
 // No gap, no retry: this must not add a model call to every generation.

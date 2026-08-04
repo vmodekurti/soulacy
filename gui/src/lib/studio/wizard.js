@@ -65,6 +65,21 @@ export function intentOf(refined, raw) {
   return String(refined || '').trim() || String(raw || '').trim()
 }
 
+/**
+ * generatedMode enforces Studio's safe authoring default.
+ *
+ * A refiner/model may still recommend "workflow", but generated fixed graphs
+ * are experimental and require the dedicated Workflow opt-in. Ordinary
+ * Generate therefore turns a fixed-procedure recommendation into Plan-Execute;
+ * malformed or missing recommendations fall back to Auto.
+ */
+export function generatedMode(mode) {
+  const m = String(mode || '').trim().toLowerCase()
+  if (m === 'workflow') return 'plan_execute'
+  if (m === 'auto' || m === 'react' || m === 'plan_execute') return m
+  return 'auto'
+}
+
 /** True when the draft can be opened in Build — a broken draft still counts. */
 export function hasDraft(ctx) {
   const c = ctx || {}
