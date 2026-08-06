@@ -3367,7 +3367,14 @@ Use null for fields that are not present.`
       const res = await bridge.save(workflow, acceptPrivilegedExposure, grants, acceptReason.trim())
       const id = res.agentId
       loadedAgentId = id || loadedAgentId
-      saveMsg = `Saved as disabled agent ${id} — enable it from Deployed.`
+      // A workflow that delegates to a peer the workspace didn't have causes
+      // that peer to be created here. Say so: otherwise the agent list silently
+      // grows and the user has no idea where "summarizer" came from.
+      const peers = Array.isArray(res.peerAgents) ? res.peerAgents : []
+      const alsoMade = peers.length
+        ? ` Also created ${peers.length === 1 ? 'helper agent' : 'helper agents'} ${peers.join(', ')} — this workflow delegates to ${peers.length === 1 ? 'it' : 'them'}.`
+        : ''
+      saveMsg = `Saved as disabled agent ${id} — enable it from Deployed.${alsoMade}`
       // The justification belongs to the save that consumed it; carrying it into
       // the next one would silently reuse a reason the user never re-affirmed.
       acceptReason = ''
