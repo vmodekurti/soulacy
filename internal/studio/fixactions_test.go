@@ -8,6 +8,9 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/soulacy/soulacy/pkg/agent"
+	sdkr "github.com/soulacy/soulacy/sdk/reasoning"
 )
 
 func TestFixActions_EveryEntryIsUsable(t *testing.T) {
@@ -157,5 +160,122 @@ func TestReadinessItems_KeepAContractChecksOwnAction(t *testing.T) {
 	}
 	if items[1].Action != FixOpenProviders {
 		t.Fatalf("expected the id-derived fallback for runtime.provider, got %q", items[1].Action)
+	}
+}
+
+// Every apply-action must be reachable from a real finding, or the client is
+// carrying a handler for something nothing sends. Apply-actions now come from
+// two places — the security review and the generation contract — so this has to
+// exercise both.
+func TestEveryApplyActionIsEmittedBySomeFinding(t *testing.T) {
+	emitted := map[string]bool{}
+	note := func(action string) {
+		if action != "" {
+			emitted[action] = true
+		}
+	}
+
+	for _, d := range []Draft{
+		{Tools: []string{"shell_exec"}, Channels: []string{"telegram", "http"}},
+		{Tools: []string{"web_search", "shell_exec"}, Channels: []string{"http"}},
+	} {
+		rev := SecurityPreflight(d, &agent.Definition{ID: "x", Capabilities: []string{"system"}}, "")
+		for _, f := range append(append([]SecurityFinding{}, rev.Blockers...), rev.Warnings...) {
+			note(f.Action)
+		}
+	}
+
+	thin := Draft{
+		Name:      "Travel Advisor",
+		Channels:  []string{"http"},
+		NewAgents: []NewAgent{{ID: "summarizer", Name: "Summarizer", SystemPrompt: "Summarise things."}},
+		Flow: Flow{Entry: "fmt", Nodes: []sdkr.FlowNode{
+			{ID: "fmt", Kind: "agent", Agent: "summarizer", Description: "Format results", Output: "reply"},
+		}},
+	}
+	for _, c := range AssessContract(thin, Catalog{}, PreflightInput{}).Checks {
+		note(c.Action)
+	}
+
+	for _, a := range FixActions() {
+		if a.Kind != FixKindApply {
+			continue
+		}
+		if !emitted[a.ID] {
+			t.Errorf("apply-action %q is declared but no finding emits it", a.ID)
+		}
+	}
+}
+
+// A thin helper prompt is the one warning a user cannot act on without knowing
+// what a good agent prompt looks like — so the finding carries one.
+func TestContract_ThinHelperPromptCarriesAWrittenPrompt(t *testing.T) {
+	draft := Draft{
+		Name:      "Travel Advisor",
+		Channels:  []string{"http"},
+		NewAgents: []NewAgent{{ID: "summarizer", Name: "Summarizer", SystemPrompt: "Summarise."}},
+		Flow: Flow{Entry: "fmt", Nodes: []sdkr.FlowNode{
+			{ID: "fmt", Kind: "agent", Agent: "summarizer", Description: "Turn travel results into prose", Output: "reply"},
+		}},
+	}
+	var found *ContractCheck
+	checks := AssessContract(draft, Catalog{}, PreflightInput{}).Checks
+	for i, c := range checks {
+		if c.ID == "agents.prompts" && c.Status == "warn" {
+			found = &checks[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("expected a thin-helper-prompt warning")
+	}
+	if found.Action != FixWriteHelperPrompt {
+		t.Fatalf("expected the write-prompt action, got %q", found.Action)
+	}
+	if got := found.ActionParams["agent"]; got != "summarizer" {
+		t.Fatalf("the fix must name which helper it is for, got %q", got)
+	}
+	prompt := found.ActionParams["prompt"]
+	if len(strings.Fields(prompt)) < 18 {
+		t.Fatalf("the offered prompt is as thin as the one it replaces: %q", prompt)
+	}
+	// It should be about THIS step, not a generic stub.
+	if !strings.Contains(prompt, "Summarizer") {
+		t.Fatalf("the offered prompt should be written for this helper: %q", prompt)
+	}
+}
+
+// The delivery blocker used to be reported twice — once under graph integrity
+// with a remedy about "broken graph structure" that had nothing to do with it.
+func TestContract_DeliveryBlockerIsReportedOnceWithAMatchingFix(t *testing.T) {
+	draft := Draft{
+		Name:     "Digest",
+		Intent:   "every morning summarise the news and send it to me on telegram",
+		Channels: []string{"http"},
+		Flow: Flow{Entry: "step", Nodes: []sdkr.FlowNode{
+			{ID: "step", Kind: "tool", Tool: "web_search", Input: `{"query":"news"}`, Output: "results"},
+		}},
+	}
+	var hits []ContractCheck
+	for _, c := range AssessContract(draft, Catalog{}, PreflightInput{}).Checks {
+		if strings.Contains(c.Message, "no routable output channel") {
+			hits = append(hits, c)
+		}
+	}
+	if len(hits) != 1 {
+		ids := []string{}
+		for _, h := range hits {
+			ids = append(ids, h.ID)
+		}
+		t.Fatalf("the same finding was reported %d times (%v) — once is enough", len(hits), ids)
+	}
+	if strings.Contains(hits[0].Fix, "broken graph structure") {
+		t.Fatalf("the remedy does not match the finding: %q", hits[0].Fix)
+	}
+	if !strings.Contains(hits[0].Fix, "Channels & delivery") {
+		t.Fatalf("the remedy should name where to change it, got %q", hits[0].Fix)
+	}
+	if hits[0].ActionLabel == "" {
+		t.Fatal("a blocker this specific should offer a button")
 	}
 }

@@ -114,14 +114,19 @@ describe('applying a draft fix', () => {
   })
 
   it('covers every shared channel the security review can name', () => {
-    // The two lists are separate by necessity (different languages) — if the Go
-    // side learns a new shared channel, this fix must learn it too or the
-    // button will leave that channel in place while claiming otherwise.
-    const goList = [...read('internal/studio/security_preflight.go')
-      .matchAll(/"(telegram|discord|slack|teams|googlechat|whatsapp|whatsapp_web|email|webhook)"/g)]
-      .map((m) => m[1])
-    for (const c of new Set(goList)) {
+    // Read the Go map itself. The first version of this test used a hand-typed
+    // alternation of channel names, which passed while the client list actually
+    // said "googlechat" for google_chat and omitted sms — so the fix would have
+    // left both wired up while reporting the agent as internal-only.
+    const goMap = read('internal/studio/security_preflight.go')
+    const block = goMap.slice(goMap.indexOf('var studioSharedExternalChannels = map[string]bool{'))
+    const names = [...block.slice(0, block.indexOf('\n}')).matchAll(/"([a-z_]+)":\s*true/g)].map((m) => m[1])
+    expect(names.length, 'failed to read the Go channel list').toBeGreaterThan(5)
+    for (const c of names) {
       expect(SHARED_CHANNELS, `security review knows "${c}" but the fix does not`).toContain(c)
+    }
+    for (const c of SHARED_CHANNELS) {
+      expect(names, `the fix strips "${c}" but the security review does not consider it shared`).toContain(c)
     }
   })
 
@@ -129,5 +134,60 @@ describe('applying a draft fix', () => {
     for (const [id, fn] of Object.entries(DRAFT_FIXES)) {
       expect(typeof fn, `${id} should be callable`).toBe('function')
     }
+  })
+})
+
+describe('restricting channels does the whole job', () => {
+  it('clears the shared channel from the output routes too', () => {
+    // Leaving it in the graph made the fix a half-measure: the review kept
+    // warning about a channel the agent's own list said was gone.
+    const { draft } = applyDraftFix({
+      channels: ['telegram', 'http'],
+      flow: { output: { channels: ['telegram', 'http'] }, nodes: [{ id: 'a', channels: ['telegram'] }] },
+    }, 'restrict_to_internal_channels')
+    expect(draft.flow.output.channels).toEqual(['http'])
+    expect(draft.flow.nodes[0].channels).toEqual([])
+  })
+
+  it('warns when it has just removed the only way out', () => {
+    const { message } = applyDraftFix({ channels: ['telegram'] }, 'restrict_to_internal_channels')
+    expect(message).toMatch(/no outbound destination/i)
+  })
+
+  it('stays quiet when another destination remains', () => {
+    // 'signal' is not in the shared set, so it survives and still delivers.
+    const { message } = applyDraftFix({ channels: ['telegram', 'signal'] }, 'restrict_to_internal_channels')
+    expect(message).not.toMatch(/no outbound destination/i)
+  })
+
+  it('leaves a graph it was not given alone', () => {
+    const { draft } = applyDraftFix({ channels: ['telegram', 'http'] }, 'restrict_to_internal_channels')
+    expect(draft.channels).toEqual(['http'])
+  })
+})
+
+describe('writing a helper prompt', () => {
+  const params = { agent: 'summarizer', prompt: 'You are Summarizer. Turn structured travel results into a short recommendation. If the input is empty, say so plainly.' }
+
+  it('replaces the thin prompt on the named peer only', () => {
+    const { draft, message } = applyDraftFix({
+      new_agents: [{ id: 'notifier', system_prompt: 'keep' }, { id: 'summarizer', name: 'Summarizer', system_prompt: 'thin' }],
+    }, 'write_helper_prompt', params)
+    expect(draft.new_agents[0].system_prompt).toBe('keep')
+    expect(draft.new_agents[1].system_prompt).toBe(params.prompt)
+    expect(draft.new_agents[1].name).toBe('Summarizer')
+    expect(message).toMatch(/floor, not a ceiling/)
+  })
+
+  it('creates the profile when the peer is referenced but not declared', () => {
+    const { draft } = applyDraftFix({ new_agents: [] }, 'write_helper_prompt', params)
+    expect(draft.new_agents).toHaveLength(1)
+    expect(draft.new_agents[0].id).toBe('summarizer')
+  })
+
+  it('says so rather than silently doing nothing when no prompt was offered', () => {
+    const res = applyDraftFix({ new_agents: [] }, 'write_helper_prompt', { agent: 'summarizer' })
+    expect(res.draft).toBeUndefined()
+    expect(res.message).toMatch(/no starter prompt/i)
   })
 })

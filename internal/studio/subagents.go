@@ -258,3 +258,25 @@ func ensureSentence(s string) string {
 func collapseWhitespace(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
+
+// agentNodeFor finds the flow node that delegates to this agent, so a
+// synthesized persona can be written from what the step actually does rather
+// than from the agent's id alone. Returns the zero node when the draft has no
+// such step (a peer declared in new_agents but not yet wired) — SynthesizeAgent
+// handles that, it just produces a more generic persona.
+func agentNodeFor(draft Draft, agentID string) sdkr.FlowNode {
+	want := strings.ToLower(strings.TrimSpace(agentID))
+	for _, n := range draft.Flow.Nodes {
+		if n.Kind == "agent" && strings.ToLower(strings.TrimSpace(n.Agent)) == want {
+			return n
+		}
+	}
+	// Fall back to the declared profile's own description so the persona still
+	// says something specific about the job.
+	for _, na := range draft.NewAgents {
+		if strings.ToLower(strings.TrimSpace(na.ID)) == want {
+			return sdkr.FlowNode{Description: na.Description}
+		}
+	}
+	return sdkr.FlowNode{}
+}

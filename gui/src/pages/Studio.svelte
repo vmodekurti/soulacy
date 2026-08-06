@@ -2908,7 +2908,7 @@ Use null for fields that are not present.`
         // Studio owns the value, so just set it. The module is pure and returns
         // a new draft; an unchanged draft means there was nothing to do, which
         // we say out loud rather than flashing a success.
-        const res = applyDraftFix(workflow, action)
+        const res = applyDraftFix(workflow, action, item.actionParams || item.action_params)
         if (res.draft) workflow = res.draft
         toast(res.message)
         // The fix changed the draft, so every verdict on screen is now stale.

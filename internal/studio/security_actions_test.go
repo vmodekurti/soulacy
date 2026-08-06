@@ -78,28 +78,3 @@ func TestSecurityPreflight_SystemCapabilityBlockerPointsSomewhereReal(t *testing
 		t.Fatalf("the fix should name the file and the field, got %q", b.Fix)
 	}
 }
-
-// Every APPLY action in the shared vocabulary must be reachable from some
-// finding — otherwise the client carries a handler for an id nothing sends.
-func TestSecurityFixActions_AreAllEmittedBySomeFinding(t *testing.T) {
-	emitted := map[string]bool{}
-	for _, draft := range []Draft{
-		{Tools: []string{"shell_exec"}, Channels: []string{"telegram", "http"}},
-		{Tools: []string{"web_search", "shell_exec"}, Channels: []string{"http"}},
-	} {
-		rev := SecurityPreflight(draft, &agent.Definition{ID: "x", Capabilities: []string{"system"}}, "")
-		for _, f := range append(append([]SecurityFinding{}, rev.Blockers...), rev.Warnings...) {
-			if f.Action != "" {
-				emitted[f.Action] = true
-			}
-		}
-	}
-	for _, a := range FixActions() {
-		if a.Kind != FixKindApply {
-			continue // navigate/focus actions come from other finding types
-		}
-		if !emitted[a.ID] {
-			t.Errorf("apply-action %q is declared but no finding emits it", a.ID)
-		}
-	}
-}

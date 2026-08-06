@@ -52,9 +52,16 @@ type ContractCheck struct {
 	// A check that leaves them empty still gets an action derived from its id
 	// (see actionForContractCheck) — this is for checks that know something the
 	// id cannot express, in particular the ones Studio can fix outright.
-	Action      string `json:"action,omitempty"`
-	ActionLabel string `json:"actionLabel,omitempty"`
+	Action       string            `json:"action,omitempty"`
+	ActionLabel  string            `json:"actionLabel,omitempty"`
+	ActionParams map[string]string `json:"actionParams,omitempty"`
 }
+
+// contractAdd records one check. contractAddFix does the same for a check that
+// can also hand the user a button — a separate signature so the many existing
+// add() calls keep their shape.
+type contractAdd func(id, title, status, node, msg, fix string)
+type contractAddFix func(id, title, status, node, msg, fix, action, label string, params map[string]string)
 
 // AssessContract runs the Studio generation contract over a draft. It is pure
 // and LLM-free; callers provide the same live-state input used by Preflight.
@@ -83,6 +90,20 @@ func AssessContract(draft Draft, cat Catalog, in PreflightInput, options ...Cont
 		}
 	}
 	pass := func(id, title, msg string) { add(id, title, "pass", "", msg, "") }
+	// addFix is `add` for a check that can hand the user a button as well as a
+	// sentence. Kept separate so the sixty existing add() calls stay readable.
+	addFix := func(id, title, status, node, msg, fix, action, label string, params map[string]string) {
+		res.Checks = append(res.Checks, ContractCheck{
+			ID: id, Title: title, Status: status, NodeID: node, Message: msg, Fix: fix,
+			Action: action, ActionLabel: label, ActionParams: params,
+		})
+		switch status {
+		case "block":
+			res.Blockers++
+		case "warn":
+			res.Warnings++
+		}
+	}
 
 	if draft.IsAgent() {
 		pass("agent.shape", "Reasoning-agent shape", "Reasoning-agent draft has no fixed graph to compile; contract checks against system prompt, tool allowlists, peer graph, and step budget run below.")
@@ -92,6 +113,13 @@ func AssessContract(draft Draft, cat Catalog, in PreflightInput, options ...Cont
 			pass("graph.integrity", "Graph integrity", "The workflow graph compiles: node ids, entry, edges, ports, and output contracts are coherent.")
 		} else {
 			for _, e := range vr.Errors {
+				if e.Source == ValidateSourceCompletion {
+					// assessCompletionContractRules reports this one with a
+					// remedy that actually matches it. Reporting it here too
+					// gave the user the same sentence twice, once under a
+					// heading about graph structure that was not the problem.
+					continue
+				}
 				add("graph.integrity", "Graph integrity", "block", e.NodeID, e.Message, "Fix the broken graph structure before saving or running.")
 			}
 		}
@@ -113,7 +141,7 @@ func AssessContract(draft Draft, cat Catalog, in PreflightInput, options ...Cont
 	}
 
 	assessInboundInputUse(draft, add, pass)
-	assessAuthoringRules(draft, opts, add, pass)
+	assessAuthoringRules(draft, opts, add, addFix, pass)
 	res.OK = res.Blockers == 0
 	res.Score = contractScore(res.Blockers, res.Warnings)
 	res.Summary = contractSummary(res)
@@ -173,11 +201,11 @@ func assessInboundInputUse(draft Draft, add func(id, title, status, node, msg, f
 			"query or prompt — or switch the trigger to a schedule if the same result every time is intended.")
 }
 
-func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {
+func assessAuthoringRules(draft Draft, opts contractOpts, add contractAdd, addFix contractAddFix, pass func(id, title, msg string)) {
 	if draft.IsAgent() {
 		pass("architecture.fit", "Architecture fit", "This draft is a reasoning agent, so Studio will not force it into a brittle fixed workflow graph.")
 		assessReasoningAgentRules(draft, opts, add, pass)
-		assessCompletionContractRules(draft, add, pass)
+		assessCompletionContractRules(draft, add, addFix, pass)
 		return
 	}
 
@@ -207,10 +235,19 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 		pass("agents.prompts", "Helper-agent prompts", "Helper agents are either absent or have enough prompt detail to run independently.")
 	} else {
 		for _, a := range bad {
-			add("agents.prompts", "Helper-agent prompts", "warn", a, "Helper agent \""+a+"\" has a very short or missing system prompt.", "Give each helper agent a self-contained role, constraints, available inputs, and expected output format.")
+			// This is the one warning a user genuinely cannot act on without
+			// knowing what a good agent prompt looks like — so hand them one.
+			// The synthesized persona travels WITH the finding rather than
+			// behind another round trip, so the button applies instantly.
+			synth := SynthesizeAgent(a, agentNodeFor(draft, a), draft.Name)
+			addFix("agents.prompts", "Helper-agent prompts", "warn", a,
+				"Helper agent \""+a+"\" has a very short or missing system prompt, so it will improvise its role on every run.",
+				"A helper agent's prompt is its whole character — it gets no other context. Studio can write a starter one from what this step does: role, how to behave, the output format expected of it, and what to do with empty input. Edit it afterwards; it is a floor, not a ceiling.",
+				FixWriteHelperPrompt, "Write a starter prompt",
+				map[string]string{"agent": a, "prompt": synth.SystemPrompt})
 		}
 	}
-	assessCompletionContractRules(draft, add, pass)
+	assessCompletionContractRules(draft, add, addFix, pass)
 }
 
 func knownDeterministicMacroWorkflow(draft Draft) bool {
@@ -235,7 +272,7 @@ func knownDeterministicMacroWorkflow(draft Draft) bool {
 	return notebookOps >= 3 && channelOps <= 1
 }
 
-func assessCompletionContractRules(draft Draft, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {
+func assessCompletionContractRules(draft Draft, add contractAdd, addFix contractAddFix, pass func(id, title, msg string)) {
 	errs, warns := completionContractValidateIssues(draft)
 	if len(errs) == 0 && len(warns) == 0 {
 		if requiresCompletionContract(draft) {
@@ -244,6 +281,15 @@ func assessCompletionContractRules(draft Draft, add func(id, title, status, node
 		return
 	}
 	for _, e := range errs {
+		if strings.Contains(e.Message, "no routable output channel") {
+			// The generic remedy ("add the missing operation(s), set a real
+			// output route…") reads like three unrelated suggestions. This one
+			// has a single cause and a single cure.
+			addFix("completion.contract", "Completion contract", "block", e.NodeID, e.Message,
+				"This agent is meant to deliver something, but its only channel is HTTP — that is how requests come IN, not where results go OUT. Tick a real destination (Telegram, Slack, email…) under Channels & delivery in the Build step's inspector. If none are listed, set one up on the Delivery page first; it appears here once configured.",
+				FixOpenStudio, "Choose a destination", nil)
+			continue
+		}
 		add("completion.contract", "Completion contract", "block", e.NodeID, e.Message, "Add the missing operation(s), set a real output route, or switch to an Auto reasoning agent for adaptive multi-step work.")
 	}
 	for _, w := range warns {

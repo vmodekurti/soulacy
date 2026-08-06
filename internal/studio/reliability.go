@@ -74,7 +74,7 @@ func completionContractValidateIssues(draft Draft) ([]ValidateError, []ValidateW
 	}
 
 	if deliveryRequested(intent) && !hasDeliveryConfigured(draft) {
-		errs = append(errs, ValidateError{Message: "The intent asks for delivery/notification, but no routable output channel or schedule output is configured. HTTP is an inbound trigger/testing surface, not a cron delivery destination."})
+		errs = append(errs, ValidateError{Source: ValidateSourceCompletion, Message: "The intent asks for delivery/notification, but no routable output channel or schedule output is configured. HTTP is an inbound trigger/testing surface, not a cron delivery destination."})
 	}
 	if strings.EqualFold(strings.TrimSpace(draft.Trigger.Type), "schedule") && !hasDeliveryConfigured(draft) {
 		warns = append(warns, ValidateWarning{Message: "This scheduled agent has no explicit output channel. If no global default output exists, completed runs will only appear in Runs/Activity."})
@@ -82,10 +82,10 @@ func completionContractValidateIssues(draft Draft) ([]ValidateError, []ValidateW
 
 	if !draft.IsAgent() {
 		if searchOnlyFinal(draft) && (artifactRequested(intent) || deliveryRequested(intent) || storageRequested(intent) || multiStepRequested(intent)) {
-			errs = append(errs, ValidateError{Message: "This workflow appears to stop at discovery/search, but the intent asks for a finished artifact, stored content, delivery, or a complete report."})
+			errs = append(errs, ValidateError{Source: ValidateSourceCompletion, Message: "This workflow appears to stop at discovery/search, but the intent asks for a finished artifact, stored content, delivery, or a complete report."})
 		}
 		if notebookRequested(intent) && !hasNotebookOperation(draft) {
-			errs = append(errs, ValidateError{Message: "The intent asks for NotebookLM/audio/podcast work, but the graph does not include NotebookLM create/add/generate/poll steps."})
+			errs = append(errs, ValidateError{Source: ValidateSourceCompletion, Message: "The intent asks for NotebookLM/audio/podcast work, but the graph does not include NotebookLM create/add/generate/poll steps."})
 		}
 		if storageRequested(intent) && !hasToolContaining(draft, "kb_write") {
 			warns = append(warns, ValidateWarning{Message: "The intent asks to store or ingest content into Knowledge, but the graph does not call kb_write."})

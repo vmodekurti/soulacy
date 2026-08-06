@@ -297,7 +297,8 @@ func contractItems(cr ContractResult) []ReadinessItem {
 			NodeID: c.NodeID, Message: c.Message, Fix: c.Fix,
 			// The check's own action wins when it has one; the id-derived
 			// mapping is only the fallback.
-			Action: nonEmptyOr(c.Action, actionForContractCheck(c.ID)),
+			Action:       nonEmptyOr(c.Action, actionForContractCheck(c.ID)),
+			ActionParams: c.ActionParams,
 		}, c.ActionLabel))
 	}
 	return out
@@ -372,16 +373,21 @@ func consentItems(plan PlanResult, accepted bool) []ReadinessItem {
 		if accepted {
 			msg = "Consent granted for " + ci.Kind + " \"" + ci.Name + "\": " + ci.Reason
 		}
-		action := "open_studio"
+		action := FixOpenStudio
+		label := ""
 		if ci.Kind == "channel" {
-			action = "open_delivery"
+			action = FixOpenDelivery
+			label = "Review the binding"
 		}
-		out = append(out, ReadinessItem{
+		// Through finishItem like every other source. Building the item by hand
+		// here is how consent findings ended up with an action and no button
+		// text — the UI rendered a button with nothing written on it.
+		out = append(out, finishItem(ReadinessItem{
 			Section: ReadinessSectionConsent, Severity: sev, Kind: "consent:" + ci.Kind,
 			Message: msg,
 			Fix:     "Review the exposure and accept it explicitly when saving, or remove the privileged capability / channel binding.",
 			Action:  action, ActionParams: map[string]string{"name": ci.Name, "kind": ci.Kind},
-		})
+		}, label))
 	}
 	if len(out) == 0 {
 		// RequiresConsent with no items shouldn't happen; stay explicit rather

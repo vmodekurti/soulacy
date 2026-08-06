@@ -30,11 +30,18 @@ export const FOCUS_ACTIONS = [
   'reveal_node',
 ]
 
-// Channels that reach people outside the install. Kept in step with
-// sharedExternalChannel in internal/studio/security_preflight.go.
+// Channels that reach people outside the install — the exact set in
+// studioSharedExternalChannels (internal/studio/security_preflight.go). The
+// first version of this list was hand-typed and got two of them wrong
+// ("googlechat" for google_chat, and sms missing entirely), so the button would
+// have claimed an agent was internal-only while leaving those two wired up.
+// fixactions.test.js now reads the Go map itself rather than a pattern someone
+// typed twice.
 export const SHARED_CHANNELS = [
-  'telegram', 'discord', 'slack', 'teams', 'googlechat',
-  'whatsapp', 'whatsapp_web', 'email', 'webhook',
+  'telegram', 'slack', 'discord',
+  'whatsapp', 'whatsapp_web',
+  'email', 'teams', 'google_chat',
+  'sms', 'webhook',
 ]
 
 const isShared = (c) => SHARED_CHANNELS.includes(String(c || '').toLowerCase())
@@ -56,9 +63,58 @@ export const DRAFT_FIXES = {
     // Leave it reachable. An agent bound to nothing at all is a different kind
     // of broken from an agent bound to too much.
     if (!kept.includes('http')) kept.push('http')
+
+    // The graph's output node routes to channels too. Leaving those behind made
+    // the fix a half-measure: the security review still saw the shared channel
+    // in the graph and kept warning, while the agent's channel list said it had
+    // been dealt with.
+    const flow = draft.flow || {}
+    const output = flow.output && typeof flow.output === 'object'
+      ? { ...flow.output, channels: (flow.output.channels || []).filter((c) => !isShared(c)) }
+      : flow.output
+    const nodes = Array.isArray(flow.nodes)
+      ? flow.nodes.map((n) => (n && Array.isArray(n.channels) && n.channels.some(isShared)
+        ? { ...n, channels: n.channels.filter((c) => !isShared(c)) }
+        : n))
+      : flow.nodes
+
+    // Say the consequence out loud. Removing the only real destination from an
+    // agent whose job is delivery turns one warning into two blockers, and the
+    // user should hear that from the button rather than from the Save step.
+    const stillDelivers = kept.some((c) => !['http', 'webhook', ''].includes(String(c).toLowerCase()))
+    const consequence = stillDelivers
+      ? ''
+      : ' It now has no outbound destination — pick another one, or accept the exposure per binding on the Delivery page instead.'
+
     return {
-      draft: { ...draft, channels: kept },
-      message: `Removed ${removed.join(', ')} — this agent is now on internal HTTP only.`,
+      draft: { ...draft, channels: kept, flow: { ...flow, output, nodes } },
+      message: `Removed ${removed.join(', ')} — this agent is now on internal HTTP only.${consequence}`,
+    }
+  },
+
+  // The synthesized persona travels in the finding, so the click is instant and
+  // the client never has to know what a good agent prompt looks like.
+  write_helper_prompt(draft, params = {}) {
+    const id = String(params.agent || '').trim()
+    const prompt = String(params.prompt || '').trim()
+    if (!id || !prompt) {
+      return { message: 'No starter prompt was offered for this helper agent.' }
+    }
+    const peers = Array.isArray(draft.new_agents) ? draft.new_agents : []
+    const i = peers.findIndex((p) => String(p && p.id || '').toLowerCase() === id.toLowerCase())
+    if (i < 0) {
+      // The peer is referenced by a node but has no profile entry yet, so make
+      // one rather than dropping the fix on the floor.
+      return {
+        draft: { ...draft, new_agents: [...peers, { id, name: id, system_prompt: prompt }] },
+        message: `Wrote a starter prompt for ${id}. Read it over — it is a floor, not a ceiling.`,
+      }
+    }
+    const next = peers.slice()
+    next[i] = { ...next[i], system_prompt: prompt }
+    return {
+      draft: { ...draft, new_agents: next },
+      message: `Wrote a starter prompt for ${id}. Read it over — it is a floor, not a ceiling.`,
     }
   },
 
@@ -96,11 +152,11 @@ export function actionKind(id) {
  * when nothing changed. Throws for an unknown id, because a caller silently
  * dropping one is exactly the failure this module exists to prevent.
  */
-export function applyDraftFix(draft, action) {
+export function applyDraftFix(draft, action, params) {
   const fn = DRAFT_FIXES[action]
   if (!fn) throw new Error(`no draft fix for action "${action}"`)
   if (!draft) return { message: 'There is no draft to change yet.' }
-  return fn(draft)
+  return fn(draft, params || {})
 }
 
 /** The button text, when the server did not send one. */
