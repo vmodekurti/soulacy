@@ -78,23 +78,14 @@ type SecurityFinding struct {
 	ActionLabel string `json:"action_label,omitempty"`
 }
 
-// Fix actions Studio can apply to the draft itself.
+// The two fixes below use the shared vocabulary in fixactions.go. They used to
+// be declared here, which meant the security panel had its own parallel action
+// list — a second seam to keep in step with the client, next to the one that
+// had already drifted.
 const (
-	// SecurityFixInternalChannelsOnly drops every shared/external channel from
-	// the draft, leaving the agent reachable over internal HTTP only.
-	SecurityFixInternalChannelsOnly = "restrict_to_internal_channels"
-	// SecurityFixIntentGateDeny sets security.intent_gate to "deny", so an
-	// injection-steered privileged call is refused rather than confirmed.
-	SecurityFixIntentGateDeny = "set_intent_gate_deny"
+	SecurityFixInternalChannelsOnly = FixInternalChannelsOnly
+	SecurityFixIntentGateDeny       = FixIntentGateDeny
 )
-
-// SecurityFixActions is every action id a finding may carry. The client-side
-// parity test enumerates this list, so a new action added here without a
-// handler in Studio.svelte fails the build rather than rendering a dead button.
-var SecurityFixActions = []string{
-	SecurityFixInternalChannelsOnly,
-	SecurityFixIntentGateDeny,
-}
 
 // SecurityRecommendation is a suggested safer alternative surfaced
 // separately from findings so operators can act on them without

@@ -40,6 +40,7 @@
   import StrategyPanel from '../lib/studio/StrategyPanel.svelte'
   import BuildSpecPanel from '../lib/studio/BuildSpecPanel.svelte'
   import ReadinessPanel from '../lib/studio/ReadinessPanel.svelte'
+  import { NAVIGATE_TARGETS, actionKind, applyDraftFix } from '../lib/studio/fixactions.js'
   import WizardRail from '../lib/studio/WizardRail.svelte'
   import TestLabInputs from '../lib/studio/TestLabInputs.svelte'
   import FailedRunsPanel from '../lib/studio/FailedRunsPanel.svelte'
@@ -2887,32 +2888,63 @@ Use null for fields that are not present.`
   // server does emit besides open_providers/open_mcp fell through to `default`
   // — so a blocker rendered a "Fix this" button that did nothing at all.
   function readinessAction(item) {
-    switch (item && item.action) {
-      case 'open_providers': window.location.hash = '#providers'; break
-      case 'open_mcp':       window.location.hash = '#mcp'; break
-      case 'open_delivery':  window.location.hash = '#channels'; break
-      case 'choose_model':
-        closePreflight()
-        openModelPicker()
-        break
-      case 'add_assertions':
-      case 'run_live':
-        // Both are fixed at the bench: add an assertion, or exercise it live.
-        closePreflight()
-        viewMode = 'canvas'
-        revealBench()
-        goStep(STEP_TEST)
-        break
-      case 'open_studio':
-      case 'open_preflight':
+    return applyFixAction(item)
+  }
+
+  // THE dispatcher for every finding, everywhere: preflight blockers, contract
+  // checks, security findings, readiness items. One function so a given action
+  // behaves identically no matter which panel offered it, and so there is
+  // exactly one place that can fall out of step with the Go vocabulary —
+  // fixactions.test.js watches that one place.
+  function applyFixAction(item) {
+    const action = item && item.action
+    if (!action) return
+    switch (actionKind(action)) {
+      case 'navigate':
+        window.location.hash = NAVIGATE_TARGETS[action]
+        return
+
+      case 'apply': {
+        // Studio owns the value, so just set it. The module is pure and returns
+        // a new draft; an unchanged draft means there was nothing to do, which
+        // we say out loud rather than flashing a success.
+        const res = applyDraftFix(workflow, action)
+        if (res.draft) workflow = res.draft
+        toast(res.message)
+        // The fix changed the draft, so every verdict on screen is now stale.
+        if (res.draft) { refreshSecurityReview(); if (readiness) loadReadiness() }
+        return
+      }
+
+      case 'focus':
+        switch (action) {
+          case 'choose_model':
+            closePreflight()
+            openAgentModelPicker()
+            return
+          case 'add_assertions':
+          case 'run_live':
+            // Both are fixed at the bench: add an assertion, or exercise it live.
+            closePreflight()
+            viewMode = 'canvas'
+            revealBench()
+            goStep(STEP_TEST)
+            return
+          default:
+            // reveal_node / open_studio / open_preflight — everything repaired
+            // on the canvas.
+            closePreflight()
+            viewMode = 'canvas'
+            goStep(STEP_BUILD)
+            if (item && item.nodeId) revealNode(item.nodeId)
+            return
+        }
+
       default:
-        // Everything else (tool / agent / field / dependency / template /
-        // schedule / policy / security) is repaired in the workflow editor.
-        closePreflight()
-        viewMode = 'canvas'
-        goStep(STEP_BUILD)
-        if (item && item.nodeId) revealNode(item.nodeId)
-        break
+        // An id the client does not know. The server should never send one —
+        // finishItem drops unknown ids before they reach us — so say so instead
+        // of rendering a button that quietly does nothing.
+        toast(`Studio does not know how to apply "${action}" — follow the written fix.`)
     }
   }
 
@@ -3156,44 +3188,6 @@ Use null for fields that are not present.`
   // node in the workflow whose `tool` (or nested tool ref) matches `from`
   // gets rewritten to `suggest`. When there's no exact match (custom tools,
   // MCP calls, etc.), we quietly skip.
-  // Apply a security finding's fix to the draft.
-  //
-  // Every id here is emitted by internal/studio/security_preflight.go and
-  // listed in its SecurityFixActions. The two sides are a hand-maintained seam
-  // across languages and it has drifted before, so securityactions.test.js
-  // fails the build when they disagree. The `default` branch is deliberately
-  // loud rather than silent: a button that quietly does nothing is worse than
-  // no button.
-  const SHARED_CHANNELS = ['telegram', 'discord', 'slack', 'teams', 'googlechat', 'whatsapp', 'whatsapp_web', 'email', 'webhook']
-
-  function applySecurityFix(finding) {
-    if (!finding || !finding.action || !workflow) return
-    switch (finding.action) {
-      case 'restrict_to_internal_channels': {
-        const before = Array.isArray(workflow.channels) ? workflow.channels : []
-        const removed = before.filter((c) => SHARED_CHANNELS.includes(String(c).toLowerCase()))
-        if (!removed.length) { toast('This agent is already on internal channels only.'); return }
-        const kept = before.filter((c) => !SHARED_CHANNELS.includes(String(c).toLowerCase()))
-        // Leave it reachable: an agent bound to nothing at all is a different
-        // kind of broken from an agent bound to too much.
-        if (!kept.includes('http')) kept.push('http')
-        workflow = { ...workflow, channels: kept }
-        toast(`Removed ${removed.join(', ')} — this agent is now on internal HTTP only.`)
-        break
-      }
-      case 'set_intent_gate_deny': {
-        const security = { ...(workflow.security || {}), intent_gate: 'deny' }
-        workflow = { ...workflow, security }
-        toast('Intent gate set to deny — injection-steered tool calls will be refused.')
-        break
-      }
-      default:
-        toast(`Studio does not know how to apply "${finding.action}" — follow the written fix above.`)
-        return
-    }
-    refreshSecurityReview()
-  }
-
   function applySecurityRecommendation(rec) {
     if (!rec || !rec.from || !rec.suggest || !workflow) return
     const from = String(rec.from)
@@ -5823,7 +5817,7 @@ Use null for fields that are not present.`
                         <div class="security-msg">{b.message}</div>
                         {#if b.fix}<div class="security-fix">→ {b.fix}</div>{/if}
                         {#if b.action_label}
-                          <button class="btn btn-sm security-apply" type="button" on:click={() => applySecurityFix(b)}>{b.action_label}</button>
+                          <button class="btn btn-sm security-apply" type="button" on:click={() => applyFixAction(b)}>{b.action_label}</button>
                         {/if}
                       </div>
                     {/each}
@@ -5839,7 +5833,7 @@ Use null for fields that are not present.`
                         {#if w.fix}<div class="security-fix">→ {w.fix}</div>{/if}
                         <div class="security-actions">
                           {#if w.action_label}
-                            <button class="btn btn-sm security-apply" type="button" on:click={() => applySecurityFix(w)}>{w.action_label}</button>
+                            <button class="btn btn-sm security-apply" type="button" on:click={() => applyFixAction(w)}>{w.action_label}</button>
                           {/if}
                           {#if w.category === 'channel'}
                             <button class="btn btn-sm" type="button" on:click={() => { window.location.hash = '#channels' }}>Open Delivery</button>

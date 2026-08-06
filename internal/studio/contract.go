@@ -48,6 +48,12 @@ type ContractCheck struct {
 	NodeID  string `json:"nodeId,omitempty"`
 	Message string `json:"message"`
 	Fix     string `json:"fix,omitempty"`
+	// Action and ActionLabel come from the shared vocabulary in fixactions.go.
+	// A check that leaves them empty still gets an action derived from its id
+	// (see actionForContractCheck) — this is for checks that know something the
+	// id cannot express, in particular the ones Studio can fix outright.
+	Action      string `json:"action,omitempty"`
+	ActionLabel string `json:"actionLabel,omitempty"`
 }
 
 // AssessContract runs the Studio generation contract over a draft. It is pure

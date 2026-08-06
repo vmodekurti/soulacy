@@ -79,8 +79,8 @@ func TestSecurityPreflight_SystemCapabilityBlockerPointsSomewhereReal(t *testing
 	}
 }
 
-// Every declared action must actually be reachable from some finding —
-// otherwise the client handles an id nothing ever sends.
+// Every APPLY action in the shared vocabulary must be reachable from some
+// finding — otherwise the client carries a handler for an id nothing sends.
 func TestSecurityFixActions_AreAllEmittedBySomeFinding(t *testing.T) {
 	emitted := map[string]bool{}
 	for _, draft := range []Draft{
@@ -94,9 +94,12 @@ func TestSecurityFixActions_AreAllEmittedBySomeFinding(t *testing.T) {
 			}
 		}
 	}
-	for _, a := range SecurityFixActions {
-		if !emitted[a] {
-			t.Errorf("action %q is declared but no finding emits it", a)
+	for _, a := range FixActions() {
+		if a.Kind != FixKindApply {
+			continue // navigate/focus actions come from other finding types
+		}
+		if !emitted[a.ID] {
+			t.Errorf("apply-action %q is declared but no finding emits it", a.ID)
 		}
 	}
 }

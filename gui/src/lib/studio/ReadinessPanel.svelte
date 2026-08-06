@@ -1,4 +1,5 @@
 <script>
+  import { fallbackLabel } from './fixactions.js'
   // ReadinessPanel — the Save step's "ready to save?" review (ST-07 / ST-16).
   //
   // One verdict assembled server-side, rather than the old client-side stitch of
@@ -40,23 +41,14 @@
   // An item is actionable when the server gave a machine-readable action rather
   // than only prose. Prose tells you what is wrong; an action gets you there.
   function actionable(item) { return !!(item && item.action) }
-  // Labels for the actions the server actually emits (internal/studio:
-  // preflight_runtime.go actionForKind + readiness.go actionForContractCheck /
-  // actionForSecurityCategory). The old list named five actions that exist
-  // nowhere in the backend.
+  // The button text comes from the server, resolved from the shared vocabulary
+  // in internal/studio/fixactions.go and attached to the item. This panel used
+  // to keep its own switch, which is how the same action came to read
+  // "Configure provider" here and "Fix this" in the security panel — and how an
+  // earlier version ended up labelling five actions the server never emitted.
+  // One list, authored next to the finding, rendered everywhere.
   function actionLabel(item) {
-    switch (item && item.action) {
-      case 'open_providers': return 'Configure provider'
-      case 'open_mcp': return 'Connect server'
-      case 'open_delivery': return 'Add destination'
-      case 'choose_model': return 'Choose a model'
-      case 'add_assertions': return 'Add an assertion'
-      case 'run_live': return 'Run it live'
-      case 'open_studio':
-      case 'open_preflight': return 'Open the editor'
-      case 'reveal_node': return 'Show the step'
-      default: return 'Fix this'
-    }
+    return (item && item.actionLabel) || fallbackLabel(item && item.action) || 'Fix this'
   }
   function fire(item) {
     if (item && item.action === 'reveal_node' && item.nodeId) onReveal(item.nodeId)
