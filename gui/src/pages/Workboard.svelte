@@ -42,8 +42,10 @@
         api.workboard.list(),
         api.agents.list().catch(() => null),
       ])
-      tasks = board?.tasks || []
-      agents = agentList?.agents || agentList || []
+      tasks = Array.isArray(board?.tasks) ? board.tasks : []
+      agents = Array.isArray(agentList?.agents)
+        ? agentList.agents
+        : (Array.isArray(agentList) ? agentList : [])
     } catch (e) {
       error = e.message || 'Failed to load workboard'
     } finally {
