@@ -4435,14 +4435,39 @@ Use null for fields that are not present.`
     try { modelAdvice = await bridge.modelAdvice() } catch (_) { modelAdvice = null }
   }
 
+  // Two different models are in play and conflating them is the whole bug this
+  // picker's `target` exists to prevent:
+  //   'studio' — the BUILDER model, the one that writes the agent (llm.studio).
+  //   'agent'  — the RUNTIME model, the one the saved agent executes on. That is
+  //              what lands in SOUL.yaml, and until now Studio gave you no way
+  //              to choose it: you got the workspace default or nothing.
   async function openModelPicker() {
-    modelPicker = { open: true, provider: '', model: '', models: [], saving: false, error: '' }
+    modelPicker = { open: true, target: 'studio', provider: '', model: '', models: [], saving: false, error: '' }
     resetModelChooser()
     try {
       const cfg = await bridge.getConfig()
       const st = (cfg && cfg.llm && cfg.llm.studio) || {}
       modelPicker = { ...modelPicker, provider: st.provider || '', model: st.model || '' }
       if (st.provider) loadModelsFor(st.provider)
+    } catch (e) {
+      modelPicker = { ...modelPicker, error: e.message || 'could not load config' }
+    }
+  }
+
+  // Choose what THIS agent runs on. Seeded from the draft when it already pins
+  // something, otherwise from the workspace default so the dialog opens showing
+  // what would actually happen rather than an empty box.
+  async function openAgentModelPicker() {
+    const cur = (workflow && workflow.llm) || {}
+    modelPicker = { open: true, target: 'agent', provider: cur.provider || '', model: cur.model || '', models: [], saving: false, error: '' }
+    resetModelChooser()
+    try {
+      if (!cur.provider) {
+        const cfg = await bridge.getConfig()
+        const def = (cfg && cfg.llm && cfg.llm.default_provider) || ''
+        modelPicker = { ...modelPicker, provider: def }
+      }
+      if (modelPicker.provider) loadModelsFor(modelPicker.provider)
     } catch (e) {
       modelPicker = { ...modelPicker, error: e.message || 'could not load config' }
     }
@@ -4504,7 +4529,26 @@ Use null for fields that are not present.`
     modelPicker = { ...modelPicker, model: m }
   }
 
+  // The draft's own provider/model, for the toolbar chip. Blank until the draft
+  // pins one — "workspace default" is the honest label for that, not a guess at
+  // which model the default happens to resolve to right now.
+  $: agentModelLabel = (() => {
+    const llm = (workflow && workflow.llm) || {}
+    if (!llm.provider && !llm.model) return 'workspace default'
+    return fmtModelLabel(llm.provider, llm.model)
+  })()
+
+  // Write the choice onto the draft. Reassignment (not mutation) so Svelte sees
+  // it and the canvas/YAML views update with it.
+  function saveAgentModel() {
+    const llm = { ...((workflow && workflow.llm) || {}), provider: modelPicker.provider, model: modelPicker.model }
+    workflow = { ...workflow, llm }
+    modelPicker = { ...modelPicker, open: false, saving: false }
+    toast(`This agent will run on ${fmtModelLabel(llm.provider, llm.model)}.`)
+  }
+
   async function saveStudioModel() {
+    if (modelPicker.target === 'agent') return saveAgentModel()
     modelPicker = { ...modelPicker, saving: true, error: '' }
     try {
       await bridge.setStudioModel(modelPicker.provider, modelPicker.model)
@@ -4720,7 +4764,11 @@ Use null for fields that are not present.`
            list beside it. Two toolbar buttons doing what step 1 already does
            made the wizard look like a veneer over the old screen. -->
       <button class="btn" type="button" on:click={openRules} data-tooltip="Edit the SOUL.yaml authoring rules used when generating, validating, and fixing">📋 Rules</button>
-      <button class="btn" type="button" on:click={openModelPicker} data-tooltip="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
+      <button class="btn" type="button" on:click={openModelPicker} data-tooltip="Choose which in-framework provider/model Studio uses to BUILD agents">⚙ Builds with: {studioModelLabel}</button>
+      {#if workflow}
+        <button class="btn" type="button" on:click={openAgentModelPicker}
+                data-tooltip="Choose the provider/model this agent RUNS on — written into its SOUL.yaml">🤖 Runs on: {agentModelLabel}</button>
+      {/if}
       <button class="btn" type="button" on:click={openTemplates} data-tooltip="Start from a template">Templates</button>
       <button class="btn" type="button" on:click={openYamlBrowser} data-tooltip="View the raw SOUL.yaml of any agent (read-only)">Browse SOUL.yaml</button>
       <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} data-tooltip="Save the current draft to the library">
@@ -6940,11 +6988,20 @@ Use null for fields that are not present.`
   {#if modelPicker.open}
     <div class="modal-backdrop" on:click|self={() => modelPicker = { ...modelPicker, open: false }} role="presentation">
       <div class="modal model-modal" role="dialog" aria-modal="true" aria-labelledby="model-title">
-        <h2 id="model-title" class="modal-title">Studio model</h2>
+        <h2 id="model-title" class="modal-title">
+          {modelPicker.target === 'agent' ? 'Model this agent runs on' : 'Studio model'}
+        </h2>
         <p class="modal-body">
-          Which provider/model should Studio use for its reasoning and code
-          generation? Uses your configured providers — leave provider blank to
-          use the global default.
+          {#if modelPicker.target === 'agent'}
+            Which provider/model should the saved agent execute on? This is
+            written into its SOUL.yaml. It is a different choice from the model
+            Studio uses to build it — leave the provider blank to inherit the
+            workspace default instead of pinning one.
+          {:else}
+            Which provider/model should Studio use for its reasoning and code
+            generation? Uses your configured providers — leave provider blank to
+            use the global default.
+          {/if}
         </p>
         {#if modelPicker.error}<div class="strip strip-error">⚠ {modelPicker.error}</div>{/if}
         <label class="field-label" for="mp-provider">provider</label>

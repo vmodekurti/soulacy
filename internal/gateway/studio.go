@@ -1132,6 +1132,15 @@ func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
 		}
 		res, err := studio.RunGeneratePipeline(ctx, model, req.Intent, cat, opts)
 
+		// Pin the RUNTIME provider/model, exactly as the two synchronous generate
+		// handlers do. Without it this path emitted a draft carrying whatever the
+		// generator left in `llm` — usually nothing, sometimes the builder model —
+		// so the YAML named a provider/model the router had never registered. The
+		// agent then failed at run time on a model the operator never chose, and
+		// Save refused it with "does not specify a model to run on" while Run Live
+		// (which resolves the default first) reported the same draft as fine.
+		s.stampDefaultLLM(&res.Compile.Workflow)
+
 		// Route the streamed result through the SAME finalization the synchronous
 		// compile path uses. Without this, res.Compile.Contract stayed nil on the
 		// streamed path while the sync path populated it — and the GUI's
@@ -3478,6 +3487,13 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	cat := s.studioCatalogSnapshot()
 	s.groundCatalog(&cat)
 	in := s.preflightInput(c, cat)
+	// Judge the draft the RUNTIME will see, not the one the client sent. A draft
+	// is allowed to omit provider/model and inherit the workspace default — Run
+	// Live and Try Agent both resolve it that way — but the save gate did not,
+	// so Studio refused to save an agent it had just told the user was runnable.
+	// Resolving here also means the saved YAML names its provider/model outright
+	// instead of depending on a workspace default that can change under it.
+	req.Workflow = s.studioDraftWithRuntimeLLM(req.Workflow)
 	contract := studio.AssessContract(req.Workflow, cat, in)
 	if contract.Blockers > 0 {
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
