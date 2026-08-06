@@ -12,9 +12,11 @@ package gateway
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"testing"
 
 	"github.com/soulacy/soulacy/pkg/agent"
+	"gopkg.in/yaml.v3"
 )
 
 // A one-node workflow whose only step delegates to an agent that does not exist.
@@ -142,5 +144,75 @@ func TestStudioSave_PeerCreationIsIdempotent(t *testing.T) {
 	_, out := gatewayJSON(t, s, http.MethodPost, "/api/v1/studio/save", "k", peerSaveBody)
 	if reported, _ := out["peerAgents"].([]any); len(reported) != 0 {
 		t.Fatalf("second save re-created the peer: %v", reported)
+	}
+}
+
+// Creating the peer is only half the job: the parent must also DECLARE it.
+//
+// The runtime refuses an agent call whose target is not in the caller's
+// `agents:` list — "agent call: %q is not in this agent's declared peer list".
+// The wizard path derives that list from the flow (studio.flowPeers), but the
+// SOUL.yaml path writes the definition verbatim, so a workflow with an agent
+// node and no `agents:` list saved fine, created the peer, and then failed at
+// the delegating node on every run. That was live for real users.
+func TestStudioSaveYAML_DeclaresThePeersItsWorkflowCalls(t *testing.T) {
+	s, _ := studioFake(t)
+
+	yamlDoc := `id: travel-advisor-agent
+name: Travel Advisor
+enabled: true
+llm:
+  provider: openai
+  model: gpt-4o-mini
+workflow:
+  entry: format_response
+  nodes:
+    - id: format_response
+      kind: agent
+      agent: summarizer
+      input: "Summarise: {{ .trigger.text }}"
+      output: response
+`
+	raw, _ := json.Marshal(map[string]any{"yaml": yamlDoc})
+	if status, body := gatewayJSON(t, s, http.MethodPost, "/api/v1/studio/save-yaml", "k", string(raw)); status != http.StatusOK {
+		t.Fatalf("save-yaml status=%d body=%v", status, body)
+	}
+
+	saved := s.loader.Get("travel-advisor-agent")
+	if saved == nil {
+		t.Fatal("agent was not saved")
+	}
+	found := false
+	for _, p := range saved.Agents {
+		if p == "summarizer" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("the workflow delegates to \"summarizer\" but the agent declares peers %v — every run dies at that node", saved.Agents)
+	}
+
+	// And on disk, not just in the loader's in-memory copy. Upsert stores the
+	// same pointer it was handed, so a mutation made AFTER the write still shows
+	// up in Get() while never reaching the file — the peer list would come back
+	// empty on the next restart.
+	raw2, err := os.ReadFile(saved.SourcePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", saved.SourcePath, err)
+	}
+	// Parse it: the id "summarizer" also appears as the node's target, so a
+	// substring search here passes whether or not the peer list was written.
+	var fromDisk agent.Definition
+	if err := yaml.Unmarshal(raw2, &fromDisk); err != nil {
+		t.Fatalf("parse %s: %v", saved.SourcePath, err)
+	}
+	onDisk := false
+	for _, p := range fromDisk.Agents {
+		if p == "summarizer" {
+			onDisk = true
+		}
+	}
+	if !onDisk {
+		t.Fatalf("the declared peer never reached the file (agents: %v), so it is lost on restart:\n%s", fromDisk.Agents, raw2)
 	}
 }

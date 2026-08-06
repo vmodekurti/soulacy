@@ -1640,8 +1640,19 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 	return c.JSON(resp)
 }
 
-// ensurePeerAgents persists a real agent for every peer a workflow delegates to
-// that does not exist yet, and returns the ids it created.
+// ensurePeerAgents makes a workflow's delegation actually work: it persists a
+// real agent for every peer the workflow calls but which does not exist yet,
+// and makes sure the caller DECLARES every peer it calls. It returns the peer
+// ids it had to create.
+//
+// Both halves are needed and they fail differently. Without the first, the
+// saved workflow names an agent that is not there. Without the second, the
+// agent exists and the runtime still refuses the call — it only allows peers
+// listed in the caller's `agents:` — so every run dies at the delegating node
+// with "is not in this agent's declared peer list". That second failure was
+// live for real users: the wizard derives the list from the flow, but the
+// SOUL.yaml path writes the definition verbatim, so a workflow saved from the
+// code view had its peers created and then could not call them.
 //
 // This is the durable twin of registerEphemeralPeers: that one registers peers
 // in memory for the length of a test run, this one writes them to disk so the
@@ -1668,11 +1679,20 @@ func (s *Server) ensurePeerAgents(dir string, def *agent.Definition, newAgents [
 	}
 	created := []string{}
 	seen := map[string]bool{}
+	declared := make(map[string]bool, len(def.Agents))
+	for _, p := range def.Agents {
+		declared[p] = true
+	}
 	for _, node := range def.Workflow.Nodes {
 		if node.Kind != "agent" || node.Agent == "" || seen[node.Agent] {
 			continue
 		}
 		seen[node.Agent] = true
+		// Authorise the call. The runtime checks this list, not the graph.
+		if !declared[node.Agent] {
+			def.Agents = append(def.Agents, node.Agent)
+			declared[node.Agent] = true
+		}
 		if existing := s.loader.Get(node.Agent); existing != nil {
 			continue // a real agent already answers to this name
 		}
@@ -3167,16 +3187,20 @@ func (s *Server) handleStudioSaveYAML(c *fiber.Ctx) error {
 		def.SourcePath = existing.SourcePath
 		dir = filepath.Dir(filepath.Dir(existing.SourcePath))
 	}
-	if err := s.loader.Upsert(dir, &def); err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
-	}
+	// BEFORE the write, not after: ensurePeerAgents adds any missing peer to
+	// def.Agents, and Upsert is what serialises def to disk. Running it after
+	// left the declaration in the loader's in-memory copy only — Get() saw it,
+	// the file did not, and the peer list came back empty on the next restart.
+	//
 	// The code view saves the SAME workflow as the wizard, so it owes the same
-	// guarantee: a delegated-to peer that does not exist gets created here too.
-	// There is no draft on this path, so every profile is synthesized from the
-	// node itself.
+	// guarantee. There is no draft on this path, so every missing profile is
+	// synthesized from the node itself.
 	createdPeers, perr := s.ensurePeerAgents(dir, &def, nil)
 	if perr != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, perr)
+	}
+	if err := s.loader.Upsert(dir, &def); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 	s.scheduler.DeregisterAgent(def.ID)
 	if err := s.scheduler.RegisterAgent(&def); err != nil {
@@ -3582,15 +3606,17 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	if len(s.cfg.AgentDirs) > 0 {
 		dir = s.cfg.AgentDirs[0]
 	}
-	if err := s.loader.Upsert(dir, &def); err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
-	}
-
 	// Materialise any peer agent the workflow delegates to that does not exist
-	// yet. A dangling peer is not cosmetic: the run dies at the delegating node.
+	// yet, and make sure the caller declares the ones it calls. A dangling peer
+	// is not cosmetic: the run dies at the delegating node. Runs before Upsert
+	// because it can add to def.Agents, and Upsert is the write.
 	createdPeers, perr := s.ensurePeerAgents(dir, &def, req.Workflow.NewAgents)
 	if perr != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, perr)
+	}
+
+	if err := s.loader.Upsert(dir, &def); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Record the save, and specifically record an ACCEPTED-WARNINGS save with the
