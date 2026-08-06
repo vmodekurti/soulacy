@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import { api, createEventSocket } from '../lib/api.js'
 
@@ -345,7 +346,8 @@
       <button class="btn-secondary" on:click={loadKBs} disabled={loading}>↺ Refresh</button>
       <button class="btn-primary" on:click={openCreateModal} disabled={!enabled}>+ New KB</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}<div class="banner err">{error}</div>{/if}
   {#if info}<div class="banner ok">{info}</div>{/if}

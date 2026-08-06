@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
 
@@ -133,7 +134,8 @@
   <div class="page-header">
     <h1>Browser Trace</h1>
     <button class="btn-secondary" on:click={load} disabled={loading || !agentId}>{loading ? 'Loading…' : '↺ Refresh'}</button>
-  </div>
+        <TourButton />
+    </div>
 
   <p class="intro">
     Replay an agent's browser automation — every navigate, click, type, extract and

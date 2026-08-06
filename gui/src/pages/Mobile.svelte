@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import { installPrompt, appInstalled, authRequired } from '../lib/stores.js'
@@ -463,6 +464,7 @@
       <h1>Operations</h1>
     </div>
     <button class="btn-secondary" on:click={() => { load(); loadApprovals() }} disabled={loading}>↻</button>
+    <TourButton />
   </header>
 
   {#if sessionExpired}

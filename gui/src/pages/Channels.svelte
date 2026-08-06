@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import QRCode from 'qrcode'
   import { api } from '../lib/api.js'
@@ -520,7 +521,8 @@
   <div class="page-header">
     <h1>Delivery</h1>
     <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}
     <div class="banner err">{error}</div>

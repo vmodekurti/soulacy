@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   // Guided first-run wizard: provider → test → template → (optional) channel →
   // production updates → create + launch. Reuses existing endpoints only; every
   // failure is shown as a plain-language fix, never a raw error.
@@ -278,6 +279,7 @@
   <div class="wiz-head">
     <h1>Welcome to Soulacy</h1>
     <p>Let’s get your first agent running. This takes about five minutes.</p>
+    <TourButton />
   </div>
 
   <ol class="stepper">

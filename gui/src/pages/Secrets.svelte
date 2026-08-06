@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
 
@@ -131,7 +132,8 @@
     <div class="header-actions">
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   <div class="note-card">
     Secrets are stored encrypted in your workspace (<code>~/.soulacy/soulspace</code>)

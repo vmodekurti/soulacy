@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import KeyValueEditor from '../lib/KeyValueEditor.svelte'
@@ -264,7 +265,8 @@
       <button class="btn-glama"     on:click={openGlamaModal}>⚡ Glama</button>
       <button class="btn-primary"   on:click={openNew}>+ New Server</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if restartNeeded}
     <div class="banner warn">

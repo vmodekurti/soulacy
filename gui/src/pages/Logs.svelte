@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
   import { stripAnsi, logLevel, LEVEL_COLORS, LEVEL_BADGES } from '../lib/logutils.js'
@@ -81,7 +82,8 @@
       </button>
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}
     <div class="banner err">{error}</div>

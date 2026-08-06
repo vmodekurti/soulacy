@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import {
     SvelteFlow, Background, Controls, MiniMap, Position,
@@ -4808,6 +4809,7 @@ Use null for fields that are not present.`
       </button>
       <button class="btn" type="button" on:click={exportDraft} disabled={!workflow} data-tooltip="Download the current draft as a .studio.json file">Export</button>
       <button class="btn" type="button" on:click={triggerImport} data-tooltip="Load a .studio.json file from disk">Import</button>
+      <TourButton />
       <input
         bind:this={fileInputEl}
         class="hidden-file"

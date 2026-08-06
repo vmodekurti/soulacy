@@ -74,3 +74,24 @@ describe('every nav page constructs and mounts', () => {
     target.remove()
   })
 })
+
+// "Show me around" lives in the page now, not the sidebar — which means it has
+// to be ON every page. A single missing call site is a screen with no way in,
+// and there is nothing to notice it: the button's absence looks like a design
+// choice rather than an omission.
+describe('every nav page offers its own tour', () => {
+  it.each(navPages.map((p) => [p.id]))('%s has a Show me around button', { timeout: 30000 }, async (id) => {
+    const { default: Page } = await loaders[id]()
+    const target = document.createElement('div')
+    document.body.appendChild(target)
+    const cmp = new Page({ target })
+    await new Promise((r) => setTimeout(r, 30))
+
+    const btn = [...target.querySelectorAll('button')]
+      .find((b) => /show me around/i.test(b.textContent || ''))
+    expect(btn, `${id} renders no "Show me around" button`).toBeTruthy()
+
+    cmp.$destroy()
+    target.remove()
+  })
+})

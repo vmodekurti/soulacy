@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
   import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl, PRIORITIES, priorityBadge, parseTags, formatTags, dueInfo } from '../lib/workboard.js'
@@ -242,7 +243,8 @@
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
       <button class="btn-primary" on:click={newTask}>+ New Task</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}
     <div class="error-banner">{error}</div>

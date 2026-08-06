@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import { rowsFromSettings, settingsPatchFromRows } from '../lib/pluginsettings.js'
@@ -481,7 +482,8 @@
         </button>
       {/if}
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if updateInfo && updateInfo.update_available}
     <div class="update-banner">
