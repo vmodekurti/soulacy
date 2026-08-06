@@ -473,6 +473,9 @@ export const api = {
     delete:         (id)        => apiFetch(`/providers/${id}`,        { method: 'DELETE' }),
   },
 
+  /** Per-page walkthrough: the same outcome, told from the screen you are on. */
+  tour: (page) => apiFetch(`/tour/${encodeURIComponent(page)}`),
+
   config: {
     get:   ()      => apiFetch('/config'),
     patch: (patch) => apiFetch('/config', { method: 'PATCH', body: JSON.stringify(patch) }),

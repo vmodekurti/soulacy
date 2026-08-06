@@ -8,6 +8,8 @@
   import { looksLikeStaleAssetError, recoverFromStaleAssets } from './lib/stalerecovery.js'
   import { navPages, navGroups, navAnchor } from './lib/nav.js'
   import Walkthrough from './lib/walkthrough/Walkthrough.svelte'
+  import PageTour from './lib/PageTour.svelte'
+  import { NAVIGATE_TARGETS } from './lib/studio/fixactions.js'
   import {
     walkthrough, loadWalkthroughState, startWalkthrough, shouldAutoStart,
   } from './lib/walkthrough/store.js'
@@ -79,12 +81,31 @@
     history.pushState({}, '', '#' + p)
   }
 
-  // Orientation tour: resume where they stopped, otherwise start at the top.
+  // "Show me around" now answers the question people actually ask — "I am on
+  // this screen, why, and what do I do here" — rather than opening a 24-stop
+  // tour of everything. The full tour is one click further in, for the people
+  // who do want the whole map.
+  let pageTourOpen = false
+
   function openTour() {
     sidebarOpen = false
+    pageTourOpen = true
+  }
+
+  function openFullTour() {
+    pageTourOpen = false
     navCollapsed = false   // the tour spotlights nav labels, so the rail must be open
     const s = $walkthrough
     startWalkthrough(!s.seen && s.resumeIndex > 0 ? 'resume' : 0)
+  }
+
+  // The tour's call to action uses the same vocabulary as every finding, so it
+  // lands in the same place a blocker's button would.
+  function tourAction(story) {
+    pageTourOpen = false
+    const target = NAVIGATE_TARGETS[story?.nextAction]
+    if (target) { window.location.hash = target; return }
+    if (story?.nextAction === 'open_studio') navigate('studio')
   }
 
   function openRestartModal() {
@@ -459,7 +480,7 @@
     <button class="nav-item nav-action tour-action" on:click={openTour}
             title="Take the guided tour of every screen">
       <span class="nav-icon">🧭</span>
-      <span class="nav-label">{$walkthrough.resumeIndex > 0 && !$walkthrough.seen ? 'Resume the tour' : 'Show me around'}</span>
+      <span class="nav-label">Show me around</span>
     </button>
 
     <button class="nav-item nav-action" on:click={openRestartModal}
@@ -485,6 +506,10 @@
 
   {#if !$authRequired}
     <Walkthrough on:navigate={(e) => navigate(e.detail)} />
+    <PageTour page={page} open={pageTourOpen}
+              on:close={() => pageTourOpen = false}
+              on:fulltour={openFullTour}
+              on:act={(e) => tourAction(e.detail)} />
   {/if}
 
   <!-- Main content -->
