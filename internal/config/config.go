@@ -96,6 +96,10 @@ type Config struct {
 	// Skill directories to scan (in addition to the default ~/.soulacy/skills/ and ~/.agents/skills/)
 	SkillDirs []string `mapstructure:"skill_dirs"`
 
+	// UI holds GUI-side preferences that belong to the install rather than to
+	// one browser. See UIConfig.
+	UI UIConfig `mapstructure:"ui"`
+
 	// Knowledge (RAG) settings — see KnowledgeConfig for details.
 	Knowledge KnowledgeConfig `mapstructure:"knowledge"`
 
@@ -1148,4 +1152,26 @@ func CheckSchemaVersion(cfg *Config) SchemaVersionStatus {
 		}
 	}
 	return SchemaVersionStatus{Have: have, Want: want, Message: "config schema up to date"}
+}
+
+// UIConfig holds preferences the web UI needs to remember per install.
+//
+// The browser could keep these in localStorage — and it also does, as a fast
+// mirror — but localStorage is per browser and per origin, so a preference
+// stored only there re-asks the same question of the same person every time
+// they open the UI somewhere new. Anything that should be answered once per
+// install belongs here.
+type UIConfig struct {
+	// WalkthroughSeen records that the platform walkthrough has been
+	// completed or dismissed, so it stops opening itself on load.
+	WalkthroughSeen bool `mapstructure:"walkthrough_seen"`
+
+	// WalkthroughStep is the step the last session stopped on, so a
+	// half-finished tour can offer to resume instead of restarting.
+	WalkthroughStep int `mapstructure:"walkthrough_step"`
+
+	// WalkthroughVersion is the script version that was seen. Bumping the
+	// script version in the UI re-arms the tour for people who already
+	// finished an older one.
+	WalkthroughVersion int `mapstructure:"walkthrough_version"`
 }

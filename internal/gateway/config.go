@@ -144,6 +144,12 @@ func (s *Server) safeConfigView() fiber.Map {
 		},
 		"agent_dirs":     cfg.AgentDirs,
 		"skill_dirs":     cfg.SkillDirs,
+		// GUI preferences that belong to the install, not to one browser.
+		"ui": fiber.Map{
+			"walkthrough_seen":    cfg.UI.WalkthroughSeen,
+			"walkthrough_step":    cfg.UI.WalkthroughStep,
+			"walkthrough_version": cfg.UI.WalkthroughVersion,
+		},
 		"channels":       safeChannelsView(cfg.Channels),
 		"plugins_config": safePluginsConfigView(cfg.PluginsConfig),
 		"_meta": fiber.Map{
@@ -336,6 +342,16 @@ type PatchableConfig struct {
 	// the GUI edits the redacted view, so round-tripped placeholders must
 	// never overwrite real secrets on disk. Unknown keys are preserved.
 	PluginsConfig map[string]map[string]any `json:"plugins_config" yaml:"plugins_config"`
+
+	// UI holds web-UI preferences that persist per install (config.UIConfig).
+	// Pointers throughout: a walkthrough that was explicitly dismissed writes
+	// walkthrough_seen=false → true, and "explicitly false" has to survive the
+	// round trip, so these cannot be plain bools with omitempty.
+	UI *struct {
+		WalkthroughSeen    *bool `json:"walkthrough_seen" yaml:"walkthrough_seen"`
+		WalkthroughStep    *int  `json:"walkthrough_step" yaml:"walkthrough_step"`
+		WalkthroughVersion *int  `json:"walkthrough_version" yaml:"walkthrough_version"`
+	} `json:"ui" yaml:"ui"`
 }
 
 // handlePatchConfig merges partial config updates into config.yaml on disk.
@@ -369,6 +385,22 @@ func (s *Server) handlePatchConfig(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "failed to write config file: " + err.Error(),
 		})
+	}
+
+	// Keep the in-memory view in step for the sections the running process
+	// reads back without a restart. The walkthrough asks for its own state on
+	// every page load, and a stale `false` here would re-open a tour the user
+	// just dismissed — inside the same gateway process, no restart involved.
+	if patch.UI != nil && s.cfg != nil {
+		if patch.UI.WalkthroughSeen != nil {
+			s.cfg.UI.WalkthroughSeen = *patch.UI.WalkthroughSeen
+		}
+		if patch.UI.WalkthroughStep != nil {
+			s.cfg.UI.WalkthroughStep = *patch.UI.WalkthroughStep
+		}
+		if patch.UI.WalkthroughVersion != nil {
+			s.cfg.UI.WalkthroughVersion = *patch.UI.WalkthroughVersion
+		}
 	}
 
 	s.log.Info("config updated via API", zap.String("path", s.cfgPath))
@@ -467,6 +499,18 @@ func applyPatch(dst map[string]any, patch PatchableConfig) {
 		}
 		if patch.Server.APIKey != "" && patch.Server.APIKey != "***" {
 			srv["api_key"] = patch.Server.APIKey
+		}
+	}
+	if patch.UI != nil {
+		ui := getOrCreateMap(dst, "ui")
+		if patch.UI.WalkthroughSeen != nil {
+			ui["walkthrough_seen"] = *patch.UI.WalkthroughSeen
+		}
+		if patch.UI.WalkthroughStep != nil {
+			ui["walkthrough_step"] = *patch.UI.WalkthroughStep
+		}
+		if patch.UI.WalkthroughVersion != nil {
+			ui["walkthrough_version"] = *patch.UI.WalkthroughVersion
 		}
 	}
 	if patch.Runtime != nil {
