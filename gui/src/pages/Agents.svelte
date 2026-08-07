@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, tick } from 'svelte'
   import { api } from '../lib/api.js'
   import { modelAvailability } from '../lib/agentmodel.js'
@@ -1459,7 +1460,8 @@ console.log(reply);` : ''
         on:change={onPackageFilePicked}
       />
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}
     <div class="banner err">⚠ {error}</div>

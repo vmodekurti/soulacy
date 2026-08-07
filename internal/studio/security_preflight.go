@@ -57,7 +57,35 @@ type SecurityFinding struct {
 	Category string `json:"category"`
 	Message  string `json:"message"`
 	Fix      string `json:"fix,omitempty"`
+
+	// Action is a machine-readable id for a fix Studio can apply to the draft
+	// on the user's behalf, and ActionLabel is the button that does it. Both
+	// empty when the fix is not Studio's to make — a config.yaml channel
+	// binding, or an operator's acceptance of risk at deploy time.
+	//
+	// Prose alone was the problem this pair solves. "Set security.intent_gate:
+	// deny in the SOUL.yaml" is accurate and still leaves the reader hunting
+	// for a field that Studio does not render anywhere.
+	//
+	// Every id here MUST be handled by the client switch in
+	// gui/src/pages/Studio.svelte. That is a hand-maintained seam across two
+	// languages, and it has already drifted once — readinessAction shipped
+	// handling five actions the server never emitted while six the server did
+	// emit fell through to a no-op, so a "Fix this" button did nothing at all.
+	// gui/src/lib/studio/securityactions.test.js now fails the build if the two
+	// sides disagree.
+	Action      string `json:"action,omitempty"`
+	ActionLabel string `json:"action_label,omitempty"`
 }
+
+// The two fixes below use the shared vocabulary in fixactions.go. They used to
+// be declared here, which meant the security panel had its own parallel action
+// list — a second seam to keep in step with the client, next to the one that
+// had already drifted.
+const (
+	SecurityFixInternalChannelsOnly = FixInternalChannelsOnly
+	SecurityFixIntentGateDeny       = FixIntentGateDeny
+)
 
 // SecurityRecommendation is a suggested safer alternative surfaced
 // separately from findings so operators can act on them without
@@ -199,7 +227,10 @@ func SecurityPreflight(draft Draft, def *agent.Definition, workspaceIntentGateDe
 				"Workflow uses %s but the agent does not declare the 'system' capability.",
 				strings.Join(intersect(sum.PrivilegedTools, keysOf(systemRequiringTools)), ", "),
 			),
-			Fix: "Add 'system' to the agent's capabilities list, or remove the privileged tools from the tool allowlist.",
+			// No Action: capabilities are not a field on the Studio draft, so
+			// there is nothing here for Studio to set. Saying where the field
+			// actually lives beats offering a button that cannot work.
+			Fix: "Open the SOUL.yaml view (the </> tab above the canvas) and add `system` to the agent's top-level `capabilities:` list. The alternative is to drop the privileged tools from the workflow entirely.",
 		})
 	}
 	if sum.PrivilegedChannelExposure {
@@ -217,7 +248,9 @@ func SecurityPreflight(draft Draft, def *agent.Definition, workspaceIntentGateDe
 				strings.Join(sum.PrivilegedTools, ", "),
 				strings.Join(sharedExposedChannels(channels), ", "),
 			),
-			Fix: "Restrict this agent to internal (http) channels, or set accept_privileged_exposure:true on each shared-channel binding in config.yaml.",
+			Fix: "Two ways out. Studio can untick the shared channels for you and leave this agent on HTTP only — the button does exactly that. Or accept the exposure per binding on the Delivery page: open the channel, tick \"accept privileged exposure\". That half stays on Delivery on purpose — the operator putting an agent on a public channel is the one accepting the risk, not the person who wrote it.",
+			Action:      SecurityFixInternalChannelsOnly,
+			ActionLabel: "Use internal channels only",
 		})
 	}
 
@@ -235,7 +268,9 @@ func SecurityPreflight(draft Draft, def *agent.Definition, workspaceIntentGateDe
 				strings.Join(sum.UntrustedContentSources, ", "),
 				strings.Join(sum.PrivilegedTools, ", "),
 			),
-			Fix: "Set security.intent_gate:deny in the SOUL.yaml, and audit the tool allowlist for surfaces that can be replaced with scoped alternatives.",
+			Fix: "The button sets `security.intent_gate: deny` on this draft, so a tool call steered by injected content is refused outright instead of prompting someone to approve it. Worth pairing with the Recommendations below, which swap broad tools for scoped ones.",
+			Action:      SecurityFixIntentGateDeny,
+			ActionLabel: "Set the intent gate to deny",
 		})
 	}
 

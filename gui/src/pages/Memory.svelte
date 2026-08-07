@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import { diffLines, diffStats, sourceBadge } from '../lib/rulediff.js'
@@ -421,7 +422,8 @@
       </select>
       <button class="btn-icon" title="Refresh" on:click={loadOverview}>↺</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if !brainEnabled}
     <div class="banner warn">

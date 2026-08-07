@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onDestroy, onMount, tick } from 'svelte'
   import { slide } from 'svelte/transition'
   import { api, apiFetch, createEventSocket } from '../lib/api.js'
@@ -1546,7 +1547,8 @@
         </span>
       {/if}
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}
     <div class="banner err">⚠ {error}</div>

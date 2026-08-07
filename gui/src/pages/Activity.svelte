@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import { get } from 'svelte/store'
   import { api } from '../lib/api.js'
@@ -512,7 +513,8 @@
       </button>
       <button class="btn-secondary" on:click={poll} disabled={!selectedId || loading}>↺ Refresh</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}<div class="banner err">{error}</div>{/if}
   {#if replayMsg}<div class="banner ok">{replayMsg}</div>{/if}

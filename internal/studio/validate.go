@@ -221,7 +221,20 @@ type ValidateError struct {
 	NodeID    string `json:"nodeId,omitempty"`
 	EdgeIndex *int   `json:"edgeIndex,omitempty"`
 	Message   string `json:"message"`
+	// Source names the check that produced this error, when it is not the
+	// graph structure itself. Validate() folds in the completion-contract
+	// rules so a single Validate call sees everything — but the contract
+	// report ALSO runs those rules directly, so without this tag the same
+	// sentence appeared twice on the Save step under two different headings,
+	// each with its own generic remedy. Worse, the graph-integrity copy said
+	// "fix the broken graph structure" about a graph that compiles fine; the
+	// real problem was a missing delivery channel.
+	Source string `json:"source,omitempty"`
 }
+
+// ValidateSourceCompletion marks an error raised by the completion-contract
+// rules rather than by graph validation.
+const ValidateSourceCompletion = "completion"
 
 // ValidateWarning is one soft problem: the graph still compiles, but the
 // shape is suspicious. NodeID locates it when applicable.

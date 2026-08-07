@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import { connected } from '../lib/stores.js'
   import { api, createEventSocket } from '../lib/api.js'
@@ -281,7 +282,8 @@
   <div class="page-header">
     <h1>Dashboard</h1>
     <button class="btn-secondary" on:click={load}>↺ Refresh</button>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}
     <div class="banner err">

@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
 
@@ -112,7 +113,8 @@
       <p>Ephemeral in-memory handoff buffers for live agents and Studio workflows.</p>
     </div>
     <button class="btn-secondary" on:click={load} disabled={loading}>↻ Refresh</button>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}<div class="banner err">{error}</div>{/if}
 

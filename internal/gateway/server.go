@@ -643,6 +643,8 @@ func (s *Server) buildApp() *fiber.App {
 	api.Post("/admin/restart", s.rbacMW(rbac.ResourceConfig, rbac.ActionWrite), s.handleRestart)
 	api.Get("/admin/audit", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleAdminAudit)
 	api.Get("/onboarding/status", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleOnboardingStatus)
+	// Per-page walkthrough: the same outcome told from whichever screen you are on.
+	api.Get("/tour/:page", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleTour)
 	api.Get("/readiness", s.rbacMW(rbac.ResourceConfig, rbac.ActionRead), s.handleReadiness)
 	s.registerUpdatesRoutes(api)
 

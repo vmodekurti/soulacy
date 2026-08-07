@@ -6,6 +6,11 @@
   import { api } from './lib/api.js'
   import { pluginNavEntries, isPluginPage, pluginIdFromPage } from './lib/pluginui.js'
   import { looksLikeStaleAssetError, recoverFromStaleAssets } from './lib/stalerecovery.js'
+  import { navPages, navGroups, navAnchor } from './lib/nav.js'
+  import Walkthrough from './lib/walkthrough/Walkthrough.svelte'
+  import {
+    loadWalkthroughState, startWalkthrough, shouldAutoStart,
+  } from './lib/walkthrough/store.js'
 
   let page = 'dashboard'
   let shareToken = ''   // set from #share/<token> — renders the public read-only view
@@ -31,30 +36,7 @@
   let restarting = false
   let restartError = ''
 
-  const pages = [
-    { id: 'dashboard', icon: '◈', label: 'Dashboard',  group: 'main'         },
-    { id: 'onboarding', icon: '✓', label: 'First Run',  group: 'main'         },
-    { id: 'studio',    icon: '🎬', label: 'Studio',      group: 'main'         },
-    { id: 'agents',    icon: '⊕', label: 'Deployed',   group: 'main'         },
-    { id: 'templates', icon: '📋', label: 'Templates',  group: 'main'         },
-    { id: 'chat',      icon: '◎', label: 'Chat',        group: 'main'         },
-    { id: 'memory',    icon: '🧠', label: 'Learning',    group: 'capabilities' },
-    { id: 'knowledge', icon: '📚', label: 'Knowledge',   group: 'capabilities' },
-    { id: 'queues',    icon: '☷', label: 'Queues',      group: 'capabilities' },
-    { id: 'workboard', icon: '▦', label: 'Workboard',  group: 'capabilities' },
-    { id: 'channels',  icon: '📡', label: 'Delivery',   group: 'integrations' },
-    { id: 'schedule',  icon: '⏱', label: 'Automations', group: 'integrations' },
-    { id: 'skills',    icon: '🧩', label: 'Skills',     group: 'integrations' },
-    { id: 'mcp',       icon: '🔌', label: 'MCP',        group: 'integrations' },
-    { id: 'pluginmgr', icon: '🧱', label: 'Plugins',    group: 'integrations' },
-    { id: 'providers', icon: '⚙', label: 'Providers',  group: 'integrations' },
-    { id: 'secrets',   icon: '🔑', label: 'Secrets',    group: 'integrations' },
-    { id: 'activity',  icon: '📈', label: 'Runs',       group: 'system'       },
-    { id: 'browser',   icon: '🕸', label: 'Browser',    group: 'system'       },
-    { id: 'config',    icon: '≡', label: 'Config',      group: 'system'       },
-    { id: 'mobile',    icon: '▣', label: 'Mobile',      group: 'system'       },
-    { id: 'logs',      icon: '📋', label: 'Logs',       group: 'system'       },
-  ]
+  const pages = navPages
 
   const retiredPages = {
     builder: 'studio',
@@ -85,14 +67,6 @@
     mobile: () => import('./pages/Mobile.svelte'),
     logs: () => import('./pages/Logs.svelte'),
   }
-
-  // Ordered nav sections with their (optional) uppercase headers, per wireframe.
-  const navGroups = [
-    { key: 'main',         label: ''             },
-    { key: 'capabilities', label: 'Capabilities' },
-    { key: 'integrations', label: 'Integrations' },
-    { key: 'system',       label: 'System'       },
-  ]
 
   // Keep the browser tab title in sync with the active page (Story 15).
   $: if (typeof document !== 'undefined') document.title = pageTitle(page, pages, pluginPages)
@@ -207,18 +181,40 @@
     // First-run: if the user landed on the default page with no explicit route
     // and setup isn't done yet, guide them into the wizard. One-shot — once
     // they've seen it (or completed setup) we never auto-redirect again.
+    let setupWizardOpened = false
+    let onboardingDecided = Promise.resolve()
     try {
       const seen = localStorage.getItem('soulacy-onboarding-seen') === '1'
       if (!seen && !location.hash && page === 'dashboard') {
-        api.onboarding.status()
+        onboardingDecided = api.onboarding.status()
           .then((st) => {
             const provider = (st?.steps || []).find(s => s.key === 'provider')
-            if (!st?.complete && provider && provider.status === 'todo') navigate('onboarding')
-            else localStorage.setItem('soulacy-onboarding-seen', '1')
+            if (!st?.complete && provider && provider.status === 'todo') {
+              setupWizardOpened = true
+              navigate('onboarding')
+            } else {
+              localStorage.setItem('soulacy-onboarding-seen', '1')
+            }
           })
           .catch(() => {}) // older gateway without onboarding status: skip silently
       }
     } catch (_) { /* localStorage unavailable — skip first-run redirect */ }
+
+    // Orientation tour: auto-opens once per install. The setup wizard wins on a
+    // brand-new install — being walked through 22 screens before you have a model
+    // connected is the wrong first experience — so the tour waits for the next
+    // load, by which point the wizard no longer auto-opens.
+    Promise.all([onboardingDecided, loadWalkthroughState()])
+      .then(([, state]) => {
+        // Not while the login screen is up: the shell renders underneath it,
+        // so a tour started here would drive navigation behind a modal the user
+        // cannot see past.
+        if (!setupWizardOpened && !$authRequired && shouldAutoStart(state)) {
+          navCollapsed = false
+          startWalkthrough(0)
+        }
+      })
+      .catch(() => {})
 
     // Auth probe: hit an authenticated endpoint. apiFetch flips $authRequired
     // true on 401/403 (→ login screen) and false on success (→ dashboard).
@@ -433,7 +429,8 @@
         {#if groupPages.length}
           {#if grp.label}<div class="nav-section" aria-hidden="true">{grp.label}</div>{/if}
           {#each groupPages as p}
-            <button class="nav-item" class:active={page === p.id} on:click={() => navigate(p.id)} title={p.label}>
+            <button class="nav-item" class:active={page === p.id} on:click={() => navigate(p.id)} title={p.label}
+                    data-tour={navAnchor(p.id)}>
               <span class="nav-icon">{p.icon}</span>
               <span class="nav-label">{p.label}</span>
             </button>
@@ -471,6 +468,10 @@
       <button class="icon-btn" on:click={openKeyModal} title="Set API key">🔑</button>
     </div>
   </aside>
+
+  {#if !$authRequired}
+    <Walkthrough on:navigate={(e) => navigate(e.detail)} />
+  {/if}
 
   <!-- Main content -->
   <main class="content">

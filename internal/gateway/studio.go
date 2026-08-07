@@ -1132,6 +1132,15 @@ func (s *Server) handleStudioGenerateStream(c *fiber.Ctx) error {
 		}
 		res, err := studio.RunGeneratePipeline(ctx, model, req.Intent, cat, opts)
 
+		// Pin the RUNTIME provider/model, exactly as the two synchronous generate
+		// handlers do. Without it this path emitted a draft carrying whatever the
+		// generator left in `llm` — usually nothing, sometimes the builder model —
+		// so the YAML named a provider/model the router had never registered. The
+		// agent then failed at run time on a model the operator never chose, and
+		// Save refused it with "does not specify a model to run on" while Run Live
+		// (which resolves the default first) reported the same draft as fine.
+		s.stampDefaultLLM(&res.Compile.Workflow)
+
 		// Route the streamed result through the SAME finalization the synchronous
 		// compile path uses. Without this, res.Compile.Contract stayed nil on the
 		// streamed path while the sync path populated it — and the GUI's
@@ -1629,6 +1638,99 @@ func (s *Server) handleStudioTryAgent(c *fiber.Ctx) error {
 		resp["error"] = runErr.Error()
 	}
 	return c.JSON(resp)
+}
+
+// ensurePeerAgents makes a workflow's delegation actually work: it persists a
+// real agent for every peer the workflow calls but which does not exist yet,
+// and makes sure the caller DECLARES every peer it calls. It returns the peer
+// ids it had to create.
+//
+// Both halves are needed and they fail differently. Without the first, the
+// saved workflow names an agent that is not there. Without the second, the
+// agent exists and the runtime still refuses the call — it only allows peers
+// listed in the caller's `agents:` — so every run dies at the delegating node
+// with "is not in this agent's declared peer list". That second failure was
+// live for real users: the wizard derives the list from the flow, but the
+// SOUL.yaml path writes the definition verbatim, so a workflow saved from the
+// code view had its peers created and then could not call them.
+//
+// This is the durable twin of registerEphemeralPeers: that one registers peers
+// in memory for the length of a test run, this one writes them to disk so the
+// saved workflow can actually run. It lives here, shared, because Studio has
+// more than one way to persist the same workflow — the wizard's Save and the
+// code view's "Save SOUL.yaml" — and when only one of them materialised peers,
+// which button you pressed decided whether the agent you just saved was
+// runnable. The workflow saved fine either way; it just referenced an agent
+// that was never created, and the run died at the delegating node.
+//
+// `newAgents` is the draft's profile list when there is a draft (the wizard
+// path). It may be nil — every missing profile is synthesized from the node.
+//
+// Errors are returned, not swallowed. A peer that fails to persist leaves the
+// caller with exactly the broken agent this function exists to prevent, so the
+// save should fail loudly rather than report success.
+func (s *Server) ensurePeerAgents(dir string, def *agent.Definition, newAgents []studio.NewAgent) ([]string, error) {
+	if def == nil || def.Workflow == nil {
+		return nil, nil
+	}
+	byID := make(map[string]studio.NewAgent, len(newAgents))
+	for _, na := range newAgents {
+		byID[na.ID] = na
+	}
+	created := []string{}
+	seen := map[string]bool{}
+	declared := make(map[string]bool, len(def.Agents))
+	for _, p := range def.Agents {
+		declared[p] = true
+	}
+	for _, node := range def.Workflow.Nodes {
+		if node.Kind != "agent" || node.Agent == "" || seen[node.Agent] {
+			continue
+		}
+		seen[node.Agent] = true
+		// Authorise the call. The runtime checks this list, not the graph.
+		if !declared[node.Agent] {
+			def.Agents = append(def.Agents, node.Agent)
+			declared[node.Agent] = true
+		}
+		if existing := s.loader.Get(node.Agent); existing != nil {
+			continue // a real agent already answers to this name
+		}
+		// Prefer the profile the draft carries; if it is missing or thin,
+		// synthesize a complete, reusable persona from the node so no helper
+		// agent is ever saved blank.
+		na := byID[node.Agent]
+		synth := studio.SynthesizeAgent(node.Agent, node, def.Name)
+		if strings.TrimSpace(na.Name) == "" {
+			na.Name = synth.Name
+		}
+		if strings.TrimSpace(na.Description) == "" {
+			na.Description = synth.Description
+		}
+		if strings.TrimSpace(na.SystemPrompt) == "" {
+			na.SystemPrompt = synth.SystemPrompt
+		}
+		peer := agent.Definition{
+			ID:           node.Agent,
+			Name:         na.Name,
+			Description:  na.Description,
+			SystemPrompt: na.SystemPrompt,
+			Enabled:      true,
+			MaxTurns:     15,
+			Memory:       agent.MemoryPolicy{MaxTokens: 8000},
+			LLM: agent.LLMConfig{
+				Provider:    s.cfg.LLM.DefaultProvider,
+				Temperature: 0.7,
+			},
+		}
+		if err := s.loader.Upsert(dir, &peer); err != nil {
+			return created, fmt.Errorf("could not create helper agent %q that this workflow delegates to: %w", node.Agent, err)
+		}
+		s.log.Info("studio: created helper agent referenced by workflow",
+			zap.String("peer", node.Agent), zap.String("workflow", def.ID))
+		created = append(created, node.Agent)
+	}
+	return created, nil
 }
 
 // registerEphemeralPeers registers an in-memory, non-persisted stub for every
@@ -3085,6 +3187,18 @@ func (s *Server) handleStudioSaveYAML(c *fiber.Ctx) error {
 		def.SourcePath = existing.SourcePath
 		dir = filepath.Dir(filepath.Dir(existing.SourcePath))
 	}
+	// BEFORE the write, not after: ensurePeerAgents adds any missing peer to
+	// def.Agents, and Upsert is what serialises def to disk. Running it after
+	// left the declaration in the loader's in-memory copy only — Get() saw it,
+	// the file did not, and the peer list came back empty on the next restart.
+	//
+	// The code view saves the SAME workflow as the wizard, so it owes the same
+	// guarantee. There is no draft on this path, so every missing profile is
+	// synthesized from the node itself.
+	createdPeers, perr := s.ensurePeerAgents(dir, &def, nil)
+	if perr != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, perr)
+	}
 	if err := s.loader.Upsert(dir, &def); err != nil {
 		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
@@ -3092,7 +3206,7 @@ func (s *Server) handleStudioSaveYAML(c *fiber.Ctx) error {
 	if err := s.scheduler.RegisterAgent(&def); err != nil {
 		s.log.Warn("scheduler registration failed", zap.String("agent", def.ID), zap.Error(err))
 	}
-	return c.JSON(fiber.Map{"id": def.ID, "agent": &def, "validation": report})
+	return c.JSON(fiber.Map{"id": def.ID, "agent": &def, "validation": report, "peerAgents": createdPeers})
 }
 
 // yamlValidateItem is one problem found validating SOUL.yaml, normalized across
@@ -3397,6 +3511,13 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	cat := s.studioCatalogSnapshot()
 	s.groundCatalog(&cat)
 	in := s.preflightInput(c, cat)
+	// Judge the draft the RUNTIME will see, not the one the client sent. A draft
+	// is allowed to omit provider/model and inherit the workspace default — Run
+	// Live and Try Agent both resolve it that way — but the save gate did not,
+	// so Studio refused to save an agent it had just told the user was runnable.
+	// Resolving here also means the saved YAML names its provider/model outright
+	// instead of depending on a workspace default that can change under it.
+	req.Workflow = s.studioDraftWithRuntimeLLM(req.Workflow)
 	contract := studio.AssessContract(req.Workflow, cat, in)
 	if contract.Blockers > 0 {
 		return c.Status(fiber.StatusUnprocessableEntity).JSON(fiber.Map{
@@ -3485,56 +3606,17 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	if len(s.cfg.AgentDirs) > 0 {
 		dir = s.cfg.AgentDirs[0]
 	}
-	if err := s.loader.Upsert(dir, &def); err != nil {
-		return s.errJSON(c, fiber.StatusInternalServerError, err)
+	// Materialise any peer agent the workflow delegates to that does not exist
+	// yet, and make sure the caller declares the ones it calls. A dangling peer
+	// is not cosmetic: the run dies at the delegating node. Runs before Upsert
+	// because it can add to def.Agents, and Upsert is the write.
+	createdPeers, perr := s.ensurePeerAgents(dir, &def, req.Workflow.NewAgents)
+	if perr != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, perr)
 	}
 
-	// Auto-stub any missing peer agents referenced in the workflow.
-	// We use the Draft's NewAgents array to populate full profiles (SystemPrompt, Description).
-	// We save these auto-generated agents as Enabled: true with safe defaults so they do not
-	// fail the main workflow execution when it delegates to them.
-	if def.Workflow != nil {
-		newAgentsMap := make(map[string]studio.NewAgent)
-		for _, na := range req.Workflow.NewAgents {
-			newAgentsMap[na.ID] = na
-		}
-		for _, node := range def.Workflow.Nodes {
-			if node.Kind == "agent" && node.Agent != "" {
-				if existing := s.loader.Get(node.Agent); existing == nil {
-					// Prefer the profile the draft carries; if it is missing or
-					// thin, synthesize a complete, reusable persona from the node
-					// so no helper agent is ever saved blank (sub-agent quality).
-					na, ok := newAgentsMap[node.Agent]
-					if !ok || na.Name == "" || na.Description == "" || strings.TrimSpace(na.SystemPrompt) == "" {
-						synth := studio.SynthesizeAgent(node.Agent, node, def.Name)
-						if na.Name == "" {
-							na.Name = synth.Name
-						}
-						if na.Description == "" {
-							na.Description = synth.Description
-						}
-						if strings.TrimSpace(na.SystemPrompt) == "" {
-							na.SystemPrompt = synth.SystemPrompt
-						}
-					}
-					stub := agent.Definition{
-						ID:           node.Agent,
-						Name:         na.Name,
-						Description:  na.Description,
-						SystemPrompt: na.SystemPrompt,
-						Enabled:      true,
-						MaxTurns:     15,
-						Memory:       agent.MemoryPolicy{MaxTokens: 8000},
-						LLM: agent.LLMConfig{
-							Provider:    s.cfg.LLM.DefaultProvider,
-							Temperature: 0.7,
-						},
-					}
-					// Ignore errors here; best-effort stubbing.
-					_ = s.loader.Upsert(dir, &stub)
-				}
-			}
-		}
+	if err := s.loader.Upsert(dir, &def); err != nil {
+		return s.errJSON(c, fiber.StatusInternalServerError, err)
 	}
 
 	// Record the save, and specifically record an ACCEPTED-WARNINGS save with the
@@ -3555,6 +3637,9 @@ func (s *Server) handleStudioSave(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{
 		"agentId": def.ID,
 		"enabled": false,
+		// The helper agents this save had to create. Surfaced so the UI can say
+		// so out loud instead of silently growing the user's agent list.
+		"peerAgents": createdPeers,
 	})
 }
 

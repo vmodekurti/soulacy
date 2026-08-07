@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   // Templates tab (Story E21): the template catalog as a first-class page —
   // four default agentic workflows ship embedded (Meeting Minutes, Inbox
   // Triage, Market Monitor, Compliance Auditor) alongside the starter
@@ -254,7 +255,8 @@
   <div class="page-header">
     <h1>Templates</h1>
     <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}<div class="banner err">⚠ {error}</div>{/if}
   {#if notice}<div class="banner ok">✓ {notice}</div>{/if}

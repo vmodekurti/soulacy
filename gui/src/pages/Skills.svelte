@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import { searchSkills } from '../lib/skillsearch.js'
@@ -242,7 +243,8 @@
       <button class="btn-as" on:click={openASModal}>⚡ From AgenticSkills</button>
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   <!-- Skill sources modal (Story E26) -->
   {#if srcModal}

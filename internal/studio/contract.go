@@ -48,7 +48,20 @@ type ContractCheck struct {
 	NodeID  string `json:"nodeId,omitempty"`
 	Message string `json:"message"`
 	Fix     string `json:"fix,omitempty"`
+	// Action and ActionLabel come from the shared vocabulary in fixactions.go.
+	// A check that leaves them empty still gets an action derived from its id
+	// (see actionForContractCheck) — this is for checks that know something the
+	// id cannot express, in particular the ones Studio can fix outright.
+	Action       string            `json:"action,omitempty"`
+	ActionLabel  string            `json:"actionLabel,omitempty"`
+	ActionParams map[string]string `json:"actionParams,omitempty"`
 }
+
+// contractAdd records one check. contractAddFix does the same for a check that
+// can also hand the user a button — a separate signature so the many existing
+// add() calls keep their shape.
+type contractAdd func(id, title, status, node, msg, fix string)
+type contractAddFix func(id, title, status, node, msg, fix, action, label string, params map[string]string)
 
 // AssessContract runs the Studio generation contract over a draft. It is pure
 // and LLM-free; callers provide the same live-state input used by Preflight.
@@ -77,6 +90,20 @@ func AssessContract(draft Draft, cat Catalog, in PreflightInput, options ...Cont
 		}
 	}
 	pass := func(id, title, msg string) { add(id, title, "pass", "", msg, "") }
+	// addFix is `add` for a check that can hand the user a button as well as a
+	// sentence. Kept separate so the sixty existing add() calls stay readable.
+	addFix := func(id, title, status, node, msg, fix, action, label string, params map[string]string) {
+		res.Checks = append(res.Checks, ContractCheck{
+			ID: id, Title: title, Status: status, NodeID: node, Message: msg, Fix: fix,
+			Action: action, ActionLabel: label, ActionParams: params,
+		})
+		switch status {
+		case "block":
+			res.Blockers++
+		case "warn":
+			res.Warnings++
+		}
+	}
 
 	if draft.IsAgent() {
 		pass("agent.shape", "Reasoning-agent shape", "Reasoning-agent draft has no fixed graph to compile; contract checks against system prompt, tool allowlists, peer graph, and step budget run below.")
@@ -86,6 +113,13 @@ func AssessContract(draft Draft, cat Catalog, in PreflightInput, options ...Cont
 			pass("graph.integrity", "Graph integrity", "The workflow graph compiles: node ids, entry, edges, ports, and output contracts are coherent.")
 		} else {
 			for _, e := range vr.Errors {
+				if e.Source == ValidateSourceCompletion {
+					// assessCompletionContractRules reports this one with a
+					// remedy that actually matches it. Reporting it here too
+					// gave the user the same sentence twice, once under a
+					// heading about graph structure that was not the problem.
+					continue
+				}
 				add("graph.integrity", "Graph integrity", "block", e.NodeID, e.Message, "Fix the broken graph structure before saving or running.")
 			}
 		}
@@ -107,7 +141,7 @@ func AssessContract(draft Draft, cat Catalog, in PreflightInput, options ...Cont
 	}
 
 	assessInboundInputUse(draft, add, pass)
-	assessAuthoringRules(draft, opts, add, pass)
+	assessAuthoringRules(draft, opts, add, addFix, pass)
 	res.OK = res.Blockers == 0
 	res.Score = contractScore(res.Blockers, res.Warnings)
 	res.Summary = contractSummary(res)
@@ -167,11 +201,11 @@ func assessInboundInputUse(draft Draft, add func(id, title, status, node, msg, f
 			"query or prompt — or switch the trigger to a schedule if the same result every time is intended.")
 }
 
-func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {
+func assessAuthoringRules(draft Draft, opts contractOpts, add contractAdd, addFix contractAddFix, pass func(id, title, msg string)) {
 	if draft.IsAgent() {
 		pass("architecture.fit", "Architecture fit", "This draft is a reasoning agent, so Studio will not force it into a brittle fixed workflow graph.")
 		assessReasoningAgentRules(draft, opts, add, pass)
-		assessCompletionContractRules(draft, add, pass)
+		assessCompletionContractRules(draft, add, addFix, pass)
 		return
 	}
 
@@ -182,18 +216,18 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 	case nodeCount <= 5:
 		pass("architecture.size", "Macro-workflow size", fmt.Sprintf("The workflow has %d node(s), which fits the simple high-level Macro-Workflow guideline.", nodeCount))
 	case nodeCount <= 8:
-		add("architecture.size", "Macro-workflow size", "warn", "", fmt.Sprintf("This workflow has %d nodes. Studio workflows should usually stay at 3-5 high-level steps.", nodeCount), "Combine extraction/formatting/filtering into one Python or LLM Extract block, or switch to an agent if runtime tool choice is needed.")
+		add("architecture.size", "Macro-workflow size", "warn", "", fmt.Sprintf("This workflow has %d nodes. Studio workflows should usually stay at 3-5 high-level steps.", nodeCount), "Steps that only reshape data can usually be one step: merge them into a single Custom Python block from the palette on the left. If the agent needs to choose tools as it goes, switch Mode to Auto at the top of the Build step.")
 	case knownDeterministicMacroWorkflow(draft):
 		add("architecture.size", "Macro-workflow size", "warn", "", fmt.Sprintf("This deterministic macro-workflow has %d high-level service steps. It is larger than the ideal visual graph, but it matches a known Soulacy pattern with explicit tool order and completion checks.", nodeCount), "Keep this as a workflow only when the ordering must be deterministic; otherwise convert it to an Auto/Plan-Execute agent.")
 	default:
-		add("architecture.size", "Macro-workflow size", "block", "", fmt.Sprintf("This workflow has %d nodes and is likely too brittle for a visual Macro-Workflow.", nodeCount), "Collapse low-level steps or switch to a ReAct/Auto agent that can choose tools dynamically.")
+		add("architecture.size", "Macro-workflow size", "block", "", fmt.Sprintf("This workflow has %d nodes and is likely too brittle for a visual Macro-Workflow.", nodeCount), "Merge the small steps into fewer, larger ones on the canvas. If the work genuinely needs the agent to decide its own steps as it goes, switch Mode to Auto at the top of the Build step instead of drawing them all out.")
 	}
 
 	if risky := freeformHandoffWarnings(draft); len(risky) == 0 {
 		pass("data.contracts", "Data contracts", "No obvious free-form agent/LLM output is wired directly into a structured tool call.")
 	} else {
 		for _, r := range risky {
-			add("data.contracts", "Data contracts", "warn", r.nodeID, r.message, "Insert an LLM Extract or Python Transform node, or pass structured values with typed ports / {{ toJson .var }}.")
+			add("data.contracts", "Data contracts", "warn", r.nodeID, r.message, "An agent step produces prose, but the tool after it expects named fields — so the tool call arrives malformed or half-empty. Put a step in between that turns the text into fields: drag LLM Extract, or a Custom Python block, from the palette on the left. Alternatively wire that tool's input from an earlier step's named output instead of from the agent's text.")
 		}
 	}
 
@@ -201,10 +235,19 @@ func assessAuthoringRules(draft Draft, opts contractOpts, add func(id, title, st
 		pass("agents.prompts", "Helper-agent prompts", "Helper agents are either absent or have enough prompt detail to run independently.")
 	} else {
 		for _, a := range bad {
-			add("agents.prompts", "Helper-agent prompts", "warn", a, "Helper agent \""+a+"\" has a very short or missing system prompt.", "Give each helper agent a self-contained role, constraints, available inputs, and expected output format.")
+			// This is the one warning a user genuinely cannot act on without
+			// knowing what a good agent prompt looks like — so hand them one.
+			// The synthesized persona travels WITH the finding rather than
+			// behind another round trip, so the button applies instantly.
+			synth := SynthesizeAgent(a, agentNodeFor(draft, a), draft.Name)
+			addFix("agents.prompts", "Helper-agent prompts", "warn", a,
+				"Helper agent \""+a+"\" has a very short or missing system prompt, so it will improvise its role on every run.",
+				"A helper agent's prompt is its whole character — it gets no other context. Studio can write a starter one from what this step does: role, how to behave, the output format expected of it, and what to do with empty input. Edit it afterwards; it is a floor, not a ceiling.",
+				FixWriteHelperPrompt, "Write a starter prompt",
+				map[string]string{"agent": a, "prompt": synth.SystemPrompt})
 		}
 	}
-	assessCompletionContractRules(draft, add, pass)
+	assessCompletionContractRules(draft, add, addFix, pass)
 }
 
 func knownDeterministicMacroWorkflow(draft Draft) bool {
@@ -229,7 +272,7 @@ func knownDeterministicMacroWorkflow(draft Draft) bool {
 	return notebookOps >= 3 && channelOps <= 1
 }
 
-func assessCompletionContractRules(draft Draft, add func(id, title, status, node, msg, fix string), pass func(id, title, msg string)) {
+func assessCompletionContractRules(draft Draft, add contractAdd, addFix contractAddFix, pass func(id, title, msg string)) {
 	errs, warns := completionContractValidateIssues(draft)
 	if len(errs) == 0 && len(warns) == 0 {
 		if requiresCompletionContract(draft) {
@@ -238,10 +281,19 @@ func assessCompletionContractRules(draft Draft, add func(id, title, status, node
 		return
 	}
 	for _, e := range errs {
-		add("completion.contract", "Completion contract", "block", e.NodeID, e.Message, "Add the missing operation(s), set a real output route, or switch to an Auto reasoning agent for adaptive multi-step work.")
+		if strings.Contains(e.Message, "no routable output channel") {
+			// The generic remedy ("add the missing operation(s), set a real
+			// output route…") reads like three unrelated suggestions. This one
+			// has a single cause and a single cure.
+			addFix("completion.contract", "Completion contract", "block", e.NodeID, e.Message,
+				"This agent is meant to deliver something, but its only channel is HTTP — that is how requests come IN, not where results go OUT. Tick a real destination (Telegram, Slack, email…) under Channels & delivery in the Build step's inspector. If none are listed, set one up on the Delivery page first; it appears here once configured.",
+				FixOpenStudio, "Choose a destination", nil)
+			continue
+		}
+		add("completion.contract", "Completion contract", "block", e.NodeID, e.Message, "The workflow stops before doing everything the description asked for. Add the missing step on the canvas — or, if the job needs the agent to work out its own steps, switch Mode to Auto at the top of the Build step.")
 	}
 	for _, w := range warns {
-		add("completion.contract", "Completion contract", "warn", w.NodeID, w.Message, "Add a completion contract and/or configure the missing output/storage route.")
+		add("completion.contract", "Completion contract", "warn", w.NodeID, w.Message, "Say what a finished run looks like for this agent, and give it somewhere to put the result — pick a destination under Channels & delivery in the Build step's inspector.")
 	}
 }
 
@@ -375,7 +427,7 @@ func assessReasoningAgentRules(draft Draft, opts contractOpts, add func(id, titl
 	case !hasTools && !hasPeers && !hasSkills && !hasKB && strategy == "react":
 		add("agent.tool_allowlist", "Tool allowlist", "block", "",
 			"A ReAct agent has no tools, peer agents, skills, or knowledge bases to act on — the loop cannot make progress.",
-			"Add at least one entry to Tools, NewAgents, Skills, or Knowledge before saving.")
+			"An agent with no tools, helpers, skills or knowledge can only talk. Add at least one from the palette on the left, or attach a Skill or Knowledge base in the Build step's inspector.")
 	case !hasTools && !hasPeers && !hasSkills && !hasKB:
 		add("agent.tool_allowlist", "Tool allowlist", "warn", "",
 			"This agent has no tools, peers, skills, or knowledge bases; runtime behaviour is limited to plain-LLM responses.",
@@ -399,7 +451,7 @@ func assessReasoningAgentRules(draft Draft, opts contractOpts, add func(id, titl
 	for _, ref := range dangling {
 		add("agent.peer_graph", "Peer agents", "warn", "",
 			"System prompt references peer \""+ref+"\" but no such agent is declared in NewAgents.",
-			"Either add the peer to NewAgents, remove the reference, or match the name exactly.")
+			"The prompt refers to a helper agent this workflow does not have. Either add an Agent step for it on the canvas, correct the spelling to match one that exists, or take the mention out of the prompt.")
 	}
 
 	// 4. prompt_hygiene — flag references to tools that aren't in the allowlist.
@@ -471,19 +523,19 @@ func assessReasoningAgentRules(draft Draft, opts contractOpts, add func(id, titl
 	if strategy == "react" && draft.MaxTurns > 40 {
 		add("agent.step_budget", "Step budget", "block", "",
 			fmt.Sprintf("max_turns is %d — a ReAct loop this deep is nearly guaranteed to blow the token budget or spin.", draft.MaxTurns),
-			"Lower max_turns to ≤ 20 (Studio's sensible default is 15).")
+			"Set `max_turns` to 20 or fewer in the SOUL.yaml view (the `</>` tab above the canvas). It caps how many thinking steps a run may take; 15 is a good default. A higher number mostly lets a stuck agent keep spending.")
 	}
 	if strategy == "react" && draft.MaxTurns == 0 && totalTimeoutDur <= 0 && runTimeoutDur <= 0 {
 		add("agent.step_budget", "Step budget", "warn", "",
 			"ReAct loop has no max_turns and no total_timeout / run_timeout — a stuck loop cannot self-terminate.",
-			"Set at least one of max_turns, total_timeout, or run_timeout.")
+			"Nothing currently stops this agent if it gets stuck in a loop. In the SOUL.yaml view (the `</>` tab above the canvas) set at least one limit: `max_turns` (how many thinking steps), `total_timeout`, or `run_timeout`.")
 	}
 	if stepTimeoutDur > 0 && totalTimeoutDur > 0 && draft.MaxTurns > 0 {
 		if totalTimeoutDur < time.Duration(draft.MaxTurns)*stepTimeoutDur {
 			add("agent.step_budget", "Step budget", "warn", "",
 				fmt.Sprintf("total_timeout (%s) is less than max_turns × step_timeout (%d × %s); the agent cannot complete a full loop.",
 					totalTimeoutDur, draft.MaxTurns, stepTimeoutDur),
-				"Either raise total_timeout, or lower max_turns / step_timeout so the arithmetic fits.")
+				"The time allowed per step, multiplied by the number of steps, is more than the overall limit — so a slow run gets cut off part-way through. In the SOUL.yaml view (the `</>` tab above the canvas) raise `total_timeout`, or lower `max_turns` or `step_timeout` until they add up.")
 		}
 	}
 
@@ -548,13 +600,13 @@ func assessAgentLLMFit(draft Draft, add func(id, title, status, node, msg, fix s
 		if draft.MaxTurns > 4 || (strategy == "plan_execute" && draft.MaxTurns == 0) {
 			add("agent.llm_fit", "Model fit", "warn", "",
 				"\""+model+"\" has a small context window; a reasoning loop with >4 turns tends to overflow it.",
-				"Lower max_turns to ≤ 4, or pick a larger-context model.")
+				"Every step adds to the conversation, and this model cannot hold more than about four before it runs out of room. Either lower `max_turns` to 4 in the SOUL.yaml view (the `</>` tab), or use the \"Runs on\" picker in the toolbar to choose a model with a larger context window.")
 		}
 	}
 	if provider == "groq" && draft.MaxTurns > 4 {
 		add("agent.llm_fit", "Model fit", "warn", "",
 			fmt.Sprintf("Groq's free tier throttles TPM aggressively; %d turns per run risks 429s mid-loop.", draft.MaxTurns),
-			"Lower max_turns to ≤ 4, or switch to a paid Groq tier / another provider.")
+			"Groq's free tier rate-limits runs this long, so it will fail partway. Either lower `max_turns` to 4 in the SOUL.yaml view (the `</>` tab), or use the \"Runs on\" picker in the toolbar to move this agent to another provider.")
 	}
 	if len(draft.LLM.AllowedProviders) > 0 {
 		allowed := false
@@ -585,7 +637,7 @@ func assessAgentCapabilityScope(draft Draft, def *agent.Definition, add func(id,
 	if privileged && isScheduled && !def.Unattended {
 		add("agent.capability_scope", "Capability scope", "warn", "",
 			"This agent has system-level capabilities and runs on a cron schedule, but is not marked Unattended — scheduled fires will silently stall waiting for a human approval that no one is there to give.",
-			"Either drop the system capability (safer) or set Unattended and audit the confirm_tools list so scheduled runs proceed knowingly.")
+			"A scheduled run has nobody to answer a confirmation prompt, so it will stop and fail. Either remove the privileged tools (the safer option), or tick Unattended in the Build step's inspector to auto-approve them — check which tools that covers under `confirm_tools:` in the SOUL.yaml view (the `</>` tab) before you do.")
 	}
 	pol := def.Policy
 	polAllowShell := strings.EqualFold(strings.TrimSpace(pol.Shell), "allow")
@@ -593,7 +645,7 @@ func assessAgentCapabilityScope(draft Draft, def *agent.Definition, add func(id,
 	if polAllowShell && len(pol.DenyPaths) == 0 && !def.Unattended {
 		add("agent.capability_scope", "Capability scope", "warn", "",
 			"policy.shell = allow with no deny_paths — every shell tool call is unfiltered.",
-			"Narrow with policy.shell: prompt, or add specific deny_paths / a confirm_tools list.")
+			"As written, this agent can run any shell command without asking. In the SOUL.yaml view (the `</>` tab above the canvas) set `policy.shell: prompt` so it asks first, or list the paths it must never touch under `deny_paths:`.")
 	}
 	if polAllowNetwork && len(pol.AllowDomains) == 0 {
 		add("agent.capability_scope", "Capability scope", "warn", "",
@@ -621,7 +673,7 @@ func assessAgentPersonaConsistency(def *agent.Definition, add func(id, title, st
 		if format == "json" && strings.TrimSpace(def.LLM.ResponseFormat) == "" && len(def.LLM.OutputSchema) == 0 {
 			add("agent.persona_consistency", "Persona consistency", "warn", "",
 				"Non-Negotiables set output format to JSON, but LLM.response_format and output_schema are both empty — the constraint is aspirational, not enforced.",
-				"Set LLM.response_format: json_object (or provide an output_schema) so the provider actually returns JSON.")
+				"The prompt asks for JSON but nothing makes the model produce it, so you get prose that only sometimes parses. In the SOUL.yaml view (the `</>` tab above the canvas) set `llm.response_format: json_object`, or describe the shape you want under `output_schema:`.")
 		}
 	}
 }
@@ -639,7 +691,7 @@ func assessAgentBuiltinScope(draft Draft, def *agent.Definition, add func(id, ti
 		mcpToolsLen == 0 && len(def.Skills) == 0 && len(def.Agents) == 0 && len(def.Knowledge) == 0 {
 		add("agent.builtin_scope", "Builtin scope", "block", "",
 			"The agent explicitly opts out of every builtin and has no MCP tools, skills, peer agents, or knowledge bases — there is nothing for a reasoning loop to call.",
-			"Add at least one Builtin, MCPTool, Skill, peer Agent, or Knowledge base.")
+			"Give it something to work with: drag a tool or a Custom Python block from the palette on the left, attach a Skill or Knowledge base in the Build step's inspector, or add an Agent step that hands work to a helper.")
 		return
 	}
 	// Setup mismatches: a builtin listed without its dependencies.
@@ -657,17 +709,17 @@ func assessAgentBuiltinScope(draft Draft, def *agent.Definition, add func(id, ti
 	if activeBuiltins["kb_search"] && len(def.Knowledge) == 0 {
 		add("agent.builtin_scope", "Builtin scope", "warn", "",
 			"kb_search is in the tool allowlist but no Knowledge bases are attached — every call will return \"no knowledge configured\".",
-			"Attach at least one Knowledge base under agent.knowledge, or remove kb_search from the allowlist.")
+			"This agent can search a knowledge base but has none attached, so every search comes back empty. Pick one under Knowledge in the Build step's inspector, or remove the `kb_search` tool from the step that uses it.")
 	}
 	if (activeBuiltins["read_skill"] || activeBuiltins["read_skill_file"]) && len(def.Skills) == 0 {
 		add("agent.builtin_scope", "Builtin scope", "warn", "",
 			"read_skill is in the tool allowlist but no Skills are attached — the agent has nothing to read.",
-			"Attach at least one Skill under agent.skills, or remove read_skill from the allowlist.")
+			"This agent can read a skill but has none attached, so there is nothing to read. Pick one under Skills in the Build step's inspector, or remove the `read_skill` tool from the step that uses it.")
 	}
 	if activeBuiltins["kb_write"] && len(def.Knowledge) == 0 {
 		add("agent.builtin_scope", "Builtin scope", "warn", "",
 			"kb_write is in the tool allowlist but no Knowledge bases are attached — writes will have nowhere to land.",
-			"Attach a Knowledge base or remove kb_write from the allowlist.")
+			"This agent can save into a knowledge base but has none attached, so the write has nowhere to go. Pick one under Knowledge in the Build step's inspector, or remove the `kb_write` tool from the step that uses it.")
 	}
 }
 

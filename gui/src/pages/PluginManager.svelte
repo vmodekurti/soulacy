@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import { sourceKind, needsChecksum, permissionLines, credentialLines, statusInfo, riskSummary, securityVerdict, securityFindingLines, migrationLines } from '../lib/pluginmanage.js'
@@ -91,7 +92,8 @@
   <div class="page-header">
     <h1>Plugins</h1>
     <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}<div class="msg err">{error}</div>{/if}
   {#if notice}<div class="msg ok">✓ {notice}</div>{/if}

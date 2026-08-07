@@ -614,6 +614,11 @@ func BuildPrompt(intent string, catalog Catalog, answers map[string]string) stri
 		sb.WriteString("Available agents: ")
 		sb.WriteString(strings.Join(catalog.Agents, ", "))
 		sb.WriteString("\n")
+		// Listing the agents is not the same as asking for them to be used. A
+		// generated graph that invents "summarizer" when the workspace already
+		// has one leaves the user with two near-identical agents and no idea
+		// which one a run actually used.
+		sb.WriteString("PREFER AN EXISTING AGENT: if one of the agents listed above already does the job a step needs, reference it by its EXACT id in that node's \"agent\" field instead of inventing a new peer. Only add a new entry to `new_agents` when nothing listed fits — every new peer becomes a real agent in the user's workspace on save.\n")
 	}
 	if len(catalog.Tools) > 0 {
 		sb.WriteString("Available tools: ")

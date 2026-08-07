@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import {
     SvelteFlow, Background, Controls, MiniMap, Position,
@@ -40,6 +41,7 @@
   import StrategyPanel from '../lib/studio/StrategyPanel.svelte'
   import BuildSpecPanel from '../lib/studio/BuildSpecPanel.svelte'
   import ReadinessPanel from '../lib/studio/ReadinessPanel.svelte'
+  import { NAVIGATE_TARGETS, actionKind, applyDraftFix } from '../lib/studio/fixactions.js'
   import WizardRail from '../lib/studio/WizardRail.svelte'
   import TestLabInputs from '../lib/studio/TestLabInputs.svelte'
   import FailedRunsPanel from '../lib/studio/FailedRunsPanel.svelte'
@@ -2887,32 +2889,63 @@ Use null for fields that are not present.`
   // server does emit besides open_providers/open_mcp fell through to `default`
   // — so a blocker rendered a "Fix this" button that did nothing at all.
   function readinessAction(item) {
-    switch (item && item.action) {
-      case 'open_providers': window.location.hash = '#providers'; break
-      case 'open_mcp':       window.location.hash = '#mcp'; break
-      case 'open_delivery':  window.location.hash = '#channels'; break
-      case 'choose_model':
-        closePreflight()
-        openModelPicker()
-        break
-      case 'add_assertions':
-      case 'run_live':
-        // Both are fixed at the bench: add an assertion, or exercise it live.
-        closePreflight()
-        viewMode = 'canvas'
-        revealBench()
-        goStep(STEP_TEST)
-        break
-      case 'open_studio':
-      case 'open_preflight':
+    return applyFixAction(item)
+  }
+
+  // THE dispatcher for every finding, everywhere: preflight blockers, contract
+  // checks, security findings, readiness items. One function so a given action
+  // behaves identically no matter which panel offered it, and so there is
+  // exactly one place that can fall out of step with the Go vocabulary —
+  // fixactions.test.js watches that one place.
+  function applyFixAction(item) {
+    const action = item && item.action
+    if (!action) return
+    switch (actionKind(action)) {
+      case 'navigate':
+        window.location.hash = NAVIGATE_TARGETS[action]
+        return
+
+      case 'apply': {
+        // Studio owns the value, so just set it. The module is pure and returns
+        // a new draft; an unchanged draft means there was nothing to do, which
+        // we say out loud rather than flashing a success.
+        const res = applyDraftFix(workflow, action, item.actionParams || item.action_params)
+        if (res.draft) workflow = res.draft
+        toast(res.message)
+        // The fix changed the draft, so every verdict on screen is now stale.
+        if (res.draft) { refreshSecurityReview(); if (readiness) loadReadiness() }
+        return
+      }
+
+      case 'focus':
+        switch (action) {
+          case 'choose_model':
+            closePreflight()
+            openAgentModelPicker()
+            return
+          case 'add_assertions':
+          case 'run_live':
+            // Both are fixed at the bench: add an assertion, or exercise it live.
+            closePreflight()
+            viewMode = 'canvas'
+            revealBench()
+            goStep(STEP_TEST)
+            return
+          default:
+            // reveal_node / open_studio / open_preflight — everything repaired
+            // on the canvas.
+            closePreflight()
+            viewMode = 'canvas'
+            goStep(STEP_BUILD)
+            if (item && item.nodeId) revealNode(item.nodeId)
+            return
+        }
+
       default:
-        // Everything else (tool / agent / field / dependency / template /
-        // schedule / policy / security) is repaired in the workflow editor.
-        closePreflight()
-        viewMode = 'canvas'
-        goStep(STEP_BUILD)
-        if (item && item.nodeId) revealNode(item.nodeId)
-        break
+        // An id the client does not know. The server should never send one —
+        // finishItem drops unknown ids before they reach us — so say so instead
+        // of rendering a button that quietly does nothing.
+        toast(`Studio does not know how to apply "${action}" — follow the written fix.`)
     }
   }
 
@@ -3367,7 +3400,14 @@ Use null for fields that are not present.`
       const res = await bridge.save(workflow, acceptPrivilegedExposure, grants, acceptReason.trim())
       const id = res.agentId
       loadedAgentId = id || loadedAgentId
-      saveMsg = `Saved as disabled agent ${id} — enable it from Deployed.`
+      // A workflow that delegates to a peer the workspace didn't have causes
+      // that peer to be created here. Say so: otherwise the agent list silently
+      // grows and the user has no idea where "summarizer" came from.
+      const peers = Array.isArray(res.peerAgents) ? res.peerAgents : []
+      const alsoMade = peers.length
+        ? ` Also created ${peers.length === 1 ? 'helper agent' : 'helper agents'} ${peers.join(', ')} — this workflow delegates to ${peers.length === 1 ? 'it' : 'them'}.`
+        : ''
+      saveMsg = `Saved as disabled agent ${id} — enable it from Deployed.${alsoMade}`
       // The justification belongs to the save that consumed it; carrying it into
       // the next one would silently reuse a reason the user never re-affirmed.
       acceptReason = ''
@@ -4428,14 +4468,39 @@ Use null for fields that are not present.`
     try { modelAdvice = await bridge.modelAdvice() } catch (_) { modelAdvice = null }
   }
 
+  // Two different models are in play and conflating them is the whole bug this
+  // picker's `target` exists to prevent:
+  //   'studio' — the BUILDER model, the one that writes the agent (llm.studio).
+  //   'agent'  — the RUNTIME model, the one the saved agent executes on. That is
+  //              what lands in SOUL.yaml, and until now Studio gave you no way
+  //              to choose it: you got the workspace default or nothing.
   async function openModelPicker() {
-    modelPicker = { open: true, provider: '', model: '', models: [], saving: false, error: '' }
+    modelPicker = { open: true, target: 'studio', provider: '', model: '', models: [], saving: false, error: '' }
     resetModelChooser()
     try {
       const cfg = await bridge.getConfig()
       const st = (cfg && cfg.llm && cfg.llm.studio) || {}
       modelPicker = { ...modelPicker, provider: st.provider || '', model: st.model || '' }
       if (st.provider) loadModelsFor(st.provider)
+    } catch (e) {
+      modelPicker = { ...modelPicker, error: e.message || 'could not load config' }
+    }
+  }
+
+  // Choose what THIS agent runs on. Seeded from the draft when it already pins
+  // something, otherwise from the workspace default so the dialog opens showing
+  // what would actually happen rather than an empty box.
+  async function openAgentModelPicker() {
+    const cur = (workflow && workflow.llm) || {}
+    modelPicker = { open: true, target: 'agent', provider: cur.provider || '', model: cur.model || '', models: [], saving: false, error: '' }
+    resetModelChooser()
+    try {
+      if (!cur.provider) {
+        const cfg = await bridge.getConfig()
+        const def = (cfg && cfg.llm && cfg.llm.default_provider) || ''
+        modelPicker = { ...modelPicker, provider: def }
+      }
+      if (modelPicker.provider) loadModelsFor(modelPicker.provider)
     } catch (e) {
       modelPicker = { ...modelPicker, error: e.message || 'could not load config' }
     }
@@ -4497,7 +4562,26 @@ Use null for fields that are not present.`
     modelPicker = { ...modelPicker, model: m }
   }
 
+  // The draft's own provider/model, for the toolbar chip. Blank until the draft
+  // pins one — "workspace default" is the honest label for that, not a guess at
+  // which model the default happens to resolve to right now.
+  $: agentModelLabel = (() => {
+    const llm = (workflow && workflow.llm) || {}
+    if (!llm.provider && !llm.model) return 'workspace default'
+    return fmtModelLabel(llm.provider, llm.model)
+  })()
+
+  // Write the choice onto the draft. Reassignment (not mutation) so Svelte sees
+  // it and the canvas/YAML views update with it.
+  function saveAgentModel() {
+    const llm = { ...((workflow && workflow.llm) || {}), provider: modelPicker.provider, model: modelPicker.model }
+    workflow = { ...workflow, llm }
+    modelPicker = { ...modelPicker, open: false, saving: false }
+    toast(`This agent will run on ${fmtModelLabel(llm.provider, llm.model)}.`)
+  }
+
   async function saveStudioModel() {
+    if (modelPicker.target === 'agent') return saveAgentModel()
     modelPicker = { ...modelPicker, saving: true, error: '' }
     try {
       await bridge.setStudioModel(modelPicker.provider, modelPicker.model)
@@ -4713,7 +4797,11 @@ Use null for fields that are not present.`
            list beside it. Two toolbar buttons doing what step 1 already does
            made the wizard look like a veneer over the old screen. -->
       <button class="btn" type="button" on:click={openRules} data-tooltip="Edit the SOUL.yaml authoring rules used when generating, validating, and fixing">📋 Rules</button>
-      <button class="btn" type="button" on:click={openModelPicker} data-tooltip="Choose which in-framework provider/model Studio uses">⚙ {studioModelLabel}</button>
+      <button class="btn" type="button" on:click={openModelPicker} data-tooltip="Choose which in-framework provider/model Studio uses to BUILD agents">⚙ Builds with: {studioModelLabel}</button>
+      {#if workflow}
+        <button class="btn" type="button" on:click={openAgentModelPicker}
+                data-tooltip="Choose the provider/model this agent RUNS on — written into its SOUL.yaml">🤖 Runs on: {agentModelLabel}</button>
+      {/if}
       <button class="btn" type="button" on:click={openTemplates} data-tooltip="Start from a template">Templates</button>
       <button class="btn" type="button" on:click={openYamlBrowser} data-tooltip="View the raw SOUL.yaml of any agent (read-only)">Browse SOUL.yaml</button>
       <button class="btn" type="button" on:click={saveDraft} disabled={!workflow || savingDraft} data-tooltip="Save the current draft to the library">
@@ -4721,6 +4809,7 @@ Use null for fields that are not present.`
       </button>
       <button class="btn" type="button" on:click={exportDraft} disabled={!workflow} data-tooltip="Download the current draft as a .studio.json file">Export</button>
       <button class="btn" type="button" on:click={triggerImport} data-tooltip="Load a .studio.json file from disk">Import</button>
+      <TourButton />
       <input
         bind:this={fileInputEl}
         class="hidden-file"
@@ -5729,6 +5818,9 @@ Use null for fields that are not present.`
                         <div class="security-cat">{b.category}</div>
                         <div class="security-msg">{b.message}</div>
                         {#if b.fix}<div class="security-fix">→ {b.fix}</div>{/if}
+                        {#if b.action_label}
+                          <button class="btn btn-sm security-apply" type="button" on:click={() => applyFixAction(b)}>{b.action_label}</button>
+                        {/if}
                       </div>
                     {/each}
                   </div>
@@ -5741,6 +5833,14 @@ Use null for fields that are not present.`
                         <div class="security-cat">{w.category}</div>
                         <div class="security-msg">{w.message}</div>
                         {#if w.fix}<div class="security-fix">→ {w.fix}</div>{/if}
+                        <div class="security-actions">
+                          {#if w.action_label}
+                            <button class="btn btn-sm security-apply" type="button" on:click={() => applyFixAction(w)}>{w.action_label}</button>
+                          {/if}
+                          {#if w.category === 'channel'}
+                            <button class="btn btn-sm" type="button" on:click={() => { window.location.hash = '#channels' }}>Open Delivery</button>
+                          {/if}
+                        </div>
                       </div>
                     {/each}
                   </div>
@@ -6933,11 +7033,20 @@ Use null for fields that are not present.`
   {#if modelPicker.open}
     <div class="modal-backdrop" on:click|self={() => modelPicker = { ...modelPicker, open: false }} role="presentation">
       <div class="modal model-modal" role="dialog" aria-modal="true" aria-labelledby="model-title">
-        <h2 id="model-title" class="modal-title">Studio model</h2>
+        <h2 id="model-title" class="modal-title">
+          {modelPicker.target === 'agent' ? 'Model this agent runs on' : 'Studio model'}
+        </h2>
         <p class="modal-body">
-          Which provider/model should Studio use for its reasoning and code
-          generation? Uses your configured providers — leave provider blank to
-          use the global default.
+          {#if modelPicker.target === 'agent'}
+            Which provider/model should the saved agent execute on? This is
+            written into its SOUL.yaml. It is a different choice from the model
+            Studio uses to build it — leave the provider blank to inherit the
+            workspace default instead of pinning one.
+          {:else}
+            Which provider/model should Studio use for its reasoning and code
+            generation? Uses your configured providers — leave provider blank to
+            use the global default.
+          {/if}
         </p>
         {#if modelPicker.error}<div class="strip strip-error">⚠ {modelPicker.error}</div>{/if}
         <label class="field-label" for="mp-provider">provider</label>
@@ -9692,4 +9801,6 @@ Use null for fields that are not present.`
   .security-msg code { color: #ada8ff; }
   .security-fix { color: #7b82a8; font-size: .72rem; }
   .security-apply { align-self: flex-start; margin-top: .3rem; }
+  .security-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin-top: .3rem; }
+  .security-actions .security-apply { margin-top: 0; }
 </style>

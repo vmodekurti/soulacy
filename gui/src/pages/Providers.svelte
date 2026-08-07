@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
 
@@ -358,7 +359,8 @@
       </button>
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}<div class="banner err">{error}</div>{/if}
   {#if notice}<div class="banner ok">{notice}</div>{/if}

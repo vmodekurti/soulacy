@@ -80,6 +80,12 @@ type ReadinessItem struct {
 	Fix          string            `json:"fix,omitempty"`
 	Action       string            `json:"action,omitempty"`
 	ActionParams map[string]string `json:"actionParams,omitempty"`
+	// ActionLabel is the button text, resolved from the shared vocabulary in
+	// fixactions.go (or the finding's own override). It travels WITH the item
+	// so every panel renders the same action the same way — three panels each
+	// keeping their own label switch is how "Configure provider" in one place
+	// became "Fix this" in another.
+	ActionLabel string `json:"actionLabel,omitempty"`
 }
 
 // ReadinessSection is one evaluated (or unevaluated) source.
@@ -239,15 +245,31 @@ func statusFor(blockers, warnings int) string {
 	}
 }
 
+// finishItem settles an item's action and button text. Node-scoped findings
+// with no better destination become "reveal the step" rather than "open the
+// editor" — the editor is already open, so pointing at it says nothing.
+func finishItem(it ReadinessItem, override string) ReadinessItem {
+	if it.Action == FixOpenStudio && strings.TrimSpace(it.NodeID) != "" {
+		it.Action = FixRevealNode
+	}
+	if !IsFixAction(it.Action) {
+		// Never ship an id the client cannot handle: a button that does nothing
+		// is worse than prose. Drop it and let the Fix text carry the finding.
+		it.Action = ""
+	}
+	it.ActionLabel = resolveFixLabel(it.Action, override)
+	return it
+}
+
 func preflightItems(pf PreflightResult) []ReadinessItem {
 	var out []ReadinessItem
 	conv := func(issues []PreflightIssue) {
 		for _, i := range issues {
-			out = append(out, ReadinessItem{
+			out = append(out, finishItem(ReadinessItem{
 				Section: ReadinessSectionPreflight, Severity: i.Severity, Kind: i.Kind,
 				NodeID: i.NodeID, Message: i.Message, Fix: i.Fix,
 				Action: nonEmptyOr(i.Action, actionForKind(i.Kind)), ActionParams: i.ActionParams,
-			})
+			}, ""))
 		}
 	}
 	conv(pf.Blockers)
@@ -270,11 +292,14 @@ func contractItems(cr ContractResult) []ReadinessItem {
 		} else {
 			sev = "warn"
 		}
-		out = append(out, ReadinessItem{
+		out = append(out, finishItem(ReadinessItem{
 			Section: ReadinessSectionContract, Severity: sev, Kind: c.ID,
 			NodeID: c.NodeID, Message: c.Message, Fix: c.Fix,
-			Action: actionForContractCheck(c.ID),
-		})
+			// The check's own action wins when it has one; the id-derived
+			// mapping is only the fallback.
+			Action:       nonEmptyOr(c.Action, actionForContractCheck(c.ID)),
+			ActionParams: c.ActionParams,
+		}, c.ActionLabel))
 	}
 	return out
 }
@@ -297,10 +322,14 @@ func securityItems(sr SecurityReview) []ReadinessItem {
 	var out []ReadinessItem
 	conv := func(fs []SecurityFinding) {
 		for _, f := range fs {
-			out = append(out, ReadinessItem{
+			// A finding that names its own fix knows better than the
+			// category mapping does — the category can only ever say "go to
+			// this screen", never "Studio can do this for you".
+			out = append(out, finishItem(ReadinessItem{
 				Section: ReadinessSectionSecurity, Severity: f.Severity, Kind: f.Category,
-				Message: f.Message, Fix: f.Fix, Action: actionForSecurityCategory(f.Category),
-			})
+				Message: f.Message, Fix: f.Fix,
+				Action: nonEmptyOr(f.Action, actionForSecurityCategory(f.Category)),
+			}, f.ActionLabel))
 		}
 	}
 	conv(sr.Blockers)
@@ -344,16 +373,21 @@ func consentItems(plan PlanResult, accepted bool) []ReadinessItem {
 		if accepted {
 			msg = "Consent granted for " + ci.Kind + " \"" + ci.Name + "\": " + ci.Reason
 		}
-		action := "open_studio"
+		action := FixOpenStudio
+		label := ""
 		if ci.Kind == "channel" {
-			action = "open_delivery"
+			action = FixOpenDelivery
+			label = "Review the binding"
 		}
-		out = append(out, ReadinessItem{
+		// Through finishItem like every other source. Building the item by hand
+		// here is how consent findings ended up with an action and no button
+		// text — the UI rendered a button with nothing written on it.
+		out = append(out, finishItem(ReadinessItem{
 			Section: ReadinessSectionConsent, Severity: sev, Kind: "consent:" + ci.Kind,
 			Message: msg,
 			Fix:     "Review the exposure and accept it explicitly when saving, or remove the privileged capability / channel binding.",
 			Action:  action, ActionParams: map[string]string{"name": ci.Name, "kind": ci.Kind},
-		})
+		}, label))
 	}
 	if len(out) == 0 {
 		// RequiresConsent with no items shouldn't happen; stay explicit rather

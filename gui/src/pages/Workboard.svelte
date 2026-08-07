@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount, onDestroy } from 'svelte'
   import { api } from '../lib/api.js'
   import { STATUSES, STATUS_LABELS, adjacentStatus, groupByStatus, canRun, runLabel, artifactName, formatBytes, artifactDownloadUrl, PRIORITIES, priorityBadge, parseTags, formatTags, dueInfo } from '../lib/workboard.js'
@@ -41,8 +42,10 @@
         api.workboard.list(),
         api.agents.list().catch(() => null),
       ])
-      tasks = board?.tasks || []
-      agents = agentList?.agents || agentList || []
+      tasks = Array.isArray(board?.tasks) ? board.tasks : []
+      agents = Array.isArray(agentList?.agents)
+        ? agentList.agents
+        : (Array.isArray(agentList) ? agentList : [])
     } catch (e) {
       error = e.message || 'Failed to load workboard'
     } finally {
@@ -242,7 +245,8 @@
       <button class="btn-secondary" on:click={load} disabled={loading}>↺ Refresh</button>
       <button class="btn-primary" on:click={newTask}>+ New Task</button>
     </div>
-  </div>
+        <TourButton />
+    </div>
 
   {#if error}
     <div class="error-banner">{error}</div>

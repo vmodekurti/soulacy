@@ -1,4 +1,5 @@
 <script>
+  import TourButton from '../lib/TourButton.svelte'
   import { onMount } from 'svelte'
   import { api } from '../lib/api.js'
   import { installPrompt, appInstalled, authRequired } from '../lib/stores.js'
@@ -290,9 +291,18 @@
     return agent?.trigger !== 'cron' && agent?.trigger !== 'oneshot'
   }
 
-  function ensurePocketAgent() {
-    if (pocketAgentId && chatAgents.some(a => a.id === pocketAgentId)) return
-    pocketAgentId = chatAgents[0]?.id || ''
+  // `eligible` is passed in by the reactive statement below rather than read
+  // from the closure. That is load-bearing: `$: ensurePocketAgent()` with no
+  // argument gives Svelte no dependency it can see, so the compiler emits the
+  // call once in the instance body instead of inside $$self.$$.update. It then
+  // ran during init — before the reactive `chatAgents` declaration had been
+  // assigned, so `chatAgents[0]` threw and wedged the whole app — and never ran
+  // again when the agent list arrived, so the picker stayed empty. Passing the
+  // list makes it a real dependency, which fixes both halves.
+  function ensurePocketAgent(eligible) {
+    const list = eligible || []
+    if (pocketAgentId && list.some(a => a.id === pocketAgentId)) return
+    pocketAgentId = list[0]?.id || ''
   }
 
   async function sendPocketChat() {
@@ -388,7 +398,7 @@
   $: deliveryChannels = channels.filter(ch => ch.id !== 'http' && (ch.configured || ch.enabled || ch.registered || (ch.bots || []).length)).slice(0, 5)
   $: enabledAgents = agents.filter(a => a.enabled)
   $: chatAgents = enabledAgents.filter(isChatEligible)
-  $: ensurePocketAgent()
+  $: ensurePocketAgent(chatAgents)
   $: riskCount = providerIssues.length + channelIssues.length + recentErrors.length
   $: pendingLearning = learning?.pending || 0
   $: readinessSummary = readiness?.summary || {}
@@ -454,6 +464,7 @@
       <h1>Operations</h1>
     </div>
     <button class="btn-secondary" on:click={() => { load(); loadApprovals() }} disabled={loading}>↻</button>
+    <TourButton />
   </header>
 
   {#if sessionExpired}
